@@ -83,6 +83,21 @@ Where things are: `eden_log.txt` (everything below unless noted), `stderr.log` (
 - What: every present (begin, after its waits, end), every front wait on the back (site, start, end), every back batch (start, end, ring words), guest syncpoint increments, fence pops and shader builds, in a 1M-event ring. Copy the `.bin` with the logs; read it with `timeline.py` (per-frame table, Perfetto trace).
 - Cost: during the window, one clock read and a 24-byte store per event; the file write at the end makes one hitch. Keep the window inside a stretch you aren't measuring fps on, or accept one slow frame.
 
+## Flight recorder, effective env, markers (patch 0923, UNTESTED on a console)
+
+**`EDEN_GBB_FLIGHT: frame of X ms at S s; last 2 s (N events) written to /data/eglantineps5/logs/gbb-flight-<pid>-<k>.bin`**
+- Switch: `EDEN_GBB_FLIGHT=<ms>[,<dumps>]`, for example `100` or `100,8`; overrides `EDEN_GBB_TIMELINE`.
+- What: the timeline's events go into a circular ring from the first present. When a frame takes `<ms>` or more, the last 2 s go to a file (at most `<dumps>`, 5 s apart). Read the files with `timeline.py`.
+- Cost: as the timeline, all session long, plus a hitch for each file written, after the hitch it records.
+
+**`EDEN_GBB_ENV count=N KEY=VALUE ...`**
+- Logged once at the first present, whenever vitals, timeline or flight is on.
+- Lists every EDEN_, RADV_, MESA_ and ACO_ variable the process really had. `checkrun.py` compares it with env.txt exactly.
+
+**`EDEN_GBB_MARK n=K`**
+- Touchpad + R3 on the controller (headless pad.cpp). Neither button reaches the game while the chord is held.
+- Press it when you see a flash or start walking. It also goes into the timeline and flight ring.
+
 ## Host GPU
 
 **`EDEN_GPU_TIME wall_ms busy_ms submissions max_ms ...`** (in stderr; eglog aligns at the session end, or one window earlier when GPU busy against fps fits better)
@@ -143,13 +158,13 @@ Where things are: `eden_log.txt` (everything below unless noted), `stderr.log` (
 
 - **`logs/boot-trace.txt`:** `diagnostic build <version> (<build time>), firmware sdk_version 0x..., pid N`. The pid ties sampler files to the session.
 - **`EDEN_GBB: position invariant on, colour NaN guard on`**: the AMD fixes are active.
-- **Menu settings** (Faster CPU emulation and others) are **not logged**. Write them in the run notes.
+- **Menu settings** are in **stderr**, `[EglantinePS5] launch: ...` lines: renderer, console mode (Handheld or Docked), resolution and output, and `Performance: block list, async shaders, fast GPU, unsafe CPU (= the menu's Faster CPU emulation), unsafe DMA, reactive flushing, skip invalidation`. `eglog` reads them into `run.menu`. The `Profile:` line can hold an account name; the packer redacts it.
 
 ## Known blind spots (what no log tells us yet)
 
 1. Per-frame order of events across the game, the front, the back, the host GPU and fences. This is the open question in the heavy views.
-2. Where in the game the player is (scene or room).
-3. When the player saw a flash; there is no marker button.
-4. Menu settings and the effective env with defaults.
+2. Where in the game the player is (scene or room). Design in `docs/GrowingBlackBeans/toolkit-roadmap.md`.
+3. When the player saw a flash: patch 0923 adds a touchpad + R3 marker (untested).
+4. The effective env with defaults (patch 0923 adds `EDEN_GBB_ENV`, untested).
 5. GPU time with timestamps.
 6. Several switches leave no trace in the log (`EDEN_GBB_GUARD_EARLY`, `EDEN_UP_AHEAD_ALWAYS`, `EDEN_GBB_TRUST_COPY`), so `checkrun.py` can't verify them.

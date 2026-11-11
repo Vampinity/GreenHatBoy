@@ -33,6 +33,14 @@ def report(path):
     L.append(f"- **Route:** {f(s['route'])}")
     if run.meta.get("impressions"):
         L.append(f"- **What the player saw:** {run.meta['impressions']}")
+    if run.menu:
+        L.append("- **Menu:** " + ", ".join(f"{k} {v}" for k, v in run.menu.items()) +
+                 " (\"unsafe CPU\" is Faster CPU emulation)")
+    if run.marks:
+        L.append(f"- **Markers (touchpad + R3) at log s:** {', '.join(f'{t:.0f}' for t, _ in run.marks)}")
+    if run.flights:
+        L.append(f"- **Flight-recorder dumps:** " + "; ".join(
+            f"{x['frame_ms']:.0f} ms frame at {x['t']:.0f} s → {x['path'].rsplit('/', 1)[-1]}" for x in run.flights))
     sw = [f"`{k}={run.env[k]}`" for k in KEY_SWITCHES if k in run.env]
     L.append(f"- **Key switches:** {', '.join(sw) if sw else '–'} ({len(run.env)} env lines)")
     costly = [f"{k} ({v})" for k, v in COSTLY.items() if run.env.get(k, "0") not in ("0", "")]

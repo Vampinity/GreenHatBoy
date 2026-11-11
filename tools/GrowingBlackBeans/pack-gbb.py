@@ -37,7 +37,11 @@ try:
     with gzip.open(target / "eden_log.txt.gz", "wt", compresslevel=9) as f: f.write(log)
     se = run / "logs" / "stderr.log"
     if se.exists():
-        with gzip.open(target / "stderr.log.gz", "wt", compresslevel=9) as f: f.write(ghb.redact(se.read_text(errors="replace"), counts))
+        err = se.read_text(errors="replace")
+        # The launcher logs the profile's name, which can be an account name: never pack it.
+        err, n = re.subn(r"(launch: Profile ).*", r"\1<redacted>", err)
+        if n: counts["profile_name"] = n
+        with gzip.open(target / "stderr.log.gz", "wt", compresslevel=9) as f: f.write(ghb.redact(err, counts))
     env_lines = []
     if (run / "env.txt").exists():
         env = ghb.redact((run / "env.txt").read_text(errors="replace"), counts)

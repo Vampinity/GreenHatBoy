@@ -23,6 +23,29 @@ Regimes (all tools; details in LOGS.md):
 
 Runs also get an era (full-wait or ahead-1; never pool them) and, on hand-played routes, standing and walking phases found from the door.
 
+## What has been tested
+
+As of 11 Nov 2026:
+
+| Piece | State |
+|---|---|
+| `eglog.py`, `runreport.py`, `abcompare.py` (including `--live`), `checkrun.py`, `index-gbb.py`, `ingest.sh` | **Tested** on all 1,219 runs in this repo and on raw folders; unit tests pass (`tests/`). |
+| Menu settings from stderr (`run.menu`) | **Tested** on real logs. |
+| `timeline.py` | Tested **only on synthetic files** (`tests/test_timeline.py`). Never on a real capture. |
+| Patch 0921, `EDEN_GBB_BACK_CALLS` | Builds (t120-gbb4). **Never run.** Its cost is unknown. |
+| Patch 0922, `EDEN_GBB_VITALS`, `EDEN_GBB_TIMELINE` | Builds (t120-gbb5). **Never run.** The cost, the file write and the event mix are all unchecked. |
+| Patch 0923, `EDEN_GBB_FLIGHT`, `EDEN_GBB_ENV`, the touchpad + R3 marker | Builds (t120-gbb6). **Never run.** The pad chord is untested: check that the touchpad doesn't also tap the game's Minus. |
+| eglog parsing of the 0921-0923 lines (vitals, env, marks, flights) | Written against the format strings in the patches; **never fed real output.** |
+
+To test 0921-0923 for the first time, one run on t120-gbb6 with `envs/GrowingBlackBeans/V-vitals-back-timeline.env.txt` covers vitals, back calls and timeline. Add `EDEN_GBB_FLIGHT=100` in a second run. Press touchpad + R3 a few times in each. Check:
+1. `EDEN_GBB_VITALS` lines, one a second, with sane numbers. Compare `fps` with the `nx2:vi2 5 s` lines.
+2. `EDEN_GBB_ENV` and `checkrun.py` agreeing.
+3. `EDEN_GBB_MARK` lines, with no Minus press reaching the game.
+4. `gbb-timeline-<pid>.bin` and `gbb-flight-*.bin` in `logs/`, readable with `timeline.py`.
+5. Fps against the same env without the switches (`abcompare.py`), to put a number on their cost.
+
+Fix whatever breaks. The code is in `patches/GrowingBlackBeans/0921-0923` and `video_core/gbb_trace.h`.
+
 ## The typical workflow
 
 ### 1. Before a session: plan the runs

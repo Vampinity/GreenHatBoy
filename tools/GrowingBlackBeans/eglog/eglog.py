@@ -65,6 +65,10 @@ MARGINS = re.compile(r"Memory margins: base (\d+) MiB, out of memory (\d+) MiB, 
 LIVE_END = re.compile(r"Live switches: phase (\d+) '([^']*)' ended after ([\d.]+) s: (\d+) frames in ([\d.]+) s = ([\d.]+) fps, "
                       r"mean ([\d.]+) ms, 1% low ([\d.]+) ms, worst ([\d.]+) ms")
 VITALS = re.compile(r"EDEN_GBB_VITALS (.*)")
+ENVLINE = re.compile(r"EDEN_GBB_ENV count=(\d+)(.*)")
+MARK = re.compile(r"EDEN_GBB_MARK n=(\d+)")
+FLIGHT = re.compile(r"EDEN_GBB_FLIGHT: frame of ([\d.]+) ms at ([\d.]+) s; last 2 s \((\d+) events\) (written to|FAILED to write) (\S+)")
+LAUNCH = re.compile(r"\[EglantinePS5\] launch: (.*)")
 TIMELINE_DONE = re.compile(r"EDEN_GBB_TIMELINE: (\d+) events .* (written to|FAILED to write) (\S+)")
 BACKCALLS = re.compile(r"EDEN_GBB_BACK 5 s \(ms per s\): busy ([\d.]+), waiting ([\d.]+), idle hook ([\d.]+)")
 
@@ -147,6 +151,9 @@ class Run:
         self.guard: list[tuple] = []              # (t, copies, most, pool, full)
         self.backcalls: list[tuple] = []          # (t, busy, waiting, hook)
         self.vitals: list[dict] = []              # EDEN_GBB_VITALS, one per second (patch 0922)
+        self.effective_env = None                 # EDEN_GBB_ENV (patch 0923): what the process really had
+        self.marks: list[tuple] = []              # (t, n) touchpad + R3 markers (patch 0923)
+        self.flights: list[dict] = []             # EDEN_GBB_FLIGHT dumps (patch 0923)
         self.timeline_file = None                 # EDEN_GBB_TIMELINE result line (patch 0923)
         self.tc_created: list[tuple] = []         # (t, images created, deleted) per 600 frames
         self.tc_uploads: list[tuple] = []         # (t, uploads, MiB) per 600 frames
@@ -201,6 +208,19 @@ class Run:
                                 rec[k] = v
                     self.vitals.append(rec)
                     continue
+                m2 = ENVLINE.search(line)
+                if m2:
+                    self.effective_env = dict(kv.split("=", 1) for kv in m2[2].split() if "=" in kv)
+                    continue
+                m2 = MARK.search(line)
+                if m2:
+                    self.marks.append((t, int(m2[1])))
+                    continue
+                m2 = FLIGHT.search(line)
+                if m2:
+                    self.flights.append({"t": t, "frame_ms": float(m2[1]), "events": int(m2[3]),
+                                         "ok": m2[4] == "written to", "path": m2[5]})
+                    continue
                 m2 = TIMELINE_DONE.search(line)
                 if m2:
                     self.timeline_file = {"events": int(m2[1]), "ok": m2[2] == "written to", "path": m2[3]}
@@ -228,9 +248,28 @@ class Run:
                 if b:
                     self.backcalls.append((t, float(b[1]), float(b[2]), float(b[3])))
         self.gpu = []
+        self.menu = {}
         if self.stderr_path:
             with _open(self.stderr_path) as fh:
-                self.gpu = [(float(m[1]), float(m[2]), int(m[3]), float(m[4])) for m in GPUTIME.finditer(fh.read())]
+                err = fh.read()
+            self.gpu = [(float(m[1]), float(m[2]), int(m[3]), float(m[4])) for m in GPUTIME.finditer(err)]
+            # The launcher's menu settings ("[EglantinePS5] launch: Performance: ..., unsafe CPU on, ...").
+            # "unsafe CPU" is the menu's Faster CPU emulation.
+            for m in LAUNCH.finditer(err):
+                text = m[1].strip()
+                if text.startswith("Profile"):
+                    continue  # can be an account name; never surfaced
+                if text.startswith("Performance:"):
+                    for part in text[len("Performance:"):].split(","):
+                        part = part.strip()
+                        if part.endswith(" on") or part.endswith(" off"):
+                            k, v = part.rsplit(" ", 1)
+                            self.menu[k] = v
+                elif ":" in text:
+                    k, v = text.split(":", 1)
+                    self.menu[k.strip()] = v.strip()
+                else:
+                    self.menu.setdefault("renderer", text)
         self._enrich()
 
     def _enrich(self):
@@ -330,6 +369,8 @@ class Run:
             return round(st.mean(v), 2) if v else None
         play = self.play()
         out = {"run": self.name, "build": self.build, "firmware": self.firmware, "era": self.era,
+               "menu": self.menu, "marks": [round(t, 1) for t, _ in self.marks],
+               "flights": self.flights,
                "door_s": self.door_t, "gpu_align": self.gpu_offset,
                "author": self.meta.get("author"), "route": (self.meta.get("route") or {}).get("script"),
                "play_windows": len(play), "play_fps": agg(play, "fps"),

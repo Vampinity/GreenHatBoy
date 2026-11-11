@@ -39,6 +39,7 @@ SIGNATURES = {
     "EDEN_GPU_TIME": ("stderr", r"EDEN_GPU_TIME wall_ms"),
     "EDEN_GBB_VITALS": ("log", r"EDEN_GBB_VITALS t_ms="),
     "EDEN_GBB_TIMELINE": ("log", r"EDEN_GBB_TIMELINE: (recording|\d+ events)"),
+    "EDEN_GBB_FLIGHT": ("log", r"EDEN_GBB_FLIGHT: recording"),
 }
 # Switches with no log line of their own (can't be checked from the log): say so instead of passing silently.
 SILENT = ["EDEN_GBB_GUARD_EARLY", "EDEN_UP_AHEAD_ALWAYS", "EDEN_GBB_TRUST_COPY"]
@@ -80,6 +81,19 @@ def main():
             problems.append(f"{sw}={run.env[sw]} is in env.txt but its lines are not in the {where} (wrong env, or log from another run)")
         if seen and not on:
             problems.append(f"the {where} shows {sw} but env.txt doesn't set it (log from another run?)")
+    if run.effective_env is not None:
+        # Patch 0923 logs the env the process really had: compare it with env.txt directly.
+        mine = {k: v for k, v in run.env.items() if k.startswith(("EDEN_", "RADV_", "MESA_", "ACO_"))}
+        diff = sorted(set(mine.items()) ^ set(run.effective_env.items()))
+        if diff:
+            keys = sorted({k for k, _ in diff})
+            problems.append(f"env.txt and the env the emulator logged (EDEN_GBB_ENV) differ in {len(keys)} switch(es): "
+                            f"{', '.join(keys[:8])}{' ...' if len(keys) > 8 else ''}")
+        else:
+            notes.append("env.txt matches the env the emulator logged (EDEN_GBB_ENV) exactly")
+    if run.menu:
+        notes.append("menu: " + ", ".join(f"{k} {v}" for k, v in run.menu.items() if k in (
+            "unsafe CPU", "fast GPU", "async shaders", "reactive flushing", "Resolution", "Console mode")))
     silent = [s for s in SILENT if run.env.get(s, "0") not in ("0", "")]
     if silent:
         notes.append("set but not visible in the log, can't be verified: " + ", ".join(silent))
