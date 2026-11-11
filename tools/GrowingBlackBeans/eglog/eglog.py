@@ -64,6 +64,8 @@ TC_UPLOADS = re.compile(r"Texture cache last 600 frames: (\d+) uploads from gues
 MARGINS = re.compile(r"Memory margins: base (\d+) MiB, out of memory (\d+) MiB, block slack (\d+) MiB")
 LIVE_END = re.compile(r"Live switches: phase (\d+) '([^']*)' ended after ([\d.]+) s: (\d+) frames in ([\d.]+) s = ([\d.]+) fps, "
                       r"mean ([\d.]+) ms, 1% low ([\d.]+) ms, worst ([\d.]+) ms")
+VITALS = re.compile(r"EDEN_GBB_VITALS (.*)")
+TIMELINE_DONE = re.compile(r"EDEN_GBB_TIMELINE: (\d+) events .* (written to|FAILED to write) (\S+)")
 BACKCALLS = re.compile(r"EDEN_GBB_BACK 5 s \(ms per s\): busy ([\d.]+), waiting ([\d.]+), idle hook ([\d.]+)")
 
 LIGHT_MAX, HEAVY_MIN = 1.0, 5.0
@@ -144,6 +146,8 @@ class Run:
         self.svcprof: list[tuple] = []            # (t, tid, frames, ms/frame, svc/frame, outside/frame)
         self.guard: list[tuple] = []              # (t, copies, most, pool, full)
         self.backcalls: list[tuple] = []          # (t, busy, waiting, hook)
+        self.vitals: list[dict] = []              # EDEN_GBB_VITALS, one per second (patch 0922)
+        self.timeline_file = None                 # EDEN_GBB_TIMELINE result line (patch 0923)
         self.tc_created: list[tuple] = []         # (t, images created, deleted) per 600 frames
         self.tc_uploads: list[tuple] = []         # (t, uploads, MiB) per 600 frames
         self.margins: list[tuple] = []            # (t, out of memory MiB, block slack MiB)
@@ -184,6 +188,22 @@ class Run:
                 g = GUARD.search(line)
                 if g:
                     self.guard.append((t, int(g[1]), int(g[2]), int(g[3]), int(g[4])))
+                    continue
+                m2 = VITALS.search(line)
+                if m2:
+                    rec = {"t": t}
+                    for kv in m2[1].split():
+                        if "=" in kv:
+                            k, v = kv.split("=", 1)
+                            try:
+                                rec[k] = float(v)
+                            except ValueError:
+                                rec[k] = v
+                    self.vitals.append(rec)
+                    continue
+                m2 = TIMELINE_DONE.search(line)
+                if m2:
+                    self.timeline_file = {"events": int(m2[1]), "ok": m2[2] == "written to", "path": m2[3]}
                     continue
                 m2 = TC_CREATED.search(line)
                 if m2:
@@ -318,7 +338,7 @@ class Run:
                "pipeline_ms_in_play": round(sum(w.pipeline_ms for w in play)),
                "regimes": {}, "hitches": self.hitches(), "has": {
                    "split": bool(self.split), "gpu_time": bool(self.gpu), "svcprof": bool(self.svcprof),
-                   "guard": bool(self.guard), "back_calls": bool(self.backcalls)}}
+                   "guard": bool(self.guard), "back_calls": bool(self.backcalls), "vitals": bool(self.vitals)}}
         for ph in ("standing", "walking"):
             ws = [w for w in play if w.phase == ph]
             out[ph] = {"windows": len(ws), "fps": agg(ws, "fps"),
@@ -332,6 +352,18 @@ class Run:
                 "uploads": round(st.mean(x[1] for x in up)) if up else None,
                 "upload_mib": round(st.mean(x[2] for x in up)) if up else None,
                 "scope": "walking" if walk_t else "whole run"}
+        if self.vitals:
+            ws = {r: [w for w in play if w.regime == r] for r in ("light", "queued", "mid", "heavy")}
+            def vit(regime_windows, key):
+                sel = [v[key] for v in self.vitals for w in regime_windows
+                       if key in v and w.t - 5 < v["t"] <= w.t]
+                return round(st.mean(sel), 2) if sel else None
+            out["vitals"] = {r: {k: vit(ws[r], k) for k in ("fps", "present_wait_ms", "back_busy_ms_s",
+                                                              "front_wait_ms_s", "gpu_busy_ms_s", "ring_kwords_s")}
+                             for r in ws}
+            out["vitals"]["seconds"] = len(self.vitals)
+        if self.timeline_file:
+            out["timeline"] = self.timeline_file
         if self.margins:
             out["memory"] = {"out_of_memory_events": sum(1 for x in self.margins if x[1] > 0),
                              "out_of_memory_max_mib": max(x[1] for x in self.margins),

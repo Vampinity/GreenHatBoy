@@ -37,6 +37,8 @@ SIGNATURES = {
     "EDEN_GBB_BACK_CALLS": ("log", r"EDEN_GBB_BACK 5 s"),
     "EDEN_GBB_NAN_GUARD": ("log", r"colour NaN guard on"),
     "EDEN_GPU_TIME": ("stderr", r"EDEN_GPU_TIME wall_ms"),
+    "EDEN_GBB_VITALS": ("log", r"EDEN_GBB_VITALS t_ms="),
+    "EDEN_GBB_TIMELINE": ("log", r"EDEN_GBB_TIMELINE: (recording|\d+ events)"),
 }
 # Switches with no log line of their own (can't be checked from the log): say so instead of passing silently.
 SILENT = ["EDEN_GBB_GUARD_EARLY", "EDEN_UP_AHEAD_ALWAYS", "EDEN_GBB_TRUST_COPY"]

@@ -12,7 +12,8 @@ Standard-library Python. Works on packed runs (`runs/<author>/<date>-<id>/`) and
 | `ingest.sh RUN ID` | check → pack (`pack-gbb.py`) → `report.md` → both indexes. Needs `REPO=<shared repo clone>`. |
 | `index-gbb.py REPO` | `index-regimes.csv`: per run era, standing/walking fps, fps per regime, back and host GPU per heavy frame, shaders, texture churn, memory events, live-switch labels. Joins `index.csv` on `path`. |
 | `abcompare.py --live RUNS` | Compares the labelled phases of in-run live-switch runs: the most precise A/B (A/A noise about ±0.5 fps). |
-| `tests/test_eglog.py` | Parser tests on a synthetic run; run after changing the parser. |
+| `timeline.py FILE.bin [--perfetto out.json] [--frames out.csv]` | Reads an `EDEN_GBB_TIMELINE` capture: per frame, the interval, present wait, back busy, front waits (and top site), shaders, and when the frame's fence was signalled; plus a Perfetto trace. |
+| `tests/` | Parser and timeline tests on synthetic data; run after changing either. |
 
 Regimes (all tools; details in LOGS.md):
 - **light:** no present wait and the back idle; the game's CPU sets the pace.

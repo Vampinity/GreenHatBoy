@@ -71,6 +71,18 @@ Where things are: `eden_log.txt` (everything below unless noted), `stderr.log` (
 - Switch: `EDEN_UP_SHADER_PREP=1`.
 - What: the boot-time pipeline preparation.
 
+## Vitals and timeline (patches 0922/0923)
+
+**`EDEN_GBB_VITALS t_ms= frames= fps= frame_p50_ms= frame_p99_ms= frame_max_ms= present_wait_ms= back_busy_ms_s= front_wait_ms_s= front_waits_s= ring_kwords_s= gpu_busy_ms_s= gpu_subs_s= shaders= shader_ms= fence_pops_s=`**
+- Switch: `EDEN_GBB_VITALS=1`. One line per second from the present thread, all on one clock. `gpu_busy` needs `EDEN_GPU_TIME=1`; the front waits need `EDEN_NX2_SPLIT_WAITS=1`.
+- Use: per-second rates (never divide by fps to get "per frame" and then regress against fps). `eglog.py` joins them to windows and regimes (`summary()["vitals"]`).
+- Cost: relaxed atomic adds at existing hooks; one clock read per back batch and per fence pop. Expected under 1%, to be measured.
+
+**`EDEN_GBB_TIMELINE: N events (D dropped) from S s for L s written to /data/eglantineps5/logs/gbb-timeline-<pid>.bin`**
+- Switch: `EDEN_GBB_TIMELINE=<start s>,<seconds>` (seconds up to 60), counted from the first present.
+- What: every present (begin, after its waits, end), every front wait on the back (site, start, end), every back batch (start, end, ring words), guest syncpoint increments, fence pops and shader builds, in a 1M-event ring. Copy the `.bin` with the logs; read it with `timeline.py` (per-frame table, Perfetto trace).
+- Cost: during the window, one clock read and a 24-byte store per event; the file write at the end makes one hitch. Keep the window inside a stretch you aren't measuring fps on, or accept one slow frame.
+
 ## Host GPU
 
 **`EDEN_GPU_TIME wall_ms busy_ms submissions max_ms ...`** (in stderr; eglog aligns at the session end, or one window earlier when GPU busy against fps fits better)
