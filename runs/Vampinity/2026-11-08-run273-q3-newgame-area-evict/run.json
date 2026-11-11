@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run273-q3-newgame-area-evict",
+ "date": "2026-11-08",
+ "time": "04:17:37",
+ "batch": "t59-q",
+ "test": "q3-newgame-area-evict",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T59",
+  "commit": "8d3664b",
+  "version": "01.219.020 (Nov 8 2026 03:40:04)",
+  "eboot_sha256_16": null
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-full-wait.txt",
+  "script_sha": "51ec784097bd"
+ },
+ "menu_settings": null,
+ "env_lines": 50,
+ "env_hash": "cefce3aed6",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 308,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 42.2,
+ "fps": {
+  "mean": 12.57,
+  "source": "heap.log EDEN_VULKAN_FRAME 5 s windows",
+  "p99_ms": null,
+  "worst_ms": 247.772
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 25.6,
+ "note": "third eviction run",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

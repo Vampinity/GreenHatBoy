@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run562-x1-walk-sample-gpu-front",
+ "date": "2026-11-09",
+ "time": "05:22:22",
+ "batch": "t81-x",
+ "test": "x1-walk-sample-gpu-front",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T81",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 04:08:04)",
+  "eboot_sha256_16": "76922bbb4a37a339"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 75,
+ "env_hash": "6787023472",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 126,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 14.04,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 100.5,
+  "worst_ms": 107.0
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "stack samples of the GPU front thread, 112-127 s (after the door load) [base: v2.1 docked]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

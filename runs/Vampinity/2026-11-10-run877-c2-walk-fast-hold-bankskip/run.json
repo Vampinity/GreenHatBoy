@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run877-c2-walk-fast-hold-bankskip",
+ "date": "2026-11-10",
+ "time": "13:52:16",
+ "batch": "t101-c",
+ "test": "c2-walk-fast-hold-bankskip",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T101",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 84,
+ "env_hash": "9f88c99b9f",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 121,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 16.51,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 123.0,
+  "worst_ms": 136.5
+ },
+ "worst_frame_ms": 645.3,
+ "runtime_pipeline_builds": 6,
+ "flashes_per_min": 2.41,
+ "note": "EDEN_UP_BANK_HASH_SKIP (Lichii #1131): identical 64 KiB uniform bank re-uploads skipped; read the 600-frame line (skipped against streamed/dropped; left to the ahead guard above 0); fade order and glitches as the control",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

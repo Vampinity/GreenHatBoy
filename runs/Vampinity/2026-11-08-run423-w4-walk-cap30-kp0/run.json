@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run423-w4-walk-cap30-kp0",
+ "date": "2026-11-08",
+ "time": "19:47:17",
+ "batch": "t71-w",
+ "test": "w4-walk-cap30-kp0",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T71",
+  "commit": "4f937d2",
+  "version": "01.219.020 (Nov 8 2026 17:54:26)",
+  "eboot_sha256_16": "5d5bf196eac47d2c"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 60,
+ "env_hash": "c0984f04ea",
+ "control": false,
+ "ending": {
+  "kind": "crash",
+  "class": "oom",
+  "seconds": 102,
+  "crash_app_s": 102.3
+ },
+ "valid": false,
+ "gameplay_s": 24.5,
+ "fps": {
+  "mean": null,
+  "source": null,
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": "v2 candidate",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

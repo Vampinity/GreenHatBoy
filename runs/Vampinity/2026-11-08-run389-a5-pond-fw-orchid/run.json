@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run389-a5-pond-fw-orchid",
+ "date": "2026-11-08",
+ "time": "17:29:10",
+ "batch": "t69-a",
+ "test": "a5-pond-fw-orchid",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T69",
+  "commit": "e7b17e4",
+  "version": "01.219.020 (Nov 8 2026 14:57:32)",
+  "eboot_sha256_16": "b65e291b1b7a5c3e"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-continue-stand-fast-wait.txt",
+  "script_sha": "076bbce66810"
+ },
+ "menu_settings": null,
+ "env_lines": 62,
+ "env_hash": "c045ef60fd",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 161,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": 70.0,
+ "fps": {
+  "mean": 18.26,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 64.4,
+  "worst_ms": 67.9
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": "Orchid single-frame glitch fixes: remaining patch flashes",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

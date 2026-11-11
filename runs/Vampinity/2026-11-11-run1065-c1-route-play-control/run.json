@@ -1,0 +1,50 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1065-c1-route-play-control",
+ "date": "2026-11-11",
+ "time": "07:18:16",
+ "batch": "route-tracker",
+ "test": "c1-route-play-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-owner-village-play.txt",
+  "script_sha": "87e2edc1eccc"
+ },
+ "menu_settings": null,
+ "env_lines": 83,
+ "env_hash": "355be31b18",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 249,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 150.5,
+ "fps": {
+  "mean": 26.64,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 77.8,
+  "worst_ms": 711.8
+ },
+ "worst_frame_ms": 711.8,
+ "runtime_pipeline_builds": 223,
+ "flashes_per_min": 58.26,
+ "note": "owner's own play route of 11 Nov 05:47 (Link's house save: out of the house, a lap of the village with rolls, the jump across the stones, two talks, a house in and out, the pause menu), replayed from his presses: the third benchmark beside the door walk and the standing spot. Arms: c = his play env (fast mode, as shipped in env-fast.txt), t = + the usage tracker. Order c t t c. Judge fps over the route, the worst frames (stutter), flashes a minute, and by eye that the replay follows his path (open loop: it can drift when the speed differs; a run that leaves his path does not count). EDEN_TEST_DISCARD_SAVE=1 keeps the save for the next run. Added 06:19 for owner's report of HUD icons drawn in the middle of the picture in fast mode: g = t + the copy guard EDEN_UP_AHEAD_GUARD=3. Order c t g g t c. If the guard removes those moments, his play env should get the guard.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1,
+  "private_word": 3
+ }
+}

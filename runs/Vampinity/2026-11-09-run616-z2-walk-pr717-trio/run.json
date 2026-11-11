@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run616-z2-walk-pr717-trio",
+ "date": "2026-11-09",
+ "time": "10:14:16",
+ "batch": "t83-z",
+ "test": "z2-walk-pr717-trio",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T83",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 07:47:14)",
+  "eboot_sha256_16": "6852dc61e1f93053"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 77,
+ "env_hash": "ca3c4d0c4d",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 135,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 14.1,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 107.6,
+  "worst_ms": 111.7
+ },
+ "worst_frame_ms": 662.4,
+ "runtime_pipeline_builds": 14,
+ "flashes_per_min": 0.0,
+ "note": "Lichii PR 717 game-side CPU patches (stephenjayakar): native zstd + fast name lookup + poll backoff; GBB: cores 4/5 are zstd + name search. Judge load hitches, not only fps",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

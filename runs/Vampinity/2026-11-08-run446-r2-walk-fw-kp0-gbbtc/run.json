@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run446-r2-walk-fw-kp0-gbbtc",
+ "date": "2026-11-08",
+ "time": "22:04:59",
+ "batch": "t73-r",
+ "test": "r2-walk-fw-kp0-gbbtc",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T73",
+  "commit": null,
+  "version": "01.219.028 (Nov 8 2026 21:33:37)",
+  "eboot_sha256_16": "5ecb8af78ed824e6"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 61,
+ "env_hash": "92e9847a75",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 124,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 11.4,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 134.2,
+  "worst_ms": 161.7
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 6.04,
+ "note": "the two that skipped the door stall once each",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

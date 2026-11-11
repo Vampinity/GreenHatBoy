@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run332-n2-pond-frame-wait",
+ "date": "2026-11-08",
+ "time": "08:09:42",
+ "batch": "t64-n",
+ "test": "n2-pond-frame-wait",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T64",
+  "commit": "ea44e93",
+  "version": "01.219.020 (Nov 8 2026 07:51:53)",
+  "eboot_sha256_16": null
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-continue-stand-fast-wait.txt",
+  "script_sha": "076bbce66810"
+ },
+ "menu_settings": null,
+ "env_lines": 54,
+ "env_hash": "8e17ec8872",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 164,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 70.0,
+ "fps": {
+  "mean": 13.27,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 86.3,
+  "worst_ms": 90.6
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "upstream a23be213d5: wait for each of Ocarina's frames (timing fix)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

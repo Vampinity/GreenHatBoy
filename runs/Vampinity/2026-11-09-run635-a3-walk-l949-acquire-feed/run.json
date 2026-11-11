@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run635-a3-walk-l949-acquire-feed",
+ "date": "2026-11-09",
+ "time": "14:19:02",
+ "batch": "t84-a",
+ "test": "a3-walk-l949-acquire-feed",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T84",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 11:20:06)",
+  "eboot_sha256_16": "7a8a495119102495"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 78,
+ "env_hash": "f0a3c2a613",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 135,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 13.1,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 142.8,
+  "worst_ms": 180.1
+ },
+ "worst_frame_ms": 645.0,
+ "runtime_pipeline_builds": 2,
+ "flashes_per_min": 0.0,
+ "note": "Lichii #949 drain-free acquires + 1 ms valve + ship2 feed/settle",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

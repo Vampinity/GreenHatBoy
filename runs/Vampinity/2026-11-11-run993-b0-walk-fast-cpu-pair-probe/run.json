@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run993-b0-walk-fast-cpu-pair-probe",
+ "date": "2026-11-11",
+ "time": "00:44:39",
+ "batch": "fps-probe",
+ "test": "b0-walk-fast-cpu-pair-probe",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T114",
+  "commit": "277c89c",
+  "version": "01.219.028 (Nov 10 2026 23:26:29)",
+  "eboot_sha256_16": "f5cdc8836199ce11"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 84,
+ "env_hash": "d7e4fced3b",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 122,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.94,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 109.0,
+  "worst_ms": 129.9
+ },
+ "worst_frame_ms": 186.7,
+ "runtime_pipeline_builds": 3,
+ "flashes_per_min": 4.92,
+ "note": "fps-gap note of 11 Nov, arm B step 0: one boot with EDEN_UP_CPU_PAIR_PROBE=1 (log only, never run before): which CPUs of the app's set share a physical core. Read the EDEN_UP_CPU_PAIR_PROBE lines (heap.log / stderr.log). The layouts of batch-fps-b assume the pairs are 2n and 2n+1: if the probe says otherwise those two EDEN_PS5_PLACE lines must be redone before fps-b runs.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

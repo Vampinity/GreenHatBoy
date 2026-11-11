@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run732-a2-walk-fast-ubo-ahead",
+ "date": "2026-11-10",
+ "time": "01:54:50",
+ "batch": "t86-a",
+ "test": "a2-walk-fast-ubo-ahead",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T86",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 01:29:38)",
+  "eboot_sha256_16": "5602e478fcef3fc0"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 83,
+ "env_hash": "fc041e50fc",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 122,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 12.45,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 151.3,
+  "worst_ms": 173.2
+ },
+ "worst_frame_ms": 766.9,
+ "runtime_pipeline_builds": 4,
+ "flashes_per_min": 25.71,
+ "note": "+ per-frame uniform copy",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

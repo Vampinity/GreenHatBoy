@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run360-e1-walk-fw-timeclean",
+ "date": "2026-11-08",
+ "time": "13:54:51",
+ "batch": "t67-e",
+ "test": "e1-walk-fw-timeclean",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T67",
+  "commit": "174b7f2",
+  "version": "01.219.020 (Nov 8 2026 13:33:48)",
+  "eboot_sha256_16": "257a9b3ab304ec5f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 61,
+ "env_hash": "c626a63dbe",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 123,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 10.65,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 114.2,
+  "worst_ms": 115.7
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 14.95,
+ "note": "clean by time + refusal evict",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run970-h5-walk-fast-hog896",
+ "date": "2026-11-10",
+ "time": "23:27:46",
+ "batch": "hogcal",
+ "test": "h5-walk-fast-hog896",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T112",
+  "commit": "d316be4",
+  "version": "01.219.028 (Nov 10 2026 22:20:36)",
+  "eboot_sha256_16": "768fe3f4740ac0b7"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 84,
+ "env_hash": "77d0f3079f",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 123,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 11.17,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 569.5,
+  "worst_ms": 1002.5
+ },
+ "worst_frame_ms": 1002.5,
+ "runtime_pipeline_builds": 2,
+ "flashes_per_min": null,
+ "note": "hog calibration, control only: play env v2.4-fast with 896 MiB taken from the pool and the census on. Read: ending, seconds of play, first pool refusal, largest free block. 512 gave no shortage inside the script (t105-a), 1152 and 1280 end every run at once (t105-b, t103-a)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

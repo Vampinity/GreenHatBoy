@@ -1,0 +1,55 @@
+name: Crash or glitch
+description: The game crashed, froze, or showed something wrong
+labels: ["report"]
+body:
+  - type: dropdown
+    id: console
+    attributes:
+      label: Console
+      options: ["PS5 (base, disc or digital)", "PS5 Slim", "PS5 Pro"]
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: Firmware
+      placeholder: "12.40"
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: Build
+      description: The release you downloaded, or the version line at the top of a crash file.
+      placeholder: "test build of 12 Nov"
+    validations:
+      required: true
+  - type: dropdown
+    id: settings
+    attributes:
+      label: Settings file in use
+      options: ["env.txt (as shipped)", "env-13x.txt", "env-fast.txt", "env-gbb-everyday.txt", "my own changes (say which below)"]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and where in the game
+      description: What you saw, and what you were doing in the minute before. For a crash, did you open the pause menu shortly before? Please keep story details vague, others may not have played that far.
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: Files
+      description: >
+        For a crash, drag in the newest crash-*.txt from /data/eglantineps5/logs/ and the crash-*-eden_log.txt with the same time.
+        No crash file? Attach /data/eglantineps5/user/log/eden_log.txt.
+        Files here are public: first delete the two lines containing EDEN_PAD_OPEN and EDEN_PAD_USERS (your console's user number).
+  - type: checkboxes
+    id: ok
+    attributes:
+      label: Before you post
+      options:
+        - label: I removed the EDEN_PAD_OPEN and EDEN_PAD_USERS lines from any log I attached, and nothing here contains game files, keys or firmware.
+          required: true

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run398-c4-walk-fw-gbb-speed",
+ "date": "2026-11-08",
+ "time": "18:10:05",
+ "batch": "t69-c",
+ "test": "c4-walk-fw-gbb-speed",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T69",
+  "commit": "e7b17e4",
+  "version": "01.219.020 (Nov 8 2026 14:57:32)",
+  "eboot_sha256_16": "b65e291b1b7a5c3e"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 61,
+ "env_hash": "cc8c348900",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 122,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 35.1,
+ "fps": {
+  "mean": 11.05,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 117.7,
+  "worst_ms": 126.6
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 11.76,
+ "note": "candidate + GBB speed bits: workers 8, JIT codegen, page reuse",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

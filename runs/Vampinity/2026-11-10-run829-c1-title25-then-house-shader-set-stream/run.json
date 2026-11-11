@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run829-c1-title25-then-house-shader-set-stream",
+ "date": "2026-11-10",
+ "time": "10:15:18",
+ "batch": "t106-c",
+ "test": "c1-title25-then-house-shader-set-stream",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T106",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-title-25min-then-stand.txt",
+  "script_sha": "203ff616b8aa"
+ },
+ "menu_settings": null,
+ "env_lines": 82,
+ "env_hash": "f3f635d9ab",
+ "control": false,
+ "ending": {
+  "kind": "script_stopped",
+  "class": "loading-hang",
+  "seconds": 1680,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": 0.0,
+ "fps": {
+  "mean": null,
+  "source": null,
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 6.0,
+ "note": "shader set with EDEN_UP_SHADER_SET_STREAM + _VERIFY + EDEN_UP_SHADER_SET_INDEX (index file beside the recipe): pass = \"1 members over the 256 MiB cap, 1 of them cut\", found about 41,169, not found 47, no stream verify error, memory floor never hit, prep_shader_set.bin stamped; then Link's house for the audit line",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run419-g5-pond-cap35-kp0",
+ "date": "2026-11-08",
+ "time": "19:26:59",
+ "batch": "t71-g",
+ "test": "g5-pond-cap35-kp0",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T71",
+  "commit": "4f937d2",
+  "version": "01.219.020 (Nov 8 2026 17:54:26)",
+  "eboot_sha256_16": "5d5bf196eac47d2c"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-continue-stand-fast-wait.txt",
+  "script_sha": "076bbce66810"
+ },
+ "menu_settings": null,
+ "env_lines": 60,
+ "env_hash": "ef5153dd51",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 156,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 70.0,
+ "fps": {
+  "mean": 15.87,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 71.1,
+  "worst_ms": 73.7
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "cap 35 + keep pending off",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

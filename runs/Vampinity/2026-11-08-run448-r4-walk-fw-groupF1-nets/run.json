@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run448-r4-walk-fw-groupF1-nets",
+ "date": "2026-11-08",
+ "time": "22:04:59",
+ "batch": "t73-r",
+ "test": "r4-walk-fw-groupF1-nets",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T73",
+  "commit": null,
+  "version": "01.219.028 (Nov 8 2026 21:33:37)",
+  "eboot_sha256_16": "5ecb8af78ed824e6"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 66,
+ "env_hash": "78b6a58df0",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 125,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 10.87,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 107.6,
+  "worst_ms": 110.1
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 9.71,
+ "note": "triage F1: low-risk safety nets",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

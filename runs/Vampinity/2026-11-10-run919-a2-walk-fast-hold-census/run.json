@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run919-a2-walk-fast-hold-census",
+ "date": "2026-11-10",
+ "time": "16:50:19",
+ "batch": "t102-a",
+ "test": "a2-walk-fast-hold-census",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T102",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 84,
+ "env_hash": "145b52c8c8",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 132,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 16.91,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 122.2,
+  "worst_ms": 137.2
+ },
+ "worst_frame_ms": 772.7,
+ "runtime_pipeline_builds": 4,
+ "flashes_per_min": 2.51,
+ "note": "control with EDEN_UP_MEM_CENSUS: the 6144x6144 texture, its over-budget and Out of device memory lines, the census top entries",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

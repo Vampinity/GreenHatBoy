@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run922-a5-walk-fast-hold-census",
+ "date": "2026-11-10",
+ "time": "16:50:19",
+ "batch": "t102-a",
+ "test": "a5-walk-fast-hold-census",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T102",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 84,
+ "env_hash": "145b52c8c8",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 127,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 18.38,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 102.0,
+  "worst_ms": 119.5
+ },
+ "worst_frame_ms": 644.0,
+ "runtime_pipeline_builds": 4,
+ "flashes_per_min": 2.48,
+ "note": "repeat of a2",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run509-y3-walk-fsr-spatial-edgeclamp",
+ "date": "2026-11-09",
+ "time": "02:13:26",
+ "batch": "t79-y",
+ "test": "y3-walk-fsr-spatial-edgeclamp",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T79",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 02:08:46)",
+  "eboot_sha256_16": "33318d87181b3cb8"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 66,
+ "env_hash": "18bf15f2ee",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 128,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 12.25,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 108.9,
+  "worst_ms": 113.9
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "same",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

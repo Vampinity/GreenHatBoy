@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run924-s2-walk-fast-ssbocap",
+ "date": "2026-11-10",
+ "time": "17:13:02",
+ "batch": "s108-a",
+ "test": "s2-walk-fast-ssbocap",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 13:59:51)",
+  "eboot_sha256_16": "2bb7e77facfee6fd"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 83,
+ "env_hash": "5a42086a3a",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 125,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.5,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 112.4,
+  "worst_ms": 120.1
+ },
+ "worst_frame_ms": 738.5,
+ "runtime_pipeline_builds": 1,
+ "flashes_per_min": 7.53,
+ "note": "EDEN_UP_SSBO_SIZE_CAP (viejunerd v1.219.029): log line \"Storage buffer size word ... is not a size\" shows whether it ever fires here; Out of device memory lines against the control",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run833-x3-walk-fast-guard3",
+ "date": "2026-11-10",
+ "time": "10:59:38",
+ "batch": "x1-claim-guard3",
+ "test": "x3-walk-fast-guard3",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 83,
+ "env_hash": "1644159982",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 128,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.44,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 111.4,
+  "worst_ms": 134.0
+ },
+ "worst_frame_ms": 646.1,
+ "runtime_pipeline_builds": 2,
+ "flashes_per_min": 2.5,
+ "note": "claim check: EDEN_UP_AHEAD_GUARD=3 against the plain fast controls of the same batch: glitch moments (check.py), fade order, cut, fps",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

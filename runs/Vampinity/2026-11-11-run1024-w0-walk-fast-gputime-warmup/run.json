@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1024-w0-walk-fast-gputime-warmup",
+ "date": "2026-11-11",
+ "time": "03:00:16",
+ "batch": "t120-w",
+ "test": "w0-walk-fast-gputime-warmup",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 84,
+ "env_hash": "ab0e4ff3a6",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 129,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.2,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 110.1,
+  "worst_ms": 125.9
+ },
+ "worst_frame_ms": 155.8,
+ "runtime_pipeline_builds": 1,
+ "flashes_per_min": 4.92,
+ "note": "T120 = T119 + 0549 (the GPU page cache and the unswizzle threads cost nothing when off). The gate again: T119's controls were about 1 fps under T116's (17.4 / 17.8 against 18.4 / 18.8 / 18.5, same env, same hour). w0: WARM-UP of the shader store the live plans use (play env v2.5-fast + EDEN_GPU_TIME=1), not judged. kw: WARM-UP of the plain fast store, not judged. k1, k2, k3: the control env of batch t116-k line for line. T120 passes if they are inside what the T116 controls show (18.4-18.8) in fps, glitch in no more runs (check.py), and nothing new crashes. If they are still low: bisect with the T117 and T118 packages.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

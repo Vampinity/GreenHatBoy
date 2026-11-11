@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run325-h5-pond-unwritten-reads-0",
+ "date": "2026-11-08",
+ "time": "07:26:51",
+ "batch": "t61-h",
+ "test": "h5-pond-unwritten-reads-0",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T61",
+  "commit": "2895a39",
+  "version": "01.219.020 (Nov 8 2026 04:20:14)",
+  "eboot_sha256_16": null
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-continue-stand-fast-wait.txt",
+  "script_sha": "076bbce66810"
+ },
+ "menu_settings": null,
+ "env_lines": 52,
+ "env_hash": "8069655687",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 163,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 70.0,
+ "fps": {
+  "mean": 19.29,
+  "source": "heap.log EDEN_VULKAN_FRAME 5 s windows",
+  "p99_ms": null,
+  "worst_ms": 65.636
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 5.14,
+ "note": "",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

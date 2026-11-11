@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run846-x1-walk-control",
+ "date": "2026-11-10",
+ "time": "11:56:12",
+ "batch": "x4-claim-skipstale-fast",
+ "test": "x1-walk-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 82,
+ "env_hash": "798d04db45",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 133,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 18.5,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 107.5,
+  "worst_ms": 131.6
+ },
+ "worst_frame_ms": 658.3,
+ "runtime_pipeline_builds": 6,
+ "flashes_per_min": 0.0,
+ "note": "play env v2.4-fast, the control of this batch",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

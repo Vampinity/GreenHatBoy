@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run772-a4-walk-v24-control",
+ "date": "2026-11-10",
+ "time": "04:57:03",
+ "batch": "t92-a",
+ "test": "a4-walk-v24-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T92",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 04:33:09)",
+  "eboot_sha256_16": "0e21aea0e98e8e81"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 76,
+ "env_hash": "4ec6e8c845",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 128,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 13.95,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 103.4,
+  "worst_ms": 109.8
+ },
+ "worst_frame_ms": 613.7,
+ "runtime_pipeline_builds": 1,
+ "flashes_per_min": 0.0,
+ "note": "v2.4 (full frame wait) control for the UB-128 arm",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

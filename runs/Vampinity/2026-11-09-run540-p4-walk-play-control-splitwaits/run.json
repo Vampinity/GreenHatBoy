@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run540-p4-walk-play-control-splitwaits",
+ "date": "2026-11-09",
+ "time": "03:57:51",
+ "batch": "t80-p",
+ "test": "p4-walk-play-control-splitwaits",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T80",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 02:54:25)",
+  "eboot_sha256_16": "2448f4026f38bf80"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 72,
+ "env_hash": "b9dacb6fae",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 124,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 14.15,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 100.9,
+  "worst_ms": 104.7
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "v2.1 docked env + split wait counters [base: v2.1 docked]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

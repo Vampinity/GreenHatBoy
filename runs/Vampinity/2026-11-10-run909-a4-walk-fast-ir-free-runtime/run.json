@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run909-a4-walk-fast-ir-free-runtime",
+ "date": "2026-11-10",
+ "time": "15:54:34",
+ "batch": "t98-a",
+ "test": "a4-walk-fast-ir-free-runtime",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T98",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 84,
+ "env_hash": "f0c91d8ff9",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 119,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 18.14,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 108.9,
+  "worst_ms": 126.7
+ },
+ "worst_frame_ms": 712.9,
+ "runtime_pipeline_builds": 2,
+ "flashes_per_min": 0.0,
+ "note": "as a3 and also at run-time builds",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

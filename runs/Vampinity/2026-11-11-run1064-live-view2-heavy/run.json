@@ -1,0 +1,50 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1064-live-view2-heavy",
+ "date": "2026-11-11",
+ "time": "07:12:30",
+ "batch": "live-view2-heavy",
+ "test": "live-view2-heavy",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "batch-live-view2-heavy-zelda-owner-spot-tunnel-mouth.txt",
+  "script_sha": "88d5662d39bf"
+ },
+ "menu_settings": null,
+ "env_lines": 91,
+ "env_hash": "5eb4c8d9c8",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 249,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 160.0,
+ "fps": {
+  "mean": 18.07,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 67.5,
+  "worst_ms": 202.5
+ },
+ "worst_frame_ms": 242.2,
+ "runtime_pipeline_builds": 51,
+ "flashes_per_min": 4.3,
+ "note": "fps by view, second try: the HEAVY spot, a few steps past the tunnel mouth facing the village and the water (17-19 fps in his play), standing, identical phases, GPU_TIME and statistics on. [live A/A: no switch changes, the noise between phases]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1,
+  "private_word": 1
+ }
+}

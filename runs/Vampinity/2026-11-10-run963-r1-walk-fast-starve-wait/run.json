@@ -1,0 +1,50 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run963-r1-walk-fast-starve-wait",
+ "date": "2026-11-10",
+ "time": "23:20:31",
+ "batch": "t100-c2",
+ "test": "r1-walk-fast-starve-wait",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T112",
+  "commit": "d316be4",
+  "version": "01.219.028 (Nov 10 2026 22:20:36)",
+  "eboot_sha256_16": "768fe3f4740ac0b7"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 84,
+ "env_hash": "1327d025a7",
+ "control": false,
+ "ending": {
+  "kind": "time_limit",
+  "class": "ok",
+  "seconds": 139,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 31.4,
+ "fps": {
+  "mean": 18.33,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 91.1,
+  "worst_ms": 139.0
+ },
+ "worst_frame_ms": 154.3,
+ "runtime_pipeline_builds": 7,
+ "flashes_per_min": 0.0,
+ "note": "rerun (the first try overlapped owner's PS home use on 10 Nov 09:10-09:15): repeat of c1",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1,
+  "private_word": 1
+ }
+}

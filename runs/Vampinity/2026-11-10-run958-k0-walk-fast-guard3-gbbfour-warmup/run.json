@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run958-k0-walk-fast-guard3-gbbfour-warmup",
+ "date": "2026-11-10",
+ "time": "23:06:38",
+ "batch": "gbb-guard-t112",
+ "test": "k0-walk-fast-guard3-gbbfour-warmup",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T112",
+  "commit": "d316be4",
+  "version": "01.219.028 (Nov 10 2026 22:20:36)",
+  "eboot_sha256_16": "768fe3f4740ac0b7"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 87,
+ "env_hash": "8ce14fc270",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 122,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 15.99,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 160.0,
+  "worst_ms": 206.1
+ },
+ "worst_frame_ms": 624.4,
+ "runtime_pipeline_builds": 73,
+ "flashes_per_min": 7.47,
+ "note": "warm-up, NOT judged: first boot of this arm (EDEN_NX2_MASK_COMPONENTS is in the pipeline key, the two EDEN_GBB_ switches are in the prepared store's stamp)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

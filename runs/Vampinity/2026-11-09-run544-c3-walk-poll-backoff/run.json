@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run544-c3-walk-poll-backoff",
+ "date": "2026-11-09",
+ "time": "04:15:35",
+ "batch": "t81-c",
+ "test": "c3-walk-poll-backoff",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T81",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 04:08:04)",
+  "eboot_sha256_16": "76922bbb4a37a339"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 72,
+ "env_hash": "84781af91c",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 125,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 14.29,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 100.3,
+  "worst_ms": 111.0
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "Lichii PR 717 resource poll backoff; watch 'OoT resource poll backoff:' line [base: v2.1 docked] | valid only with boot line 'Applying built-in patch \"Resource poll backoff (built-in)\" (2 sites in main)' and 'OoT resource poll backoff: active'",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

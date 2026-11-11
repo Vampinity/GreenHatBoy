@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run813-c2-walk-fast-starve-wait-rescue",
+ "date": "2026-11-10",
+ "time": "09:00:00",
+ "batch": "t100-c",
+ "test": "c2-walk-fast-starve-wait-rescue",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T100",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 08:19:43)",
+  "eboot_sha256_16": "8b1b91d5489d8924"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 85,
+ "env_hash": "b422493b4b",
+ "control": false,
+ "ending": {
+  "kind": "time_limit",
+  "class": "ok",
+  "seconds": 147,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 25.76,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 308.4,
+  "worst_ms": 656.1
+ },
+ "worst_frame_ms": 656.1,
+ "runtime_pipeline_builds": 2,
+ "flashes_per_min": 10.13,
+ "note": "as c1 + EDEN_UP_HEAP_RESCUE",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

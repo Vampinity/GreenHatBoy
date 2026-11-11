@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run524-q3-walk-querylight",
+ "date": "2026-11-09",
+ "time": "03:06:33",
+ "batch": "t80-q",
+ "test": "q3-walk-querylight",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T80",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 02:54:25)",
+  "eboot_sha256_16": "2448f4026f38bf80"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 68,
+ "env_hash": "7f7b43db32",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 111,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 12.2,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 106.2,
+  "worst_ms": 108.8
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "same for speed",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

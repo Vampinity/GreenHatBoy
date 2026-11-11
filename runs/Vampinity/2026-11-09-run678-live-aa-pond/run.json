@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run678-live-aa-pond",
+ "date": "2026-11-09",
+ "time": "19:33:57",
+ "batch": "live-aa-pond",
+ "test": "live-aa-pond",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 19:12:23)",
+  "eboot_sha256_16": "8c04000889ae11f4"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "batch-live-aa-pond-zelda-continue-stand-fast-wait.txt",
+  "script_sha": "584f4def9fde"
+ },
+ "menu_settings": null,
+ "env_lines": 75,
+ "env_hash": "37bc244223",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 433,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 343.0,
+ "fps": {
+  "mean": 18.76,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 71.8,
+  "worst_ms": 92.7
+ },
+ "worst_frame_ms": 1246.0,
+ "runtime_pipeline_builds": 51,
+ "flashes_per_min": 0.0,
+ "note": "A/A check of live switching on T85: the noise between identical phases [live A/A: no switch changes, the noise between phases]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

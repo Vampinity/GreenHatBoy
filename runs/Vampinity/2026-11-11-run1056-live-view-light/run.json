@@ -1,0 +1,50 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1056-live-view-light",
+ "date": "2026-11-11",
+ "time": "06:20:22",
+ "batch": "live-view-light",
+ "test": "live-view-light",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "batch-live-view-light-zelda-owner-spot-ravine.txt",
+  "script_sha": "6bceb147f997"
+ },
+ "menu_settings": null,
+ "env_lines": 91,
+ "env_hash": "5eb4c8d9c8",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 247,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 150.0,
+ "fps": {
+  "mean": 36.17,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 34.2,
+  "worst_ms": 60.9
+ },
+ "worst_frame_ms": 60.9,
+ "runtime_pipeline_builds": 4,
+ "flashes_per_min": 9.2,
+ "note": "fps by view (owner, 11 Nov): the LIGHT spot, the dark ravine path before the tunnel (31-33 fps in his play), standing, identical phases, GPU_TIME and every statistics line on. Pair with view-heavy: what does the heavy view cost that this one does not? [live A/A: no switch changes, the noise between phases]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1,
+  "private_word": 2
+ }
+}

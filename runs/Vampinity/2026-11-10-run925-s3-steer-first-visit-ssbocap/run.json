@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run925-s3-steer-first-visit-ssbocap",
+ "date": "2026-11-10",
+ "time": "17:13:02",
+ "batch": "s108-a",
+ "test": "s3-steer-first-visit-ssbocap",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 13:59:51)",
+  "eboot_sha256_16": "2bb7e77facfee6fd"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-door-steer-first-visit.txt",
+  "script_sha": "982f14f0d528"
+ },
+ "menu_settings": null,
+ "env_lines": 83,
+ "env_hash": "5a42086a3a",
+ "control": false,
+ "ending": {
+  "kind": "script_stopped",
+  "class": "ok",
+  "seconds": 345,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 209.1,
+ "fps": {
+  "mean": 27.09,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 65.1,
+  "worst_ms": 297.4
+ },
+ "worst_frame_ms": 641.5,
+ "runtime_pipeline_builds": 27,
+ "flashes_per_min": 32.92,
+ "note": "the same on the long route (door, village, east path by the minimap): a new area with the cap on",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

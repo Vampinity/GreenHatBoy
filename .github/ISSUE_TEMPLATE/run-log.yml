@@ -1,0 +1,36 @@
+name: Send a run log
+description: Add one of your runs to the log pool (no crash needed)
+labels: ["run log"]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Runs from other consoles and firmwares help most. Pack the run with `python3 tools/pack-run.py <folder> --out . --author <your name>`
+        if you can (it removes your console's user number and local paths) and attach the folder as a zip. No Python? Attach eden_log.txt and env.txt,
+        with the two lines containing EDEN_PAD_OPEN and EDEN_PAD_USERS deleted.
+  - type: input
+    id: console
+    attributes:
+      label: Console and firmware
+      placeholder: "PS5 base, 13.60"
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: Build and settings file
+      placeholder: "test build of 12 Nov, env-13x.txt"
+    validations:
+      required: true
+  - type: textarea
+    id: route
+    attributes:
+      label: Where you played and what you saw
+      description: Roughly where, how long, how it felt (smooth, stutter, flashes and about when). Keep story details vague.
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: Files
+      description: The packed run as a zip, or eden_log.txt and env.txt. Files here are public.

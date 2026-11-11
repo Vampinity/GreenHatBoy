@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 168" width="820" height="168" role="img" aria-label="What has been fixed, by date">
+<rect width="820" height="168" fill="#0d1117"/>
+<line x1="70" y1="52" x2="750" y2="52" stroke="#30363d" stroke-width="6" stroke-linecap="round" stroke-dasharray="2 10"/>
+<line x1="70" y1="52" x2="523" y2="52" stroke="#3fb950" stroke-width="6" stroke-linecap="round"/>
+<circle cx="70" cy="52" r="11" fill="#3fb950" stroke="#0d1117" stroke-width="3"/>
+<path d="M65 52 l4 4 l7 -8" fill="none" stroke="#0d1117" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="70" y="24" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#9198a1">5 Nov</text>
+<text x="70" y="86" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#e6edf3">It starts</text>
+<circle cx="183" cy="52" r="11" fill="#3fb950" stroke="#0d1117" stroke-width="3"/>
+<path d="M178 52 l4 4 l7 -8" fill="none" stroke="#0d1117" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="183" y="24" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#9198a1">6-7 Nov</text>
+<text x="183" y="86" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#e6edf3">Fog gone,</text>
+<text x="183" y="102" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#e6edf3">leaves back</text>
+<circle cx="297" cy="52" r="11" fill="#3fb950" stroke="#0d1117" stroke-width="3"/>
+<path d="M292 52 l4 4 l7 -8" fill="none" stroke="#0d1117" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="297" y="24" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#9198a1">8 Nov</text>
+<text x="297" y="86" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#e6edf3">No dark flashes,</text>
+<text x="297" y="102" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#e6edf3">movies in sync</text>
+<circle cx="410" cy="52" r="11" fill="#3fb950" stroke="#0d1117" stroke-width="3"/>
+<path d="M405 52 l4 4 l7 -8" fill="none" stroke="#0d1117" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="410" y="24" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#9198a1">9 Nov</text>
+<text x="410" y="86" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#e6edf3">Shorter freezes</text>
+<text x="410" y="102" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#e6edf3">on a first visit</text>
+<circle cx="523" cy="52" r="11" fill="#3fb950" stroke="#0d1117" stroke-width="3"/>
+<path d="M518 52 l4 4 l7 -8" fill="none" stroke="#0d1117" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="523" y="24" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#9198a1">10-11 Nov</text>
+<text x="523" y="86" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#e6edf3">10% faster,</text>
+<text x="523" y="102" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#e6edf3">memory waits</text>
+<text x="523" y="118" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#e6edf3">(in tests)</text>
+<circle cx="637" cy="52" r="11" fill="#d29922" stroke="#0d1117" stroke-width="3"/>
+<text x="637" y="24" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#9198a1">now</text>
+<text x="637" y="86" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#e6edf3">Faster open areas</text>
+<text x="637" y="102" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#e6edf3">and no crashes</text>
+<text x="637" y="118" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#e6edf3">at area changes</text>
+<circle cx="750" cy="52" r="11" fill="#30363d" stroke="#0d1117" stroke-width="3"/>
+<text x="750" y="24" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#9198a1">goal</text>
+<text x="750" y="86" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" font-weight="400" fill="#9198a1">The whole</text>
+<text x="750" y="102" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" font-weight="400" fill="#9198a1">game</text>
+<text x="410" y="156" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="11.5" fill="#9198a1">Steps of work, not a share of the game</text>
+</svg>

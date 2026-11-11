@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run975-a4-walk-fast-gpustarve-gpuwait300",
+ "date": "2026-11-10",
+ "time": "23:48:52",
+ "batch": "t114-a",
+ "test": "a4-walk-fast-gpustarve-gpuwait300",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T114",
+  "commit": "277c89c",
+  "version": "01.219.028 (Nov 10 2026 23:26:29)",
+  "eboot_sha256_16": "f5cdc8836199ce11"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 86,
+ "env_hash": "055ca5c876",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 138,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 35.5,
+ "fps": {
+  "mean": 11.35,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 454.4,
+  "worst_ms": 466.4
+ },
+ "worst_frame_ms": 1521.5,
+ "runtime_pipeline_builds": 33,
+ "flashes_per_min": 5.77,
+ "note": null,
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

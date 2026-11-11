@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1042-g1-walk-fast-guard3-control",
+ "date": "2026-11-11",
+ "time": "04:30:04",
+ "batch": "fps-ahead2b",
+ "test": "g1-walk-fast-guard3-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 86,
+ "env_hash": "cff4eeb322",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 127,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.25,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 111.0,
+  "worst_ms": 122.9
+ },
+ "worst_frame_ms": 156.4,
+ "runtime_pipeline_builds": 2,
+ "flashes_per_min": 0.0,
+ "note": "Upstream's EDEN_NX2_FRAMES_AHEAD=2 (lethevimlet/oot-bc250 73f7b83c1: a present waits for the PREVIOUS frame only, also while the GPU is behind; 13.6 -> 21.3 fps on his BC-250 Kokiri walk). Our core reads the value by its first character: '2' is taken as 0, the full frame wait, so =2 must NOT be put in an env here. The same behaviour is in every build since T87 as EDEN_NX2_FRAMES_AHEAD=1 + EDEN_UP_AHEAD_ALWAYS=1 (nx2_gsv.h: it drops the second wait of the 'GPU is behind' case, which is exactly his two changed lines). Arms, play env v2.5-fast with EDEN_GPU_TIME=1 and the copy guard EDEN_UP_AHEAD_GUARD=3 in both: g control, a + EDEN_UP_AHEAD_ALWAYS=1; w0 is a WARM-UP (first run on the GPU_TIME shader store of this build), then 3 runs each in turn. Earlier (T87-T91, parked): glitches in 4 of 4 always-ahead runs (5-13 moments against 0-2 for the guard alone), fps -1.0, +2.4, +0.5, +2.1 against the same-batch control. Since then: guard copy fixes, skip stale uploads, GBB's guards. Judge BOTH: fps in the fly-over and the door walk, and with check.py 'glitches in N of M runs' per arm: always-ahead widens the window the guard has to cover. It goes into a play env only if it is faster by more than the spread AND glitches in no more runs than the control. Read also the present fence wait in the GPU_TIME lines: his fell from 25 ms to 0. [11 Nov 04:20, on T120: the warm-up is gone (the store is warm from the live plans); every run has EDEN_TEST_DISCARD_SAVE=1 and the item the runner flag --discard-save-reuse, so the save goes back before the first run only. T120 is about 0.9 fps under T116; both arms are on it, so the comparison holds. The live plans gave always-ahead +1.43 fps (village) and +1.66 (pond) with the guard on: this batch counts the glitch runs.]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

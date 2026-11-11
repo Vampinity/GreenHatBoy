@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run595-p4-pause-v23-transcode1",
+ "date": "2026-11-09",
+ "time": "08:41:38",
+ "batch": "t83-p",
+ "test": "p4-pause-v23-transcode1",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T83",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 07:47:14)",
+  "eboot_sha256_16": "6852dc61e1f93053"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-door-pause-exits.txt",
+  "script_sha": "806c963802ea"
+ },
+ "menu_settings": null,
+ "env_lines": 75,
+ "env_hash": "6e603a7c5b",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 201,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 110.1,
+ "fps": {
+  "mean": 25.22,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 101.5,
+  "worst_ms": 361.4
+ },
+ "worst_frame_ms": 625.1,
+ "runtime_pipeline_builds": 9,
+ "flashes_per_min": 0.0,
+ "note": "v2.3 + one transcode thread",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

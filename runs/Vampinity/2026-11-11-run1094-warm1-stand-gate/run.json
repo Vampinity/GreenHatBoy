@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1094-warm1-stand-gate",
+ "date": "2026-11-11",
+ "time": "10:59:08",
+ "batch": "stand-gate-t122",
+ "test": "warm1-stand-gate",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 11 2026 10:11:51)",
+  "eboot_sha256_16": "218add9a22284c24"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "batch-live-stand-tracker-control-zelda-newgame-door-wait.txt",
+  "script_sha": "01844020085a"
+ },
+ "menu_settings": null,
+ "env_lines": 87,
+ "env_hash": "a3d2bcd87c",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 310,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 197.1,
+ "fps": {
+  "mean": 23.04,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 78.2,
+  "worst_ms": 345.3
+ },
+ "worst_frame_ms": 345.3,
+ "runtime_pipeline_builds": 20,
+ "flashes_per_min": 1.38,
+ "note": "T122 gate, standing starts: the control env of stand-tracker (fast + guard 3 + GPU_TIME), the same plan and script, so its three T120 control starts of 05:10-05:45 are the 'old' before; this batch is the new build (one warm-up start: a new build's prepared shader stores are cold, then two counted starts); t121-gate-old in queue-t120 is the old build again. Judge with boot-means.py (per-start mean of the 6 standing phases; pass = within 0.3 fps of T120 and no more glitch runs on the door walk by check.py). [T122: old = the T120 starts of t121-gate-old and stand-tracker's controls, same env and plan.]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

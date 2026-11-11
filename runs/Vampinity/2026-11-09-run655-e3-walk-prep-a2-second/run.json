@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run655-e3-walk-prep-a2-second",
+ "date": "2026-11-09",
+ "time": "17:58:37",
+ "batch": "t84-e",
+ "test": "e3-walk-prep-a2-second",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T84",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 11:20:06)",
+  "eboot_sha256_16": "7a8a495119102495"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 76,
+ "env_hash": "526b30cb3d",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 137,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 13.95,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 98.9,
+  "worst_ms": 102.3
+ },
+ "worst_frame_ms": 704.3,
+ "runtime_pipeline_builds": 27,
+ "flashes_per_min": 0.0,
+ "note": "A2: second boot: 0 left, compared at boot ~800, no translate-differently line",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

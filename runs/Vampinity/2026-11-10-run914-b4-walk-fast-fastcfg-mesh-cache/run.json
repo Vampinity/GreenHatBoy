@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run914-b4-walk-fast-fastcfg-mesh-cache",
+ "date": "2026-11-10",
+ "time": "16:14:45",
+ "batch": "t92-b",
+ "test": "b4-walk-fast-fastcfg-mesh-cache",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T92",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 83,
+ "env_hash": "0084ccd5d5",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 127,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 15.45,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 119.8,
+  "worst_ms": 132.8
+ },
+ "worst_frame_ms": 652.1,
+ "runtime_pipeline_builds": 0,
+ "flashes_per_min": 7.5,
+ "note": "fast CFG + mesh cache",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

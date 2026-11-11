@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run370-c1-newgame-fw-jit-cram256",
+ "date": "2026-11-08",
+ "time": "14:59:25",
+ "batch": "t66-c",
+ "test": "c1-newgame-fw-jit-cram256",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T66",
+  "commit": "cc27039",
+  "version": "01.219.020 (Nov 8 2026 13:33:48)",
+  "eboot_sha256_16": "257a9b3ab304ec5f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-full-wait.txt",
+  "script_sha": "51ec784097bd"
+ },
+ "menu_settings": null,
+ "env_lines": 59,
+ "env_hash": "d8e5b5f38e",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 310,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 42.6,
+ "fps": {
+  "mean": 9.44,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 185.8,
+  "worst_ms": 1001.4
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 1.76,
+ "note": "bigger guest reserve: the fatal consumer in run347",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

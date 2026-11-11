@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run804-r2-walk-no-gpu-transcode",
+ "date": "2026-11-10",
+ "time": "08:22:02",
+ "batch": "ovl-20261110-5",
+ "test": "r2-walk-no-gpu-transcode",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 07:20:09)",
+  "eboot_sha256_16": "37716ff7bb7ff74d"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 80,
+ "env_hash": "b9449e1078",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 144,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 18.2,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 138.6,
+  "worst_ms": 150.1
+ },
+ "worst_frame_ms": 642.5,
+ "runtime_pipeline_builds": 1,
+ "flashes_per_min": 2.53,
+ "note": "GPU transcode off: the 6144x6144 texture goes back to the CPU decode that KEEP_ASYNC keeps (audit: at 256 it is remade 3-4x per run, each time over budget)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run910-a5-walk-fast-zstd-stream-verify",
+ "date": "2026-11-10",
+ "time": "15:54:34",
+ "batch": "t98-a",
+ "test": "a5-walk-fast-zstd-stream-verify",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T98",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 83,
+ "env_hash": "97414d8cb9",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 124,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.48,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 107.6,
+  "worst_ms": 124.9
+ },
+ "worst_frame_ms": 698.7,
+ "runtime_pipeline_builds": 6,
+ "flashes_per_min": 0.0,
+ "note": "host decode of the game zstd stream step in verify mode for the first 2000 steps: needs zero mismatches",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

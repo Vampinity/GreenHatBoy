@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1083-live-heavy-fastdraw-s",
+ "date": "2026-11-11",
+ "time": "09:53:00",
+ "batch": "live-heavy-fastdraw-s",
+ "test": "live-heavy-fastdraw-s",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "batch-live-heavy-fastdraw-s-zelda-steer-tunnel-mouth.txt",
+  "script_sha": "0f0d5560ccc6"
+ },
+ "menu_settings": null,
+ "env_lines": 96,
+ "env_hash": "56d6dacf28",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 392,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 282.6,
+ "fps": {
+  "mean": 16.56,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 71.7,
+  "worst_ms": 290.0
+ },
+ "worst_frame_ms": 290.0,
+ "runtime_pipeline_builds": 47,
+ "flashes_per_min": 2.82,
+ "note": "[STEERED walk to the heavy spot, proven by prof-heavy-steer2 run1076: village and water in view] Live at the HEAVY spot: the fast-draw stack (FAST_DRAW + OOT_EXEMPT + QUERY_LIGHT + L949_DESC_REPLAY at boot, UBO_KEEP off), FAST_DRAW 0 against 1. Never run before where the back thread is the wall. Armed: the off phases keep its bookkeeping. [live A: EDEN_UP_FAST_DRAW=0; B: EDEN_UP_FAST_DRAW=1]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

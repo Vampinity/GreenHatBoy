@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run449-r5-walk-fw-control",
+ "date": "2026-11-08",
+ "time": "22:04:59",
+ "batch": "t73-r",
+ "test": "r5-walk-fw-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T73",
+  "commit": null,
+  "version": "01.219.028 (Nov 8 2026 21:33:37)",
+  "eboot_sha256_16": "5ecb8af78ed824e6"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 59,
+ "env_hash": "6f171171bf",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 125,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.7,
+ "fps": {
+  "mean": 10.55,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 132.8,
+  "worst_ms": 150.6
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 11.54,
+ "note": "control (T73)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

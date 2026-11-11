@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run351-x3-walk-fw",
+ "date": "2026-11-08",
+ "time": "10:05:45",
+ "batch": "t64-x",
+ "test": "x3-walk-fw",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T64",
+  "commit": "ea44e93",
+  "version": "01.219.020 (Nov 8 2026 07:51:53)",
+  "eboot_sha256_16": null
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 54,
+ "env_hash": "8e17ec8872",
+ "control": false,
+ "ending": {
+  "kind": "crash",
+  "class": "oom",
+  "seconds": 102,
+  "crash_app_s": 102.1
+ },
+ "valid": false,
+ "gameplay_s": 20.0,
+ "fps": {
+  "mean": null,
+  "source": null,
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": "frame wait, no JIT",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

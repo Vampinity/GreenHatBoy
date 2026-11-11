@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run539-p3-walk-layoutA-exclusive",
+ "date": "2026-11-09",
+ "time": "03:57:51",
+ "batch": "t80-p",
+ "test": "p3-walk-layoutA-exclusive",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T80",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 02:54:25)",
+  "eboot_sha256_16": "2448f4026f38bf80"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 75,
+ "env_hash": "6f5ace6839",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 131,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 12.22,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 809.9,
+  "worst_ms": 1519.4
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": "layout A + other threads kept off the GPU threads' cores (idea Lichii #913) [base: v2.1 docked]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

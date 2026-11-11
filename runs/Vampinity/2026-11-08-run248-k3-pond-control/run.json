@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run248-k3-pond-control",
+ "date": "2026-11-08",
+ "time": "02:04:34",
+ "batch": "t56-k",
+ "test": "k3-pond-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T56",
+  "commit": "f5e7c39",
+  "version": "01.219.020 (Nov 8 2026 00:36:58)",
+  "eboot_sha256_16": null
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-continue-stand-fast.txt",
+  "script_sha": "248e248a0c05"
+ },
+ "menu_settings": null,
+ "env_lines": 49,
+ "env_hash": "431d1328a4",
+ "control": true,
+ "ending": {
+  "kind": "time_limit",
+  "class": "ok",
+  "seconds": 161,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 90.0,
+ "fps": {
+  "mean": null,
+  "source": null,
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 3.33,
+ "note": "control 2",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run644-c2-pause-lastaddr",
+ "date": "2026-11-09",
+ "time": "17:14:23",
+ "batch": "t84-c",
+ "test": "c2-pause-lastaddr",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T84",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 11:20:06)",
+  "eboot_sha256_16": "7a8a495119102495"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-door-pause-exits.txt",
+  "script_sha": "806c963802ea"
+ },
+ "menu_settings": null,
+ "env_lines": 75,
+ "env_hash": "fd5da2a9b5",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 206,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 110.1,
+ "fps": {
+  "mean": 25.04,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 87.2,
+  "worst_ms": 356.2
+ },
+ "worst_frame_ms": 655.2,
+ "runtime_pipeline_builds": 7,
+ "flashes_per_min": 0.0,
+ "note": "stale write area fix (Fritchii 9e8cb73ede): flash candidate",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

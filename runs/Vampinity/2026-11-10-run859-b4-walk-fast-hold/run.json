@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run859-b4-walk-fast-hold",
+ "date": "2026-11-10",
+ "time": "12:34:26",
+ "batch": "t106-b",
+ "test": "b4-walk-fast-hold",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T106",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 83,
+ "env_hash": "1644159982",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 129,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.38,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 109.8,
+  "worst_ms": 134.6
+ },
+ "worst_frame_ms": 641.0,
+ "runtime_pipeline_builds": 4,
+ "flashes_per_min": 4.98,
+ "note": "v2.4-fast + guard =3, the control of this batch",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

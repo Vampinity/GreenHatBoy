@@ -1,0 +1,50 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1086-m3-field-menu-burst300",
+ "date": "2026-11-11",
+ "time": "10:19:30",
+ "batch": "field-menu2-t120",
+ "test": "m3-field-menu-burst300",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-field-menu-cycles.txt",
+  "script_sha": "c1fe16677876"
+ },
+ "menu_settings": null,
+ "env_lines": 86,
+ "env_hash": "429b220778",
+ "control": false,
+ "ending": {
+  "kind": "time_limit",
+  "class": "ok",
+  "seconds": 276,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 172.0,
+ "fps": {
+  "mean": 43.82,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 32.6,
+  "worst_ms": 440.4
+ },
+ "worst_frame_ms": 440.4,
+ "runtime_pipeline_builds": 5,
+ "flashes_per_min": 0.0,
+ "note": "The same six pause-menu cycles with EDEN_NX2_AREA_EVICT_BURST=300 (default 100): the area clean-up (patch 0274, EDEN_NX2_AREA_EVICT=40 in the play env) reads a burst of 100 new images in 30 frames as an area load and then deletes what was unused for 40 frames. Opening the pause menu makes 102-212 new images, so it fires and the whole field goes (772 and 492 images in two logs); real area loads make 419-1962. At 300 the menu should no longer fire it. Wanted: no EDEN_AREA_EVICT burst line at menu open, no rebuild burst at menu close, steadier free memory per cycle than m1. owner's own question: 'the pictures should not be thrown away with pressing start then?'",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1,
+  "private_word": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run401-b2-pond-guards2-split",
+ "date": "2026-11-08",
+ "time": "18:27:58",
+ "batch": "t69-b",
+ "test": "b2-pond-guards2-split",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T69",
+  "commit": "e7b17e4",
+  "version": "01.219.020 (Nov 8 2026 17:54:26)",
+  "eboot_sha256_16": "5d5bf196eac47d2c"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-continue-stand-fast-wait.txt",
+  "script_sha": "076bbce66810"
+ },
+ "menu_settings": null,
+ "env_lines": 55,
+ "env_hash": "99f0c4e778",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 164,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 70.0,
+ "fps": {
+  "mean": 18.44,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 77.9,
+  "worst_ms": 90.4
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 13.71,
+ "note": "heydemoura split first drain + bind on back",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

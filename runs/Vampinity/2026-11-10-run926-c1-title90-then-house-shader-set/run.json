@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run926-c1-title90-then-house-shader-set",
+ "date": "2026-11-10",
+ "time": "17:29:37",
+ "batch": "t108-s",
+ "test": "c1-title90-then-house-shader-set",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T108",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 13:59:51)",
+  "eboot_sha256_16": "2bb7e77facfee6fd"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-title-90min-then-stand.txt",
+  "script_sha": "f8bb333de986"
+ },
+ "menu_settings": null,
+ "env_lines": 81,
+ "env_hash": "e79973d28b",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 5873,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 370.0,
+ "fps": {
+  "mean": 21.23,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 65.9,
+  "worst_ms": 469.5
+ },
+ "worst_frame_ms": 1203.5,
+ "runtime_pipeline_builds": 40,
+ "flashes_per_min": 0.0,
+ "note": "shader set with STREAM + INDEX, 90 min at the title: how long does the conversion of the full set take (t106-c: not done after 25 min, title movie at 26 fps all along), is prep_shader_set.bin written and stamped, then Link's house for the audit",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

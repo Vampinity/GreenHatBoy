@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run666-g4-walk-control",
+ "date": "2026-11-09",
+ "time": "18:35:04",
+ "batch": "t84-g",
+ "test": "g4-walk-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T84",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 11:20:06)",
+  "eboot_sha256_16": "7a8a495119102495"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 74,
+ "env_hash": "85cbe0166c",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 125,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 14.0,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 150.8,
+  "worst_ms": 202.3
+ },
+ "worst_frame_ms": 663.3,
+ "runtime_pipeline_builds": 15,
+ "flashes_per_min": 0.0,
+ "note": "control",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

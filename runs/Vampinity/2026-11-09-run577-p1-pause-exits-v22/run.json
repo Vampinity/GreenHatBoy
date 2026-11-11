@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run577-p1-pause-exits-v22",
+ "date": "2026-11-09",
+ "time": "07:33:33",
+ "batch": "t82-p",
+ "test": "p1-pause-exits-v22",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T82",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 05:31:49)",
+  "eboot_sha256_16": "029293280a76d935"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-door-pause-exits.txt",
+  "script_sha": "3e938607168d"
+ },
+ "menu_settings": null,
+ "env_lines": 73,
+ "env_hash": "e40df81954",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 116,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 24.1,
+ "fps": {
+  "mean": null,
+  "source": null,
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "v2.2 (no KEEP_ASYNC): 4 pause-menu exits in the village",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

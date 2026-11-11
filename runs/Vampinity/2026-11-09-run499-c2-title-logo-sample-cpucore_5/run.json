@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run499-c2-title-logo-sample-cpucore_5",
+ "date": "2026-11-09",
+ "time": "01:45:30",
+ "batch": "t78-c",
+ "test": "c2-title-logo-sample-cpucore_5",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T78",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 01:06:04)",
+  "eboot_sha256_16": "5e107b98fb705cc3"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-title-movie-watch.txt",
+  "script_sha": "d06d9077600e"
+ },
+ "menu_settings": null,
+ "env_lines": 72,
+ "env_hash": "29f7e9d959",
+ "control": false,
+ "ending": {
+  "kind": "time_limit",
+  "class": "ok",
+  "seconds": 87,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 48.3,
+ "fps": {
+  "mean": 60.0,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 18.2,
+  "worst_ms": 22.1
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 17.48,
+ "note": "logo stutter: stack samples of CPUCore_5 (one of the two busiest guest cores) from 48 s for 15 s, slow-frame lines on",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

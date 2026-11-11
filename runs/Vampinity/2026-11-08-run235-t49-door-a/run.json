@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run235-t49-door-a",
+ "date": "2026-11-08",
+ "time": "00:54:17",
+ "batch": "t49-door",
+ "test": "t49-door-a",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T49",
+  "commit": "db606c8",
+  "version": "01.219.020 (Nov 7 2026 08:43:05)",
+  "eboot_sha256_16": null
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door.txt",
+  "script_sha": "24f901d5a7ff"
+ },
+ "menu_settings": null,
+ "env_lines": 48,
+ "env_hash": "5096608064",
+ "control": false,
+ "ending": {
+  "kind": "time_limit",
+  "class": "ok",
+  "seconds": 202,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 71.3,
+ "fps": {
+  "mean": 15.38,
+  "source": "heap.log EDEN_VULKAN_FRAME 5 s windows",
+  "p99_ms": null,
+  "worst_ms": 2302.828
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 20.2,
+ "note": "test build 1 eboot and env: did the door ever work?",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

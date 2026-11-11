@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run245-i4-door-late-reserve",
+ "date": "2026-11-08",
+ "time": "01:24:32",
+ "batch": "t56-i",
+ "test": "i4-door-late-reserve",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T56",
+  "commit": "f5e7c39",
+  "version": "01.219.020 (Nov 8 2026 00:36:58)",
+  "eboot_sha256_16": null
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-late.txt",
+  "script_sha": "c9263db6c9cc"
+ },
+ "menu_settings": null,
+ "env_lines": 50,
+ "env_hash": "007fbf7eb8",
+ "control": false,
+ "ending": {
+  "kind": "time_limit",
+  "class": "ok",
+  "seconds": 516,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 189.9,
+ "fps": {
+  "mean": 25.01,
+  "source": "heap.log EDEN_VULKAN_FRAME 5 s windows",
+  "p99_ms": null,
+  "worst_ms": 711.979
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 7.27,
+ "note": "repeat",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

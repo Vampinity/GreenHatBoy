@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run962-k4-walk-fast-guard3-gbbfour",
+ "date": "2026-11-10",
+ "time": "23:06:38",
+ "batch": "gbb-guard-t112",
+ "test": "k4-walk-fast-guard3-gbbfour",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T112",
+  "commit": "d316be4",
+  "version": "01.219.028 (Nov 10 2026 22:20:36)",
+  "eboot_sha256_16": "768fe3f4740ac0b7"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 87,
+ "env_hash": "8ce14fc270",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 122,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 15.74,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 179.3,
+  "worst_ms": 234.7
+ },
+ "worst_frame_ms": 620.4,
+ "runtime_pipeline_builds": 62,
+ "flashes_per_min": 2.36,
+ "note": "repeat of the four-switch arm",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

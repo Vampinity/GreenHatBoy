@@ -1,0 +1,50 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1081-tracker2-stand-hud",
+ "date": "2026-11-11",
+ "time": "09:22:54",
+ "batch": "stand-hud",
+ "test": "tracker2-stand-hud",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "batch-live-hud-tracker-zelda-owner-spot-tunnel-mouth.txt",
+  "script_sha": "f8b37d4bbc67"
+ },
+ "menu_settings": null,
+ "env_lines": 85,
+ "env_hash": "5e05f96789",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 256,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": 160.0,
+ "fps": {
+  "mean": 37.82,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 31.1,
+  "worst_ms": 151.4
+ },
+ "worst_frame_ms": 735.5,
+ "runtime_pipeline_builds": 27,
+ "flashes_per_min": null,
+ "note": "owner's HUD-icon glitch (HUD images drawn at a wrong place for one game frame), counted where it clusters: standing, HUD on screen, in a heavy view. Standing at the heavy spot (past the tunnel mouth, 17.6 fps) for 6 phases of 20 s per start. Arms: control = his play env v2.5 (fast mode, no guard, no tracker), tracker = + EDEN_UP_FRITCHII_USAGE_TRACKER=1 (his play env v2.6), guard = tracker + EDEN_UP_AHEAD_GUARD=3. Order c t g g t c. Count the moments in each video with the detector in the session scratchpad hud-glitch/scripts and check them by eye; fps per start with boot-means.py. Replaces route-tracker: the open-loop replay of his village route left his path within seconds (Link ended up in the water channel), so that batch could not be read.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1,
+  "private_word": 2
+ }
+}

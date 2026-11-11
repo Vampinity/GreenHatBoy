@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run166-u2-t42-pack-old-settings",
+ "date": "2026-11-07",
+ "time": "00:25:43",
+ "batch": "u",
+ "test": "u2-t42-pack-old-settings",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": null,
+  "eboot_sha256_16": null
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": null,
+  "script_sha": null
+ },
+ "menu_settings": null,
+ "env_lines": 32,
+ "env_hash": null,
+ "control": null,
+ "ending": {
+  "kind": "time_limit",
+  "class": null,
+  "seconds": 244,
+  "crash_app_s": null
+ },
+ "valid": null,
+ "gameplay_s": null,
+ "fps": {
+  "mean": null,
+  "source": null,
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": null,
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

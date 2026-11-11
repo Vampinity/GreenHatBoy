@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run759-b1-walk-fast-hog1024",
+ "date": "2026-11-10",
+ "time": "04:16:24",
+ "batch": "t89-b",
+ "test": "b1-walk-fast-hog1024",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T89",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 03:44:07)",
+  "eboot_sha256_16": "234d4d36b243bd8c"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 82,
+ "env_hash": "628ae3925b",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 124,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 3.4,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 3134.0,
+  "worst_ms": 3134.0
+ },
+ "worst_frame_ms": 3134.0,
+ "runtime_pipeline_builds": 8,
+ "flashes_per_min": null,
+ "note": "v2.4-fast with 1024 MiB taken out of the pool (768 survived with 26 MiB free and no refused request)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

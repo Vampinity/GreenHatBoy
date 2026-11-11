@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run892-r2-walk-profile",
+ "date": "2026-11-10",
+ "time": "14:51:38",
+ "batch": "ovl-20261110-1",
+ "test": "r2-walk-profile",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 87,
+ "env_hash": "02abdd68a9",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 133,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 18.05,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 130.1,
+  "worst_ms": 150.9
+ },
+ "worst_frame_ms": 628.7,
+ "runtime_pipeline_builds": 4,
+ "flashes_per_min": 2.46,
+ "note": "fast-mode profile (not an fps arm: the report costs ~3%): EDEN_GPU_TIME (GPU busy per 5 s), EDEN_PERF_REPORT (where each frame goes), stack samples of GPU, GPUBack, CPUCore_4, CPUCore_5. Sampler: 5 s windows (1000 samples) in turn from 80 s after boot, 4 rounds = 80-160 s, so every thread has windows in the house, at the door/fly-over and after (the default 30 s windows from 90 s would give GPUBack only 120-150 s). Split the 5 s lines and windows by phase: house = game CPU side, fly-over = GPU side. sample-report.py with the build's llvm-pie.elf",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

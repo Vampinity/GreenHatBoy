@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run798-a1-walk-fast-hold",
+ "date": "2026-11-10",
+ "time": "08:03:45",
+ "batch": "t100-a",
+ "test": "a1-walk-fast-hold",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T100",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 07:20:09)",
+  "eboot_sha256_16": "37716ff7bb7ff74d"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 83,
+ "env_hash": "1644159982",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 133,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.56,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 138.2,
+  "worst_ms": 153.3
+ },
+ "worst_frame_ms": 648.3,
+ "runtime_pipeline_builds": 7,
+ "flashes_per_min": 0.0,
+ "note": "v2.4-fast + guard =3 (the candidate): over-bright second after the cut to Link's house in about 1 run of 3",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

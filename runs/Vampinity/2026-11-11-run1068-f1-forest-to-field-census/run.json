@@ -1,0 +1,50 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1068-f1-forest-to-field-census",
+ "date": "2026-11-11",
+ "time": "07:59:37",
+ "batch": "field-census-t120",
+ "test": "f1-forest-to-field-census",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-owner-forest-door-t121.txt",
+  "script_sha": "dcf0713b29c9"
+ },
+ "menu_settings": null,
+ "env_lines": 85,
+ "env_hash": "ed89c86096",
+ "control": false,
+ "ending": {
+  "kind": "time_limit",
+  "class": "ok",
+  "seconds": 432,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 335.7,
+ "fps": {
+  "mean": 35.44,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 41.0,
+  "worst_ms": 879.3
+ },
+ "worst_frame_ms": 879.3,
+ "runtime_pipeline_builds": 61,
+ "flashes_per_min": 11.2,
+ "note": "owner's route of 11 Nov 05:54 from his doorway save (talk to the Kokiri guard, the tunnel, Saria's cutscene, the ocarina introduction, the standing pair wall / long view, the path to Hyrule Field, the owl, a few steps into the field), replayed from his presses with the memory census on (EDEN_UP_MEM_CENSUS=1). On T121 with the three memory lines the app died in the field at 391 s (std::bad_alloc, largest free block 2 MiB). Wanted: the census lines along the route for waveydude (plain T120, and T121 with the three lines), and whether the replay reaches the field at all. Open loop over five minutes with cutscenes: check in the video how far Link really got; a run that leaves his path still gives census lines up to there.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1,
+  "private_word": 2
+ }
+}

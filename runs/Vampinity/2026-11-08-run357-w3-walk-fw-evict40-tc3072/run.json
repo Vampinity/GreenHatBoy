@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run357-w3-walk-fw-evict40-tc3072",
+ "date": "2026-11-08",
+ "time": "13:38:57",
+ "batch": "t66-w",
+ "test": "w3-walk-fw-evict40-tc3072",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T66",
+  "commit": "cc27039",
+  "version": "01.219.020 (Nov 8 2026 13:33:48)",
+  "eboot_sha256_16": "257a9b3ab304ec5f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 60,
+ "env_hash": "c2b30ff570",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 124,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 35.1,
+ "fps": {
+  "mean": 10.7,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 110.7,
+  "worst_ms": 111.3
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 13.42,
+ "note": "plus collector earlier",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

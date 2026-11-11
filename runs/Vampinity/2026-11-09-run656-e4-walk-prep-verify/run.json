@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run656-e4-walk-prep-verify",
+ "date": "2026-11-09",
+ "time": "17:58:37",
+ "batch": "t84-e",
+ "test": "e4-walk-prep-verify",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T84",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 11:20:06)",
+  "eboot_sha256_16": "7a8a495119102495"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 76,
+ "env_hash": "6aa46b2c7d",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 138,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 14.0,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 104.4,
+  "worst_ms": 104.9
+ },
+ "worst_frame_ms": 636.4,
+ "runtime_pipeline_builds": 15,
+ "flashes_per_min": 0.0,
+ "note": "verify on a normal boot: B differ must be 0; no fps from this run",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

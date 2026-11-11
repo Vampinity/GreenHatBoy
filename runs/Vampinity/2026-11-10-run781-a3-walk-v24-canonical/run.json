@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run781-a3-walk-v24-canonical",
+ "date": "2026-11-10",
+ "time": "05:36:09",
+ "batch": "t94-a",
+ "test": "a3-walk-v24-canonical",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T94",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 05:08:27)",
+  "eboot_sha256_16": "c120352d57e24135"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 77,
+ "env_hash": "f9275937e9",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 117,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 15.14,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 95.7,
+  "worst_ms": 107.0
+ },
+ "worst_frame_ms": 632.4,
+ "runtime_pipeline_builds": 1,
+ "flashes_per_min": 0.0,
+ "note": "run A again: second canonical boot (vulkan_canonical.bin exists)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

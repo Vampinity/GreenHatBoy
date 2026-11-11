@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run478-f3-walk-fw-fastdraw",
+ "date": "2026-11-09",
+ "time": "00:08:43",
+ "batch": "t75-f",
+ "test": "f3-walk-fw-fastdraw",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T75",
+  "commit": null,
+  "version": "01.219.028 (Nov 8 2026 23:29:21)",
+  "eboot_sha256_16": "72970991e7093cda"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 63,
+ "env_hash": "06bc4f44f9",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 129,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": 35.2,
+ "fps": {
+  "mean": 3.67,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 2159.0,
+  "worst_ms": 3948.3
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "fast draw for speed",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

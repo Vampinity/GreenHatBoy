@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run897-c2-walk-cold-async",
+ "date": "2026-11-10",
+ "time": "15:11:53",
+ "batch": "t99-a",
+ "test": "c2-walk-cold-async",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T99",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 77,
+ "env_hash": "6402bf6648",
+ "control": false,
+ "ending": {
+  "kind": "script_stopped",
+  "class": "loading-hang",
+  "seconds": 170,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": 0.0,
+ "fps": {
+  "mean": null,
+  "source": null,
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "as c1 + EDEN_UP_ASYNC_TRANSLATION: new pipelines are translated on translator threads; a draw waits 2 ms a pipeline / 4 ms a frame, then is skipped",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

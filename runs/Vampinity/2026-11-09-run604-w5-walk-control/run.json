@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run604-w5-walk-control",
+ "date": "2026-11-09",
+ "time": "09:20:08",
+ "batch": "t83-w",
+ "test": "w5-walk-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T83",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 07:47:14)",
+  "eboot_sha256_16": "6852dc61e1f93053"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 75,
+ "env_hash": "3cb944dd0b",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 132,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 13.4,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 144.9,
+  "worst_ms": 186.2
+ },
+ "worst_frame_ms": 639.3,
+ "runtime_pipeline_builds": 13,
+ "flashes_per_min": 0.0,
+ "note": "control + split waits",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

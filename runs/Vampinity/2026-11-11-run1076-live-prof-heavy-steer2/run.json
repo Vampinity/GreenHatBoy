@@ -1,0 +1,50 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1076-live-prof-heavy-steer2",
+ "date": "2026-11-11",
+ "time": "09:16:54",
+ "batch": "live-prof-heavy-steer2",
+ "test": "live-prof-heavy-steer2",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "batch-live-prof-heavy-steer2-zelda-steer-tunnel-mouth.txt",
+  "script_sha": "a6cc5ae2acf9"
+ },
+ "menu_settings": null,
+ "env_lines": 93,
+ "env_hash": "5228ac5f00",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 260,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 171.4,
+ "fps": {
+  "mean": 11.56,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 170.4,
+  "worst_ms": 773.4
+ },
+ "worst_frame_ms": 773.4,
+ "runtime_pipeline_builds": 105,
+ "flashes_per_min": 79.32,
+ "note": "Back-thread profile at the HEAVY spot by minimap steering, second route (13 points along owner's curve; the 5-point route ran into a tree). Valid only if a standing frame shows the village and the water. [live A/A: no switch changes, the noise between phases]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1,
+  "private_word": 1
+ }
+}

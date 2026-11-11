@@ -1,0 +1,50 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1072-live-prof-heavy-x125",
+ "date": "2026-11-11",
+ "time": "08:28:49",
+ "batch": "live-prof-heavy-x125",
+ "test": "live-prof-heavy-x125",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "batch-live-prof-heavy-x125-zelda-owner-spot-tunnel-mouth-x125.txt",
+  "script_sha": "1c4dc6331f31"
+ },
+ "menu_settings": null,
+ "env_lines": 93,
+ "env_hash": "5228ac5f00",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 254,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 165.0,
+ "fps": {
+  "mean": 30.27,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 40.0,
+  "worst_ms": 139.1
+ },
+ "worst_frame_ms": 456.4,
+ "runtime_pipeline_builds": 41,
+ "flashes_per_min": 0.0,
+ "note": "Back-thread profile at the HEAVY spot, second try: the walk's times stretched x1.25 because the profile slows the game by about a quarter and the plain replay came up short (prof-heavy stood at a rock wall, 29 fps). Valid only if a standing frame shows the village and the water. [live A/A: no switch changes, the noise between phases]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1,
+  "private_word": 1
+ }
+}

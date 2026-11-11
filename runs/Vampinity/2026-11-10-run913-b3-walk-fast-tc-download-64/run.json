@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run913-b3-walk-fast-tc-download-64",
+ "date": "2026-11-10",
+ "time": "16:14:45",
+ "batch": "t92-b",
+ "test": "b3-walk-fast-tc-download-64",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T92",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 82,
+ "env_hash": "702abe4878",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 140,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.75,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 135.1,
+  "worst_ms": 160.7
+ },
+ "worst_frame_ms": 658.1,
+ "runtime_pipeline_builds": 6,
+ "flashes_per_min": 0.0,
+ "note": "EDEN_NX2_TC_DOWNLOAD_MAX_MIB=64: the collector downloads less per pass (fly-over frames of 550-630 ms)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

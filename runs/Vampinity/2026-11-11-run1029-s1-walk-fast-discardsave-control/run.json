@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1029-s1-walk-fast-discardsave-control",
+ "date": "2026-11-11",
+ "time": "03:16:32",
+ "batch": "t119-save-trial",
+ "test": "s1-walk-fast-discardsave-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 85,
+ "env_hash": "ab0e4ff3a6",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 128,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.64,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 107.2,
+  "worst_ms": 129.8
+ },
+ "worst_frame_ms": 151.5,
+ "runtime_pipeline_builds": 1,
+ "flashes_per_min": 7.56,
+ "note": "Trial of the save-restore skip (runner flag --discard-save-reuse + EDEN_TEST_DISCARD_SAVE=1, patch 0547; ChatGPT job F reviewed, two corrections by the build chat). Three plain door-walk runs, play env v2.5-fast + EDEN_GPU_TIME=1, each with the test-only save copy. Expected in the batch log: before s1 'SAVE restore required: first install or no finished-run copy proof', before s2 and s3 'SAVE restore skipped: finished run confirmed session copy (copied)'. Pass: every run reaches the house and the fly-over card (script_end), each run's log has the EDEN_TEST_DISCARD_SAVE '(copied)' line, fps like the other fast controls of this build, and the save on the console is byte for byte the batch's save afterwards. Any other outcome: the flag comes off the batches behind it.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

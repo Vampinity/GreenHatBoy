@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run454-d5-walk-fw-control",
+ "date": "2026-11-08",
+ "time": "22:29:23",
+ "batch": "t74-d",
+ "test": "d5-walk-fw-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T74",
+  "commit": null,
+  "version": "01.219.028 (Nov 8 2026 22:26:30)",
+  "eboot_sha256_16": "c0936db656499b2c"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 61,
+ "env_hash": "ee0e24c471",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 126,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 35.1,
+ "fps": {
+  "mean": 9.0,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 151.9,
+  "worst_ms": 173.9
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "control, drain counters on",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

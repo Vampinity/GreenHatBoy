@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run927-c2-stand8-shader-set",
+ "date": "2026-11-10",
+ "time": "17:29:37",
+ "batch": "t108-s",
+ "test": "c2-stand8-shader-set",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T108",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 13:59:51)",
+  "eboot_sha256_16": "2bb7e77facfee6fd"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-continue-stand-long-wait.txt",
+  "script_sha": "37876171ce7b"
+ },
+ "menu_settings": null,
+ "env_lines": 81,
+ "env_hash": "e79973d28b",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 583,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 490.0,
+ "fps": {
+  "mean": 21.25,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 65.4,
+  "worst_ms": 84.4
+ },
+ "worst_frame_ms": 741.2,
+ "runtime_pipeline_builds": 0,
+ "flashes_per_min": 0.0,
+ "note": "second boot: \"reusing prep_shader_set.bin ... its stamp holds\" if boot 1 stamped it; audit in the house",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

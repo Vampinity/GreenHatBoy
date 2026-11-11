@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run374-c5-newgame-fw-jit-control",
+ "date": "2026-11-08",
+ "time": "14:59:25",
+ "batch": "t66-c",
+ "test": "c5-newgame-fw-jit-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T66",
+  "commit": "cc27039",
+  "version": "01.219.020 (Nov 8 2026 13:33:48)",
+  "eboot_sha256_16": "257a9b3ab304ec5f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-full-wait.txt",
+  "script_sha": "51ec784097bd"
+ },
+ "menu_settings": null,
+ "env_lines": 59,
+ "env_hash": "d1fd91df53",
+ "control": true,
+ "ending": {
+  "kind": "crash",
+  "class": "oom",
+  "seconds": 280,
+  "crash_app_s": 277.9
+ },
+ "valid": false,
+ "gameplay_s": 29.1,
+ "fps": {
+  "mean": 4.34,
+  "source": "heap.log EDEN_VULKAN_FRAME 5 s windows",
+  "p99_ms": null,
+  "worst_ms": 4480.759
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 68.5,
+ "note": "control (CRAM 128)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

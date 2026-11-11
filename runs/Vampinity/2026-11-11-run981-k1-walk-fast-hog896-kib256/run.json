@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run981-k1-walk-fast-hog896-kib256",
+ "date": "2026-11-11",
+ "time": "00:05:42",
+ "batch": "t114-b",
+ "test": "k1-walk-fast-hog896-kib256",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T114",
+  "commit": "277c89c",
+  "version": "01.219.028 (Nov 10 2026 23:26:29)",
+  "eboot_sha256_16": "f5cdc8836199ce11"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 86,
+ "env_hash": "0a20f2a3f3",
+ "control": false,
+ "ending": {
+  "kind": "crash",
+  "class": "oom",
+  "seconds": 110,
+  "crash_app_s": 107.3
+ },
+ "valid": false,
+ "gameplay_s": 17.6,
+ "fps": {
+  "mean": 6.44,
+  "source": "heap.log EDEN_VULKAN_FRAME 5 s windows",
+  "p99_ms": null,
+  "worst_ms": 2096.769
+ },
+ "worst_frame_ms": 520.2,
+ "runtime_pipeline_builds": 4,
+ "flashes_per_min": null,
+ "note": null,
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

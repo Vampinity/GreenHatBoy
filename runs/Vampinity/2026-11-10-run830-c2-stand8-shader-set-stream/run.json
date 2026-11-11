@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run830-c2-stand8-shader-set-stream",
+ "date": "2026-11-10",
+ "time": "10:15:18",
+ "batch": "t106-c",
+ "test": "c2-stand8-shader-set-stream",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T106",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-continue-stand-long-wait.txt",
+  "script_sha": "37876171ce7b"
+ },
+ "menu_settings": null,
+ "env_lines": 81,
+ "env_hash": "e79973d28b",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 578,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": 490.0,
+ "fps": {
+  "mean": 10.79,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 963.8,
+  "worst_ms": 1874.8
+ },
+ "worst_frame_ms": 1874.8,
+ "runtime_pipeline_builds": 0,
+ "flashes_per_min": 0.0,
+ "note": "second boot with STREAM and INDEX only: \"reusing prep_shader_set.bin ... its stamp holds\", no extraction; audit in Link's house",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

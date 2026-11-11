@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run843-x3-walk-v24-skipstale",
+ "date": "2026-11-10",
+ "time": "11:37:19",
+ "batch": "x3-claim-skipstale-fullwait",
+ "test": "x3-walk-v24-skipstale",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 78,
+ "env_hash": "464de375c1",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 121,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 16.2,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 87.4,
+  "worst_ms": 96.5
+ },
+ "worst_frame_ms": 651.6,
+ "runtime_pipeline_builds": 8,
+ "flashes_per_min": 0.0,
+ "note": "claim check: EDEN_UP_SKIP_STALE_UPLOADS (EdGlantine UB-128) on the full wait, where the one run so far gave 16.6 against 13.9 fps",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1089-tracker1-walk-hud",
+ "date": "2026-11-11",
+ "time": "10:31:08",
+ "batch": "walk-hud",
+ "test": "tracker1-walk-hud",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-steer-ravine-loop.txt",
+  "script_sha": "beb300a4c37a"
+ },
+ "menu_settings": null,
+ "env_lines": 84,
+ "env_hash": "2ef7f40b8d",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 202,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 114.6,
+ "fps": {
+  "mean": 26.3,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 74.5,
+  "worst_ms": 136.8
+ },
+ "worst_frame_ms": 136.8,
+ "runtime_pipeline_builds": 14,
+ "flashes_per_min": 28.24,
+ "note": "HUD-icon glitch counted while WALKING: three steered loops ravine - heavy spot - ravine (about 55 s each). Arms as stand-hud: control = play env v2.5 (fast, no tracker, no guard), tracker = + usage tracker (v2.6), guard = tracker + EDEN_UP_AHEAD_GUARD=3; order c t g g t c. stand-hud found 5 moments in the control arm's walks, 0 in the tracker arm's, 0 standing anywhere: two starts each, no verdict. Count with the detector (scan3.py, detect.py, review.py) over the walking time and check by eye.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

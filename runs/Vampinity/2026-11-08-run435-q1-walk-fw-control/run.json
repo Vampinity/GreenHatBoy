@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run435-q1-walk-fw-control",
+ "date": "2026-11-08",
+ "time": "21:23:42",
+ "batch": "t72-q",
+ "test": "q1-walk-fw-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T72",
+  "commit": null,
+  "version": "01.219.020 (Nov 8 2026 21:05:23)",
+  "eboot_sha256_16": "ce590c345142eec9"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 62,
+ "env_hash": "25d4680653",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 124,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 35.2,
+ "fps": {
+  "mean": 9.1,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 157.5,
+  "worst_ms": 187.7
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 8.53,
+ "note": "control",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

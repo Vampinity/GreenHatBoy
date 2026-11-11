@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run848-x3-walk-fast-skipstale",
+ "date": "2026-11-10",
+ "time": "11:56:12",
+ "batch": "x4-claim-skipstale-fast",
+ "test": "x3-walk-fast-skipstale",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 83,
+ "env_hash": "054e1d5c70",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 124,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 18.37,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 103.5,
+  "worst_ms": 117.7
+ },
+ "worst_frame_ms": 662.0,
+ "runtime_pipeline_builds": 9,
+ "flashes_per_min": 2.53,
+ "note": "EDEN_UP_SKIP_STALE_UPLOADS on the fast base: the fixed patch marks nothing stale while a frame ahead, so little is expected here; picture must match the controls",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

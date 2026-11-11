@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run263-o1-profile",
+ "date": "2026-11-08",
+ "time": "03:38:26",
+ "batch": "t58-o",
+ "test": "o1-profile",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T58",
+  "commit": "a2d7721",
+  "version": "01.219.020 (Nov 8 2026 02:53:00)",
+  "eboot_sha256_16": null
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door.txt",
+  "script_sha": "24f901d5a7ff"
+ },
+ "menu_settings": null,
+ "env_lines": 52,
+ "env_hash": "b4d90c896a",
+ "control": false,
+ "ending": {
+  "kind": "time_limit",
+  "class": "ok",
+  "seconds": 153,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": 26.8,
+ "fps": {
+  "mean": 18.07,
+  "source": "heap.log EDEN_VULKAN_FRAME 5 s windows",
+  "p99_ms": null,
+  "worst_ms": 717.372
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 42.54,
+ "note": "Fable step 0: where the frame goes while moving and loading",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

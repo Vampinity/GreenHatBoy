@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 268" width="760" height="268" role="img" aria-label="Frames per second by kind of place">
+<rect width="760" height="268" fill="#0d1117"/>
+<text x="20" y="28" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#e6edf3">Frames per second by kind of place</text>
+<line x1="270" y1="44" x2="270" y2="238" stroke="#30363d" stroke-width="1"/>
+<text x="270" y="256" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="11.5" fill="#9198a1">0</text>
+<line x1="370" y1="44" x2="370" y2="238" stroke="#30363d" stroke-width="1"/>
+<text x="370" y="256" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="11.5" fill="#9198a1">15</text>
+<line x1="470" y1="44" x2="470" y2="238" stroke="#30363d" stroke-width="1"/>
+<text x="470" y="256" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="11.5" fill="#9198a1">30</text>
+<line x1="570" y1="44" x2="570" y2="238" stroke="#30363d" stroke-width="1"/>
+<text x="570" y="256" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="11.5" fill="#9198a1">45</text>
+<line x1="670" y1="44" x2="670" y2="238" stroke="#30363d" stroke-width="1"/>
+<text x="670" y="256" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="11.5" fill="#9198a1">60</text>
+<text x="258" y="77" text-anchor="end" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" fill="#e6edf3">Indoors</text>
+<rect x="270" y="62" width="400" height="22" rx="4" fill="#3fb950"/>
+<text x="678" y="78" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12.5" font-weight="600" fill="#e6edf3">up to 60</text>
+<text x="258" y="121" text-anchor="end" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" fill="#e6edf3">Narrow paths and tunnels</text>
+<rect x="270" y="106" width="227" height="22" rx="4" fill="#3fb950"/>
+<text x="505" y="122" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12.5" font-weight="600" fill="#e6edf3">30 to 34</text>
+<text x="258" y="165" text-anchor="end" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" fill="#e6edf3">Open paths</text>
+<rect x="270" y="150" width="187" height="22" rx="4" fill="#58a6ff"/>
+<text x="465" y="166" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12.5" font-weight="600" fill="#e6edf3">26 to 28</text>
+<text x="258" y="209" text-anchor="end" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" fill="#e6edf3">Wide open, many trees and water</text>
+<rect x="270" y="194" width="127" height="22" rx="4" fill="#58a6ff"/>
+<text x="405" y="210" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12.5" font-weight="600" fill="#e6edf3">17 to 19</text>
+</svg>

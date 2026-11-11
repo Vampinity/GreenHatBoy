@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run552-g1-pond-loadwait-stats",
+ "date": "2026-11-09",
+ "time": "04:48:57",
+ "batch": "t81-g",
+ "test": "g1-pond-loadwait-stats",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T81",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 04:08:04)",
+  "eboot_sha256_16": "76922bbb4a37a339"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-continue-stand-fast-wait.txt",
+  "script_sha": "076bbce66810"
+ },
+ "menu_settings": null,
+ "env_lines": 72,
+ "env_hash": "2062d2e7d5",
+ "control": false,
+ "ending": {
+  "kind": "crash",
+  "class": "desync",
+  "seconds": 93,
+  "crash_app_s": 93.0
+ },
+ "valid": false,
+ "gameplay_s": 17.4,
+ "fps": {
+  "mean": null,
+  "source": null,
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": "load-only frame wait + query stats: reaches gameplay? flashes after the wait drops? stats race line [base: v2.1 docked; count flashes/fps only after the 'full frame wait off' line]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

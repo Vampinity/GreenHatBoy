@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run938-c1-title30-shader-set-reconvert",
+ "date": "2026-11-10",
+ "time": "20:11:57",
+ "batch": "t109-s",
+ "test": "c1-title30-shader-set-reconvert",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T109",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 20:07:31)",
+  "eboot_sha256_16": "9d7c16656fc6c36c"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-title-wait-30min.txt",
+  "script_sha": "3c598104d822"
+ },
+ "menu_settings": null,
+ "env_lines": 82,
+ "env_hash": "d8a4c6ff23",
+ "control": false,
+ "ending": {
+  "kind": "interrupted",
+  "class": "not-run",
+  "seconds": 1133,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": 1106.9,
+ "fps": {
+  "mean": 26.47,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 538.9,
+  "worst_ms": 967.6
+ },
+ "worst_frame_ms": 967.6,
+ "runtime_pipeline_builds": 0,
+ "flashes_per_min": 6.0,
+ "note": "T109: the set is converted again (EDEN_UP_SHADER_SET_RECONVERT=1 changes the stamp) with the records written in 8 MiB pieces: \"converting: N records, M MB written, S s so far\" every 512 MB, against 4,014 s for 4,311 MB on T108; title movie fps while it writes; stamped if it finishes inside 30 min",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

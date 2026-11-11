@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run825-h2-walk-fast-hold-keep",
+ "date": "2026-11-10",
+ "time": "09:56:48",
+ "batch": "g107-b",
+ "test": "h2-walk-fast-hold-keep",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 83,
+ "env_hash": "1644159982",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 125,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.2,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 113.4,
+  "worst_ms": 135.5
+ },
+ "worst_frame_ms": 655.9,
+ "runtime_pipeline_builds": 6,
+ "flashes_per_min": 2.5,
+ "note": "guard =3 WITH EDEN_UP_PIPELINE_LIST_KEEP (as every guard run since 08:00)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

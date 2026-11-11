@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run873-b3-walk-fast-hold-spin4",
+ "date": "2026-11-10",
+ "time": "13:32:51",
+ "batch": "t101-b",
+ "test": "b3-walk-fast-hold-spin4",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T101",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 84,
+ "env_hash": "ed3c6316c2",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 126,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.6,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 109.9,
+  "worst_ms": 123.6
+ },
+ "worst_frame_ms": 667.3,
+ "runtime_pipeline_builds": 8,
+ "flashes_per_min": 4.96,
+ "note": "EDEN_UP_ARBITER_SPIN_US=4 (javocsoft e0ae6b0, arbiter part): WaitForAddress spins that long before it sleeps; read the arbiter log line (share of spins that avoided a sleep), fps and 1% low; do not judge by the WaitForAddress share",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1000-c0-walk-fast-guard3-cold-control-warmup",
+ "date": "2026-11-11",
+ "time": "01:38:36",
+ "batch": "t114-g2",
+ "test": "c0-walk-fast-guard3-cold-control-warmup",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T116",
+  "commit": "6db9343",
+  "version": "01.219.028 (Nov 11 2026 00:02:15)",
+  "eboot_sha256_16": "2815f78aeea2c397"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 84,
+ "env_hash": "ee73bbb7b2",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 139,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 16.5,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 163.7,
+  "worst_ms": 220.3
+ },
+ "worst_frame_ms": 623.9,
+ "runtime_pipeline_builds": 68,
+ "flashes_per_min": 2.47,
+ "note": "the fair read of GBB's four switches under guard =3: EVERY arm builds its pipelines at first sight (EDEN_UP_PIPELINE_COLD=1), because MASK_COMPONENTS changes the pipeline key and the four arm did that anyway on T112 (0 of 2 runs glitched, but at 15.6 fps against 17.7). Is it the switches or the slower run? c0, t0, f0 are WARM-UPS (cold shader preparation), not judged; then control / two / four, twice. Compare glitches in N of M runs AND fps between the arms; do not compare these fps with warm runs. Judge with check.py.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

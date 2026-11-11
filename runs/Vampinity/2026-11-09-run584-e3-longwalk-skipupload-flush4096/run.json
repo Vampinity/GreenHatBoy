@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run584-e3-longwalk-skipupload-flush4096",
+ "date": "2026-11-09",
+ "time": "07:51:10",
+ "batch": "t82-e",
+ "test": "e3-longwalk-skipupload-flush4096",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T82",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 05:31:49)",
+  "eboot_sha256_16": "029293280a76d935"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-door-long-walk.txt",
+  "script_sha": "b5ae89468705"
+ },
+ "menu_settings": null,
+ "env_lines": 76,
+ "env_hash": "4741faba9d",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 286,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 191.1,
+ "fps": {
+  "mean": 22.42,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 66.2,
+  "worst_ms": 310.5
+ },
+ "worst_frame_ms": 657.7,
+ "runtime_pipeline_builds": 34,
+ "flashes_per_min": 0.0,
+ "note": "back thread: shadow-map upload skip (Lichii PR 288, up to 17% of back) + submit budget 4096 (upstream default)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

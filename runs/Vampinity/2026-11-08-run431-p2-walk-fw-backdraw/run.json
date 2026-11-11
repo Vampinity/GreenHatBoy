@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run431-p2-walk-fw-backdraw",
+ "date": "2026-11-08",
+ "time": "21:08:06",
+ "batch": "t72-p",
+ "test": "p2-walk-fw-backdraw",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T72",
+  "commit": null,
+  "version": "01.219.020 (Nov 8 2026 21:05:23)",
+  "eboot_sha256_16": "ce590c345142eec9"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 63,
+ "env_hash": "7918fc0c40",
+ "control": false,
+ "ending": {
+  "kind": "crash",
+  "class": "oom",
+  "seconds": 109,
+  "crash_app_s": 106.5
+ },
+ "valid": false,
+ "gameplay_s": 27.9,
+ "fps": {
+  "mean": 3.44,
+  "source": "heap.log EDEN_VULKAN_FRAME 5 s windows",
+  "p99_ms": null,
+  "worst_ms": 2701.435
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": "Lichii #858 part",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

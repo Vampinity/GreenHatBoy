@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run735-a5-walk-fast-ubo-ahead-landing",
+ "date": "2026-11-10",
+ "time": "01:54:50",
+ "batch": "t86-a",
+ "test": "a5-walk-fast-ubo-ahead-landing",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T86",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 01:29:38)",
+  "eboot_sha256_16": "5602e478fcef3fc0"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 84,
+ "env_hash": "c48df4dd09",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 125,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 12.44,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 157.1,
+  "worst_ms": 176.1
+ },
+ "worst_frame_ms": 630.8,
+ "runtime_pipeline_builds": 7,
+ "flashes_per_min": 28.93,
+ "note": "+ uniform copy + Fritchii download landing",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

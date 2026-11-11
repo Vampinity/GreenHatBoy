@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run278-s3-sem-fast",
+ "date": "2026-11-08",
+ "time": "04:50:56",
+ "batch": "t61-s",
+ "test": "s3-sem-fast",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T61",
+  "commit": "2895a39",
+  "version": "01.219.020 (Nov 8 2026 04:20:14)",
+  "eboot_sha256_16": null
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 50,
+ "env_hash": "9b7ca56678",
+ "control": false,
+ "ending": {
+  "kind": "crash",
+  "class": "oom",
+  "seconds": 101,
+  "crash_app_s": 101.1
+ },
+ "valid": false,
+ "gameplay_s": 21.1,
+ "fps": {
+  "mean": null,
+  "source": null,
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": "Fritchii / Lichii #231: semaphore waits without stopping the GPU threads",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

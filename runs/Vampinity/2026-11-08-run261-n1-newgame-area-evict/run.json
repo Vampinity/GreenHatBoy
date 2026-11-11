@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run261-n1-newgame-area-evict",
+ "date": "2026-11-08",
+ "time": "03:23:25",
+ "batch": "t58-n",
+ "test": "n1-newgame-area-evict",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T58",
+  "commit": "a2d7721",
+  "version": "01.219.020 (Nov 8 2026 02:53:00)",
+  "eboot_sha256_16": null
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-full.txt",
+  "script_sha": "aeb4d84eeb11"
+ },
+ "menu_settings": null,
+ "env_lines": 50,
+ "env_hash": "cefce3aed6",
+ "control": false,
+ "ending": {
+  "kind": "time_limit",
+  "class": "ok",
+  "seconds": 359,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 166.7,
+ "fps": {
+  "mean": 49.78,
+  "source": "heap.log EDEN_VULKAN_FRAME 5 s windows",
+  "p99_ms": null,
+  "worst_ms": 4026.315
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 23.76,
+ "note": "T58: free images idle 120 frames at an area load",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1035-live-t119-ahead-pond",
+ "date": "2026-11-11",
+ "time": "03:49:03",
+ "batch": "live-t119-ahead-pond",
+ "test": "live-t119-ahead-pond",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "batch-live-t119-ahead-pond-zelda-continue-stand-fast-wait.txt",
+  "script_sha": "119eacdabcab"
+ },
+ "menu_settings": null,
+ "env_lines": 86,
+ "env_hash": "a3d2bcd87c",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 352,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 263.0,
+ "fps": {
+  "mean": 21.35,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 78.8,
+  "worst_ms": 101.1
+ },
+ "worst_frame_ms": 103.8,
+ "runtime_pipeline_builds": 0,
+ "flashes_per_min": 1.83,
+ "note": "T119 live, standing at the pond, copy guard =3 on: always-ahead off against on, ABBA x 3 [live A: EDEN_UP_AHEAD_ALWAYS=0; B: EDEN_UP_AHEAD_ALWAYS=1]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

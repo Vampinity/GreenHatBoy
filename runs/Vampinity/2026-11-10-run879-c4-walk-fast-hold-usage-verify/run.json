@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run879-c4-walk-fast-hold-usage-verify",
+ "date": "2026-11-10",
+ "time": "13:52:16",
+ "batch": "t101-c",
+ "test": "c4-walk-fast-hold-usage-verify",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T101",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 85,
+ "env_hash": "542a6f0d41",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 130,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 16.1,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 127.9,
+  "worst_ms": 138.4
+ },
+ "worst_frame_ms": 621.6,
+ "runtime_pipeline_builds": 3,
+ "flashes_per_min": 7.32,
+ "note": "EDEN_UP_FRITCHII_USAGE_TRACKER + _VERIFY (Lichii #184 run fill): expect 0 lines of not all tracked / differently",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

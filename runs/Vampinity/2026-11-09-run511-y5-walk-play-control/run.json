@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run511-y5-walk-play-control",
+ "date": "2026-11-09",
+ "time": "02:13:26",
+ "batch": "t79-y",
+ "test": "y5-walk-play-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T79",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 02:08:46)",
+  "eboot_sha256_16": "33318d87181b3cb8"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 64,
+ "env_hash": "06b5cbf5f0",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 124,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 12.4,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 108.3,
+  "worst_ms": 111.0
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 2.56,
+ "note": "play env",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

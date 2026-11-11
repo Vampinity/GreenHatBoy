@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run770-a2-walk-fast-fastcfg",
+ "date": "2026-11-10",
+ "time": "04:57:03",
+ "batch": "t92-a",
+ "test": "a2-walk-fast-fastcfg",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T92",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 04:33:09)",
+  "eboot_sha256_16": "0e21aea0e98e8e81"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 82,
+ "env_hash": "d7b6965cab",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 117,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 18.8,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 109.5,
+  "worst_ms": 129.9
+ },
+ "worst_frame_ms": 661.0,
+ "runtime_pipeline_builds": 4,
+ "flashes_per_min": 0.0,
+ "note": "EdGlantine UB-056 (fixed): fast CFG lookup + a waited pipeline goes to the front of the builder queue",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

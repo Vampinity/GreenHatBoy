@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1104-c1-menu-control",
+ "date": "2026-11-11",
+ "time": "11:51:11",
+ "batch": "t125-menu",
+ "test": "c1-menu-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T125",
+  "commit": "69c9cfa",
+  "version": "01.219.028 (Nov 11 2026 10:11:51)",
+  "eboot_sha256_16": "218add9a22284c24"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-field-menu-cycles.txt",
+  "script_sha": "c1fe16677876"
+ },
+ "menu_settings": null,
+ "env_lines": 85,
+ "env_hash": "ed89c86096",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 266,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 172.0,
+ "fps": {
+  "mean": 44.33,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 75.2,
+  "worst_ms": 431.4
+ },
+ "worst_frame_ms": 431.4,
+ "runtime_pipeline_builds": 1,
+ "flashes_per_min": 65.27,
+ "note": "T125, the same six menu cycles with his switches off: control.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}
