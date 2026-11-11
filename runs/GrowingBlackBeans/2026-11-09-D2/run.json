@@ -1,0 +1,114 @@
+{
+ "format": 0,
+ "author": "GrowingBlackBeans",
+ "run_id": "D2",
+ "date": "2026-11-09",
+ "time": "11:38:46",
+ "batch": null,
+ "test": "D2",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov  9 2026 15:53:21)",
+  "eboot_sha256_16": null
+ },
+ "firmware": null,
+ "console": "PS5 base 13.60",
+ "route": {
+  "script": "GrowingBlackBeans Kokiri benchmark: Continue, house, out, walk loop to the water",
+  "script_sha": null
+ },
+ "menu_settings": null,
+ "env_lines": 78,
+ "env_hash": "39e53ab3d1",
+ "control": null,
+ "ending": {
+  "kind": "hand_stopped",
+  "class": null,
+  "seconds": 56.879791,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": null,
+ "fps": {
+  "mean": null,
+  "source": "nx2:vi2 5 s lines (play windows under 45 fps)",
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": 1,
+ "flashes_per_min": null,
+ "note": null,
+ "impressions": "",
+ "flash_times": [],
+ "gbb": {
+  "windows_5s_columns": [
+   "log_s",
+   "frames",
+   "fps",
+   "1pct_low_ms",
+   "worst_ms",
+   "fence_ms"
+  ],
+  "windows_5s": [
+   [
+    31.829758,
+    289,
+    57.7,
+    53.4,
+    140.8,
+    0.0
+   ],
+   [
+    36.871527,
+    269,
+    53.3,
+    82.5,
+    96.2,
+    1.9
+   ],
+   [
+    41.877232,
+    285,
+    56.9,
+    56.1,
+    97.6,
+    0.7
+   ],
+   [
+    46.877437,
+    297,
+    59.4,
+    39.3,
+    55.2,
+    0.0
+   ],
+   [
+    51.879794,
+    298,
+    59.6,
+    28.1,
+    67.3,
+    0.0
+   ],
+   [
+    56.879791,
+    300,
+    60.0,
+    18.3,
+    44.6,
+    0.0
+   ]
+  ],
+  "heavy_windows": 0,
+  "heavy_fps": null,
+  "light_windows": 0,
+  "light_fps": null,
+  "regimes": "play windows (<45 fps); heavy = present fence wait >= 5 ms per frame (GPU thread bound), light = < 1 ms (game CPU bound)"
+ },
+ "redacted": {
+  "console_user": 3
+ }
+}

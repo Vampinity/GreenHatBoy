@@ -1,0 +1,90 @@
+diff --git a/src/core/hle/kernel/svc/svc_thread.cpp b/src/core/hle/kernel/svc/svc_thread.cpp
+index 72ab392e22..5363eb1c1d 100644
+--- a/src/core/hle/kernel/svc/svc_thread.cpp
++++ b/src/core/hle/kernel/svc/svc_thread.cpp
+@@ -8,6 +8,7 @@
+ #include <bit>
+ #include <chrono>
+ #include <thread>
++#include <cstdlib>
+ 
+ #include "common/pe_switch.h"
+ #include "common/scope_exit.h"
+@@ -19,9 +20,39 @@
+ #include "core/hle/kernel/k_thread.h"
+ #include "core/hle/kernel/svc.h"
+ 
++// Module main load address (core.cpp, EDEN_GBB_DUMP_GUEST); used by EDEN_GBB_THREADS.
++extern std::atomic<u64> eden_gbb_main_base;
++
+ namespace Kernel::Svc {
+ namespace {
+ 
++// EDEN_GBB_THREADS=1 (GrowingBlackBeans): log each guest thread the game creates (id, entry, arg,
++// priority, core) and every priority change. EDEN_GBB_THREAD_PRIO=<id>:<priority>[,...] gives
++// those thread ids that priority from creation on, whatever the game asks for later.
++bool GbbThreadLog() {
++    static const bool on = [] {
++        const char* v = std::getenv("EDEN_GBB_THREADS");
++        return v != nullptr && v[0] == '1';
++    }();
++    return on;
++}
++s32 GbbThreadPriority(u64 id, s32 priority) {
++    static const char* list = std::getenv("EDEN_GBB_THREAD_PRIO");
++    for (const char* at = list; at != nullptr && *at != 0;) {
++        char* end = nullptr;
++        const u64 want = std::strtoull(at, &end, 10);
++        if (end == nullptr || *end != ':') {
++            break;
++        }
++        const long value = std::strtol(end + 1, &end, 10);
++        if (want == id && value >= HighestThreadPriority && value <= LowestThreadPriority) {
++            return static_cast<s32>(value);
++        }
++        at = (end != nullptr && *end == ',') ? end + 1 : nullptr;
++    }
++    return priority;
++}
++
+ constexpr bool IsValidVirtualCoreId(int32_t core_id) {
+     return (0 <= core_id && core_id < static_cast<int32_t>(Core::Hardware::NUM_CPU_CORES));
+ }
+@@ -104,6 +135,20 @@ Result CreateThread(Core::System& system, Handle* out_handle, u64 entry_point, u
+     // Commit the thread reservation.
+     thread_reservation.Commit();
+ 
++    {
++        const u64 id = thread->GetThreadId();
++        const s32 forced = GbbThreadPriority(id, priority);
++        if (forced != priority) {
++            thread->SetBasePriority(kernel, forced);
++        }
++        if (GbbThreadLog()) {
++            const u64 base = eden_gbb_main_base.load(std::memory_order_acquire);
++            LOG_INFO(Kernel_SVC, "EDEN_GBB_THREADS: created thread {} entry {:#x} (main+{:#x}) arg {:#x} priority {}{} core {}",
++                     id, entry_point, entry_point - base, arg, priority,
++                     forced != priority ? fmt::format(" -> {}", forced) : std::string{}, core_id);
++        }
++    }
++
+     // Clone the current fpu status to the new thread.
+     thread->CloneFpuStatus(system.Kernel());
+ 
+@@ -258,6 +303,16 @@ Result SetThreadPriority(Core::System& system, Handle thread_handle, s32 priorit
+     R_UNLESS(thread.IsNotNull(), ResultInvalidHandle);
+ 
+     // Set the thread priority.
++    {
++        const u64 id = thread->GetThreadId();
++        const s32 forced = GbbThreadPriority(id, priority);
++        if (GbbThreadLog()) {
++            LOG_INFO(Kernel_SVC, "EDEN_GBB_THREADS: thread {} priority {} -> {}{}", id,
++                     thread->GetBasePriority(), priority,
++                     forced != priority ? fmt::format(" (kept at {})", forced) : std::string{});
++        }
++        priority = forced;
++    }
+     thread->SetBasePriority(system.Kernel(), priority);
+     R_SUCCEED();
+ }

@@ -1,0 +1,33 @@
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index 39e527596f..cea30b24db 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -2043,6 +2043,28 @@ private:
+             }
+             WaitForFrame(m_previous_fence_id, m_previous_fence_value);
+             if (gpu_behind || ahead_load_wait) {
++                // GrowingBlackBeans 0919, EDEN_GBB_GUARD_EARLY=1: the guard is armed before this
++                // second wait, not after it. Job threads go on with the next frame while the
++                // present waits here, and their writes to pages this frame still reads used to
++                // land unguarded (the guard armed only after the wait, when the fence is reached
++                // and nothing is left to guard): 0918 counted 900-1850 stale buffer uploads and
++                // up to 8400 stale streamed uniforms per 5 s in the heavy walking windows.
++                static const bool guard_early = [] {
++                    const char* value = std::getenv("EDEN_GBB_GUARD_EARLY");
++                    return value != nullptr && value[0] == '1' && value[1] == '\0';
++                }();
++                if (guard_early && VideoCommon::AheadGuard::Enabled() && ~w[22] < 192) {
++                    auto& syncpoints = system.Host1x().GetSyncpointManager();
++                    if (!syncpoints.IsReadyGuest(~w[22], w[24])) {
++                        if (VideoCommon::AheadGuard::Mode() == 3) {
++                            system.GPU().GatherForAheadGuard();
++                        }
++                        // The previous frame's fence was just waited for.
++                        VideoCommon::AheadGuard::AtPresent(m_presents, ~w[22], w[24], true,
++                                                           syncpoints,
++                                                           system.Host1x().MemoryManager());
++                    }
++                }
+                 WaitForFrame(~w[22], w[24]);
+             }
+         } else if (slack_wait) {

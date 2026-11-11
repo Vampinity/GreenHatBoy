@@ -1,0 +1,96 @@
+From: GrowingBlackBeans <gbb@local>
+Subject: [PATCH] EDEN_GBB_DUMP_GUEST=<off>:<size>[,...]: write module main guest bytes at those offsets to logs once, 15 s in
+
+---
+diff --git a/src/core/core.cpp b/src/core/core.cpp
+index 2c82d3279a..f0ab02ca37 100644
+--- a/src/core/core.cpp
++++ b/src/core/core.cpp
+@@ -2,6 +2,7 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ #include <array>
++#include <cstdio>
+ #include <cstdlib>
+ #include <atomic>
+ #include <chrono>
+@@ -76,6 +77,9 @@
+ #include "video_core/renderer_base.h"
+ #include "video_core/video_core.h"
+ 
++// Module main's load address, set by the NSO loader (EDEN_GBB_DUMP_GUEST).
++std::atomic<u64> eden_gbb_main_base{0};
++
+ namespace Core {
+ 
+ std::atomic<u64> g_nx2_present_count{};
+@@ -293,6 +297,37 @@ struct System::Impl {
+                     }
+                     auto processes = kernel.GetProcessList();
+                     LOG_WARNING(Core, "guest threads t={}s processes={}", tick * 15, processes.size());
++                    // EDEN_GBB_DUMP_GUEST=<off>:<size>[,...] (GrowingBlackBeans): module main's guest
++                    // bytes at those offsets, once, to disassemble the guest side of hot JIT blocks.
++                    if (const char* dump = std::getenv("EDEN_GBB_DUMP_GUEST");
++                        tick == 1 && dump != nullptr && !processes.empty()) {
++                        const u64 base = eden_gbb_main_base.load(std::memory_order_acquire);
++                        std::string list{dump};
++                        for (size_t at = 0; base != 0 && at < list.size();) {
++                            const size_t end = (std::min)(list.find(',', at), list.size());
++                            const std::string item = list.substr(at, end - at);
++                            at = end + 1;
++                            const size_t colon = item.find(':');
++                            if (colon == std::string::npos) {
++                                continue;
++                            }
++                            const u64 offset = std::strtoull(item.c_str(), nullptr, 16);
++                            const u64 size = (std::min)(static_cast<u64>(std::strtoull(item.c_str() + colon + 1, nullptr, 16)),
++                                                        u64{1} << 20);
++                            std::vector<u8> bytes(size);
++                            const bool read = processes.front()->GetMemory().ReadBlock(base + offset,
++                                                                                       bytes.data(), size);
++                            const std::string path = fmt::format(
++                                "/data/eglantineps5/logs/guest-main+{:x}.bin", offset);
++                            bool written = false;
++                            if (std::FILE* file = std::fopen(path.c_str(), "wb")) {
++                                written = std::fwrite(bytes.data(), 1, size, file) == size;
++                                written = std::fclose(file) == 0 && written;
++                            }
++                            LOG_WARNING(Core, "EDEN_GBB_DUMP_GUEST main+{:#x} ({:#x} bytes at {:#x}): read={} written={}",
++                                        offset, size, base + offset, read, written);
++                        }
++                    }
+                     // With EDEN_NX2_GPU_PROFILE: a GPU thread that has stopped, and where.
+                     if (const std::string stopped = VideoCommon::Nx2Profile::StoppedPlaces();
+                         !stopped.empty()) {
+diff --git a/src/core/loader/nso.cpp b/src/core/loader/nso.cpp
+index 566683ad72..20639619d3 100644
+--- a/src/core/loader/nso.cpp
++++ b/src/core/loader/nso.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <atomic>
+ #include <cinttypes>
+ #include <cstdlib>
+ #include <cstring>
+@@ -29,6 +30,9 @@
+ #include "core/loader/nso.h"
+ #include "core/memory.h"
+ 
++// Module main's load address (core.cpp, EDEN_GBB_DUMP_GUEST).
++extern std::atomic<u64> eden_gbb_main_base;
++
+ #ifdef HAS_NCE
+ #include "core/arm/nce/patcher.h"
+ #endif
+@@ -399,6 +403,9 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
+ 
+     // Load codeset for current process
+     LOG_INFO(Loader, "Module {} loaded at {:#x} (size {:#x})", nso_file.GetName(), load_base, image_size);
++    if (name == "main") {
++        eden_gbb_main_base.store(load_base, std::memory_order_release);  // EDEN_GBB_DUMP_GUEST
++    }
+     process.LoadModule(system.Kernel(), std::move(codeset), load_base);
+     if (name == "main" && process.GetProgramId() == Settings::MarioKartWorldProgramId) {
+         process.SetMkwDynamicFpsPatchApplied(mkw_dynamic_fps_patch_applied);

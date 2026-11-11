@@ -1,0 +1,130 @@
+{
+ "format": 0,
+ "author": "GrowingBlackBeans",
+ "run_id": "52",
+ "date": "2026-11-08",
+ "time": "08:26:19",
+ "batch": null,
+ "test": "52",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov  8 2026 11:12:05)",
+  "eboot_sha256_16": null
+ },
+ "firmware": null,
+ "console": "PS5 base 13.60",
+ "route": {
+  "script": "GrowingBlackBeans Kokiri benchmark: Continue, house, out, walk loop to the water",
+  "script_sha": null
+ },
+ "menu_settings": null,
+ "env_lines": 56,
+ "env_hash": "6cf9df3275",
+ "control": null,
+ "ending": {
+  "kind": "hand_stopped",
+  "class": null,
+  "seconds": 69.170602,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 5.0,
+ "fps": {
+  "mean": 10.9,
+  "source": "nx2:vi2 5 s lines (play windows under 45 fps)",
+  "p99_ms": 1157.0,
+  "worst_ms": 1157.0
+ },
+ "worst_frame_ms": 1157.0,
+ "runtime_pipeline_builds": 18,
+ "flashes_per_min": null,
+ "note": null,
+ "impressions": "",
+ "flash_times": [],
+ "gbb": {
+  "windows_5s_columns": [
+   "log_s",
+   "frames",
+   "fps",
+   "1pct_low_ms",
+   "worst_ms",
+   "fence_ms"
+  ],
+  "windows_5s": [
+   [
+    33.977991,
+    288,
+    57.6,
+    55.0,
+    146.8,
+    0.6
+   ],
+   [
+    39.00264,
+    293,
+    58.1,
+    23.3,
+    107.0,
+    0.2
+   ],
+   [
+    44.020275,
+    250,
+    50.0,
+    103.5,
+    353.3,
+    5.6
+   ],
+   [
+    49.020278,
+    300,
+    60.0,
+    21.3,
+    21.7,
+    3.1
+   ],
+   [
+    54.031242,
+    295,
+    58.9,
+    49.1,
+    71.7,
+    0.7
+   ],
+   [
+    59.045017,
+    299,
+    59.6,
+    18.7,
+    61.2,
+    0.2
+   ],
+   [
+    64.061723,
+    301,
+    60.0,
+    18.3,
+    30.1,
+    0.2
+   ],
+   [
+    69.170602,
+    55,
+    10.9,
+    1157.0,
+    1157.0,
+    29.8
+   ]
+  ],
+  "heavy_windows": 1,
+  "heavy_fps": 10.9,
+  "light_windows": 0,
+  "light_fps": null,
+  "regimes": "play windows (<45 fps); heavy = present fence wait >= 5 ms per frame (GPU thread bound), light = < 1 ms (game CPU bound)"
+ },
+ "redacted": {
+  "console_user": 3
+ }
+}

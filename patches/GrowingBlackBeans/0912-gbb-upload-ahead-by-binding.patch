@@ -1,0 +1,175 @@
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index 8662377f2f..87f213df0e 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -1336,6 +1336,7 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
+     }
+     auto& src_buffer = slot_buffers[buffer_a];
+     auto& dest_buffer = slot_buffers[buffer_b];
++    gbb_sync_kind = 0; // 0912
+     SynchronizeBuffer(src_buffer, *cpu_src_address, static_cast<u32>(amount));
+     SynchronizeBuffer(dest_buffer, *cpu_dest_address, static_cast<u32>(amount));
+     std::array copies{BufferCopy{
+@@ -1476,6 +1477,7 @@ std::pair<typename P::Buffer*, u32> BufferCache<P>::ObtainCPUBuffer(
+     // synchronize op
+     switch (sync_info) {
+     case ObtainBufferSynchronize::FullSynchronize:
++        gbb_sync_kind = 0; // 0912
+         SynchronizeBuffer(buffer, device_addr, size);
+         break;
+     default:
+@@ -2303,6 +2305,23 @@ void BufferCache<P>::OverwriteCloseWindow(u64 present_number) {
+                  summary.frames, summary.frames_ahead_writes, summary.frames_ahead_reads,
+                  summary.frames_early_writes, summary.frames_both, overwrite_kind_total[0],
+                  overwrite_kind_total[1], overwrite_kind_total[2]);
++        {
++            // 0912: the upload ahead reads by the binding they were synchronized for.
++            static constexpr const char* names[13] = {"other", "index", "vertex", "indirect",
++                "gfx uniform", "gfx storage", "gfx texbuf", "tfb", "compute uniform",
++                "compute storage", "compute texbuf", "?", "?"};
++            std::string parts;
++            for (size_t k = 0; k < 13; ++k) {
++                if (gbb_upload_kind_reads[k] != 0) {
++                    parts += fmt::format("{}{} {} ({} KiB)", parts.empty() ? "" : ", ", names[k],
++                                         gbb_upload_kind_reads[k], gbb_upload_kind_bytes[k] >> 10);
++                }
++            }
++            LOG_INFO(HW_GPU, "OverwriteCheck 5 s upload ahead reads by binding: {}",
++                     parts.empty() ? std::string{"none"} : parts);
++            gbb_upload_kind_reads = {};
++            gbb_upload_kind_bytes = {};
++        }
+         overwrite_kind_total = {};
+         const u64 lines = summary.lines;
+         summary = {};
+@@ -2678,6 +2697,7 @@ void BufferCache<P>::BindHostIndexBuffer() {
+     const u32 size = channel_state->index_buffer.size;
+     const auto& draw_state = maxwell3d->draw_manager.draw_state;
+     if (draw_state.inline_index_draw_indexes.empty()) {
++        gbb_sync_kind = 1; // 0912
+         SynchronizeBuffer(buffer, channel_state->index_buffer.device_addr, size);
+     } else if (size != 0) {
+         Nx2BankHashForget(buffer.CpuAddr(), size); // EDEN_UP_BANK_HASH_SKIP; empty without it
+@@ -2804,6 +2824,7 @@ void BufferCache<P>::BindHostVertexBuffers() {
+                                   : ~u64{0};
+             if (epoch == ~u64{0} || synced.epoch != epoch || synced.buffer_id != binding.buffer_id ||
+                 synced.device_addr != binding.device_addr || synced.size != binding.size) {
++                gbb_sync_kind = 2; // 0912
+                 SynchronizeBuffer(buffer, binding.device_addr, binding.size);
+                 synced = {binding.buffer_id, binding.device_addr, binding.size, epoch};
+             }
+@@ -2845,6 +2866,7 @@ void BufferCache<P>::BindHostVertexBuffers() {
+             const Binding& binding = channel_state->vertex_buffers[index];
+             Buffer& buffer = slot_buffers[binding.buffer_id];
+             TouchBuffer(buffer, binding.buffer_id);
++            gbb_sync_kind = 2; // 0912
+             SynchronizeBuffer(buffer, binding.device_addr, binding.size);
+             if (!flags[Dirty::VertexBuffer0 + index]) {
+                 continue;
+@@ -2883,6 +2905,7 @@ void BufferCache<P>::BindHostDrawIndirectBuffers() {
+     const auto bind_buffer = [this](const Binding& binding) {
+         Buffer& buffer = slot_buffers[binding.buffer_id];
+         TouchBuffer(buffer, binding.buffer_id);
++        gbb_sync_kind = 3; // 0912
+         SynchronizeBuffer(buffer, binding.device_addr, binding.size);
+         if (BufferUseMarks()) {
+             // MythosOfs/Orchid 225ed15fb3: the draw reads these parameters: keep later uploads
+@@ -3204,6 +3227,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32
+                   "streamed",
+                   stage, index, device_addr, size);
+     }
++    gbb_sync_kind = 4; // 0912
+     const bool nothing_uploaded = SynchronizeBuffer(buffer, device_addr, size);
+     if (nothing_uploaded) {
+         ++channel_state->uniform_cache_hits[0];
+@@ -3712,6 +3736,7 @@ bool BufferCache<P>::BindMultiRangeStorage(const Binding& binding, bool is_writt
+             const MultiRangeSegment& segment = pool[binding.segment_first + index];
+             Buffer& buffer = slot_buffers[segment.buffer_id];
+             TouchBuffer(buffer, segment.buffer_id);
++            gbb_sync_kind = 5; // 0912
+             if (SynchronizeBuffer(buffer, segment.device_addr, segment.size)) {
+                 runtime.InvalidateMultiRange(key);
+             }
+@@ -3746,6 +3771,7 @@ void BufferCache<P>::BindHostGraphicsStorageBuffers(size_t stage) {
+         Buffer& buffer = slot_buffers[binding.buffer_id];
+         TouchBuffer(buffer, binding.buffer_id);
+         const u32 size = binding.size;
++        gbb_sync_kind = 5; // 0912
+         SynchronizeBuffer(buffer, binding.device_addr, size);
+ 
+         const u32 offset = buffer.Offset(binding.device_addr);
+@@ -3770,6 +3796,7 @@ void BufferCache<P>::BindHostGraphicsTextureBuffers(size_t stage) {
+         const TextureBufferBinding& binding = channel_state->texture_buffers[stage][index];
+         Buffer& buffer = slot_buffers[binding.buffer_id];
+         const u32 size = binding.size;
++        gbb_sync_kind = 6; // 0912
+         SynchronizeBuffer(buffer, binding.device_addr, size);
+ 
+         const bool is_written = ((channel_state->written_texture_buffers[stage] >> index) & 1) != 0;
+@@ -3811,6 +3838,7 @@ void BufferCache<P>::BindHostTransformFeedbackBuffers() {
+             Buffer& buffer = slot_buffers[binding.buffer_id];
+             TouchBuffer(buffer, binding.buffer_id);
+             size = binding.size;
++            gbb_sync_kind = 7; // 0912
+             SynchronizeBuffer(buffer, binding.device_addr, size);
+             MarkWrittenBuffer(binding.buffer_id, binding.device_addr, size);
+             offset = buffer.Offset(binding.device_addr);
+@@ -3869,6 +3897,7 @@ void BufferCache<P>::BindHostComputeUniformBuffers() {
+             }
+         }
+ 
++        gbb_sync_kind = 8; // 0912
+         SynchronizeBuffer(buffer, binding.device_addr, size);
+ 
+         buffer.MarkUsage(offset, size);
+@@ -3900,6 +3929,7 @@ void BufferCache<P>::BindHostComputeStorageBuffers() {
+         Buffer& buffer = slot_buffers[binding.buffer_id];
+         TouchBuffer(buffer, binding.buffer_id);
+         const u32 size = binding.size;
++        gbb_sync_kind = 9; // 0912
+         SynchronizeBuffer(buffer, binding.device_addr, size);
+ 
+         const u32 offset = buffer.Offset(binding.device_addr);
+@@ -3927,6 +3957,7 @@ void BufferCache<P>::BindHostComputeTextureBuffers() {
+         const TextureBufferBinding& binding = channel_state->compute_texture_buffers[index];
+         Buffer& buffer = slot_buffers[binding.buffer_id];
+         const u32 size = binding.size;
++        gbb_sync_kind = 10; // 0912
+         SynchronizeBuffer(buffer, binding.device_addr, size);
+ 
+         const bool is_written =
+@@ -5203,6 +5234,7 @@ bool BufferCache<P>::InlineMemoryImplementation(DAddr dest_address, size_t copy_
+             return false;
+         }
+     }
++    gbb_sync_kind = 0; // 0912
+     SynchronizeBuffer(buffer, dest_address, static_cast<u32>(copy_size));
+ 
+     if constexpr (USE_MEMORY_MAPS_FOR_UPLOADS) {
+diff --git a/src/video_core/buffer_cache/buffer_cache_base.h b/src/video_core/buffer_cache/buffer_cache_base.h
+index 99b764d6ba..9922c417ee 100644
+--- a/src/video_core/buffer_cache/buffer_cache_base.h
++++ b/src/video_core/buffer_cache/buffer_cache_base.h
+@@ -1196,9 +1196,22 @@ private:
+         ++overwrite_counts.ahead_kind_reads[kind];
+         overwrite_counts.ahead_kind_bytes[kind] += bytes;
+         ++overwrite_kind_total[kind];
++        if (kind == 2) {
++            const u32 sub = (std::min)(gbb_sync_kind, 12U);
++            ++gbb_upload_kind_reads[sub];
++            gbb_upload_kind_bytes[sub] += bytes;
++        }
+     }
+     /// Ahead reads per kind since the last 5 s summary (EDEN_NX2_OVERWRITE_CHECK).
+     std::array<u64, 3> overwrite_kind_total{};
++    /// GrowingBlackBeans (patch 0912): which binding the buffer upload behind an ahead read was
++    /// for, set before each SynchronizeBuffer call. 0 other (DMA copy, CPU buffer, inline data),
++    /// 1 index, 2 vertex, 3 indirect, 4 graphics uniform (synced), 5 graphics storage,
++    /// 6 graphics texture buffer, 7 transform feedback, 8 compute uniform (synced),
++    /// 9 compute storage, 10 compute texture buffer. Counted per 5 s summary.
++    u32 gbb_sync_kind = 0;
++    std::array<u64, 13> gbb_upload_kind_reads{};
++    std::array<u64, 13> gbb_upload_kind_bytes{};
+     struct OverwriteCounts {
+         u64 ahead_writes{};
+         u64 ahead_write_bytes{};

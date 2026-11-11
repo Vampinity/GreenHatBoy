@@ -1,0 +1,63 @@
+{
+ "format": 0,
+ "author": "GrowingBlackBeans",
+ "run_id": "38",
+ "date": "2026-11-08",
+ "time": "06:01:00",
+ "batch": null,
+ "test": "38",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.020 (Nov  8 2026 02:38:47)",
+  "eboot_sha256_16": null
+ },
+ "firmware": null,
+ "console": "PS5 base 13.60",
+ "route": {
+  "script": "GrowingBlackBeans Kokiri benchmark: Continue, house, out, walk loop to the water",
+  "script_sha": null
+ },
+ "menu_settings": null,
+ "env_lines": 49,
+ "env_hash": "aeb8cf70f3",
+ "control": null,
+ "ending": {
+  "kind": "hand_stopped",
+  "class": null,
+  "seconds": null,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": null,
+ "fps": {
+  "mean": null,
+  "source": "nx2:vi2 5 s lines (play windows under 45 fps)",
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": 0,
+ "flashes_per_min": null,
+ "note": null,
+ "impressions": "",
+ "flash_times": [],
+ "gbb": {
+  "windows_5s_columns": [
+   "log_s",
+   "frames",
+   "fps",
+   "1pct_low_ms",
+   "worst_ms",
+   "fence_ms"
+  ],
+  "windows_5s": [],
+  "heavy_windows": 0,
+  "heavy_fps": null,
+  "light_windows": 0,
+  "light_fps": null,
+  "regimes": "play windows (<45 fps); heavy = present fence wait >= 5 ms per frame (GPU thread bound), light = < 1 ms (game CPU bound)"
+ },
+ "redacted": {}
+}

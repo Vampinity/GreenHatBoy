@@ -1,0 +1,187 @@
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index 5967ae5c41..a8bf443bca 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -2581,6 +2581,18 @@ void BufferCache<P>::PopAsyncBuffers() {
+         // Only what no write replaced since the copy was taken: the rest is older than guest
+         // memory (CPU writes) or than the GPU's copy (GPU writes, still to be downloaded).
+         ranges.ForEachInRange(device_addr, copy.size, [&](DAddr start, DAddr end) {
++            if (VideoCore::GbbAheadAudit::On()) [[unlikely]] {
++                // 0920: how many of the landing bytes differ from guest memory now.
++                const u64 count = end - start;
++                std::vector<u8> before(count);
++                device_memory.ReadBlockUnsafe(start, before.data(), count);
++                const u8* const landing_bytes = &read_mapped_memory[start - device_addr];
++                u64 changed = 0;
++                for (u64 i = 0; i < count; ++i) {
++                    changed += before[i] != landing_bytes[i] ? 1 : 0;
++                }
++                VideoCore::GbbAheadAudit::NoteLanding(start, count, changed);
++            }
+             WriteDownloadedMemory(cpu_written, start, &read_mapped_memory[start - device_addr],
+                                   end - start);
+             if (superseded == nullptr || !superseded->Intersects(start, end - start)) {
+diff --git a/src/video_core/gbb_ahead_audit.h b/src/video_core/gbb_ahead_audit.h
+index c7bc687d3f..be490c6f51 100644
+--- a/src/video_core/gbb_ahead_audit.h
++++ b/src/video_core/gbb_ahead_audit.h
+@@ -9,7 +9,10 @@
+ #include <chrono>
+ #include <memory>
+ #include <mutex>
++#include <string>
+ #include <unordered_map>
++#include <vector>
++#include <fmt/format.h>
+ 
+ #include "common/common_types.h"
+ #include "common/logging.h"
+@@ -39,6 +42,9 @@ struct Counters {
+     std::atomic<u64> desc{}, desc_changed{}, desc_first{};
+     std::atomic<u64> handle{}, handle_first{};
+     std::atomic<u64> cpuread{}, cpuread_ahead{}, cpuread_first{};
++    // 0920
++    std::atomic<u64> cpuread_pre{}, cpuread_pre_ahead{};
++    std::atomic<u64> land{}, land_bytes{}, land_changed{}, land_changed_bytes{}, land_first{};
+ };
+ 
+ struct State {
+@@ -53,6 +59,10 @@ struct State {
+     std::chrono::steady_clock::time_point start{};
+     u64 lines{};
+     std::array<std::atomic<u8>, 1024> behind{}; ///< by present number & 1023
++    // 0920: fence downloads that changed guest bytes, by range start, per 5 s (under mutex)
++    std::unordered_map<u64, std::pair<u32, u64>> changed_ranges; ///< start -> (landings, bytes)
++    u64 land_totals[4]{}; ///< landings, changed landings, bytes, changed bytes
++    u64 cpuread_totals[3]{}; ///< trapped, preemptive (answered from fence downloads), in flight
+ };
+ 
+ inline State& Get() {
+@@ -164,6 +174,32 @@ inline void NoteHandle(u64 addr, u64 size) {
+     }
+ }
+ 
++/// 0920: a fence download lands [addr, addr + size) in guest memory; `changed` of its bytes
++/// differ from what guest memory held (what a read before the landing saw).
++inline void NoteLanding(u64 addr, u64 size, u64 changed) {
++    State& s = Get();
++    s.frame.land.fetch_add(1, std::memory_order_relaxed);
++    s.frame.land_bytes.fetch_add(size, std::memory_order_relaxed);
++    if (changed != 0) {
++        First(s.frame.land_first, s.frame.land_changed, addr);
++        s.frame.land_changed_bytes.fetch_add(changed, std::memory_order_relaxed);
++        std::scoped_lock lk{s.mutex};
++        auto& entry = s.changed_ranges[addr];
++        ++entry.first;
++        entry.second += size;
++    }
++}
++
++/// 0920: a trapped guest read of GPU-written memory answered at once (preemptive: the area is
++/// downloaded at fences, so later reads of it are not trapped and see the last landing).
++inline void NoteCpuReadPreemptive(bool frame_in_flight) {
++    State& s = Get();
++    s.frame.cpuread_pre.fetch_add(1, std::memory_order_relaxed);
++    if (frame_in_flight) {
++        s.frame.cpuread_pre_ahead.fetch_add(1, std::memory_order_relaxed);
++    }
++}
++
+ inline void NoteCpuRead(u64 addr, bool frame_in_flight) {
+     State& s = Get();
+     s.frame.cpuread.fetch_add(1, std::memory_order_relaxed);
+@@ -181,6 +217,12 @@ inline void CloseWindow(u64 present_number, u64 buffer_ahead_reads, s64 wall_ms)
+     const u64 desc = f.desc.exchange(0), desc_changed = f.desc_changed.exchange(0);
+     const u64 handle = f.handle.exchange(0);
+     const u64 cpuread = f.cpuread.exchange(0), cpuread_ahead = f.cpuread_ahead.exchange(0);
++    const u64 land = f.land.exchange(0), land_bytes = f.land_bytes.exchange(0);
++    const u64 land_changed = f.land_changed.exchange(0);
++    const u64 land_changed_bytes = f.land_changed_bytes.exchange(0);
++    const u64 land_first = f.land_first.load();
++    const u64 cpuread_pre = f.cpuread_pre.exchange(0);
++    const u64 cpuread_pre_ahead = f.cpuread_pre_ahead.exchange(0);
+     const u64 tex_first = f.tex_first.load(), desc_first = f.desc_first.load(),
+               handle_first = f.handle_first.load(), cpuread_first = f.cpuread_first.load();
+     const auto now = std::chrono::steady_clock::now();
+@@ -199,6 +241,23 @@ inline void CloseWindow(u64 present_number, u64 buffer_ahead_reads, s64 wall_ms)
+         s.totals[2] += handle;
+         s.totals[3] += cpuread_ahead;
+         s.totals[4] += buffer_ahead_reads;
++        s.land_totals[0] += land;
++        s.land_totals[1] += land_changed;
++        s.land_totals[2] += land_bytes;
++        s.land_totals[3] += land_changed_bytes;
++        s.cpuread_totals[0] += cpuread;
++        s.cpuread_totals[1] += cpuread_pre;
++        s.cpuread_totals[2] += cpuread_ahead;
++        if (land_changed != 0 && s.lines < 20000) {
++            ++s.lines;
++            LOG_INFO(HW_GPU,
++                     "GbbAheadAudit landings present #{} wall {}{}: {} fence downloads ({} B), {} "
++                     "changed guest bytes ({} B, first {:#x}); trapped reads of GPU data {} ({} "
++                     "answered from downloads, {} of them with the frame in flight)",
++                     present_number, wall_ms, behind ? " behind" : "", land, land_bytes,
++                     land_changed, land_changed_bytes, land_first, cpuread, cpuread_pre,
++                     cpuread_pre_ahead);
++        }
+         if (tex + desc + handle + cpuread_ahead != 0 && s.lines < 20000) {
+             ++s.lines;
+             LOG_INFO(HW_GPU,
+@@ -217,6 +276,31 @@ inline void CloseWindow(u64 present_number, u64 buffer_ahead_reads, s64 wall_ms)
+                  "flight {}, buffer ahead reads {}",
+                  s.frames, s.behind_frames, s.frames_with_any, s.behind_with_any, s.totals[0],
+                  s.totals[1], s.totals[2], s.totals[3], s.totals[4]);
++        {
++            std::vector<std::pair<u64, std::pair<u32, u64>>> top;
++            {
++                std::scoped_lock lk{s.mutex};
++                top.assign(s.changed_ranges.begin(), s.changed_ranges.end());
++                s.changed_ranges.clear();
++            }
++            std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) {
++                return a.second.first > b.second.first;
++            });
++            std::string parts;
++            for (size_t i = 0; i < top.size() && i < 10; ++i) {
++                parts += fmt::format("{}{:#x} x{} ({} B)", parts.empty() ? "" : ", ", top[i].first,
++                                     top[i].second.first, top[i].second.second);
++            }
++            LOG_INFO(HW_GPU,
++                     "GbbAheadAudit 5 s landings: {} fence downloads, {} changed guest bytes "
++                     "({} KiB of {} KiB) in {} ranges; most changed: {}; trapped reads of GPU "
++                     "data {} ({} answered from downloads), {} with the frame in flight",
++                     s.land_totals[0], s.land_totals[1], s.land_totals[3] >> 10,
++                     s.land_totals[2] >> 10, top.size(), parts.empty() ? std::string{"none"} : parts,
++                     s.cpuread_totals[0], s.cpuread_totals[1], s.cpuread_totals[2]);
++            std::fill(std::begin(s.land_totals), std::end(s.land_totals), 0);
++            std::fill(std::begin(s.cpuread_totals), std::end(s.cpuread_totals), 0);
++        }
+         s.frames = s.behind_frames = s.frames_with_any = s.behind_with_any = 0;
+         s.totals = {};
+         s.start = now;
+diff --git a/src/video_core/gpu.cpp b/src/video_core/gpu.cpp
+index cefc8963a6..2867081f94 100644
+--- a/src/video_core/gpu.cpp
++++ b/src/video_core/gpu.cpp
+@@ -484,6 +484,7 @@ struct GPU::Impl {
+     }
+ 
+     VideoCore::RasterizerDownloadArea OnCPURead(DAddr addr, u64 size) {
++        bool gbb_in_flight = false;
+         if (VideoCore::GbbAheadAudit::On()) [[unlikely]] {
+             // 0918: the game reads GPU-written memory while the frame it presented last may
+             // still be on the GPU (with frame-ahead that frame can write these bytes still).
+@@ -494,9 +495,13 @@ struct GPU::Impl {
+                     static_cast<u32>(fence >> 32), static_cast<u32>(fence));
+             }
+             VideoCore::GbbAheadAudit::NoteCpuRead(addr, in_flight);
++            gbb_in_flight = in_flight;
+         }
+         auto raster_area = renderer->ReadRasterizer()->GetFlushArea(addr, size);
+         if (raster_area.preemtive) {
++            if (VideoCore::GbbAheadAudit::On()) [[unlikely]] {
++                VideoCore::GbbAheadAudit::NoteCpuReadPreemptive(gbb_in_flight); // 0920
++            }
+             return raster_area;
+         }
+         raster_area.preemtive = true;

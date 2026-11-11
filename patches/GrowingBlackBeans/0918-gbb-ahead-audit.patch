@@ -1,0 +1,408 @@
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index fe2cd3779a..39e527596f 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -37,6 +37,7 @@
+ #include "core/device_memory.h"
+ #include "video_core/rasterizer_interface.h"
+ #include "video_core/readback_wait.h"
++#include "video_core/gbb_ahead_audit.h"
+ #include "video_core/renderer_base.h"
+ #include "core/frontend/framebuffer_layout.h"
+ #include "core/perf_stats.h"
+@@ -1999,6 +2000,7 @@ private:
+             VideoCore::Readback::g_present_fence.store((u64{~w[22]} << 32) | u64{w[24]},
+                                                        std::memory_order_release);
+             VideoCore::Readback::g_present_number.store(m_presents, std::memory_order_release);
++            VideoCore::GbbAheadAudit::MarkBehind(m_presents, false); // 0918
+         }
+         const auto entered = std::chrono::steady_clock::now();
+         if (front_wait) [[unlikely]] {
+@@ -2032,6 +2034,13 @@ private:
+                                     m_previous_fence_id < 192 &&
+                                     !system.Host1x().GetSyncpointManager().IsReadyGuest(
+                                         m_previous_fence_id, m_previous_fence_value);
++            if (VideoCore::Readback::OverwriteCheck() && frames_ahead == 1 && ahead_always &&
++                m_previous_fence_id < 192 &&
++                !system.Host1x().GetSyncpointManager().IsReadyGuest(m_previous_fence_id,
++                                                                    m_previous_fence_value)) {
++                // 0918: this present runs ahead where the gpu_behind wait would have held it.
++                VideoCore::GbbAheadAudit::MarkBehind(m_presents, true);
++            }
+             WaitForFrame(m_previous_fence_id, m_previous_fence_value);
+             if (gpu_behind || ahead_load_wait) {
+                 WaitForFrame(~w[22], w[24]);
+diff --git a/src/video_core/ahead_guard.h b/src/video_core/ahead_guard.h
+index fd404d90eb..164376282b 100644
+--- a/src/video_core/ahead_guard.h
++++ b/src/video_core/ahead_guard.h
+@@ -17,6 +17,7 @@
+ 
+ #include "common/common_types.h"
+ #include "common/logging.h"
++#include "video_core/gbb_ahead_audit.h"
+ 
+ /// EDEN_UP_AHEAD_GUARD=1 or 2: keeps a frame still in flight from being drawn with buffer bytes
+ /// the game has already rewritten, when a present returns before that frame's fence
+@@ -808,6 +809,12 @@ void Read(u64 device_addr, u8* out, u64 size, bool upload, Live&& live) {
+ /// has no device address, is read as before.
+ template <class T, class GpuMemory>
+ [[nodiscard]] T ReadGpu(GpuMemory& gpu_memory, u64 gpu_addr) {
++    if (::VideoCore::GbbAheadAudit::Any()) [[unlikely]] {
++        // 0918: a handle or pointer written after a present whose frame is still in flight.
++        if (const auto audit_addr = gpu_memory.GpuToCpuAddress(gpu_addr)) {
++            ::VideoCore::GbbAheadAudit::NoteHandle(static_cast<u64>(*audit_addr), sizeof(T));
++        }
++    }
+     if (!CopyMode() || (gpu_addr & (PageSize - 1)) > PageSize - sizeof(T)) {
+         return gpu_memory.template Read<T>(gpu_addr);
+     }
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index 87f213df0e..5967ae5c41 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -9,6 +9,7 @@
+ #include "common/cityhash.h"
+ #include "common/pe_switch.h"
+ #include "video_core/readback_wait.h"
++#include "video_core/gbb_ahead_audit.h"
+ #include <algorithm>
+ #include <cstdio>
+ #include <cstdlib>
+@@ -2247,6 +2248,7 @@ void BufferCache<P>::OverwriteNoteCpuWrites(std::span<const std::pair<DAddr, u64
+             overwrite_counts.early_write_bytes += size;
+         }
+         if (ahead) {
++            VideoCore::GbbAheadAudit::AddWrite(device_addr, size); // 0918
+             overwrite_ahead_ranges.Add(device_addr, size);
+             overwrite_ahead_active = true;
+             ++overwrite_counts.ahead_writes;
+@@ -2257,6 +2259,7 @@ void BufferCache<P>::OverwriteNoteCpuWrites(std::span<const std::pair<DAddr, u64
+ 
+ template <class P>
+ void BufferCache<P>::OverwriteClearAhead() {
++    VideoCore::GbbAheadAudit::Clear(); // 0918
+     overwrite_ahead_ranges.Clear();
+     overwrite_ahead_active = false;
+ }
+@@ -2265,6 +2268,12 @@ template <class P>
+ void BufferCache<P>::OverwriteCloseWindow(u64 present_number) {
+     const OverwriteCounts counts = overwrite_counts;
+     overwrite_counts = {};
++    // 0918: the reads the buffer cache does not see, per CPU frame.
++    VideoCore::GbbAheadAudit::CloseWindow(
++        present_number, counts.ahead_reads,
++        std::chrono::duration_cast<std::chrono::milliseconds>(
++            std::chrono::system_clock::now().time_since_epoch())
++            .count());
+     OverwriteSummary& summary = overwrite_summary;
+     const auto now = std::chrono::steady_clock::now();
+     if (summary.frames == 0 && summary.start == std::chrono::steady_clock::time_point{}) {
+diff --git a/src/video_core/gbb_ahead_audit.h b/src/video_core/gbb_ahead_audit.h
+new file mode 100644
+index 0000000000..c7bc687d3f
+--- /dev/null
++++ b/src/video_core/gbb_ahead_audit.h
+@@ -0,0 +1,226 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <algorithm>
++#include <array>
++#include <atomic>
++#include <chrono>
++#include <memory>
++#include <mutex>
++#include <unordered_map>
++
++#include "common/common_types.h"
++#include "common/logging.h"
++#include "video_core/readback_wait.h"
++
++/// GrowingBlackBeans 0918, with EDEN_NX2_OVERWRITE_CHECK=1: the reads the overwrite check and the
++/// frame-ahead guard (ahead_guard.h) do not see. The buffer cache's "ahead" guest writes (made
++/// after a present whose frame the GPU thread has not finished) are kept here at 64-byte
++/// granularity until that fence, and these are counted per CPU frame:
++///   tex     an image re-upload (TextureCache::RefreshContents) that overlaps an ahead write:
++///           the frame in flight is textured with the next frame's bytes;
++///   desc    a texture or sampler descriptor (TIC/TSC) read that overlaps an ahead write
++///           ("changed": the value differs from the last one read for that slot);
++///   handle  a texture handle or storage buffer pointer read from a constant buffer at a draw
++///           (AheadGuard::ReadGpu) that overlaps an ahead write;
++///   cpuread a guest read of GPU-written memory (reactive flush) while the latest presented
++///           frame's fence is not reached: the game reads a result that frame may still write.
++/// "behind": the present ran ahead although the previous frame was still on the GPU (the case
++/// the gpu_behind full wait covers, skipped with EDEN_UP_AHEAD_ALWAYS=1).
++namespace VideoCore::GbbAheadAudit {
++
++inline constexpr u64 PageBits = 12;
++inline constexpr u64 PageLimit = u64{1} << 24; // 36-bit device addresses
++
++struct Counters {
++    std::atomic<u64> tex{}, tex_bytes{}, tex_first{};
++    std::atomic<u64> desc{}, desc_changed{}, desc_first{};
++    std::atomic<u64> handle{}, handle_first{};
++    std::atomic<u64> cpuread{}, cpuread_ahead{}, cpuread_first{};
++};
++
++struct State {
++    std::mutex mutex;
++    std::unordered_map<u32, u64> chunks; ///< page -> 64-byte chunks written ahead
++    std::unique_ptr<std::atomic<u64>[]> pages{new std::atomic<u64>[PageLimit / 64]()};
++    std::atomic<bool> any{};
++    Counters frame;
++    // 5 s totals (closing thread only)
++    u64 frames{}, behind_frames{}, frames_with_any{}, behind_with_any{};
++    std::array<u64, 5> totals{};
++    std::chrono::steady_clock::time_point start{};
++    u64 lines{};
++    std::array<std::atomic<u8>, 1024> behind{}; ///< by present number & 1023
++};
++
++inline State& Get() {
++    static State* const state = new State{};
++    return *state;
++}
++
++inline bool On() {
++    return VideoCore::Readback::OverwriteCheck();
++}
++
++inline void MarkBehind(u64 present_number, bool behind) {
++    Get().behind[present_number & 1023].store(behind ? 1 : 0, std::memory_order_relaxed);
++}
++
++inline void AddWrite(u64 addr, u64 size) {
++    if (size == 0 || addr >= (PageLimit << PageBits)) {
++        return;
++    }
++    State& s = Get();
++    const u64 end = (std::min)(addr + size, PageLimit << PageBits);
++    std::scoped_lock lk{s.mutex};
++    for (u64 page = addr >> PageBits; page <= (end - 1) >> PageBits; ++page) {
++        const u64 page_lo = page << PageBits;
++        const u64 lo = (std::max)(addr, page_lo) - page_lo;
++        const u64 hi = (std::min)(end, page_lo + (u64{1} << PageBits)) - page_lo; // exclusive
++        u64 mask = 0;
++        for (u64 c = lo >> 6; c <= (hi - 1) >> 6; ++c) {
++            mask |= u64{1} << c;
++        }
++        s.chunks[static_cast<u32>(page)] |= mask;
++        s.pages[page / 64].fetch_or(u64{1} << (page % 64), std::memory_order_relaxed);
++    }
++    s.any.store(true, std::memory_order_release);
++}
++
++inline void Clear() {
++    State& s = Get();
++    if (!s.any.load(std::memory_order_acquire)) {
++        return;
++    }
++    std::scoped_lock lk{s.mutex};
++    for (const auto& [page, mask] : s.chunks) {
++        s.pages[page / 64].fetch_and(~(u64{1} << (page % 64)), std::memory_order_relaxed);
++    }
++    s.chunks.clear();
++    s.any.store(false, std::memory_order_release);
++}
++
++inline bool Any() {
++    return Get().any.load(std::memory_order_acquire);
++}
++
++/// Whether [addr, addr + size) overlaps an ahead write.
++inline bool Hits(u64 addr, u64 size) {
++    State& s = Get();
++    if (size == 0 || !s.any.load(std::memory_order_acquire) || addr >= (PageLimit << PageBits)) {
++        return false;
++    }
++    const u64 end = (std::min)(addr + size, PageLimit << PageBits);
++    for (u64 page = addr >> PageBits; page <= (end - 1) >> PageBits; ++page) {
++        if ((s.pages[page / 64].load(std::memory_order_relaxed) & (u64{1} << (page % 64))) == 0) {
++            continue;
++        }
++        const u64 page_lo = page << PageBits;
++        const u64 lo = (std::max)(addr, page_lo) - page_lo;
++        const u64 hi = (std::min)(end, page_lo + (u64{1} << PageBits)) - page_lo;
++        u64 mask = 0;
++        for (u64 c = lo >> 6; c <= (hi - 1) >> 6; ++c) {
++            mask |= u64{1} << c;
++        }
++        std::scoped_lock lk{s.mutex};
++        const auto it = s.chunks.find(static_cast<u32>(page));
++        if (it != s.chunks.end() && (it->second & mask) != 0) {
++            return true;
++        }
++    }
++    return false;
++}
++
++inline void First(std::atomic<u64>& first, std::atomic<u64>& count, u64 addr) {
++    if (count.fetch_add(1, std::memory_order_relaxed) == 0) {
++        first.store(addr, std::memory_order_relaxed);
++    }
++}
++
++inline void NoteTexture(u64 addr, u64 size) {
++    if (On() && Hits(addr, size)) {
++        State& s = Get();
++        First(s.frame.tex_first, s.frame.tex, addr);
++        s.frame.tex_bytes.fetch_add(size, std::memory_order_relaxed);
++    }
++}
++
++inline void NoteDescriptor(u64 addr, u64 size, bool changed) {
++    if (Hits(addr, size)) {
++        State& s = Get();
++        First(s.frame.desc_first, s.frame.desc, addr);
++        if (changed) {
++            s.frame.desc_changed.fetch_add(1, std::memory_order_relaxed);
++        }
++    }
++}
++
++inline void NoteHandle(u64 addr, u64 size) {
++    if (Hits(addr, size)) {
++        State& s = Get();
++        First(s.frame.handle_first, s.frame.handle, addr);
++    }
++}
++
++inline void NoteCpuRead(u64 addr, bool frame_in_flight) {
++    State& s = Get();
++    s.frame.cpuread.fetch_add(1, std::memory_order_relaxed);
++    if (frame_in_flight) {
++        First(s.frame.cpuread_first, s.frame.cpuread_ahead, addr);
++    }
++}
++
++/// From BufferCache::OverwriteCloseWindow on the thread that applies guest writes.
++/// `buffer_ahead_reads`: the buffer cache's own ahead reads in the same CPU frame.
++inline void CloseWindow(u64 present_number, u64 buffer_ahead_reads, s64 wall_ms) {
++    State& s = Get();
++    Counters& f = s.frame;
++    const u64 tex = f.tex.exchange(0), tex_bytes = f.tex_bytes.exchange(0);
++    const u64 desc = f.desc.exchange(0), desc_changed = f.desc_changed.exchange(0);
++    const u64 handle = f.handle.exchange(0);
++    const u64 cpuread = f.cpuread.exchange(0), cpuread_ahead = f.cpuread_ahead.exchange(0);
++    const u64 tex_first = f.tex_first.load(), desc_first = f.desc_first.load(),
++              handle_first = f.handle_first.load(), cpuread_first = f.cpuread_first.load();
++    const auto now = std::chrono::steady_clock::now();
++    if (s.start == std::chrono::steady_clock::time_point{}) {
++        s.start = now;
++    }
++    if (present_number != ~u64{0}) {
++        const bool behind = s.behind[present_number & 1023].load(std::memory_order_relaxed) != 0;
++        const bool any = buffer_ahead_reads + tex + desc + handle + cpuread_ahead != 0;
++        ++s.frames;
++        s.behind_frames += behind ? 1 : 0;
++        s.frames_with_any += any ? 1 : 0;
++        s.behind_with_any += behind && any ? 1 : 0;
++        s.totals[0] += tex;
++        s.totals[1] += desc;
++        s.totals[2] += handle;
++        s.totals[3] += cpuread_ahead;
++        s.totals[4] += buffer_ahead_reads;
++        if (tex + desc + handle + cpuread_ahead != 0 && s.lines < 20000) {
++            ++s.lines;
++            LOG_INFO(HW_GPU,
++                     "GbbAheadAudit present #{} wall {}{}: tex {} ({} KiB, first {:#x}), desc {} "
++                     "({} changed, first {:#x}), handle {} (first {:#x}), cpu reads of GPU data "
++                     "{} with the frame in flight of {} (first {:#x}); buffer ahead reads {}",
++                     present_number, wall_ms, behind ? " behind" : "", tex, tex_bytes >> 10,
++                     tex_first, desc, desc_changed, desc_first, handle, handle_first,
++                     cpuread_ahead, cpuread, cpuread_first, buffer_ahead_reads);
++        }
++    }
++    if (now - s.start >= std::chrono::seconds{5}) {
++        LOG_INFO(HW_GPU,
++                 "GbbAheadAudit 5 s: {} frames ({} ran ahead with the GPU behind), {} with a "
++                 "stale read ({} of the behind ones); tex {}, desc {}, handle {}, cpu reads in "
++                 "flight {}, buffer ahead reads {}",
++                 s.frames, s.behind_frames, s.frames_with_any, s.behind_with_any, s.totals[0],
++                 s.totals[1], s.totals[2], s.totals[3], s.totals[4]);
++        s.frames = s.behind_frames = s.frames_with_any = s.behind_with_any = 0;
++        s.totals = {};
++        s.start = now;
++    }
++}
++
++} // namespace VideoCore::GbbAheadAudit
+diff --git a/src/video_core/gpu.cpp b/src/video_core/gpu.cpp
+index b5781fcb0f..cefc8963a6 100644
+--- a/src/video_core/gpu.cpp
++++ b/src/video_core/gpu.cpp
+@@ -43,6 +43,7 @@
+ #include "video_core/gpu_thread.h"
+ #include "video_core/host1x/host1x.h"
+ #include "video_core/host1x/syncpoint_manager.h"
++#include "video_core/gbb_ahead_audit.h"
+ #include "video_core/memory_manager.h"
+ #include "video_core/nx2.h"
+ #include "video_core/nx2_async_readback.h"
+@@ -483,6 +484,17 @@ struct GPU::Impl {
+     }
+ 
+     VideoCore::RasterizerDownloadArea OnCPURead(DAddr addr, u64 size) {
++        if (VideoCore::GbbAheadAudit::On()) [[unlikely]] {
++            // 0918: the game reads GPU-written memory while the frame it presented last may
++            // still be on the GPU (with frame-ahead that frame can write these bytes still).
++            const u64 fence = VideoCore::Readback::g_present_fence.load(std::memory_order_acquire);
++            bool in_flight = false;
++            if (fence != ~u64{0} && (fence >> 32) < 192) {
++                in_flight = !system.Host1x().GetSyncpointManager().IsReadyGuest(
++                    static_cast<u32>(fence >> 32), static_cast<u32>(fence));
++            }
++            VideoCore::GbbAheadAudit::NoteCpuRead(addr, in_flight);
++        }
+         auto raster_area = renderer->ReadRasterizer()->GetFlushArea(addr, size);
+         if (raster_area.preemtive) {
+             return raster_area;
+diff --git a/src/video_core/texture_cache/descriptor_table.h b/src/video_core/texture_cache/descriptor_table.h
+index 88c1716314..5c71c39f85 100644
+--- a/src/video_core/texture_cache/descriptor_table.h
++++ b/src/video_core/texture_cache/descriptor_table.h
+@@ -22,6 +22,7 @@
+ #include "common/logging.h"
+ #include "video_core/memory_manager.h"
+ #include "video_core/rasterizer_interface.h"
++#include "video_core/gbb_ahead_audit.h"
+ 
+ namespace VideoCommon {
+ 
+@@ -67,6 +68,12 @@ public:
+             read_descriptors[index / 64] |= 1ULL << (index % 64);
+             result.second = true;
+         }
++        if (VideoCore::GbbAheadAudit::Any()) [[unlikely]] {
++            // 0918: a descriptor written after a present whose frame is still in flight.
++            if (const auto device_addr = gpu_memory.GpuToCpuAddress(gpu_addr)) {
++                VideoCore::GbbAheadAudit::NoteDescriptor(*device_addr, sizeof(T), result.second);
++            }
++        }
+         if (result.second) {
+             descriptors[index] = result.first;
+         }
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 2ed7545d1d..a2c1588f7d 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -9,6 +9,7 @@
+ #include "common/pe_switch.h"
+ #include "video_core/image_pages.h"
+ #include "video_core/astc_policy.h"
++#include "video_core/gbb_ahead_audit.h"
+ #include <algorithm>
+ #include <array>
+ #include <numeric>
+@@ -3639,6 +3640,8 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
+                                 HitchTraceDesc(image.info, image.gpu_addr)};
+ 
+     image.flags &= ~ImageFlagBits::CpuModified;
++    // 0918: a re-upload of bytes written after a present whose frame is still in flight.
++    VideoCore::GbbAheadAudit::NoteTexture(image.cpu_addr, image.guest_size_bytes);
+ 
+     // Images uploaded by layer stay tracked while some of their layers are dirty.
+     if (False(image.flags & ImageFlagBits::Tracked)) {

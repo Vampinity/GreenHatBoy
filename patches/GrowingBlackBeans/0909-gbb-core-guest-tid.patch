@@ -1,0 +1,32 @@
+From: GrowingBlackBeans <gbb@local>
+Subject: [PATCH] eden_core_guest_tid: the guest thread each emulated core last entered, for the stack sampler
+
+---
+diff --git a/src/core/hle/kernel/physical_core.cpp b/src/core/hle/kernel/physical_core.cpp
+index c3ae7629aa..feb8f2e794 100644
+--- a/src/core/hle/kernel/physical_core.cpp
++++ b/src/core/hle/kernel/physical_core.cpp
+@@ -17,6 +17,11 @@
+ #include "core/hle/kernel/physical_core.h"
+ #include "core/hle/kernel/svc.h"
+ 
++/// The guest thread id each emulated core last entered (the stack sampler reads it).
++extern "C" {
++volatile unsigned long long eden_core_guest_tid[8] = {};
++}
++
+ namespace Kernel {
+ 
+ PhysicalCore::PhysicalCore(KernelCore& kernel, std::size_t core_index)
+@@ -45,6 +50,11 @@ void PhysicalCore::RunThread(KernelCore& kernel, Kernel::KThread* thread) {
+         // Mark that we are running.
+         m_arm_interface = interface;
+         m_current_thread = thread;
++        // GrowingBlackBeans: the stack sampler (headless/mkw_native_sample.inc) tags its samples
++        // with the guest thread this core last entered; kept through the thread's SVCs.
++        if (m_core_index < 8) {
++            eden_core_guest_tid[m_core_index] = thread->GetThreadId();
++        }
+ 
+         // Acquire the lock on the thread parameters.
+         // This allows us to force synchronization with Interrupt.
