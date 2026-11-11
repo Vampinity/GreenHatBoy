@@ -1,0 +1,409 @@
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index cea30b24db..f5ad21dd40 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -38,6 +38,7 @@
+ #include "video_core/rasterizer_interface.h"
+ #include "video_core/readback_wait.h"
+ #include "video_core/gbb_ahead_audit.h"
++#include "video_core/gbb_trace.h"
+ #include "video_core/renderer_base.h"
+ #include "core/frontend/framebuffer_layout.h"
+ #include "core/perf_stats.h"
+@@ -2098,6 +2099,14 @@ private:
+         const auto composited = std::chrono::steady_clock::now();
+         PaceToVblank(w[12], ctx.GetThread().GetOwnerProcess());
+         const auto paced = std::chrono::steady_clock::now();
++        if (VideoCore::GbbTrace::Any()) [[unlikely]] { // 0922/0923: vitals and timeline, on one clock
++            const auto ns = [](auto d) {
++                return static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(d).count());
++            };
++            const u64 end_ns = VideoCore::GbbTrace::Now();
++            VideoCore::GbbTrace::Present(m_presents, ~w[22], w[24], end_ns - ns(paced - entered),
++                                         end_ns - ns(paced - waited), end_ns);
++        }
+         // Where each frame's time goes on the present thread, averaged per 600 presents: the
+         // game is blocked here while Eden's GPU thread catches up (fence) and composites.
+         {
+diff --git a/src/video_core/fence_manager.h b/src/video_core/fence_manager.h
+index 24b7da6dde..ae058f0847 100644
+--- a/src/video_core/fence_manager.h
++++ b/src/video_core/fence_manager.h
+@@ -26,6 +26,7 @@
+ #include "common/settings.h"
+ #include "common/thread.h"
+ #include "video_core/delayed_destruction_ring.h"
++#include "video_core/gbb_trace.h"
+ #include "video_core/gpu.h"
+ #include "video_core/gpu_split.h"
+ #include "video_core/host1x/host1x.h"
+@@ -662,6 +663,7 @@ private:
+                 }
+                 take_front();
+             }
++            const u64 gbb_pop_start = VideoCore::GbbTrace::Any() ? VideoCore::GbbTrace::Now() : 0;
+             if (!batch.front().fence->IsStubbed()) {
+                 Common::HangSite site{"fence: waiting for the GPU"};
+                 WaitFence(batch.front().fence);
+@@ -705,6 +707,9 @@ private:
+             if (!batch.empty()) {
+                 VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Fence);
+             }
++            if (gbb_pop_start != 0) [[unlikely]] {
++                VideoCore::GbbTrace::FencePop(gbb_pop_start, static_cast<u32>(batch.size())); // 0922
++            }
+             {
+                 std::unique_lock lock(ring_guard);
+                 for (Released& released : batch) {
+diff --git a/src/video_core/gbb_trace.h b/src/video_core/gbb_trace.h
+new file mode 100644
+index 0000000000..83db442202
+--- /dev/null
++++ b/src/video_core/gbb_trace.h
+@@ -0,0 +1,250 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <algorithm>
++#include <atomic>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <memory>
++#include <vector>
++#include <unistd.h>
++
++#include "common/common_types.h"
++#include "common/logging.h"
++#include "common/cpu_features.h"
++
++/// GrowingBlackBeans 0922/0923: two cheap, always-comparable views of where a frame goes.
++///
++/// EDEN_GBB_VITALS=1 (0922): one "EDEN_GBB_VITALS" line per second from the present thread, on the same clock for
++///   everything: frames, fps, frame time p50/p99/max, present wait per frame, the split back's busy time, the
++///   front's waits on the back (time and count), ring words, host GPU busy (with EDEN_GPU_TIME=1), shaders built
++///   on the GPU thread, fence pops. Counters are relaxed atomics added at the hooks below; no clock reads beyond
++///   the ones those sites already make, except one per back batch and per fence pop.
++///
++/// EDEN_GBB_TIMELINE=<start s>,<seconds> (0923): records every hook as an event, from <start s> after the first
++///   present for <seconds>, into a preallocated ring (1M events, 24 MiB, made at the window start), then writes
++///   /data/eglantineps5/logs/gbb-timeline-<pid>.bin and logs one line. tools/GrowingBlackBeans/eglog/timeline.py
++///   turns it into a per-frame table and a Perfetto trace. Events: present begin / waited / end, the front's
++///   waits on the back (site, start, end), the back's busy batches (start, end, ring words), guest syncpoint
++///   increments (id, value), fence pops on the fencing thread, shaders built on the GPU thread.
++namespace VideoCore::GbbTrace {
++
++enum class Ev : u32 {
++    PresentBegin = 1, // a = present number, b = fence id << 32 | value
++    PresentWaited,    // a = present number, b = wait ns
++    PresentEnd,       // a = present number
++    FrontWait,        // a = drain site, b = start ns
++    BackBusy,         // a = ring words, b = start ns
++    GuestIncr,        // a = syncpoint id, b = new guest value
++    FencePop,         // a = fences popped in the batch, b = start of the host wait ns
++    Pipeline,         // a = 0 graphics / 1 compute, b = start ns
++};
++
++struct Event {
++    u64 ns;
++    u32 type_tid; // type in the low 8 bits, thread index above
++    u32 a;
++    u64 b;
++};
++static_assert(sizeof(Event) == 24);
++
++inline u64 Now() {
++    return static_cast<u64>(Common::g_wall_clock.GetTimeNS().count());
++}
++
++inline bool VitalsOn() {
++    static const bool on = [] {
++        const char* v = std::getenv("EDEN_GBB_VITALS");
++        return v != nullptr && v[0] == '1' && v[1] == '\0';
++    }();
++    return on;
++}
++
++struct TimelineConfig {
++    double start_s{-1}, seconds{0};
++};
++inline const TimelineConfig& Timeline() {
++    static const TimelineConfig cfg = [] {
++        TimelineConfig c;
++        if (const char* v = std::getenv("EDEN_GBB_TIMELINE"); v != nullptr) {
++            double a = 0, b = 0;
++            if (std::sscanf(v, "%lf,%lf", &a, &b) == 2 && a >= 0 && b > 0 && b <= 60) {
++                c.start_s = a;
++                c.seconds = b;
++            }
++        }
++        return c;
++    }();
++    return cfg;
++}
++
++struct State {
++    // vitals (relaxed atomics; read and reset once a second by the present thread)
++    std::atomic<u64> back_busy_ns{}, back_words{}, front_wait_ns{}, front_waits{}, gpu_busy_ns{}, gpu_subs{},
++        shaders{}, shader_ns{}, fence_pops{};
++    // timeline
++    std::atomic<bool> recording{};
++    std::unique_ptr<Event[]> ring;
++    std::atomic<u64> next{};
++    static constexpr u64 Capacity = u64{1} << 20;
++    std::atomic<u32> threads{};
++    u64 first_present_ns{}, window_start_ns{}, window_end_ns{};
++    bool done{};
++    // present-thread only
++    u64 last_present_ns{}, second_start_ns{}, wait_ns{};
++    std::vector<u64> frames_ns;
++};
++
++inline State& Get() {
++    static State* const s = new State{};
++    return *s;
++}
++
++inline bool Any() {
++    return VitalsOn() || Timeline().seconds > 0;
++}
++
++inline u32 ThreadIndex() {
++    static thread_local u32 index = Get().threads.fetch_add(1, std::memory_order_relaxed) + 1;
++    return index;
++}
++
++inline void Record(Ev type, u32 a, u64 b, u64 ns) {
++    State& s = Get();
++    if (!s.recording.load(std::memory_order_relaxed)) {
++        return;
++    }
++    const u64 i = s.next.fetch_add(1, std::memory_order_relaxed);
++    if (i < State::Capacity) {
++        s.ring[i] = Event{ns, static_cast<u32>(type) | (ThreadIndex() << 8), a, b};
++    }
++}
++
++// ---- hooks ---------------------------------------------------------------------------------------------------------
++
++/// The split front waited on the back from `start` to now (GpuSplit::NoteWait; with EDEN_NX2_SPLIT_WAITS=1).
++inline void FrontWait(u32 site, u64 start_ns, u64 end_ns) {
++    if (!Any()) return;
++    State& s = Get();
++    s.front_wait_ns.fetch_add(end_ns - start_ns, std::memory_order_relaxed);
++    s.front_waits.fetch_add(1, std::memory_order_relaxed);
++    Record(Ev::FrontWait, site, start_ns, end_ns);
++}
++
++/// The split back ran one batch of ring entries.
++inline void BackBusy(u64 start_ns, u64 end_ns, u64 words) {
++    if (!Any()) return;
++    State& s = Get();
++    s.back_busy_ns.fetch_add(end_ns - start_ns, std::memory_order_relaxed);
++    s.back_words.fetch_add(words, std::memory_order_relaxed);
++    Record(Ev::BackBusy, static_cast<u32>((std::min<u64>)(words, 0xffffffffu)), start_ns, end_ns);
++}
++
++inline void GuestIncr(u32 id, u32 value) {
++    if (Timeline().seconds > 0) Record(Ev::GuestIncr, id, value, Now());
++}
++
++inline void FencePop(u64 start_ns, u32 fences) {
++    if (!Any()) return;
++    const u64 end = Now();
++    Get().fence_pops.fetch_add(fences, std::memory_order_relaxed);
++    Record(Ev::FencePop, fences, start_ns, end);
++}
++
++inline void Pipeline(bool compute, u64 start_ns, u64 end_ns) {
++    if (!Any()) return;
++    State& s = Get();
++    s.shaders.fetch_add(1, std::memory_order_relaxed);
++    s.shader_ns.fetch_add(end_ns - start_ns, std::memory_order_relaxed);
++    Record(Ev::Pipeline, compute ? 1 : 0, start_ns, end_ns);
++}
++
++/// Host GPU time of one submission (the EDEN_GPU_TIME probe).
++inline void GpuBusy(u64 ns) {
++    State& s = Get();
++    s.gpu_busy_ns.fetch_add(ns, std::memory_order_relaxed);
++    s.gpu_subs.fetch_add(1, std::memory_order_relaxed);
++}
++
++inline void WriteTimeline() {
++    State& s = Get();
++    s.recording.store(false, std::memory_order_relaxed);
++    const u64 n = (std::min)(s.next.load(), State::Capacity);
++    char path[128];
++    std::snprintf(path, sizeof(path), "/data/eglantineps5/logs/gbb-timeline-%u.bin", unsigned(getpid()));
++    bool ok = false;
++    if (std::FILE* f = std::fopen(path, "wb")) {
++        const char magic[8] = {'G', 'B', 'B', 'T', 'L', '1', 0, 0};
++        const u64 header[4] = {n, s.first_present_ns, s.window_start_ns, s.window_end_ns};
++        ok = std::fwrite(magic, 1, 8, f) == 8 && std::fwrite(header, sizeof(u64), 4, f) == 4 &&
++             std::fwrite(s.ring.get(), sizeof(Event), n, f) == n;
++        std::fclose(f);
++    }
++    LOG_INFO(HW_GPU, "EDEN_GBB_TIMELINE: {} events ({} dropped) from {:.1f} s for {:.1f} s {} {}", n,
++             s.next.load() > n ? s.next.load() - n : 0,
++             static_cast<double>(s.window_start_ns - s.first_present_ns) / 1e9,
++             static_cast<double>(s.window_end_ns - s.window_start_ns) / 1e9, ok ? "written to" : "FAILED to write",
++             path);
++    s.ring.reset();
++}
++
++/// From nx2:vi2 PresentClientBuffer: `begin` before the waits, `waited` after them, `end` after pacing.
++inline void Present(u64 number, u32 fence_id, u32 fence_value, u64 begin_ns, u64 waited_ns, u64 end_ns) {
++    if (!Any()) return;
++    State& s = Get();
++    const auto& tl = Timeline();
++    if (tl.seconds > 0 && !s.done) {
++        if (s.first_present_ns == 0) s.first_present_ns = begin_ns;
++        const double since = static_cast<double>(begin_ns - s.first_present_ns) / 1e9;
++        if (!s.recording.load() && since >= tl.start_s) {
++            s.ring.reset(new Event[State::Capacity]);
++            s.next.store(0);
++            s.window_start_ns = begin_ns;
++            s.recording.store(true);
++            LOG_INFO(HW_GPU, "EDEN_GBB_TIMELINE: recording {:.1f} s from present #{}", tl.seconds, number);
++        }
++        if (s.recording.load() && since >= tl.start_s + tl.seconds) {
++            s.window_end_ns = begin_ns;
++            s.done = true;
++            WriteTimeline();
++        }
++    }
++    Record(Ev::PresentBegin, static_cast<u32>(number), (u64{fence_id} << 32) | fence_value, begin_ns);
++    Record(Ev::PresentWaited, static_cast<u32>(number), waited_ns - begin_ns, waited_ns);
++    Record(Ev::PresentEnd, static_cast<u32>(number), 0, end_ns);
++    if (!VitalsOn()) return;
++    if (s.second_start_ns == 0) {
++        s.second_start_ns = begin_ns;
++        s.frames_ns.reserve(256);
++    }
++    if (s.last_present_ns != 0) s.frames_ns.push_back(begin_ns - s.last_present_ns);
++    s.last_present_ns = begin_ns;
++    s.wait_ns += waited_ns - begin_ns;
++    const u64 span = begin_ns - s.second_start_ns;
++    if (span < 1'000'000'000ULL || s.frames_ns.empty()) return;
++    std::vector<u64>& f = s.frames_ns;
++    const size_t n = f.size();
++    std::sort(f.begin(), f.end());
++    const double sec = static_cast<double>(span) / 1e9;
++    const auto ms = [](u64 ns) { return static_cast<double>(ns) / 1e6; };
++    const auto take = [](std::atomic<u64>& a) { return a.exchange(0, std::memory_order_relaxed); };
++    const u64 back = take(s.back_busy_ns), words = take(s.back_words), fw = take(s.front_wait_ns),
++              fwn = take(s.front_waits), gpu = take(s.gpu_busy_ns), subs = take(s.gpu_subs), sh = take(s.shaders),
++              shn = take(s.shader_ns), pops = take(s.fence_pops);
++    LOG_INFO(HW_GPU,
++             "EDEN_GBB_VITALS t_ms={} frames={} fps={:.2f} frame_p50_ms={:.1f} frame_p99_ms={:.1f} frame_max_ms={:.1f} "
++             "present_wait_ms={:.2f} back_busy_ms_s={:.1f} front_wait_ms_s={:.1f} front_waits_s={:.0f} "
++             "ring_kwords_s={:.0f} gpu_busy_ms_s={:.1f} gpu_subs_s={:.0f} shaders={} shader_ms={:.1f} fence_pops_s={:.0f}",
++             begin_ns / 1'000'000, n, static_cast<double>(n) / sec, ms(f[n / 2]), ms(f[(std::min)(n * 99 / 100, n - 1)]),
++             ms(f[n - 1]), ms(s.wait_ns) / static_cast<double>(n), ms(back) / sec, ms(fw) / sec,
++             static_cast<double>(fwn) / sec, static_cast<double>(words) / 1000.0 / sec, ms(gpu) / sec,
++             static_cast<double>(subs) / sec, sh, ms(shn), static_cast<double>(pops) / sec);
++    f.clear();
++    s.wait_ns = 0;
++    s.second_start_ns = begin_ns;
++}
++
++} // namespace VideoCore::GbbTrace
+diff --git a/src/video_core/gpu_split.cpp b/src/video_core/gpu_split.cpp
+index bb4ed55cb3..9dc8ff1d50 100644
+--- a/src/video_core/gpu_split.cpp
++++ b/src/video_core/gpu_split.cpp
+@@ -33,6 +33,7 @@
+ #include "video_core/engines/maxwell_3d.h"
+ #include "video_core/engines/maxwell_3d.h"
+ #include "video_core/gpu_split.h"
++#include "video_core/gbb_trace.h"
+ #include "video_core/nx2.h"
+ #include "video_core/nx2_fast_draw.h"
+ #include "video_core/nx2_profile.h"
+@@ -777,6 +778,7 @@ void GpuSplit::NoteWait(DrainSite site, u64 start) {
+     const u64 elapsed = WaitClockNs() - start;
+     wait_ns[index] += elapsed;
+     ++wait_count[index];
++    VideoCore::GbbTrace::FrontWait(static_cast<u32>(site), start, start + elapsed); // 0922
+     wait_max_ns[index] = std::max(wait_max_ns[index], elapsed);
+ }
+ 
+@@ -1285,6 +1287,9 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
+             }
+         }
+         u64 last_store = read_position;
++        const bool gbb_trace = VideoCore::GbbTrace::Any();
++        const u64 gbb_busy_start = gbb_trace ? VideoCore::GbbTrace::Now() : 0;
++        const u64 gbb_busy_from = read_position;
+         // Before any entry runs, so a front that sees these entries consumed also sees this.
+         back_quiet.store(false, std::memory_order_seq_cst);
+         g_back_busy.store(true, std::memory_order_relaxed);
+@@ -1331,9 +1336,18 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
+             }
+         }
+         g_back_busy.store(false, std::memory_order_release);
++        if (gbb_trace) [[unlikely]] {
++            VideoCore::GbbTrace::BackBusy(gbb_busy_start, VideoCore::GbbTrace::Now(), read_position - gbb_busy_from);
++        }
+         consumed.store(read_position, std::memory_order_release);
+     }
+     back_running.store(false, std::memory_order_release);
+ }
+ 
+ } // namespace VideoCommon
++
++// GrowingBlackBeans 0922: the EDEN_GPU_TIME probe (headless gpu_time_probe.inc, included inside namespace Vulkan)
++// reports each submission's host GPU time here for EDEN_GBB_VITALS.
++extern "C" void eden_gbb_trace_gpu_busy(unsigned long long ns) {
++    VideoCore::GbbTrace::GpuBusy(static_cast<u64>(ns));
++}
+diff --git a/src/video_core/host1x/syncpoint_manager.cpp b/src/video_core/host1x/syncpoint_manager.cpp
+index 92c4eae988..473f85c914 100644
+--- a/src/video_core/host1x/syncpoint_manager.cpp
++++ b/src/video_core/host1x/syncpoint_manager.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include "common/logging.h"
+ #include "video_core/host1x/syncpoint_manager.h"
++#include "video_core/gbb_trace.h"
+ 
+ namespace Tegra {
+ 
+@@ -85,6 +86,9 @@ void SyncpointManager::IncrementGuest(u32 syncpoint_id) {
+         return;
+     }
+     Increment(syncpoints_guest[syncpoint_id], wait_guest_cv, guest_action_storage[syncpoint_id]);
++    if (VideoCore::GbbTrace::Timeline().seconds > 0) [[unlikely]] {
++        VideoCore::GbbTrace::GuestIncr(syncpoint_id, GetGuestSyncpointValue(syncpoint_id)); // 0923
++    }
+ }
+ 
+ void SyncpointManager::IncrementHost(u32 syncpoint_id) {
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index ab1e83b9d1..9e9b03ab3a 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -47,6 +47,7 @@
+ #include "shader_recompiler/ir_opt/oot_visual_workaround.h"
+ #include "shader_recompiler/program_header.h"
+ #include "video_core/engines/kepler_compute.h"
++#include "video_core/gbb_trace.h"
+ #include "video_core/engines/maxwell_3d.h"
+ #include <unordered_set>
+ #include <atomic>
+@@ -2897,6 +2898,12 @@ void ReportRuntimePipeline(const char* kind, std::chrono::steady_clock::time_poi
+     static auto window = std::chrono::steady_clock::now();
+     const auto now = std::chrono::steady_clock::now();
+     const auto elapsed = now - begin;
++    if (VideoCore::GbbTrace::Any()) [[unlikely]] { // 0922
++        const u64 end_ns = VideoCore::GbbTrace::Now();
++        VideoCore::GbbTrace::Pipeline(std::strcmp(kind, "Compute") == 0,
++                                      end_ns - static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()),
++                                      end_ns);
++    }
+     total += elapsed;
+     ++count;
+     ++reasons[static_cast<size_t>(reason)];

@@ -19,5 +19,6 @@ For the Eglantine submodule, applied after Vampinity's T120 series (`tools/eglan
 | 0919 | `EDEN_GBB_GUARD_EARLY` | Arms `EDEN_UP_AHEAD_GUARD` before the gpu_behind second wait (fixes stale reads during it) |
 | 0920 | with `EDEN_NX2_OVERWRITE_CHECK` | Fence-download landing audit |
 | 0921 | `EDEN_GBB_BACK_CALLS` | Split back thread time per ring entry kind, method and call thunk (TSC; low overhead) |
+| 0922 | `EDEN_GBB_VITALS`, `EDEN_GBB_TIMELINE=<start s>,<s>` | Per-second vitals line on one clock; per-event timeline file (presents, front waits, back batches, syncpoint increments, fence pops, shaders) read by `eglog/timeline.py`. Also changes `headless/gpu_time_probe.inc` (feeds host GPU time to vitals). |
 
 Dropped because T120 has them: 0899 (`EDEN_UP_SSBO_SIZE_CAP`), 0911 (`EDEN_UP_AHEAD_ALWAYS`), 0915 (NaN guard / invariant position), 0905/0906 (0482/0483). Parked: 0914 (our copy guard; superseded by `EDEN_UP_AHEAD_GUARD`).
