@@ -74,6 +74,14 @@ def main():
     err_text = eglog._open(run.stderr_path).read() if run.stderr_path else ""
     for sw, (where, rx) in SIGNATURES.items():
         on = run.env.get(sw, "0") not in ("0", "")
+        if sw == "EDEN_GPU_TIME":
+            # Some builds write these to heap.log instead of stderr; a copy may hold neither file.
+            if on and not run.gpu:
+                notes.append("EDEN_GPU_TIME is set but no GPU-time lines were found in stderr or heap.log "
+                             "(some builds write them to heap.log: copy it too); host GPU columns stay empty")
+            elif run.gpu and not on:
+                problems.append(f"the {run.gpu_source} shows EDEN_GPU_TIME lines but env.txt doesn't set it (log from another run?)")
+            continue
         seen = bool(re.search(rx, log_text if where == "log" else err_text))
         if where == "stderr" and not run.stderr_path:
             continue
@@ -97,10 +105,10 @@ def main():
     silent = [s for s in SILENT if run.env.get(s, "0") not in ("0", "")]
     if silent:
         notes.append("set but not visible in the log, can't be verified: " + ", ".join(silent))
-    if run.stderr_path and run.windows:
+    if run.gpu and run.windows:
         n_gpu = len(run.gpu)
         if run.env.get("EDEN_GPU_TIME") and abs(n_gpu - len(run.windows)) > 8:
-            problems.append(f"stderr has {n_gpu} GPU-time lines for {len(run.windows)} 5 s windows: stderr from another session?")
+            problems.append(f"{run.gpu_source} has {n_gpu} GPU-time lines for {len(run.windows)} 5 s windows: from another session?")
     others = a.others if a.others is not None else [d for d in glob.glob(os.path.join(os.path.dirname(os.path.abspath(folder)), "*/"))
                                                      if os.path.abspath(d).rstrip("/") != os.path.abspath(folder)]
     mine = sha(run.log_path)
