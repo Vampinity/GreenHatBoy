@@ -6,6 +6,7 @@ Base PS5, firmware 13.60, one standard route: Continue, through Link's house, ou
 - Envs: `envs/GrowingBlackBeans/` (`everyday.env.txt` is what every unlabeled run starts from).
 - Patches: `patches/GrowingBlackBeans/`. Tools: `tools/GrowingBlackBeans/` (`pack-gbb.py` packs a run into this layout with this repo's redaction).
 - Builds: releases `gbb-t120-*`.
+- Technical limits (what a base PS5 can ever do with this game): `technical-limits.md`. Second-opinion review: `review-2026-11-11-second-opinion.md`.
 
 ## Where we are (11 Nov)
 
