@@ -21,6 +21,7 @@ For the Eglantine submodule, applied after Vampinity's T120 series (`tools/eglan
 | 0921 | `EDEN_GBB_BACK_CALLS` | Split back thread time per ring entry kind, method and call thunk (TSC; low overhead). Built (t120-gbb4); **never run**. |
 | 0922 | `EDEN_GBB_VITALS`, `EDEN_GBB_TIMELINE=<start s>,<s>` | Per-second vitals line on one clock; per-event timeline file (presents, front waits, back batches, syncpoint increments, fence pops, shaders) read by `eglog/timeline.py`. Also changes `headless/gpu_time_probe.inc` (feeds host GPU time to vitals). Built (t120-gbb5); **never run**. |
 | 0923 | `EDEN_GBB_FLIGHT=<ms>[,<dumps>]` | Flight recorder (last 2 s before a slow frame), `EDEN_GBB_ENV` effective env line, touchpad + R3 marker (`headless/pad.cpp`). Built (t120-gbb6); **never run**. |
+| 0924 | `EDEN_GBB_FRAMES_AHEAD2=1` | Two frames in flight: presents wait for the frame two back. An fps experiment; the guard covers one frame, so expect flashes. Built (t120-gbb7); **never run**. |
 
 The headless (outer repo) side of 0922/0923 is `headless-0922-0923.diff` (pad.cpp, gpu_time_probe.inc).
 
