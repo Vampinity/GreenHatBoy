@@ -7,11 +7,19 @@ Where things are: `eden_log.txt` (everything below unless noted), `stderr.log` (
 ## Definitions used by every tool
 
 - **Play window:** a 5 s window under 45 fps with at least 40 frames and no frame of 500 ms or more. Over 45 fps is menus or the intro (vblank-paced at 60).
-- **Regime**, from the present's fence wait per frame:
-  - light, under 1 ms: the game's own CPU work sets the pace;
-  - mid, 1-5 ms;
-  - heavy, 5 ms or more: the emulator's GPU thread sets the pace.
-- **Back busy:** 1000 minus "back idle" from the split line, divided by fps. It needs no profiler.
+- **Regime**, by the present's fence wait per frame and the back's idle time:
+  - **light:** wait under 1 ms and the back idle 20% or more. The game's own CPU sets the pace.
+  - **queued:** wait under 1 ms but the back over 80% busy. The GPU side throttles the game through the command queue without a present wait; seen at heavy stands. "No wait" does not always mean CPU-bound.
+  - **mid:** wait 1-5 ms.
+  - **heavy:** wait 5 ms or more. The GPU side sets the pace.
+- **Phase** (hand-played routes): the door is the first window after 35 s with a frame of 300 ms or more. Standing runs from 10 to 60 s after the door, walking from 70 s after it.
+- **Era:**
+  - **full-wait:** `EDEN_NX2_FRAMES_AHEAD` is not 1, or standing fence wait is over 15 ms (our runs before 9 Nov);
+  - **ahead-1:** frame-ahead.
+
+  Never pool the two eras.
+- **Back busy:** 1000 minus "back idle" from the split line (one line per 10 s; a window takes the line covering its midpoint), divided by fps. No profiler needed.
+- **Never regress frame time on work per frame.** Both are divided by fps, so they correlate by construction. Use per-second rates or the fence-wait model: wait ≈ 0.89 × back busy/frame + 0.60 × host GPU/frame − 31 ms.
 
 ## Frame rate and pacing
 
@@ -65,7 +73,7 @@ Where things are: `eden_log.txt` (everything below unless noted), `stderr.log` (
 
 ## Host GPU
 
-**`EDEN_GPU_TIME wall_ms busy_ms submissions max_ms ...`** (in stderr)
+**`EDEN_GPU_TIME wall_ms busy_ms submissions max_ms ...`** (in stderr; eglog aligns at the session end, or one window earlier when GPU busy against fps fits better)
 - Switch: `EDEN_GPU_TIME=1`.
 - What: host GPU busy time per ~5 s, covering upload and graphics submissions.
 - Pitfalls: the lines have **no timestamps**. Tools align them to the eden 5 s windows by the end of the session. Treat a single window as approximate and a regime average as reliable.
@@ -108,6 +116,9 @@ Where things are: `eden_log.txt` (everything below unless noted), `stderr.log` (
 - Pitfalls: mode 1 doesn't hold semaphore releases, about 15-21k per 5 s during downloads.
 
 ## Memory and streaming
+
+- **`Texture cache last 600 frames: created N images, deleted M (...)`** and **`... N uploads from guest memory, M MiB`**: texture churn. Walking: about 2,000+ images and 1.3-1.5 GB uploaded per 600 frames; standing: almost none.
+- **`Live switches: phase N 'label' ended after S s: F frames ... = X fps ...`**: in-run A/B phases (`EDEN_UP_LIVE_SWITCHES`). The most precise A/B instrument: A/A noise about ±0.5 fps. Compare with `abcompare.py --live`.
 
 - **`VMA heap 1: usage U MiB of budget B MiB, VMA blocks`**: GPU memory.
 - **`Memory margins: base, out of memory, block slack`**: texture cache headroom.

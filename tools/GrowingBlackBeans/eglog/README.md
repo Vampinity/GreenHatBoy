@@ -9,12 +9,18 @@ Standard-library Python. Works on packed runs (`runs/<author>/<date>-<id>/`) and
 | `runreport.py RUN` | A one-page Markdown report: what ran, speed by regime, where a frame went, front waits by site, hitches with causes, what the run can't tell you. |
 | `abcompare.py --a RUNS --b RUNS` | Whether B differs from A beyond run-to-run noise (run-level, permutation test, noise floor). |
 | `checkrun.py RUN` | Before packing: env matches log, stderr from the same session, not a duplicate log, right build, stale files listed. |
-| `ingest.sh RUN ID` | check → pack (`pack-gbb.py`) → `report.md` → index. Needs `REPO=<shared repo clone>`. |
+| `ingest.sh RUN ID` | check → pack (`pack-gbb.py`) → `report.md` → both indexes. Needs `REPO=<shared repo clone>`. |
+| `index-gbb.py REPO` | `index-regimes.csv`: per run era, standing/walking fps, fps per regime, back and host GPU per heavy frame, shaders, texture churn, memory events, live-switch labels. Joins `index.csv` on `path`. |
+| `abcompare.py --live RUNS` | Compares the labelled phases of in-run live-switch runs: the most precise A/B (A/A noise about ±0.5 fps). |
+| `tests/test_eglog.py` | Parser tests on a synthetic run; run after changing the parser. |
 
-Regimes (all tools):
-- **light:** present fence wait under 1 ms per frame; the game's CPU sets the pace.
-- **mid:** 1-5 ms.
-- **heavy:** 5 ms or more; the GPU side sets the pace.
+Regimes (all tools; details in LOGS.md):
+- **light:** no present wait and the back idle; the game's CPU sets the pace.
+- **queued:** no present wait but the back over 80% busy; the GPU side throttles through the command queue.
+- **mid:** 1-5 ms wait.
+- **heavy:** 5 ms or more wait; the GPU side sets the pace.
+
+Runs also get an era (full-wait or ahead-1; never pool them) and, on hand-played routes, standing and walking phases found from the door.
 
 ## The typical workflow
 
@@ -72,4 +78,4 @@ Use the `review-regroup-replan` skill (in `.claude/skills/`). It starts from `in
 
 ### For agents
 
-Start from `index.csv`. Run `eglog.py summary` on the runs that matter, `runreport.py` on the interesting ones, and `abcompare.py` before calling any difference. Read `LOGS.md` before trusting any line you haven't seen before. Never claim a gain from one run per side.
+Start from `index.csv` and `index-regimes.csv`. Run `eglog.py summary` on the runs that matter, `runreport.py` on the interesting ones, and `abcompare.py` before calling any difference. Read `LOGS.md` before trusting any line you haven't seen before. Never claim a gain from one run per side.
