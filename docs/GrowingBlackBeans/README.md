@@ -9,6 +9,7 @@ Base PS5, firmware 13.60, one standard route: Continue, through Link's house, ou
 - Where the split back thread spends its time (sampler, 9 Nov) and ports from other forks: `back-thread-profile.md`.
 - Next PS5 session plan: `session-plan-2026-11-11.md`.
 - How close Kokiri is to the memory wall (1,055 runs): `memory-wall.md`.
+- waveydude's runs (Lon Lon, Lost Woods, Kakariko, Dodongo's Cavern; 9.40 boots) read against ours: `waveydude-runs-2026-11-11.md`.
 - Builds t120-gbb4 to gbb7 (untested), switches and how to test them: `builds-t120-gbb4-7.md`.
 - Technical limits (what a base PS5 can ever do with this game): `technical-limits.md`. Second-opinion review: `review-2026-11-11-second-opinion.md`.
 

@@ -1218,3 +1218,9 @@ runs/Vampinity/2026-11-11-run996-u1-walk-fast-guard3-control,Vampinity,2026-11-1
 runs/Vampinity/2026-11-11-run997-v1-walk-fast-guard3-two,Vampinity,2026-11-11-run997-v1-walk-fast-guard3-two,01.219.028 (Nov 10 2026 23:26:29),ahead-1,,,,,31.4,1,,0,23.1,1,19.3,6,,,176.5,5,1019,1901,10,,False,False
 runs/Vampinity/2026-11-11-run998-u2-walk-fast-guard3-control,Vampinity,2026-11-11-run998-u2-walk-fast-guard3-control,01.219.028 (Nov 10 2026 23:26:29),ahead-1,,,,,30.6,1,,0,,0,19.32,6,,,193.4,2,981,1895,7,,False,False
 runs/Vampinity/2026-11-11-run999-v2-walk-fast-guard3-two,Vampinity,2026-11-11-run999-v2-walk-fast-guard3-two,01.219.028 (Nov 10 2026 23:26:29),ahead-1,,,,,31.0,1,,0,,0,19.32,6,,,156.4,4,988,1910,0,,False,False
+runs/waveydude/2026-11-11-astc-crash-18m58s,waveydude,2026-11-11-astc-crash-18m58s,01.219.028 (Nov 11 2026 17:28:48),full-wait,118.440538,15.18,19.57,0.71,27.21,11,27.6,3,19.88,11,17.53,66,43.08,,437.2,190,12158,6252,1920,,True,False
+runs/waveydude/2026-11-11-dodongos-cavern-24m05s,waveydude,2026-11-11-dodongos-cavern-24m05s,01.219.028 (Nov 11 2026 17:57:21),full-wait,88.962461,12.99,27.86,0.44,34.21,25,31.61,50,28.55,37,22.26,100,41.19,,471.1,208,2989,1716,2309,,True,False
+runs/waveydude/2026-11-11-fw940-black-screen,waveydude,2026-11-11-fw940-black-screen,01.219.028 (Nov 11 2026 05:08:26),unknown,,,,,,0,,0,,0,,0,,,,0,,,0,,False,False
+runs/waveydude/2026-11-11-fw940-rendered,waveydude,2026-11-11-fw940-rendered,01.219.028 (Nov 11 2026 05:08:26),unknown,,,,,,0,,0,,0,,0,,,,0,,,0,,False,False
+runs/waveydude/2026-11-11-kakariko-9m11s,waveydude,2026-11-11-kakariko-9m11s,,ahead-1,181.368565,,21.01,0.79,30.15,2,30.02,4,26.27,3,18.95,34,48.93,,497.1,144,5337,2940,260,,True,False
+runs/waveydude/2026-11-11-lost-woods-35m47s,waveydude,2026-11-11-lost-woods-35m47s,,ahead-1,128.853498,,23.92,0.61,32.74,26,26.94,34,28.06,33,20.65,143,44.84,,452.6,159,2511,1465,3203,,True,False

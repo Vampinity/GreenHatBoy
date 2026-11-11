@@ -249,10 +249,23 @@ class Run:
                     self.backcalls.append((t, float(b[1]), float(b[2]), float(b[3])))
         self.gpu = []
         self.menu = {}
+        # Some builds write EDEN_GPU_TIME to heap.log rather than stderr: look in both.
+        self.heap_path = _first(self.folder, "heap.log.gz", "heap.log", "logs/heap.log")
+        self.gpu_source = None
         if self.stderr_path:
             with _open(self.stderr_path) as fh:
                 err = fh.read()
             self.gpu = [(float(m[1]), float(m[2]), int(m[3]), float(m[4])) for m in GPUTIME.finditer(err)]
+            if self.gpu:
+                self.gpu_source = "stderr"
+        if not self.gpu and self.heap_path:
+            with _open(self.heap_path) as fh:
+                self.gpu = [(float(m[1]), float(m[2]), int(m[3]), float(m[4])) for m in GPUTIME.finditer(fh.read())]
+            if self.gpu:
+                self.gpu_source = "heap.log"
+        if not self.stderr_path:
+            err = ""
+        if err:
             # The launcher's menu settings ("[EglantinePS5] launch: Performance: ..., unsafe CPU on, ...").
             # "unsafe CPU" is the menu's Faster CPU emulation.
             for m in LAUNCH.finditer(err):

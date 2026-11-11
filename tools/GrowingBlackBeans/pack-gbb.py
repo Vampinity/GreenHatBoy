@@ -15,6 +15,8 @@ ap.add_argument("repo"); ap.add_argument("run"); ap.add_argument("--id", require
 ap.add_argument("--route", default="GrowingBlackBeans Kokiri benchmark: Continue, house, out, walk loop to the water")
 ap.add_argument("--notes", default=""); ap.add_argument("--build-tag", default=None)
 ap.add_argument("--console", default="PS5 base 13.60")
+ap.add_argument("--author", default="GrowingBlackBeans")
+ap.add_argument("--date", default=None, help="YYYY-MM-DD (default: the eden_log's file date)")
 a = ap.parse_args()
 spec = importlib.util.spec_from_file_location("ghb_pack", os.path.join(a.repo, "tools/pack-run.py"))
 ghb = importlib.util.module_from_spec(spec); spec.loader.exec_module(ghb)
@@ -22,9 +24,9 @@ ghb = importlib.util.module_from_spec(spec); spec.loader.exec_module(ghb)
 run = pathlib.Path(a.run); log_path = run / "eden_log.txt"
 if not log_path.exists(): sys.exit(f"no eden_log.txt in {run}")
 raw = log_path.read_text(errors="replace")
-date = datetime.date.fromtimestamp(log_path.stat().st_mtime).isoformat()
+date = a.date or datetime.date.fromtimestamp(log_path.stat().st_mtime).isoformat()
 time = datetime.datetime.fromtimestamp(log_path.stat().st_mtime).strftime("%H:%M:%S")
-target = pathlib.Path(a.repo) / "runs" / "GrowingBlackBeans" / f"{date}-{a.id}"
+target = pathlib.Path(a.repo) / "runs" / a.author / f"{date}-{a.id}"
 if target.exists(): sys.exit(f"{target} exists")
 target.mkdir(parents=True)
 secrets = set(re.findall(r"EDEN_PAD_\w+ .*?(?:user|foreground|initial)=(\d{6,})", raw))
@@ -57,7 +59,7 @@ try:
     bm = re.search(r"diagnostic build ([\d.]+) \(([^)]*)\)", (run / "logs" / "boot-trace.txt").read_text(errors="replace")) if (run / "logs" / "boot-trace.txt").exists() else None
     pipes = len(re.findall(r"pipeline built on the GPU thread", log))
     info = {
-        "format": 0, "author": "GrowingBlackBeans", "run_id": a.id, "date": date, "time": time,
+        "format": 0, "author": a.author, "run_id": a.id, "date": date, "time": time,
         "batch": None, "test": a.id, "game": "0400486024DEC000",
         "build": {"tag": a.build_tag, "commit": None, "version": f"{bm[1]} ({bm[2]})" if bm else None, "eboot_sha256_16": None},
         "firmware": None, "console": a.console,

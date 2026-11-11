@@ -1,0 +1,63 @@
+{
+ "format": 0,
+ "author": "waveydude",
+ "run_id": "fw940-black-screen",
+ "date": "2026-11-11",
+ "time": "18:06:49",
+ "batch": null,
+ "test": "fw940-black-screen",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 11 2026 05:08:26)",
+  "eboot_sha256_16": null
+ },
+ "firmware": null,
+ "console": "PS5 Digital 9.40",
+ "route": {
+  "script": "boot",
+  "script_sha": null
+ },
+ "menu_settings": null,
+ "env_lines": 29,
+ "env_hash": "61bf2b3681",
+ "control": null,
+ "ending": {
+  "kind": "hand_stopped",
+  "class": null,
+  "seconds": null,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": null,
+ "fps": {
+  "mean": null,
+  "source": "nx2:vi2 5 s lines (play windows under 45 fps)",
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": 10,
+ "flashes_per_min": null,
+ "note": null,
+ "impressions": "Music with a black screen; split GPU thread stuck on one command, two frame fences timed out.",
+ "flash_times": [],
+ "gbb": {
+  "windows_5s_columns": [
+   "log_s",
+   "frames",
+   "fps",
+   "1pct_low_ms",
+   "worst_ms",
+   "fence_ms"
+  ],
+  "windows_5s": [],
+  "heavy_windows": 0,
+  "heavy_fps": null,
+  "light_windows": 0,
+  "light_fps": null,
+  "regimes": "play windows (<45 fps); heavy = present fence wait >= 5 ms per frame (GPU thread bound), light = < 1 ms (game CPU bound)"
+ },
+ "redacted": {}
+}
