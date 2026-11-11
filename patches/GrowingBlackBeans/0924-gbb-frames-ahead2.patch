@@ -1,0 +1,61 @@
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index f5ad21dd40..e7152849fb 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -2042,6 +2042,30 @@ private:
+                 // 0918: this present runs ahead where the gpu_behind wait would have held it.
+                 VideoCore::GbbAheadAudit::MarkBehind(m_presents, true);
+             }
++            // GrowingBlackBeans 0924, EDEN_GBB_FRAMES_AHEAD2=1 (with EDEN_NX2_FRAMES_AHEAD=1; UNTESTED on a
++            // console): two frames in flight. The present waits for the frame two back, not the previous
++            // one, and never for this one, so the game's 33 ms and the GPU side's per-frame work can
++            // overlap across two frames. An experiment for fps only: EDEN_UP_AHEAD_GUARD covers one
++            // frame in flight (a second one is not guarded: expect flashes, as with AHEAD_ALWAYS), and a
++            // game that reuses command memory a frame later could misread commands.
++            static const bool gbb_ahead2 = [] {
++                const char* value = std::getenv("EDEN_GBB_FRAMES_AHEAD2");
++                const bool on = value != nullptr && value[0] == '1' && value[1] == '\0';
++                if (on) {
++                    LOG_INFO(Service, "EDEN_GBB_FRAMES_AHEAD2=1: presents wait for the frame two back "
++                                      "(two frames in flight; the guard covers one)");
++                }
++                return on;
++            }();
++            if (gbb_ahead2 && frames_ahead == 1 && !ahead_load_wait) {
++                WaitForFrame(m_gbb_fence2_id, m_gbb_fence2_value);
++                if (static u64 noted = 0; ++noted % 600 == 0 && m_previous_fence_id < 192 &&
++                                          !system.Host1x().GetSyncpointManager().IsReadyGuest(
++                                              m_previous_fence_id, m_previous_fence_value)) {
++                    LOG_INFO(Service, "EDEN_GBB_FRAMES_AHEAD2: present #{} returned with the previous "
++                                      "frame still on the GPU side", m_presents);
++                }
++            } else {
+             WaitForFrame(m_previous_fence_id, m_previous_fence_value);
+             if (gpu_behind || ahead_load_wait) {
+                 // GrowingBlackBeans 0919, EDEN_GBB_GUARD_EARLY=1: the guard is armed before this
+@@ -2068,6 +2092,7 @@ private:
+                 }
+                 WaitForFrame(~w[22], w[24]);
+             }
++            } // 0924
+         } else if (slack_wait) {
+             WaitForFrameSlack(~w[22], w[24]);
+         } else if (cap_wait) {
+@@ -2092,6 +2117,8 @@ private:
+             VideoCommon::AheadGuard::AtPresent(m_presents, ~w[22], w[24], previous_reached,
+                                                syncpoints, system.Host1x().MemoryManager());
+         }
++        m_gbb_fence2_id = m_previous_fence_id; // 0924: the frame two back, for EDEN_GBB_FRAMES_AHEAD2
++        m_gbb_fence2_value = m_previous_fence_value;
+         m_previous_fence_id = ~w[22];
+         m_previous_fence_value = w[24];
+         const auto waited = std::chrono::steady_clock::now();
+@@ -2229,6 +2256,8 @@ private:
+     } m_fps_window{};
+     u32 m_previous_fence_id{~0U}; // none yet (WaitForFrame ignores ids >= 192)
+     u32 m_previous_fence_value{};
++    u32 m_gbb_fence2_id{~0U};     // 0924: the present fence two frames back
++    u32 m_gbb_fence2_value{};
+     u32 m_frame_fence_relearn_logs{}; // EDEN_UP_FRITCHII_CLOCK: the first 8 frame-fence learn lines
+ 
+     // EDEN_UP_FRITCHII_CLOCK (Fritchii ddc5e2585c, fable_answer_17): the render-frame clock's
