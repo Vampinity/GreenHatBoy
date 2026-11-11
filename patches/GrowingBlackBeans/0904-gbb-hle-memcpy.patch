@@ -1,0 +1,198 @@
+From: GrowingBlackBeans <gbb@local>
+Subject: [PATCH] EDEN_GBB_HLE_MEMCPY=<main offset>: the guest memcpy/memmove as one host copy (translator host call + RET), counters in the 15 s report; off by default
+
+---
+diff --git a/src/core/arm/dynarmic/arm_dynarmic_64.cpp b/src/core/arm/dynarmic/arm_dynarmic_64.cpp
+index 3711b53450..5461067697 100644
+--- a/src/core/arm/dynarmic/arm_dynarmic_64.cpp
++++ b/src/core/arm/dynarmic/arm_dynarmic_64.cpp
+@@ -4,6 +4,9 @@
+ // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <algorithm>
++#include <vector>
++#include <cstring>
+ #include <atomic>
+ #include <cstdlib>
+ #if defined(_M_X64) || defined(__x86_64__)
+@@ -11,6 +14,8 @@
+ #endif
+ #include "common/cpu_features.h"
+ #include "common/settings.h"
++#include "common/page_table.h"
++#include "core/memory.h"
+ #include "core/arm/dynarmic/arm_dynarmic.h"
+ #include "core/arm/dynarmic/arm_dynarmic_64.h"
+ #include "core/arm/dynarmic/dynarmic_exclusive_monitor.h"
+@@ -18,6 +23,65 @@
+ #include "core/hle/kernel/k_process.h"
+ #include "dynarmic/interface/A64/config.h"
+ 
++
++// EDEN_GBB_HLE_MEMCPY (GrowingBlackBeans): the guest memcpy/memmove as one host copy. The JIT's
++// translator calls this in place of the guest function (a64_translate.cpp). Pages the page
++// table maps directly are copied with memcpy, as the JIT's own loads and stores would; any other
++// page (GPU-cached, debug, unmapped) goes through ReadBlock/WriteBlock, which keep the GPU and
++// the error paths informed. Overlapping ranges go through a buffer, so memmove is right too.
++extern "C" {
++unsigned long long eden_hle_memcpy_pc = 0;
++std::atomic<unsigned long long> eden_hle_memcpy_calls{0};
++std::atomic<unsigned long long> eden_hle_memcpy_bytes{0};
++std::atomic<unsigned long long> eden_hle_memcpy_slow{0};
++}
++namespace {
++Common::PageTable* g_hle_page_table{};
++Core::Memory::Memory* g_hle_memory{};
++
++u8* HleDirect(u64 vaddr) {
++    vaddr &= 0xffffffffffffULL;
++    const u64 page = vaddr >> Core::Memory::YUZU_PAGEBITS;
++    if (page >= g_hle_page_table->entries.size()) {
++        return nullptr;
++    }
++    const uintptr_t pointer = g_hle_page_table->entries[page].Pointer();
++    return pointer != 0 ? reinterpret_cast<u8*>(pointer + vaddr) : nullptr;
++}
++} // Anonymous namespace
++
++extern "C" void eden_hle_memcpy(std::uint64_t dst, std::uint64_t src, std::uint64_t size) {
++    eden_hle_memcpy_calls.fetch_add(1, std::memory_order_relaxed);
++    eden_hle_memcpy_bytes.fetch_add(size, std::memory_order_relaxed);
++    if (size == 0 || g_hle_page_table == nullptr || g_hle_memory == nullptr) {
++        return;
++    }
++    if (dst < src + size && src < dst + size) {
++        std::vector<u8> buffer(size);
++        g_hle_memory->ReadBlock(src, buffer.data(), size);
++        g_hle_memory->WriteBlock(dst, buffer.data(), size);
++        eden_hle_memcpy_slow.fetch_add(1, std::memory_order_relaxed);
++        return;
++    }
++    constexpr u64 PageSize = Core::Memory::YUZU_PAGESIZE;
++    while (size != 0) {
++        const u64 chunk = (std::min)({size, PageSize - (src & (PageSize - 1)), PageSize - (dst & (PageSize - 1))});
++        u8* const from = HleDirect(src);
++        u8* const to = HleDirect(dst);
++        if (from != nullptr && to != nullptr) {
++            std::memcpy(to, from, chunk);
++        } else {
++            u8 buffer[Core::Memory::YUZU_PAGESIZE];
++            g_hle_memory->ReadBlock(src, buffer, chunk);
++            g_hle_memory->WriteBlock(dst, buffer, chunk);
++            eden_hle_memcpy_slow.fetch_add(1, std::memory_order_relaxed);
++        }
++        src += chunk;
++        dst += chunk;
++        size -= chunk;
++    }
++}
++
+ namespace Core {
+ 
+ using namespace Common::Literals;
+@@ -451,6 +515,8 @@ ArmDynarmic64::ArmDynarmic64(System& system, bool uses_wall_clock, Kernel::KProc
+ {
+     auto& page_table = process->GetPageTable().GetBasePageTable();
+     auto& page_table_impl = page_table.GetImpl();
++    g_hle_page_table = &page_table_impl;  // EDEN_GBB_HLE_MEMCPY: one guest process per session
++    g_hle_memory = &process->GetMemory();
+     MakeJit(&page_table_impl, page_table.GetAddressSpaceWidth());
+ }
+ 
+diff --git a/src/core/core.cpp b/src/core/core.cpp
+index f0ab02ca37..761e20380e 100644
+--- a/src/core/core.cpp
++++ b/src/core/core.cpp
+@@ -79,6 +79,9 @@
+ 
+ // Module main's load address, set by the NSO loader (EDEN_GBB_DUMP_GUEST).
+ std::atomic<u64> eden_gbb_main_base{0};
++// EDEN_GBB_HLE_MEMCPY (arm_dynarmic_64.cpp).
++extern "C" unsigned long long eden_hle_memcpy_pc;
++extern "C" std::atomic<unsigned long long> eden_hle_memcpy_calls, eden_hle_memcpy_bytes, eden_hle_memcpy_slow;
+ 
+ namespace Core {
+ 
+@@ -297,6 +300,12 @@ struct System::Impl {
+                     }
+                     auto processes = kernel.GetProcessList();
+                     LOG_WARNING(Core, "guest threads t={}s processes={}", tick * 15, processes.size());
++                    if (eden_hle_memcpy_pc != 0) {
++                        LOG_WARNING(Core, "EDEN_GBB_HLE_MEMCPY calls={} bytes={} slow={}",
++                                    eden_hle_memcpy_calls.load(std::memory_order_relaxed),
++                                    eden_hle_memcpy_bytes.load(std::memory_order_relaxed),
++                                    eden_hle_memcpy_slow.load(std::memory_order_relaxed));
++                    }
+                     // EDEN_GBB_DUMP_GUEST=<off>:<size>[,...] (GrowingBlackBeans): module main's guest
+                     // bytes at those offsets, once, to disassemble the guest side of hot JIT blocks.
+                     if (const char* dump = std::getenv("EDEN_GBB_DUMP_GUEST");
+diff --git a/src/core/loader/nso.cpp b/src/core/loader/nso.cpp
+index 20639619d3..8211c7853a 100644
+--- a/src/core/loader/nso.cpp
++++ b/src/core/loader/nso.cpp
+@@ -32,6 +32,7 @@
+ 
+ // Module main's load address (core.cpp, EDEN_GBB_DUMP_GUEST).
+ extern std::atomic<u64> eden_gbb_main_base;
++extern "C" unsigned long long eden_hle_memcpy_pc;  // arm_dynarmic_64.cpp
+ 
+ #ifdef HAS_NCE
+ #include "core/arm/nce/patcher.h"
+@@ -405,6 +406,12 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
+     LOG_INFO(Loader, "Module {} loaded at {:#x} (size {:#x})", nso_file.GetName(), load_base, image_size);
+     if (name == "main") {
+         eden_gbb_main_base.store(load_base, std::memory_order_release);  // EDEN_GBB_DUMP_GUEST
++        // EDEN_GBB_HLE_MEMCPY=<offset hex>: main's memcpy/memmove runs as one host copy.
++        if (const char* hle = std::getenv("EDEN_GBB_HLE_MEMCPY"); hle != nullptr && hle[0] != '\0') {
++            eden_hle_memcpy_pc = load_base + std::strtoull(hle, nullptr, 16);
++            LOG_INFO(Loader, "EDEN_GBB_HLE_MEMCPY: main+{} = {:#x} runs as a host copy", hle,
++                     eden_hle_memcpy_pc);
++        }
+     }
+     process.LoadModule(system.Kernel(), std::move(codeset), load_base);
+     if (name == "main" && process.GetProgramId() == Settings::MarioKartWorldProgramId) {
+diff --git a/src/dynarmic/src/dynarmic/frontend/A64/translate/a64_translate.cpp b/src/dynarmic/src/dynarmic/frontend/A64/translate/a64_translate.cpp
+index 8299aa0801..717abb0894 100644
+--- a/src/dynarmic/src/dynarmic/frontend/A64/translate/a64_translate.cpp
++++ b/src/dynarmic/src/dynarmic/frontend/A64/translate/a64_translate.cpp
+@@ -6,6 +6,8 @@
+  * SPDX-License-Identifier: 0BSD
+  */
+ 
++#include <cstdint>
++
+ #include "dynarmic/frontend/A64/translate/a64_translate.h"
+ 
+ #include "dynarmic/frontend/A64/a64_location_descriptor.h"
+@@ -14,6 +16,12 @@
+ #include "dynarmic/ir/basic_block.h"
+ #include "dynarmic/ir/terminal.h"
+ 
++// EglantinePS5 (GrowingBlackBeans, EDEN_GBB_HLE_MEMCPY): the guest memcpy/memmove's entry, and
++// the host function that does its work. Weak: programs that link dynarmic without the core (the
++// headless checks) see a null address and translate every block as before.
++extern "C" __attribute__((weak)) unsigned long long eden_hle_memcpy_pc;
++extern "C" __attribute__((weak)) void eden_hle_memcpy(std::uint64_t dst, std::uint64_t src, std::uint64_t size);
++
+ namespace Dynarmic::A64 {
+ 
+ void Translate(IR::Block& block, LocationDescriptor descriptor, MemoryReadCodeFuncType memory_read_code, TranslationOptions options) {
+@@ -23,7 +31,16 @@ void Translate(IR::Block& block, LocationDescriptor descriptor, MemoryReadCodeFu
+     bool should_continue = true;
+     do {
+         const u64 pc = visitor.ir.current_location->PC();
+-        if (const auto instruction = memory_read_code(pc)) {
++        if (&eden_hle_memcpy_pc != nullptr && &eden_hle_memcpy != nullptr && eden_hle_memcpy_pc != 0 &&
++            pc == eden_hle_memcpy_pc && !single_step) {
++            // The whole function as one host call, then its RET: X0 (the destination, memcpy's
++            // return value) is left as it was.
++            visitor.ir.CallHostFunction(&eden_hle_memcpy, IR::U64{visitor.X(64, Reg::R0)},
++                                        IR::U64{visitor.X(64, Reg::R1)}, IR::U64{visitor.X(64, Reg::R2)});
++            visitor.ir.SetPC(IR::U64{visitor.X(64, Reg::R30)});
++            visitor.ir.SetTerm(IR::Term::PopRSBHint{});
++            should_continue = false;
++        } else if (const auto instruction = memory_read_code(pc)) {
+             if (auto decoder = Decode<TranslatorVisitor, bool>(visitor, *instruction)) {
+                 should_continue = *decoder;
+             } else {

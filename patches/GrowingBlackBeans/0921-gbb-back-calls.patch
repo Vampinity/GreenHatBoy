@@ -1,0 +1,252 @@
+diff --git a/src/video_core/gpu_split.cpp b/src/video_core/gpu_split.cpp
+index 6418f53e26..bb4ed55cb3 100644
+--- a/src/video_core/gpu_split.cpp
++++ b/src/video_core/gpu_split.cpp
+@@ -2,6 +2,12 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ #include <algorithm>
++#include <array>
++#include <vector>
++#ifndef _MSC_VER
++#include <x86intrin.h>
++#endif
++#include <fmt/format.h>
+ #include <chrono>
+ #include <cstdlib>
+ #include <string>
+@@ -34,6 +40,165 @@
+ #include "video_core/ubo_ahead.h"
+ #include "video_core/ubo_snapshot.h"
+ 
++// GrowingBlackBeans 0921, EDEN_GBB_BACK_CALLS=1: where the split's back thread spends its time,
++// without the per-zone clock reads of EDEN_NX2_GPU_PROFILE (which slowed the game ~20%). Every
++// ring entry the back executes is timed with the TSC and charged, inclusive, to its kind and to
++// the method (by engine) or the call thunk it carries; the idle hook (deferred submits) and the
++// waits for work are timed apart. Every 5 s: busy/wait/hook ms per second, the kinds, the top
++// call thunks (address minus an anchor function's, for the ELF) and the top methods.
++namespace GbbBackCalls {
++[[gnu::noinline]] void Anchor() {
++    asm volatile("" ::: "memory");
++}
++inline bool On() {
++    static const bool on = [] {
++        const char* value = std::getenv("EDEN_GBB_BACK_CALLS");
++        return value != nullptr && value[0] == '1' && value[1] == '\0';
++    }();
++    return on;
++}
++constexpr u32 MethodSlots = 8;
++constexpr u32 MethodRange = 0x2000;
++struct Table {
++    // kinds: 0 wrap, 1 engine, 2 method, 3 multi, 4 call, 5 regs, 6 cbdata
++    std::array<u64, 8> kind_ticks{};
++    std::array<u64, 8> kind_count{};
++    std::array<const void*, MethodSlots> engines{};
++    std::vector<u64> method_ticks = std::vector<u64>(MethodSlots * MethodRange);
++    std::vector<u32> method_count = std::vector<u32>(MethodSlots * MethodRange);
++    std::array<u64, 1024> call_key{};
++    std::array<u64, 1024> call_ticks{};
++    std::array<u32, 1024> call_count{};
++    u64 wait_ticks{}, hook_ticks{}, hook_count{}, busy_ticks{};
++    u64 window_tsc{};
++    std::chrono::steady_clock::time_point window_start{};
++};
++inline Table& T() {
++    static thread_local Table* table = new Table{};
++    return *table;
++}
++inline u32 EngineSlot(const void* engine) {
++    Table& t = T();
++    for (u32 i = 0; i < MethodSlots; ++i) {
++        if (t.engines[i] == engine) {
++            return i;
++        }
++        if (t.engines[i] == nullptr) {
++            t.engines[i] = engine;
++            return i;
++        }
++    }
++    return MethodSlots - 1;
++}
++inline void Charge(u32 kind, const u64* entry, const void* engine, u64 ticks) {
++    Table& t = T();
++    t.kind_ticks[kind] += ticks;
++    ++t.kind_count[kind];
++    t.busy_ticks += ticks;
++    const u64 head = entry[0];
++    if (kind == 2 || kind == 3) {
++        const u32 method = (std::min)(static_cast<u32>((head >> 8) & 0xffff), MethodRange - 1);
++        const u32 index = EngineSlot(engine) * MethodRange + method;
++        t.method_ticks[index] += ticks;
++        ++t.method_count[index];
++    } else if (kind == 4) {
++        const u64 key = entry[1];
++        size_t at = (key * 0x9E3779B97F4A7C15ULL >> 54) & 1023;
++        for (u32 probe = 0; probe < 1024; ++probe, at = (at + 1) & 1023) {
++            if (t.call_key[at] == key || t.call_key[at] == 0) {
++                t.call_key[at] = key;
++                t.call_ticks[at] += ticks;
++                ++t.call_count[at];
++                break;
++            }
++        }
++    }
++}
++inline void MaybeReport() {
++    Table& t = T();
++    const auto now = std::chrono::steady_clock::now();
++    if (t.window_start == std::chrono::steady_clock::time_point{}) {
++        t.window_start = now;
++        t.window_tsc = __rdtsc();
++        return;
++    }
++    const double seconds = std::chrono::duration<double>(now - t.window_start).count();
++    if (seconds < 5.0) {
++        return;
++    }
++    const double tsc_per_ms = static_cast<double>(__rdtsc() - t.window_tsc) / (seconds * 1000.0);
++    const auto ms_s = [&](u64 ticks) { return static_cast<double>(ticks) / tsc_per_ms / seconds; };
++    static const char* const kind_names[8] = {"wrap", "engine", "method", "multi", "call",
++                                              "regs", "cb data", "?"};
++    std::string kinds;
++    for (u32 k = 0; k < 7; ++k) {
++        if (t.kind_count[k] != 0) {
++            kinds += fmt::format("{}{} {:.1f} ({}/s)", kinds.empty() ? "" : ", ", kind_names[k],
++                                 ms_s(t.kind_ticks[k]),
++                                 static_cast<u64>(static_cast<double>(t.kind_count[k]) / seconds));
++        }
++    }
++    LOG_INFO(HW_GPU,
++             "EDEN_GBB_BACK 5 s (ms per s): busy {:.1f}, waiting {:.1f}, idle hook {:.1f} ({}/s); "
++             "{}; anchor {:#x}",
++             ms_s(t.busy_ticks), ms_s(t.wait_ticks), ms_s(t.hook_ticks),
++             static_cast<u64>(static_cast<double>(t.hook_count) / seconds), kinds,
++             reinterpret_cast<u64>(&Anchor));
++    {
++        std::vector<u32> order;
++        for (u32 i = 0; i < 1024; ++i) {
++            if (t.call_key[i] != 0) {
++                order.push_back(i);
++            }
++        }
++        std::sort(order.begin(), order.end(),
++                  [&](u32 a, u32 b) { return t.call_ticks[a] > t.call_ticks[b]; });
++        std::string parts;
++        for (size_t i = 0; i < order.size() && i < 16; ++i) {
++            const u32 at = order[i];
++            parts += fmt::format("{}{:+#x} {:.1f} ({}/s, {:.1f} us)", parts.empty() ? "" : ", ",
++                                 static_cast<s64>(t.call_key[at] - reinterpret_cast<u64>(&Anchor)),
++                                 ms_s(t.call_ticks[at]),
++                                 static_cast<u64>(static_cast<double>(t.call_count[at]) / seconds),
++                                 static_cast<double>(t.call_ticks[at]) / tsc_per_ms * 1000.0 /
++                                     (std::max)(t.call_count[at], 1U));
++        }
++        LOG_INFO(HW_GPU, "EDEN_GBB_BACK calls (thunk - anchor, ms per s): {}", parts);
++    }
++    {
++        std::vector<u32> order;
++        for (u32 i = 0; i < MethodSlots * MethodRange; ++i) {
++            if (t.method_count[i] != 0) {
++                order.push_back(i);
++            }
++        }
++        std::partial_sort(order.begin(), order.begin() + (std::min<size_t>)(order.size(), 24),
++                          order.end(),
++                          [&](u32 a, u32 b) { return t.method_ticks[a] > t.method_ticks[b]; });
++        std::string parts;
++        for (size_t i = 0; i < order.size() && i < 24; ++i) {
++            const u32 at = order[i];
++            parts += fmt::format("{}e{}:{:#x} {:.1f} ({}/s, {:.2f} us)", parts.empty() ? "" : ", ",
++                                 at / MethodRange, at % MethodRange, ms_s(t.method_ticks[at]),
++                                 static_cast<u64>(static_cast<double>(t.method_count[at]) / seconds),
++                                 static_cast<double>(t.method_ticks[at]) / tsc_per_ms * 1000.0 /
++                                     (std::max)(t.method_count[at], 1U));
++        }
++        LOG_INFO(HW_GPU, "EDEN_GBB_BACK methods (engine:method, inclusive ms per s): {}", parts);
++    }
++    t.kind_ticks = {};
++    t.kind_count = {};
++    std::fill(t.method_ticks.begin(), t.method_ticks.end(), 0);
++    std::fill(t.method_count.begin(), t.method_count.end(), 0);
++    t.call_key = {};
++    t.call_ticks = {};
++    t.call_count = {};
++    t.wait_ticks = t.hook_ticks = t.hook_count = t.busy_ticks = 0;
++    t.window_start = now;
++    t.window_tsc = __rdtsc();
++}
++} // namespace GbbBackCalls
++
+ namespace VideoCommon {
+ 
+ namespace {
+@@ -1035,11 +1200,24 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
+     const bool feed_on = feed;
+     const bool counting = g_l949_counting;
+     u64 read_position = 0;
++    const bool gbb_calls = GbbBackCalls::On();
+     while (!stop_token.stop_requested()) {
+         Nx2Profile::Report("GPU back thread");
++        if (gbb_calls) [[unlikely]] {
++            GbbBackCalls::MaybeReport();
++        }
+         u64 available = published.load(std::memory_order_acquire);
+         if (available == read_position) {
+             Nx2Profile::Scope scope{Nx2Profile::Zone::SplitWait};
++            struct GbbWaitTimer {
++                bool on;
++                u64 start;
++                ~GbbWaitTimer() {
++                    if (on) {
++                        GbbBackCalls::T().wait_ticks += __rdtsc() - start;
++                    }
++                }
++            } gbb_wait_timer{gbb_calls, gbb_calls ? __rdtsc() : 0};
+             const BackIdleClock idle_clock{back_idle_ns};
+             if (feed_on) {
+                 // EDEN_UP_SHIP2_FEED: the front publishes what it holds after a few more words.
+@@ -1067,7 +1245,14 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
+                         back_going_quiet = true;
+                         {
+                             const SubmitStats::HookScope stats_hook{SubmitStats::Hook::OwnIdle};
++                            const u64 gbb_hook_start = gbb_calls ? __rdtsc() : 0;
+                             idle_hook(idle_argument);
++                            if (gbb_calls) [[unlikely]] {
++                                const u64 spent = __rdtsc() - gbb_hook_start;
++                                GbbBackCalls::T().hook_ticks += spent;
++                                GbbBackCalls::T().wait_ticks -= spent; // inside the wait timer
++                                ++GbbBackCalls::T().hook_count;
++                            }
+                         }
+                         back_going_quiet = false;
+                         if (counting) [[unlikely]] {
+@@ -1113,8 +1298,15 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
+                     back_entry_call.store(ring[index + 1], std::memory_order_relaxed);
+                 }
+             }
++            const u64 gbb_start = gbb_calls ? __rdtsc() : 0;
++            const void* const gbb_engine = back_engine;
+             const size_t size =
+                 Execute(&ring[index], std::min<u64>(available - read_position, RingWords - index));
++            if (gbb_calls) [[unlikely]] {
++                const u32 kind = static_cast<u32>(ring[index] & 0xf);
++                GbbBackCalls::Charge(kind < 7 ? kind : 7, &ring[index], gbb_engine,
++                                     __rdtsc() - gbb_start);
++            }
+             read_position += size != 0 ? size : RingWords - index;
+             if (hook_requested.load(std::memory_order_relaxed) &&
+                 idle_hook != nullptr) [[unlikely]] {
+@@ -1122,7 +1314,12 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
+                 const SubmitStats::HookScope stats_hook{SubmitStats::Enabled()
+                                                             ? SubmitStats::TakeRequestedHook()
+                                                             : SubmitStats::Hook::Other};
++                const u64 gbb_hook_start = gbb_calls ? __rdtsc() : 0;
+                 idle_hook(idle_argument);
++                if (gbb_calls) [[unlikely]] {
++                    GbbBackCalls::T().hook_ticks += __rdtsc() - gbb_hook_start;
++                    ++GbbBackCalls::T().hook_count;
++                }
+             }
+             // Hand ring space back now and then while working through a long batch, and at once
+             // when the front waits for this position (WaitForWriters).

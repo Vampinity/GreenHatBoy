@@ -1,0 +1,178 @@
+{
+ "format": 0,
+ "author": "GrowingBlackBeans",
+ "run_id": "B12b",
+ "date": "2026-11-09",
+ "time": "01:42:42",
+ "batch": null,
+ "test": "B12b",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov  9 2026 01:45:29)",
+  "eboot_sha256_16": null
+ },
+ "firmware": null,
+ "console": "PS5 base 13.60",
+ "route": {
+  "script": "GrowingBlackBeans Kokiri benchmark: Continue, house, out, walk loop to the water",
+  "script_sha": null
+ },
+ "menu_settings": null,
+ "env_lines": 73,
+ "env_hash": "9782207af1",
+ "control": null,
+ "ending": {
+  "kind": "hand_stopped",
+  "class": null,
+  "seconds": 98.070964,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 25.0,
+ "fps": {
+  "mean": 22.98,
+  "source": "nx2:vi2 5 s lines (play windows under 45 fps)",
+  "p99_ms": 66.9,
+  "worst_ms": 663.7
+ },
+ "worst_frame_ms": 663.7,
+ "runtime_pipeline_builds": 8,
+ "flashes_per_min": null,
+ "note": null,
+ "impressions": "",
+ "flash_times": [],
+ "gbb": {
+  "windows_5s_columns": [
+   "log_s",
+   "frames",
+   "fps",
+   "1pct_low_ms",
+   "worst_ms",
+   "fence_ms"
+  ],
+  "windows_5s": [
+   [
+    32.901371,
+    288,
+    57.5,
+    51.9,
+    142.9,
+    0.5
+   ],
+   [
+    37.914827,
+    291,
+    58.0,
+    66.2,
+    97.2,
+    0.2
+   ],
+   [
+    42.918369,
+    263,
+    52.6,
+    53.1,
+    79.8,
+    6.0
+   ],
+   [
+    47.918374,
+    300,
+    60.0,
+    21.9,
+    24.6,
+    2.7
+   ],
+   [
+    52.920299,
+    293,
+    58.6,
+    43.6,
+    96.5,
+    3.2
+   ],
+   [
+    57.920297,
+    300,
+    60.0,
+    22.2,
+    22.6,
+    2.9
+   ],
+   [
+    62.9202,
+    298,
+    59.4,
+    39.6,
+    54.3,
+    1.7
+   ],
+   [
+    67.937281,
+    298,
+    59.6,
+    29.8,
+    56.8,
+    0.2
+   ],
+   [
+    72.937281,
+    300,
+    60.0,
+    18.0,
+    26.9,
+    0.2
+   ],
+   [
+    77.982459,
+    83,
+    16.5,
+    663.7,
+    663.7,
+    28.3
+   ],
+   [
+    82.991663,
+    121,
+    24.1,
+    67.7,
+    85.0,
+    30.5
+   ],
+   [
+    88.016595,
+    123,
+    24.5,
+    66.9,
+    70.2,
+    29.7
+   ],
+   [
+    93.040156,
+    125,
+    24.9,
+    57.9,
+    63.1,
+    29.3
+   ],
+   [
+    98.070964,
+    125,
+    24.9,
+    57.4,
+    58.5,
+    28.6
+   ]
+  ],
+  "heavy_windows": 5,
+  "heavy_fps": 22.98,
+  "light_windows": 0,
+  "light_fps": null,
+  "regimes": "play windows (<45 fps); heavy = present fence wait >= 5 ms per frame (GPU thread bound), light = < 1 ms (game CPU bound)"
+ },
+ "redacted": {
+  "console_user": 3
+ }
+}

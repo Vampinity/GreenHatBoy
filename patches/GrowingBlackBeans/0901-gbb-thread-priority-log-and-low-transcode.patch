@@ -1,0 +1,57 @@
+From: GrowingBlackBeans <gbb@local>
+Subject: [PATCH] EDEN_THREAD_PRIO: log what SetCurrentThreadPriority did (once per level); EDEN_GBB_TRANSCODE_LOW=1: texture transcode pool at low priority
+
+---
+diff --git a/src/common/thread.cpp b/src/common/thread.cpp
+index 7b4dec3dce..0108d7c493 100644
+--- a/src/common/thread.cpp
++++ b/src/common/thread.cpp
+@@ -498,7 +498,26 @@ void SetCurrentThreadPriority(ThreadPriority new_priority) {
+         sched_param params{};
+         params.sched_priority =
+             min_prio + static_cast<s32>(static_cast<u32>(max_prio - min_prio) * level) / 4;
+-        pthread_setschedparam(pthread_self(), SCHED_OTHER, &params);
++        const int set_rc = pthread_setschedparam(pthread_self(), SCHED_OTHER, &params);
++        // GrowingBlackBeans: what this system made of it, once per level (Low 0 .. Critical 4).
++        // POSIX numbers priorities upward; a system that numbers them downward would run a
++        // Low thread ahead of a Critical one.
++        static std::atomic<u32> logged{0};
++        if (const u32 bit = 1U << level; (logged.fetch_or(bit) & bit) == 0) {
++            sched_param got{};
++            int policy = -1;
++            const int get_rc = pthread_getschedparam(pthread_self(), &policy, &got);
++            std::fprintf(stderr,
++                         "EDEN_THREAD_PRIO level=%u asked=%d min=%d max=%d set_rc=%d got=%d "
++                         "policy=%d get_rc=%d\n",
++                         level, params.sched_priority, min_prio, max_prio, set_rc,
++                         got.sched_priority, policy, get_rc);
++        }
++    } else {
++        static std::atomic<bool> logged{false};
++        if (!logged.exchange(true)) {
++            std::fprintf(stderr, "EDEN_THREAD_PRIO none: min=%d max=%d\n", min_prio, max_prio);
++        }
+     }
+ #endif
+ }
+diff --git a/src/video_core/textures/workers.cpp b/src/video_core/textures/workers.cpp
+index e3a0f26cf2..9e3aa1a2d7 100644
+--- a/src/video_core/textures/workers.cpp
++++ b/src/video_core/textures/workers.cpp
+@@ -20,7 +20,15 @@ Common::ThreadWorker& GetThreadWorkers() {
+             return (std::max)(static_cast<u32>(std::strtoul(text, nullptr, 10)), 1U);
+         }
+         return (std::max)(std::thread::hardware_concurrency() / 4, 2U);
+-    }(), "ImageTranscode"};
++    }(), "ImageTranscode", {}, [] {
++        // EDEN_GBB_TRANSCODE_LOW=1 (GrowingBlackBeans): the pool at ThreadPriority::Low
++        // (ThreadPlacement::Background), so a large decode (Ocarina's 6144x6144 ground texture,
++        // 1.4 s on 3 threads) does not take the cores the GPU threads need: on the PS5 every
++        // GPU-thread handshake slowed ~20x while one ran, a frame as long as the decode.
++        const char* text = std::getenv("EDEN_GBB_TRANSCODE_LOW");
++        return text != nullptr && text[0] == '1' ? Common::ThreadPlacement::Background
++                                                 : Common::ThreadPlacement::Default;
++    }()};
+     return workers;
+ }
+ 

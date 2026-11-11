@@ -1,0 +1,110 @@
+diff --git a/src/core/hle/service/nvdrv/devices/nx2_stub_device.h b/src/core/hle/service/nvdrv/devices/nx2_stub_device.h
+index 8dee9ccfb7..e640035e66 100644
+--- a/src/core/hle/service/nvdrv/devices/nx2_stub_device.h
++++ b/src/core/hle/service/nvdrv/devices/nx2_stub_device.h
+@@ -76,6 +76,39 @@ public:
+         }
+     }
+ 
++    // Memory [cpu_address, +size) is destroyed (sub 102): every GPU range that still reaches it
++    // stops reaching it, wherever it was mapped, because the game reuses the memory right after.
++    // Returns the ranges other than the one at the memory's own address, as (GPU address, size).
++    std::vector<std::pair<u64, u64>> UnmapMemory(u64 cpu_address, u64 size) {
++        std::scoped_lock lk{mutex};
++        const u64 end = cpu_address + size;
++        struct Range {
++            u64 gpu_address;
++            u64 size;
++            bool own; ///< The mapping at the memory's own address
++        };
++        std::vector<Range> ranges;
++        for (const auto& m : mappings) {
++            const u64 first = (std::max)(m.cpu_address, cpu_address);
++            const u64 last = (std::min)(m.cpu_address + m.size, end);
++            if (first < last) {
++                ranges.push_back({m.gpu_address + (first - m.cpu_address), last - first,
++                                  m.gpu_address == m.cpu_address});
++            }
++        }
++        std::vector<std::pair<u64, u64>> leftovers;
++        for (const auto& range : ranges) {
++            TrimMappings(range.gpu_address, range.size);
++            for (auto& [owner, listener] : listeners) {
++                listener.unmap(range.gpu_address, range.size);
++            }
++            if (!range.own) {
++                leftovers.emplace_back(range.gpu_address, range.size);
++            }
++        }
++        return leftovers;
++    }
++
+     // Backing memory [cpu_address, +size) is about to be freed (its GPU mappings are gone): each
+     // address space drops its SMMU mapping of it, in GPU-thread order.
+     void ReleaseBacking(u64 cpu_address, u64 size) {
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index dccda9ed0f..fe2cd3779a 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -633,7 +633,8 @@ private:
+ 
+     // Sub 102: word 2 is the memory handle 101 returned, word 3 the job slot. The game frees the
+     // memory (svc 0x80 clears GPU access) and reuses it as ordinary heap right after, so nothing
+-    // on the GPU side may keep it: drop the mapping 101 made at its own address.
++    // on the GPU side may keep it: drop the mapping 101 made at its own address and every other
++    // GPU range still mapped into it. Parts of GPU-only regions show the region's memory again.
+     void SubDestroyMemory(HLERequestContext& ctx) {
+         const auto* w = ctx.CommandBuffer();
+         const u32 handle = w[2];
+@@ -641,8 +642,42 @@ private:
+             const auto [address, size] = it->second;
+             LOG_DEBUG(Service, "nx2:gpu 102 destroy handle={} [{:#x}, +{:#x}] slot={}", handle,
+                       address, size, w[3]);
+-            if (size != 0) {
++            // EDEN_GBB_DESTROY_UNMAP_ALL=1 (GrowingBlackBeans 0916, port of zortos293/Lichii#1199):
++            // every GPU range still mapped into the destroyed memory goes too. Unset: only the
++            // mapping at the memory's own address, as before.
++            static const bool unmap_all = [] {
++                const char* const value = std::getenv("EDEN_GBB_DESTROY_UNMAP_ALL");
++                return value != nullptr && value[0] == '1';
++            }();
++            if (size != 0 && !unmap_all) {
+                 Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Unmap(address, size);
++            } else if (size != 0) {
++                std::scoped_lock lk{m_region_mutex};
++                std::vector<std::pair<u64, u64>> tiles;
++                for (const auto& [tile_address, tile] : m_gpu_only_tiles) {
++                    if (tile.memory_handle == handle) {
++                        tiles.emplace_back(tile_address, tile.size);
++                    }
++                }
++                for (const auto& [tile_address, tile_size] : tiles) {
++                    DropGpuOnlyTiles(tile_address, tile_size, false);
++                }
++                auto& registry = Nvidia::Devices::Nx2GpuMemoryRegistry::Get();
++                const auto leftovers = registry.UnmapMemory(address, size);
++                for (const auto& [gpu_address, range_size] : leftovers) {
++                    // Only what still reached this memory: a later map of the range is kept.
++                    if (const auto backing = OwnBackingOf(gpu_address, range_size)) {
++                        registry.MapAt(gpu_address, *backing, range_size);
++                    }
++                    // The first 32, then every 1000th.
++                    if (++m_destroy_leftovers <= 32 || m_destroy_leftovers % 1000 == 0) {
++                        LOG_WARNING(Service,
++                                    "nx2:gpu 102 destroy of memory {} [{:#x}, +{:#x}] also unmapped "
++                                    "GPU range [{:#x}, +{:#x}] still mapped into it ({} so far)",
++                                    handle, address, size, gpu_address, range_size,
++                                    m_destroy_leftovers);
++                    }
++                }
+             }
+             if (size == 0x2000) {
+                 Tegra::Nx2RemoveSemaphoreRegion(address);
+@@ -1185,6 +1220,7 @@ private:
+     u64 m_tile_maps{};
+     u64 m_tile_unmaps{};
+     u64 m_tile_kept{}; ///< Maps into GPU-only regions that keep their own memory, left out
++    u64 m_destroy_leftovers{}; ///< GPU ranges 102 unmapped besides the memory's own address
+     u64 m_tile_bytes{}; ///< Sparse region pages a tile maps right now
+ 
+     void ApplySparseMapRequest(const SparseMapRequest& request) {
