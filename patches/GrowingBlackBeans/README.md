@@ -18,7 +18,10 @@ For the Eglantine submodule, applied after Vampinity's T120 series (`tools/eglan
 | 0918 | with `EDEN_NX2_OVERWRITE_CHECK` | Ahead audit: stale texture, descriptor, handle and GPU-result reads per frame |
 | 0919 | `EDEN_GBB_GUARD_EARLY` | Arms `EDEN_UP_AHEAD_GUARD` before the gpu_behind second wait (fixes stale reads during it) |
 | 0920 | with `EDEN_NX2_OVERWRITE_CHECK` | Fence-download landing audit |
-| 0921 | `EDEN_GBB_BACK_CALLS` | Split back thread time per ring entry kind, method and call thunk (TSC; low overhead) |
-| 0922 | `EDEN_GBB_VITALS`, `EDEN_GBB_TIMELINE=<start s>,<s>` | Per-second vitals line on one clock; per-event timeline file (presents, front waits, back batches, syncpoint increments, fence pops, shaders) read by `eglog/timeline.py`. Also changes `headless/gpu_time_probe.inc` (feeds host GPU time to vitals). |
+| 0921 | `EDEN_GBB_BACK_CALLS` | Split back thread time per ring entry kind, method and call thunk (TSC; low overhead). Built (t120-gbb4); **never run**. |
+| 0922 | `EDEN_GBB_VITALS`, `EDEN_GBB_TIMELINE=<start s>,<s>` | Per-second vitals line on one clock; per-event timeline file (presents, front waits, back batches, syncpoint increments, fence pops, shaders) read by `eglog/timeline.py`. Also changes `headless/gpu_time_probe.inc` (feeds host GPU time to vitals). Built (t120-gbb5); **never run**. |
+| 0923 | `EDEN_GBB_FLIGHT=<ms>[,<dumps>]` | Flight recorder (last 2 s before a slow frame), `EDEN_GBB_ENV` effective env line, touchpad + R3 marker (`headless/pad.cpp`). Built (t120-gbb6); **never run**. |
+
+The headless (outer repo) side of 0922/0923 is `headless-0922-0923.diff` (pad.cpp, gpu_time_probe.inc).
 
 Dropped because T120 has them: 0899 (`EDEN_UP_SSBO_SIZE_CAP`), 0911 (`EDEN_UP_AHEAD_ALWAYS`), 0915 (NaN guard / invariant position), 0905/0906 (0482/0483). Parked: 0914 (our copy guard; superseded by `EDEN_UP_AHEAD_GUARD`).

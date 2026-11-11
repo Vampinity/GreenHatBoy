@@ -1,0 +1,204 @@
+diff --git a/src/video_core/gbb_trace.h b/src/video_core/gbb_trace.h
+index 83db442202..2af8b0e4db 100644
+--- a/src/video_core/gbb_trace.h
++++ b/src/video_core/gbb_trace.h
+@@ -9,6 +9,7 @@
+ #include <cstdlib>
+ #include <cstring>
+ #include <memory>
++#include <string>
+ #include <vector>
+ #include <unistd.h>
+ 
+@@ -30,6 +31,19 @@
+ ///   turns it into a per-frame table and a Perfetto trace. Events: present begin / waited / end, the front's
+ ///   waits on the back (site, start, end), the back's busy batches (start, end, ring words), guest syncpoint
+ ///   increments (id, value), fence pops on the fencing thread, shaders built on the GPU thread.
++///
++/// UNTESTED ON A CONSOLE (written 11 Nov 2026 away from the PS5; builds, not run):
++/// EDEN_GBB_FLIGHT=<ms>[,<dumps>] (0923): a flight recorder. The same events go into a circular ring from the first
++///   present; when a frame's interval reaches <ms>, the last 2 s are written to
++///   /data/eglantineps5/logs/gbb-flight-<pid>-<k>.bin (same format as the timeline; at most <dumps>, default 8, at
++///   least 5 s apart) and one line is logged. Overrides EDEN_GBB_TIMELINE. The write itself is a hitch, after the one
++///   it records.
++/// The first present also logs "EDEN_GBB_ENV count=N KEY=VALUE ..." with every EDEN_, RADV_, MESA_ and ACO_ variable
++///   the process actually has (the effective env, for checking a run's env.txt), when any of these switches is set.
++/// Marker (headless pad.cpp, 0923): touchpad + R3 logs "EDEN_GBB_MARK n=<k>" and records a Mark event: press it
++///   when you see a flash or start walking. Neither button reaches the game while the chord is held.
++extern "C" char** environ; // the process environment (POSIX), for EDEN_GBB_ENV
++
+ namespace VideoCore::GbbTrace {
+ 
+ enum class Ev : u32 {
+@@ -41,6 +55,7 @@ enum class Ev : u32 {
+     GuestIncr,        // a = syncpoint id, b = new guest value
+     FencePop,         // a = fences popped in the batch, b = start of the host wait ns
+     Pipeline,         // a = 0 graphics / 1 compute, b = start ns
++    Mark,             // a = marker number (touchpad + R3)
+ };
+ 
+ struct Event {
+@@ -81,6 +96,27 @@ inline const TimelineConfig& Timeline() {
+     return cfg;
+ }
+ 
++struct FlightConfig {
++    u64 threshold_ns{0};
++    u32 dumps{8};
++};
++inline const FlightConfig& Flight() {
++    static const FlightConfig cfg = [] {
++        FlightConfig c;
++        if (const char* v = std::getenv("EDEN_GBB_FLIGHT"); v != nullptr) {
++            double ms = 0;
++            unsigned dumps = 8;
++            const int n = std::sscanf(v, "%lf,%u", &ms, &dumps);
++            if (n >= 1 && ms >= 34 && ms <= 5000) {
++                c.threshold_ns = static_cast<u64>(ms * 1e6);
++                c.dumps = n == 2 ? (std::min)(dumps, 64u) : 8u;
++            }
++        }
++        return c;
++    }();
++    return cfg;
++}
++
+ struct State {
+     // vitals (relaxed atomics; read and reset once a second by the present thread)
+     std::atomic<u64> back_busy_ns{}, back_words{}, front_wait_ns{}, front_waits{}, gpu_busy_ns{}, gpu_subs{},
+@@ -93,6 +129,11 @@ struct State {
+     std::atomic<u32> threads{};
+     u64 first_present_ns{}, window_start_ns{}, window_end_ns{};
+     bool done{};
++    bool circular{};          // flight recorder: the ring wraps
++    u32 flight_dumps{};
++    u64 last_dump_ns{}, last_interval_ns{};
++    bool env_logged{};
++    std::atomic<u32> marks{};
+     // present-thread only
+     u64 last_present_ns{}, second_start_ns{}, wait_ns{};
+     std::vector<u64> frames_ns;
+@@ -104,7 +145,7 @@ inline State& Get() {
+ }
+ 
+ inline bool Any() {
+-    return VitalsOn() || Timeline().seconds > 0;
++    return VitalsOn() || Timeline().seconds > 0 || Flight().threshold_ns > 0;
+ }
+ 
+ inline u32 ThreadIndex() {
+@@ -118,7 +159,9 @@ inline void Record(Ev type, u32 a, u64 b, u64 ns) {
+         return;
+     }
+     const u64 i = s.next.fetch_add(1, std::memory_order_relaxed);
+-    if (i < State::Capacity) {
++    if (s.circular) {
++        s.ring[i & (State::Capacity - 1)] = Event{ns, static_cast<u32>(type) | (ThreadIndex() << 8), a, b};
++    } else if (i < State::Capacity) {
+         s.ring[i] = Event{ns, static_cast<u32>(type) | (ThreadIndex() << 8), a, b};
+     }
+ }
+@@ -169,6 +212,60 @@ inline void GpuBusy(u64 ns) {
+     s.gpu_subs.fetch_add(1, std::memory_order_relaxed);
+ }
+ 
++/// Touchpad + R3 on the controller (headless pad.cpp).
++inline void Mark() {
++    const u32 n = Get().marks.fetch_add(1, std::memory_order_relaxed) + 1;
++    LOG_INFO(HW_GPU, "EDEN_GBB_MARK n={}", n);
++    Record(Ev::Mark, n, 0, Now());
++}
++
++inline void LogEnv() {
++    std::vector<std::string> vars;
++    for (char** e = environ; e != nullptr && *e != nullptr; ++e) {
++        const std::string v{*e};
++        if (v.rfind("EDEN_", 0) == 0 || v.rfind("RADV_", 0) == 0 || v.rfind("MESA_", 0) == 0 ||
++            v.rfind("ACO_", 0) == 0) {
++            vars.push_back(v);
++        }
++    }
++    std::sort(vars.begin(), vars.end());
++    std::string line;
++    for (const auto& v : vars) {
++        line += ' ';
++        line += v;
++    }
++    LOG_INFO(HW_GPU, "EDEN_GBB_ENV count={}{}", vars.size(), line);
++}
++
++/// Flight recorder: the events of the last 2 s, oldest first, to their own file.
++inline void DumpFlight(u64 now_ns, u64 interval_ns) {
++    State& s = Get();
++    const u64 total = s.next.load(std::memory_order_relaxed);
++    const u64 have = (std::min)(total, State::Capacity);
++    std::vector<Event> out;
++    out.reserve(4096);
++    for (u64 k = total - have; k < total; ++k) {
++        const Event& e = s.ring[k & (State::Capacity - 1)];
++        if (e.ns + 2'000'000'000ULL >= now_ns && e.ns <= now_ns) {
++            out.push_back(e);
++        }
++    }
++    char path[128];
++    std::snprintf(path, sizeof(path), "/data/eglantineps5/logs/gbb-flight-%u-%u.bin", unsigned(getpid()),
++                  s.flight_dumps);
++    bool ok = false;
++    if (std::FILE* f = std::fopen(path, "wb")) {
++        const char magic[8] = {'G', 'B', 'B', 'T', 'L', '1', 0, 0};
++        const u64 header[4] = {out.size(), s.first_present_ns, now_ns - 2'000'000'000ULL, now_ns};
++        ok = std::fwrite(magic, 1, 8, f) == 8 && std::fwrite(header, sizeof(u64), 4, f) == 4 &&
++             std::fwrite(out.data(), sizeof(Event), out.size(), f) == out.size();
++        std::fclose(f);
++    }
++    LOG_INFO(HW_GPU, "EDEN_GBB_FLIGHT: frame of {:.1f} ms at {:.1f} s; last 2 s ({} events) {} {}",
++             static_cast<double>(interval_ns) / 1e6, static_cast<double>(now_ns - s.first_present_ns) / 1e9,
++             out.size(), ok ? "written to" : "FAILED to write", path);
++}
++
+ inline void WriteTimeline() {
+     State& s = Get();
+     s.recording.store(false, std::memory_order_relaxed);
+@@ -196,7 +293,28 @@ inline void Present(u64 number, u32 fence_id, u32 fence_value, u64 begin_ns, u64
+     if (!Any()) return;
+     State& s = Get();
+     const auto& tl = Timeline();
+-    if (tl.seconds > 0 && !s.done) {
++    if (!s.env_logged) {
++        s.env_logged = true;
++        LogEnv();
++    }
++    if (Flight().threshold_ns > 0) {
++        if (!s.ring) {
++            s.first_present_ns = begin_ns;
++            s.ring.reset(new Event[State::Capacity]);
++            s.circular = true;
++            s.recording.store(true);
++            LOG_INFO(HW_GPU, "EDEN_GBB_FLIGHT: recording; frames of {:.0f} ms or more dump the last 2 s",
++                     static_cast<double>(Flight().threshold_ns) / 1e6);
++        }
++        const u64 interval = s.last_interval_ns != 0 ? begin_ns - s.last_interval_ns : 0;
++        s.last_interval_ns = begin_ns;
++        if (interval >= Flight().threshold_ns && s.flight_dumps < Flight().dumps &&
++            begin_ns - s.last_dump_ns >= 5'000'000'000ULL) {
++            DumpFlight(begin_ns, interval);
++            ++s.flight_dumps;
++            s.last_dump_ns = Now();
++        }
++    } else if (tl.seconds > 0 && !s.done) {
+         if (s.first_present_ns == 0) s.first_present_ns = begin_ns;
+         const double since = static_cast<double>(begin_ns - s.first_present_ns) / 1e9;
+         if (!s.recording.load() && since >= tl.start_s) {
+diff --git a/src/video_core/gpu_split.cpp b/src/video_core/gpu_split.cpp
+index 9dc8ff1d50..1d8ed48a96 100644
+--- a/src/video_core/gpu_split.cpp
++++ b/src/video_core/gpu_split.cpp
+@@ -1351,3 +1351,8 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
+ extern "C" void eden_gbb_trace_gpu_busy(unsigned long long ns) {
+     VideoCore::GbbTrace::GpuBusy(static_cast<u64>(ns));
+ }
++
++// GrowingBlackBeans 0923: the controller marker (headless pad.cpp, touchpad + R3).
++extern "C" void eden_gbb_trace_mark() {
++    VideoCore::GbbTrace::Mark();
++}

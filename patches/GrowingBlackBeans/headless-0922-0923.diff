@@ -1,0 +1,61 @@
+diff --git a/headless/gpu_time_probe.inc b/headless/gpu_time_probe.inc
+index ebc1132..329a7f5 100644
+--- a/headless/gpu_time_probe.inc
++++ b/headless/gpu_time_probe.inc
+@@ -1,3 +1,6 @@
++// 0922: host GPU time into EDEN_GBB_VITALS (defined in video_core/gpu_split.cpp; a C symbol, because this file is
++// included inside namespace Vulkan).
++extern "C" void eden_gbb_trace_gpu_busy(unsigned long long ns);
+ namespace {
+ // Development GPU execution time (dev_vulkan.h gpu_time): timestamps at the start and end
+ // of each upload+graphics submission, summed once the GPU has run it and printed every
+@@ -86,6 +89,7 @@ void GpuTimeCollect(const Device& device) {
+         const u64 mask = gpu_time.valid_bits == 64 ? ~u64{0} : (u64{1} << gpu_time.valid_bits) - 1;
+         const u64 ns = static_cast<u64>(double((stamps[1] - stamps[0]) & mask) * gpu_time.period_ns);
+         gpu_time.busy_ns += ns;
++        eden_gbb_trace_gpu_busy(ns);
+         gpu_time.total_ns += ns;
+         ++gpu_time.total_submissions;
+         gpu_time.max_ns = (std::max)(gpu_time.max_ns, ns);
+diff --git a/headless/pad.cpp b/headless/pad.cpp
+index b4c3aa8..d56c447 100644
+--- a/headless/pad.cpp
++++ b/headless/pad.cpp
+@@ -20,6 +20,7 @@ struct LoginUserIdList {
+ extern "C" int sceUserServiceGetForegroundUser(int* user);
+ extern "C" int sceUserServiceGetLoginUserIdList(LoginUserIdList* list);
+ 
++extern "C" void eden_gbb_trace_mark(); // video_core/gpu_split.cpp, patch 0923
+ namespace Eden {
+ // Look for newly signed-in (or signed-out) users about once a second at the 4 ms poll interval.
+ constexpr unsigned kPollsPerScan = 250;
+@@ -331,6 +332,9 @@ void Pad::Consume(std::size_t player, std::span<const ps5::pad::Data> samples) {
+         // The shortcuts work from every controller.
+         constexpr ButtonMask menu_chord = kButtonTouchPad | kButtonL1;
+         constexpr ButtonMask hud_chord = kButtonTouchPad | kButtonR1;
++        // GrowingBlackBeans 0923 (untested on a console): touchpad + R3 drops a marker in the log and the
++        // EDEN_GBB_TIMELINE/FLIGHT ring ("I saw a flash", "walking starts"). Neither button reaches the game.
++        constexpr ButtonMask mark_chord = kButtonTouchPad | kButtonR3;
+         const auto pressed = sample.buttons;
+         if ((pressed & menu_chord) == menu_chord &&
+             (last_buttons & menu_chord) != menu_chord)
+@@ -338,6 +342,10 @@ void Pad::Consume(std::size_t player, std::span<const ps5::pad::Data> samples) {
+         if ((pressed & hud_chord) == hud_chord &&
+             (last_buttons & hud_chord) != hud_chord)
+             hud_toggle = true;
++        if ((pressed & mark_chord) == mark_chord && (last_buttons & mark_chord) != mark_chord)
++            eden_gbb_trace_mark();
++        if ((pressed & mark_chord) == mark_chord)
++            sample.buttons &= ~(kButtonTouchPad | kButtonR3);
+         if ((pressed & menu_chord) == menu_chord || (pressed & hud_chord) == hud_chord)
+             sample.buttons &= ~(kButtonTouchPad | kButtonL1 | kButtonR1);
+         // The touchpad on its own: see kSelectTapPolls.
+@@ -347,7 +355,7 @@ void Pad::Consume(std::size_t player, std::span<const ps5::pad::Data> samples) {
+             slot.touch_chord = false;
+             slot.touch_polls = 0;
+         }
+-        if (touch && (pressed & (kButtonL1 | kButtonR1)) != 0) {
++        if (touch && (pressed & (kButtonL1 | kButtonR1 | kButtonR3)) != 0) {  // R3: the 0923 marker chord
+             slot.touch_chord = true;
+             slot.select_held = false;
+         }
