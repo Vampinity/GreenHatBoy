@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run608-e4-walk-single-gpu-thread",
+ "date": "2026-11-09",
+ "time": "09:37:36",
+ "batch": "t83-e",
+ "test": "e4-walk-single-gpu-thread",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T83",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 07:47:14)",
+  "eboot_sha256_16": "6852dc61e1f93053"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 75,
+ "env_hash": "f1b0574eab",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 130,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 12.05,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 161.1,
+  "worst_ms": 214.4
+ },
+ "worst_frame_ms": 664.8,
+ "runtime_pipeline_builds": 15,
+ "flashes_per_min": 0.0,
+ "note": "one GPU thread (EDEN_NX2_SPLIT=0) under the full frame wait: Linux-gap bisect step 1",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

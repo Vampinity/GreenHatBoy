@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run489-x2-walk-fastdraw-exempt-verify",
+ "date": "2026-11-09",
+ "time": "01:12:54",
+ "batch": "t78-x",
+ "test": "x2-walk-fastdraw-exempt-verify",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T78",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 01:06:04)",
+  "eboot_sha256_16": "5e107b98fb705cc3"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 67,
+ "env_hash": "8e727cab17",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 128,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 11.55,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 113.2,
+  "worst_ms": 119.6
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "fast draw + Ocarina exemptions, check mode: mismatches and delta share",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

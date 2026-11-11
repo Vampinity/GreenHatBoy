@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run776-a3-walk-fast-hold-granule16",
+ "date": "2026-11-10",
+ "time": "05:17:49",
+ "batch": "t93-a",
+ "test": "a3-walk-fast-hold-granule16",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T93",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 05:08:27)",
+  "eboot_sha256_16": "c120352d57e24135"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 83,
+ "env_hash": "96be75d4b8",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 127,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.96,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 106.0,
+  "worst_ms": 122.6
+ },
+ "worst_frame_ms": 648.3,
+ "runtime_pipeline_builds": 1,
+ "flashes_per_min": 2.52,
+ "note": "=3 with the guard widened to 16-page granules (64 KiB): for the frame after the cut",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

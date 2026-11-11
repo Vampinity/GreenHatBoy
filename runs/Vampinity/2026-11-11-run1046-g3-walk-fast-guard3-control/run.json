@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1046-g3-walk-fast-guard3-control",
+ "date": "2026-11-11",
+ "time": "04:30:04",
+ "batch": "fps-ahead2b",
+ "test": "g3-walk-fast-guard3-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 86,
+ "env_hash": "cff4eeb322",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 122,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.01,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 114.3,
+  "worst_ms": 128.1
+ },
+ "worst_frame_ms": 152.7,
+ "runtime_pipeline_builds": 2,
+ "flashes_per_min": 0.0,
+ "note": null,
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run719-i3-walk-gbb-everyday",
+ "date": "2026-11-09",
+ "time": "23:04:40",
+ "batch": "t85-i",
+ "test": "i3-walk-gbb-everyday",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T85",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 19:12:23)",
+  "eboot_sha256_16": "8c04000889ae11f4"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 81,
+ "env_hash": "628ae3925b",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 126,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 18.69,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 100.5,
+  "worst_ms": 117.8
+ },
+ "worst_frame_ms": 795.9,
+ "runtime_pipeline_builds": 8,
+ "flashes_per_min": 10.17,
+ "note": "repeat",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

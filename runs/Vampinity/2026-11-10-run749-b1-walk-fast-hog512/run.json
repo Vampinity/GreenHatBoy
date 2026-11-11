@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run749-b1-walk-fast-hog512",
+ "date": "2026-11-10",
+ "time": "03:36:22",
+ "batch": "t88-b",
+ "test": "b1-walk-fast-hog512",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T88",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 03:10:51)",
+  "eboot_sha256_16": "755daff5f50b05b6"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 82,
+ "env_hash": "628ae3925b",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 123,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 18.6,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 108.8,
+  "worst_ms": 133.7
+ },
+ "worst_frame_ms": 627.3,
+ "runtime_pipeline_builds": 6,
+ "flashes_per_min": 5.04,
+ "note": "v2.4-fast with 512 MiB taken out of the pool: does the door run out of memory as on the Pro?",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run916-b1-steer-first-visit",
+ "date": "2026-11-10",
+ "time": "16:34:59",
+ "batch": "t102-b",
+ "test": "b1-steer-first-visit",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T102",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-door-steer-first-visit.txt",
+  "script_sha": "982f14f0d528"
+ },
+ "menu_settings": null,
+ "env_lines": 83,
+ "env_hash": "1644159982",
+ "control": false,
+ "ending": {
+  "kind": "script_stopped",
+  "class": "ok",
+  "seconds": 339,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 209.1,
+ "fps": {
+  "mean": 28.4,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 53.9,
+  "worst_ms": 161.9
+ },
+ "worst_frame_ms": 632.2,
+ "runtime_pipeline_builds": 19,
+ "flashes_per_min": 9.03,
+ "note": "first run ever of the STEER script line: from Link's door through the village to the east path by the minimap; stderr.log: steer_point per point, steer_met at the end or steer_timeout",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

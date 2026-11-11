@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run815-c4-walk-fast-starve",
+ "date": "2026-11-10",
+ "time": "09:00:00",
+ "batch": "t100-c",
+ "test": "c4-walk-fast-starve",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T100",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 08:19:43)",
+  "eboot_sha256_16": "8b1b91d5489d8924"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 83,
+ "env_hash": "798d04db45",
+ "control": false,
+ "ending": {
+  "kind": "system_error",
+  "class": "system-error",
+  "seconds": 75,
+  "crash_app_s": 6.0
+ },
+ "valid": false,
+ "gameplay_s": 0.0,
+ "fps": {
+  "mean": null,
+  "source": null,
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": "the same test shortage with no wait: the refusal reaches the driver's shader compiler; expected to end as owner's crash of 10 Nov (SIGSEGV on a VkPipelineBuilder thread)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "private_word": 1
+ }
+}

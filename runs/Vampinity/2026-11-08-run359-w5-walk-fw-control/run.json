@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run359-w5-walk-fw-control",
+ "date": "2026-11-08",
+ "time": "13:38:57",
+ "batch": "t66-w",
+ "test": "w5-walk-fw-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T66",
+  "commit": "cc27039",
+  "version": "01.219.020 (Nov 8 2026 13:33:48)",
+  "eboot_sha256_16": "257a9b3ab304ec5f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 59,
+ "env_hash": "d1fd91df53",
+ "control": true,
+ "ending": {
+  "kind": "crash",
+  "class": "oom",
+  "seconds": 99,
+  "crash_app_s": 98.3
+ },
+ "valid": false,
+ "gameplay_s": 19.0,
+ "fps": {
+  "mean": null,
+  "source": null,
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": "frame wait as before (crashed 3/3)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

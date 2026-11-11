@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run599-m3-walk-mesh-compute-off",
+ "date": "2026-11-09",
+ "time": "09:05:52",
+ "batch": "t83-m",
+ "test": "m3-walk-mesh-compute-off",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T83",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 07:47:14)",
+  "eboot_sha256_16": "6852dc61e1f93053"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 72,
+ "env_hash": "9e84970302",
+ "control": false,
+ "ending": {
+  "kind": "no_answer",
+  "class": "not-run",
+  "seconds": 206,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": 0.0,
+ "fps": {
+  "mean": null,
+  "source": null,
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "no task/mesh draws at all, like Lichii build-83 on Linux (22-34 fps): is foliage the Linux gap?",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

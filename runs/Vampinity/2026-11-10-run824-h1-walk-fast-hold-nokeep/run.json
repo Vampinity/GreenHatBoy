@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run824-h1-walk-fast-hold-nokeep",
+ "date": "2026-11-10",
+ "time": "09:56:48",
+ "batch": "g107-b",
+ "test": "h1-walk-fast-hold-nokeep",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 82,
+ "env_hash": "2c30701275",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 121,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.74,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 109.1,
+  "worst_ms": 133.4
+ },
+ "worst_frame_ms": 647.7,
+ "runtime_pipeline_builds": 1,
+ "flashes_per_min": 0.0,
+ "note": "guard =3 WITHOUT EDEN_UP_PIPELINE_LIST_KEEP (as every guard run before 07:00, which were mostly clean): is the list-keep switch what brought the 1-4 glitch moments a run since 08:00",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

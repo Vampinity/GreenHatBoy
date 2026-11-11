@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run907-a2-walk-fast-staging-keep128",
+ "date": "2026-11-10",
+ "time": "15:54:34",
+ "batch": "t98-a",
+ "test": "a2-walk-fast-staging-keep128",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T98",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 84,
+ "env_hash": "ecba0f2c43",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 119,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.5,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 108.3,
+  "worst_ms": 126.0
+ },
+ "worst_frame_ms": 656.9,
+ "runtime_pipeline_builds": 6,
+ "flashes_per_min": 2.47,
+ "note": "BC-250 staging: one 128 MiB upload buffer kept from boot (look for \"used for 134217728\" and the buffer upload time at the door)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

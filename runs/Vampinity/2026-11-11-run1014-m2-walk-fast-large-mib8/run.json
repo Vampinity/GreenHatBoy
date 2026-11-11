@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1014-m2-walk-fast-large-mib8",
+ "date": "2026-11-11",
+ "time": "02:01:40",
+ "batch": "t116-k",
+ "test": "m2-walk-fast-large-mib8",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T116",
+  "commit": "6db9343",
+  "version": "01.219.028 (Nov 11 2026 00:02:15)",
+  "eboot_sha256_16": "2815f78aeea2c397"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 85,
+ "env_hash": "e5a875a43a",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 122,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 18.3,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 112.2,
+  "worst_ms": 135.2
+ },
+ "worst_frame_ms": 185.6,
+ "runtime_pipeline_builds": 2,
+ "flashes_per_min": 5.04,
+ "note": null,
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

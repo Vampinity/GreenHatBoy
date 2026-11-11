@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run940-c2-stand8-shader-set-layout2",
+ "date": "2026-11-10",
+ "time": "20:38:38",
+ "batch": "t110-s",
+ "test": "c2-stand8-shader-set-layout2",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T110",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 20:30:16)",
+  "eboot_sha256_16": "198c006743a887ba"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-continue-stand-long-wait.txt",
+  "script_sha": "37876171ce7b"
+ },
+ "menu_settings": null,
+ "env_lines": 81,
+ "env_hash": "e79973d28b",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 588,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 490.0,
+ "fps": {
+  "mean": 21.47,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 64.8,
+  "worst_ms": 77.0
+ },
+ "worst_frame_ms": 702.4,
+ "runtime_pipeline_builds": 0,
+ "flashes_per_min": 0.0,
+ "note": "second boot: \"reusing ... its stamp holds\", preparation goes on from the file, audit in the house; any \"no generated records used\" or a crash here = the layout 2 reader is wrong",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run396-c2-walk-gbb-env",
+ "date": "2026-11-08",
+ "time": "18:10:05",
+ "batch": "t69-c",
+ "test": "c2-walk-gbb-env",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T69",
+  "commit": "e7b17e4",
+  "version": "01.219.020 (Nov 8 2026 14:57:32)",
+  "eboot_sha256_16": "b65e291b1b7a5c3e"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 54,
+ "env_hash": "4f36ac4cc3",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 122,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 16.55,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 153.3,
+  "worst_ms": 168.0
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 47.62,
+ "note": "GBB's everyday env as is (no frame wait, no lone mesh draws)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

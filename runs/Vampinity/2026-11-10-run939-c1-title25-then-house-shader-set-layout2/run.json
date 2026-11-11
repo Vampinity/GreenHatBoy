@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run939-c1-title25-then-house-shader-set-layout2",
+ "date": "2026-11-10",
+ "time": "20:38:38",
+ "batch": "t110-s",
+ "test": "c1-title25-then-house-shader-set-layout2",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T110",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 20:30:16)",
+  "eboot_sha256_16": "198c006743a887ba"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-title-25min-then-stand.txt",
+  "script_sha": "203ff616b8aa"
+ },
+ "menu_settings": null,
+ "env_lines": 81,
+ "env_hash": "e79973d28b",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 1975,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 370.0,
+ "fps": {
+  "mean": 21.12,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 65.9,
+  "worst_ms": 105.4
+ },
+ "worst_frame_ms": 801.2,
+ "runtime_pipeline_builds": 41,
+ "flashes_per_min": 0.16,
+ "note": "T110: shader set with records layout 2 (each program stored once): the old stamp does not hold, so it converts again; read \"N facts and M programs stored once, X MB in all; S s\", \"written ... with its stamp\", the preparation line, then the audit in Link's house (T108: programs 511 of 541 in the set, pipelines 0 of 426 hit)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

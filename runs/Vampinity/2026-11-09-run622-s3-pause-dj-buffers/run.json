@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run622-s3-pause-dj-buffers",
+ "date": "2026-11-09",
+ "time": "10:32:51",
+ "batch": "t83-s",
+ "test": "s3-pause-dj-buffers",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T83",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 07:47:14)",
+  "eboot_sha256_16": "6852dc61e1f93053"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-door-pause-exits.txt",
+  "script_sha": "806c963802ea"
+ },
+ "menu_settings": null,
+ "env_lines": 76,
+ "env_hash": "296e0f1d8a",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 206,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 110.6,
+ "fps": {
+  "mean": 25.06,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 87.2,
+  "worst_ms": 436.9
+ },
+ "worst_frame_ms": 665.9,
+ "runtime_pipeline_builds": 11,
+ "flashes_per_min": 0.0,
+ "note": "Djihads80 channel ids + gather owners (buffer deletion paths the pause eviction exercises)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

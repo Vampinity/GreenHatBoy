@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run738-b3-walk-fast-overwrite-check",
+ "date": "2026-11-10",
+ "time": "02:38:22",
+ "batch": "t86-b",
+ "test": "b3-walk-fast-overwrite-check",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T86",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 01:29:38)",
+  "eboot_sha256_16": "5602e478fcef3fc0"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 82,
+ "env_hash": "3cd6dd40d5",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 124,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.6,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 113.2,
+  "worst_ms": 132.5
+ },
+ "worst_frame_ms": 612.1,
+ "runtime_pipeline_builds": 6,
+ "flashes_per_min": 7.44,
+ "note": "repeat of b1",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

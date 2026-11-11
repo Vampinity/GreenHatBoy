@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run746-a3-walk-fast-copy-always",
+ "date": "2026-11-10",
+ "time": "03:18:12",
+ "batch": "t88-a",
+ "test": "a3-walk-fast-copy-always",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T88",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 03:10:51)",
+  "eboot_sha256_16": "755daff5f50b05b6"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 83,
+ "env_hash": "dd19d6611b",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 118,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.25,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 115.9,
+  "worst_ms": 126.7
+ },
+ "worst_frame_ms": 617.3,
+ "runtime_pipeline_builds": 7,
+ "flashes_per_min": 16.28,
+ "note": "as a2 + EDEN_UP_AHEAD_ALWAYS: every present returns once the previous frame is done",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

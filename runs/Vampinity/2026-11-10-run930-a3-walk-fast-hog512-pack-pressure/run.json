@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run930-a3-walk-fast-hog512-pack-pressure",
+ "date": "2026-11-10",
+ "time": "19:29:44",
+ "batch": "t105-a",
+ "test": "a3-walk-fast-hog512-pack-pressure",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T105",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 13:59:51)",
+  "eboot_sha256_16": "2bb7e77facfee6fd"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 85,
+ "env_hash": "ab49c32945",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 142,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.7,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 117.5,
+  "worst_ms": 145.5
+ },
+ "worst_frame_ms": 651.8,
+ "runtime_pipeline_builds": 4,
+ "flashes_per_min": 0.0,
+ "note": "C: B + EDEN_UP_PACK_PRESSURE_MS=250: packs slots untouched for 4 s while the largest free block is under 2560 MiB; read out, freed, pool_largest before the door; came_in must not jump. STOP the pack tests at once on \"could not be unpacked\" or \"store closed: N slabs were still held\" with N above 0",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

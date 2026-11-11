@@ -1,0 +1,50 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1070-live-prof-heavy",
+ "date": "2026-11-11",
+ "time": "08:14:42",
+ "batch": "live-prof-heavy",
+ "test": "live-prof-heavy",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "batch-live-prof-heavy-zelda-owner-spot-tunnel-mouth.txt",
+  "script_sha": "40299f29343e"
+ },
+ "menu_settings": null,
+ "env_lines": 93,
+ "env_hash": "5228ac5f00",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 256,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": 160.0,
+ "fps": {
+  "mean": 28.61,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 42.7,
+  "worst_ms": 138.7
+ },
+ "worst_frame_ms": 306.5,
+ "runtime_pipeline_builds": 31,
+ "flashes_per_min": null,
+ "note": "Back-thread profile at the HEAVY spot (past the tunnel mouth, about 3000 draws a frame): EDEN_NX2_GPU_PROFILE=1, tracker on, standing. [live A/A: no switch changes, the noise between phases]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1,
+  "private_word": 1
+ }
+}

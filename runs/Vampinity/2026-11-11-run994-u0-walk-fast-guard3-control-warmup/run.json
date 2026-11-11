@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run994-u0-walk-fast-guard3-control-warmup",
+ "date": "2026-11-11",
+ "time": "00:47:59",
+ "batch": "t114-g1",
+ "test": "u0-walk-fast-guard3-control-warmup",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T114",
+  "commit": "277c89c",
+  "version": "01.219.028 (Nov 10 2026 23:26:29)",
+  "eboot_sha256_16": "f5cdc8836199ce11"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 83,
+ "env_hash": "1644159982",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 122,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.85,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 110.9,
+  "worst_ms": 128.6
+ },
+ "worst_frame_ms": 206.6,
+ "runtime_pipeline_builds": 7,
+ "flashes_per_min": 7.56,
+ "note": "guard =3 with and without GBB's two new switches (NaN guard + invariant position; no pipeline key change, so a fair pair as it stands). u0 and v0 are WARM-UPS (new build), not judged; then control / two, twice. On T112: guard control glitched in 2 of 2 runs (2 dark moments each), guard + all four in 0 of 2 but 2 fps slower. Judge with check.py.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

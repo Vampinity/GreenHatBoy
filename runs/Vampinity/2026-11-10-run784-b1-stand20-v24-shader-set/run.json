@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run784-b1-stand20-v24-shader-set",
+ "date": "2026-11-10",
+ "time": "05:54:46",
+ "batch": "t94-b",
+ "test": "b1-stand20-v24-shader-set",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T94",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 05:08:27)",
+  "eboot_sha256_16": "c120352d57e24135"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-continue-stand-20min-wait.txt",
+  "script_sha": "6f3201ed0bb7"
+ },
+ "menu_settings": null,
+ "env_lines": 78,
+ "env_hash": "01c42bf231",
+ "control": false,
+ "ending": {
+  "kind": "interrupted",
+  "class": "not-run",
+  "seconds": 163,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": 103.9,
+ "fps": {
+  "mean": 21.71,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 64.7,
+  "worst_ms": 76.1
+ },
+ "worst_frame_ms": 683.2,
+ "runtime_pipeline_builds": 5,
+ "flashes_per_min": 0.0,
+ "note": "shader set run B boot 1: recipe read, programs extracted from the game files in the background, records converted, first 5000 prepared; stand 20 min",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1097-live-heavy-stand-s1",
+ "date": "2026-11-11",
+ "time": "11:17:03",
+ "batch": "live-heavy-stand-s",
+ "test": "live-heavy-stand-s1",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 11 2026 10:11:51)",
+  "eboot_sha256_16": "218add9a22284c24"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "batch-live-heavy-stand-s-zelda-steer-tunnel-mouth.txt",
+  "script_sha": "ed8a2a8c84fc"
+ },
+ "menu_settings": null,
+ "env_lines": 92,
+ "env_hash": "2acbc78d17",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 267,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 163.1,
+ "fps": {
+  "mean": 18.31,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 66.0,
+  "worst_ms": 202.1
+ },
+ "worst_frame_ms": 202.1,
+ "runtime_pipeline_builds": 19,
+ "flashes_per_min": 5.71,
+ "note": "Standing at the HEAVY spot (steered walk), no switch flipped: one fps number per start for comparing BUILDS where the back thread is the wall (T122 against T124 ThinLTO, and T125). Tracker on, statistics on. Check a frame: village and water in view. [live A/A: no switch changes, the noise between phases]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

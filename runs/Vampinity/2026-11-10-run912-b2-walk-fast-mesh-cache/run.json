@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run912-b2-walk-fast-mesh-cache",
+ "date": "2026-11-10",
+ "time": "16:14:45",
+ "batch": "t92-b",
+ "test": "b2-walk-fast-mesh-cache",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T92",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 82,
+ "env_hash": "bea757a3ed",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 141,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 15.5,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 124.7,
+  "worst_ms": 134.1
+ },
+ "worst_frame_ms": 752.1,
+ "runtime_pipeline_builds": 1,
+ "flashes_per_min": 5.02,
+ "note": "EDEN_UP_MESH_CACHE: every vulkan_mesh.bin record built at boot",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

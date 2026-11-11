@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run802-a5-walk-fast-hold-loadwait",
+ "date": "2026-11-10",
+ "time": "08:03:45",
+ "batch": "t100-a",
+ "test": "a5-walk-fast-hold-loadwait",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T100",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 07:20:09)",
+  "eboot_sha256_16": "37716ff7bb7ff74d"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 84,
+ "env_hash": "bd39937c79",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 120,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.54,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 113.8,
+  "worst_ms": 138.6
+ },
+ "worst_frame_ms": 690.6,
+ "runtime_pipeline_builds": 4,
+ "flashes_per_min": 0.0,
+ "note": "as the control + EDEN_UP_AHEAD_LOAD_WAIT: full wait around the black before the cut and 700 ms after; the cut should be clean every time, fps as the control",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

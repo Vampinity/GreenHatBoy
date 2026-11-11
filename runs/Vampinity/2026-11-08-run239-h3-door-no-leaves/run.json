@@ -1,0 +1,50 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run239-h3-door-no-leaves",
+ "date": "2026-11-08",
+ "time": "01:03:57",
+ "batch": "t56-h",
+ "test": "h3-door-no-leaves",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T56",
+  "commit": "f5e7c39",
+  "version": "01.219.020 (Nov 8 2026 00:36:58)",
+  "eboot_sha256_16": null
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door.txt",
+  "script_sha": "24f901d5a7ff"
+ },
+ "menu_settings": null,
+ "env_lines": 48,
+ "env_hash": "730712eb66",
+ "control": false,
+ "ending": {
+  "kind": "time_limit",
+  "class": "ok",
+  "seconds": 202,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 91.0,
+ "fps": {
+  "mean": 19.79,
+  "source": "heap.log EDEN_VULKAN_FRAME 5 s windows",
+  "p99_ms": null,
+  "worst_ms": 209.605
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 13.19,
+ "note": "owner's idea: leaves and plants (lone mesh draws) cost memory; does the door pass without them?",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1,
+  "private_word": 1
+ }
+}

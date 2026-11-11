@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run399-c5-walk-fw-gbb-speed-lean",
+ "date": "2026-11-08",
+ "time": "18:10:05",
+ "batch": "t69-c",
+ "test": "c5-walk-fw-gbb-speed-lean",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T69",
+  "commit": "e7b17e4",
+  "version": "01.219.020 (Nov 8 2026 14:57:32)",
+  "eboot_sha256_16": "b65e291b1b7a5c3e"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 54,
+ "env_hash": "19bac53a91",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 123,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 10.1,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 380.3,
+  "worst_ms": 649.4
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 11.36,
+ "note": "same, minus our diagnostic logging",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

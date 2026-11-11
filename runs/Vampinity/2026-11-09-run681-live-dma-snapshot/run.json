@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run681-live-dma-snapshot",
+ "date": "2026-11-09",
+ "time": "20:03:33",
+ "batch": "live-dma-snapshot",
+ "test": "live-dma-snapshot",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 19:12:23)",
+  "eboot_sha256_16": "8c04000889ae11f4"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "batch-live-dma-snapshot-zelda-continue-stand-fast-wait.txt",
+  "script_sha": "fc0aeb04d020"
+ },
+ "menu_settings": null,
+ "env_lines": 75,
+ "env_hash": "37bc244223",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 434,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 343.0,
+ "fps": {
+  "mean": 17.84,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 76.2,
+  "worst_ms": 85.5
+ },
+ "worst_frame_ms": 733.4,
+ "runtime_pipeline_builds": 2,
+ "flashes_per_min": 0.0,
+ "note": "[live A: EDEN_NX2_DMA_SNAPSHOT=1; B: EDEN_NX2_DMA_SNAPSHOT=0]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run664-g2-walk-table-ssbo",
+ "date": "2026-11-09",
+ "time": "18:35:04",
+ "batch": "t84-g",
+ "test": "g2-walk-table-ssbo",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T84",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 11:20:06)",
+  "eboot_sha256_16": "7a8a495119102495"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 77,
+ "env_hash": "fa32e3baeb",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 134,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 15.0,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 98.8,
+  "worst_ms": 112.5
+ },
+ "worst_frame_ms": 661.4,
+ "runtime_pipeline_builds": 12,
+ "flashes_per_min": 0.0,
+ "note": "confirm t84-d4 (+1.6 fps): table charge + 64 graphics SSBOs + wide compute SSBOs",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

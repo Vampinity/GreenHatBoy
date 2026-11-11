@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run457-n3-newgame-movie-nopace",
+ "date": "2026-11-08",
+ "time": "22:44:51",
+ "batch": "t74-n",
+ "test": "n3-newgame-movie-nopace",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T74",
+  "commit": null,
+  "version": "01.219.028 (Nov 8 2026 22:26:30)",
+  "eboot_sha256_16": "c0936db656499b2c"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-full-wait.txt",
+  "script_sha": "51ec784097bd"
+ },
+ "menu_settings": null,
+ "env_lines": 63,
+ "env_hash": "6a2d278264",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 296,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 42.2,
+ "fps": {
+  "mean": 10.97,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 183.6,
+  "worst_ms": 336.6
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "feed fixes without pacing",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

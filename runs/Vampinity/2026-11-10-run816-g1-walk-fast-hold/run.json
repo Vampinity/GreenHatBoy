@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run816-g1-walk-fast-hold",
+ "date": "2026-11-10",
+ "time": "09:21:42",
+ "batch": "g95-a",
+ "test": "g1-walk-fast-hold",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 05:42:45)",
+  "eboot_sha256_16": "9569288c7454dadd"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 83,
+ "env_hash": "1644159982",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 124,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 15.75,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 118.9,
+  "worst_ms": 125.7
+ },
+ "worst_frame_ms": 630.8,
+ "runtime_pipeline_builds": 3,
+ "flashes_per_min": 2.5,
+ "note": "guard =3 on the OLD build T95 under today's conditions (list keep on): is the guard still as clean as on 10 Nov 06:00 (0-1 single frames a run), or do the 2-4 moments a run of T100/T104 show here too",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

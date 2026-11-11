@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run920-a3-walk-fast-hold-astc64",
+ "date": "2026-11-10",
+ "time": "16:50:19",
+ "batch": "t102-a",
+ "test": "a3-walk-fast-hold-astc64",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T102",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 85,
+ "env_hash": "9ef7e5fc4e",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 125,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.08,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 115.9,
+  "worst_ms": 130.6
+ },
+ "worst_frame_ms": 706.9,
+ "runtime_pipeline_builds": 4,
+ "flashes_per_min": 5.13,
+ "note": "EDEN_UP_ASTC_BATCH_MIB=64: the big ASTC texture decoded on the GPU in row bands (about 56 MiB peak instead of 240); the 6144 over-budget and out-of-memory lines should go; look at the ground",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

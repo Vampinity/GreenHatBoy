@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1053-control2-stand-tracker",
+ "date": "2026-11-11",
+ "time": "05:10:09",
+ "batch": "stand-tracker",
+ "test": "control2-stand-tracker",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "batch-live-stand-tracker-control-zelda-newgame-door-wait.txt",
+  "script_sha": "01844020085a"
+ },
+ "menu_settings": null,
+ "env_lines": 87,
+ "env_hash": "a3d2bcd87c",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 286,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 197.1,
+ "fps": {
+  "mean": 23.2,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 77.1,
+  "worst_ms": 356.5
+ },
+ "worst_frame_ms": 356.5,
+ "runtime_pipeline_builds": 2,
+ "flashes_per_min": 1.71,
+ "note": "Standing starts at the village: 6 identical 20 s phases per start, one number per start, 3 starts per arm in turn. Arms: control: the base env; tracker: EDEN_UP_FRITCHII_USAGE_TRACKER=1. Judge with boot-means.py on the batch folder. Why: the live plan at the village gave the tracker +1.45 fps (11 Nov 04:52), its first phase higher than its second; a start with it on from boot shows the lasting gain, and the door walk in front gives the glitch runs (check.py).",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

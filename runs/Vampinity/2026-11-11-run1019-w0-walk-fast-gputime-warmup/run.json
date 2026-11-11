@@ -1,0 +1,50 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1019-w0-walk-fast-gputime-warmup",
+ "date": "2026-11-11",
+ "time": "02:30:06",
+ "batch": "t119-w",
+ "test": "w0-walk-fast-gputime-warmup",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T119",
+  "commit": "5f49ec7",
+  "version": "01.219.028 (Nov 11 2026 02:12:00)",
+  "eboot_sha256_16": "cadd11c668d5ac64"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 84,
+ "env_hash": "ab0e4ff3a6",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 128,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.95,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 110.2,
+  "worst_ms": 131.5
+ },
+ "worst_frame_ms": 153.4,
+ "runtime_pipeline_builds": 2,
+ "flashes_per_min": 0.0,
+ "note": "T119 = T118 + the live test bench (0546-0548). First boots of the build, and the gate before owner plays it. w0: WARM-UP of the shader store the live plans use (play env v2.5-fast + EDEN_GPU_TIME=1), not judged. kw: WARM-UP of the plain fast store, not judged. k1, k2: the control env of batch t116-k, line for line (play env v2.5-fast + the memory census), so they are read against t116-k's three controls on T116 from the same hour: fps in the door walk and the fly-over, and check.py's glitch runs. T119 passes if both are inside what the T116 controls show and nothing new crashes.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1,
+  "private_word": 1
+ }
+}

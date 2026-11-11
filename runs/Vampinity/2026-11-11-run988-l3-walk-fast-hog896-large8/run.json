@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run988-l3-walk-fast-hog896-large8",
+ "date": "2026-11-11",
+ "time": "00:05:42",
+ "batch": "t114-b",
+ "test": "l3-walk-fast-hog896-large8",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T114",
+  "commit": "277c89c",
+  "version": "01.219.028 (Nov 10 2026 23:26:29)",
+  "eboot_sha256_16": "f5cdc8836199ce11"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 86,
+ "env_hash": "e5a875a43a",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 124,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 9.87,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 891.3,
+  "worst_ms": 1189.8
+ },
+ "worst_frame_ms": 1189.8,
+ "runtime_pipeline_builds": 5,
+ "flashes_per_min": 2.19,
+ "note": null,
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

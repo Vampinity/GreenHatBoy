@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run545-c4-walk-fast-lookup",
+ "date": "2026-11-09",
+ "time": "04:15:35",
+ "batch": "t81-c",
+ "test": "c4-walk-fast-lookup",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T81",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 04:08:04)",
+  "eboot_sha256_16": "76922bbb4a37a339"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 72,
+ "env_hash": "87aca9ebb8",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 127,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 13.9,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 105.6,
+  "worst_ms": 108.4
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "Lichii PR 717 fast name lookup alone (byte-identical to upstream; 14M-case check passed; not verified against the game binary): watch missing assets / early crash; valid only with the 'Applying built-in patch' boot line [base: v2.1 docked]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

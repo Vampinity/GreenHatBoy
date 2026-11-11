@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run441-m1-2-title-busy",
+ "date": "2026-11-08",
+ "time": "21:40:43",
+ "batch": "t73-movie-m1",
+ "test": "m1-2-title-busy",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T73",
+  "commit": null,
+  "version": "01.219.028 (Nov 8 2026 21:33:37)",
+  "eboot_sha256_16": "5ecb8af78ed824e6"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-title-movie-watch.txt",
+  "script_sha": "d06d9077600e"
+ },
+ "menu_settings": null,
+ "env_lines": 61,
+ "env_hash": "854a5dc756",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 218,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 160.0,
+ "fps": {
+  "mean": 59.94,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 20.7,
+  "worst_ms": 34.0
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 22.87,
+ "note": "refuse packets busy from 24 queued (Lichii #659/#809)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

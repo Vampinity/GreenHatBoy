@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run729-k1-village-stand8-v24",
+ "date": "2026-11-10",
+ "time": "01:28:22",
+ "batch": "t85-k",
+ "test": "k1-village-stand8-v24",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T85",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 19:12:23)",
+  "eboot_sha256_16": "8c04000889ae11f4"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-continue-stand-long-wait.txt",
+  "script_sha": "37876171ce7b"
+ },
+ "menu_settings": null,
+ "env_lines": 76,
+ "env_hash": "4ec6e8c845",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 583,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 490.0,
+ "fps": {
+  "mean": 21.75,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 64.4,
+  "worst_ms": 72.7
+ },
+ "worst_frame_ms": 671.7,
+ "runtime_pipeline_builds": 6,
+ "flashes_per_min": 0.0,
+ "note": "v2.4: stand 8 min in the village (memory curve)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

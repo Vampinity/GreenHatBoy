@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run232-g3-control",
+ "date": "2026-11-08",
+ "time": "00:34:00",
+ "batch": "t54-g2",
+ "test": "g3-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T54",
+  "commit": "42a7b23",
+  "version": "01.219.020 (Nov 7 2026 23:08:59)",
+  "eboot_sha256_16": null
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-continue-stand-fast.txt",
+  "script_sha": "248e248a0c05"
+ },
+ "menu_settings": null,
+ "env_lines": 49,
+ "env_hash": "431d1328a4",
+ "control": true,
+ "ending": {
+  "kind": "time_limit",
+  "class": "ok",
+  "seconds": 146,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": 26.9,
+ "fps": {
+  "mean": null,
+  "source": null,
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "control 2",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

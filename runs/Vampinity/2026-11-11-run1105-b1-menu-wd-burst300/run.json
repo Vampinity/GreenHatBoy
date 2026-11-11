@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1105-b1-menu-wd-burst300",
+ "date": "2026-11-11",
+ "time": "11:51:11",
+ "batch": "t125-menu",
+ "test": "b1-menu-wd-burst300",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T125",
+  "commit": "69c9cfa",
+  "version": "01.219.028 (Nov 11 2026 10:11:51)",
+  "eboot_sha256_16": "218add9a22284c24"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-field-menu-cycles.txt",
+  "script_sha": "c1fe16677876"
+ },
+ "menu_settings": null,
+ "env_lines": 107,
+ "env_hash": "cbbaa072a1",
+ "control": false,
+ "ending": {
+  "kind": "time_limit",
+  "class": "ok",
+  "seconds": 274,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": 155.6,
+ "fps": {
+  "mean": 43.1,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 113.8,
+  "worst_ms": 488.0
+ },
+ "worst_frame_ms": 488.0,
+ "runtime_pipeline_builds": 0,
+ "flashes_per_min": null,
+ "note": "T125, six menu cycles, his preset plus EDEN_NX2_AREA_EVICT_BURST=300 (the stopgap named in the reply to him).",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

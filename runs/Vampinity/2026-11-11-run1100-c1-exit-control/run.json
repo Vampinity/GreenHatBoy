@@ -1,0 +1,50 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1100-c1-exit-control",
+ "date": "2026-11-11",
+ "time": "11:28:16",
+ "batch": "t125-exit",
+ "test": "c1-exit-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T125",
+  "commit": "69c9cfa",
+  "version": "01.219.028 (Nov 11 2026 10:11:51)",
+  "eboot_sha256_16": "218add9a22284c24"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-owner-forest-exit-crash1.txt",
+  "script_sha": "356ef27430be"
+ },
+ "menu_settings": null,
+ "env_lines": 85,
+ "env_hash": "ed89c86096",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 218,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 109.1,
+ "fps": {
+  "mean": 34.38,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 45.7,
+  "worst_ms": 259.2
+ },
+ "worst_frame_ms": 259.2,
+ "runtime_pipeline_builds": 15,
+ "flashes_per_min": 17.03,
+ "note": "T125, the same route with his switches off (play env + our census): the control of this batch.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1,
+  "private_word": 1
+ }
+}

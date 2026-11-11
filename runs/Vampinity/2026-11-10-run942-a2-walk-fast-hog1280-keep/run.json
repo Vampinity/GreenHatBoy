@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run942-a2-walk-fast-hog1280-keep",
+ "date": "2026-11-10",
+ "time": "21:29:54",
+ "batch": "t103-a",
+ "test": "a2-walk-fast-hog1280-keep",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T103",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 20:30:16)",
+  "eboot_sha256_16": "198c006743a887ba"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 86,
+ "env_hash": "d7b8f485b8",
+ "control": false,
+ "ending": {
+  "kind": "crash",
+  "class": "oom",
+  "seconds": 90,
+  "crash_app_s": 89.8
+ },
+ "valid": false,
+ "gameplay_s": 16.3,
+ "fps": {
+  "mean": null,
+  "source": null,
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": 650.6,
+ "runtime_pipeline_builds": 3,
+ "flashes_per_min": null,
+ "note": "as the control + EDEN_UP_TC_KEEP_REMADE: the 6144 kept once (KEEP_REMADE: keeping), its decode warning at most once, fewer Out of device memory lines, survives where the control ends",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

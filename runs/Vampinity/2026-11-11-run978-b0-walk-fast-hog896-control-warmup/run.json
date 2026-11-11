@@ -1,0 +1,50 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run978-b0-walk-fast-hog896-control-warmup",
+ "date": "2026-11-11",
+ "time": "00:05:42",
+ "batch": "t114-b",
+ "test": "b0-walk-fast-hog896-control-warmup",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T114",
+  "commit": "277c89c",
+  "version": "01.219.028 (Nov 10 2026 23:26:29)",
+  "eboot_sha256_16": "f5cdc8836199ce11"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 85,
+ "env_hash": "354f8351ef",
+ "control": true,
+ "ending": {
+  "kind": "crash",
+  "class": "oom",
+  "seconds": 113,
+  "crash_app_s": 111.8
+ },
+ "valid": false,
+ "gameplay_s": 23.3,
+ "fps": {
+  "mean": 2.5,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 3055.6,
+  "worst_ms": 3055.6
+ },
+ "worst_frame_ms": 3055.6,
+ "runtime_pipeline_builds": 3,
+ "flashes_per_min": 5.71,
+ "note": "T114 under a memory hog (memory taken away on purpose so a short door walk runs into the shortage of owner's crashes). hogcal on T112, same walk, no fix: 640 MiB survived, 768 crashed at 108 s, 896 crashed once at 108 s and survived once (48 MiB left), 1024 crashed at 96 s. At 896, 3 runs each: control (play env v2.5-fast + hog + census) / EDEN_HEAP_LARGE_MIB=8 / EDEN_HEAP_LARGE_KIB=256 (waveydude's better setting on a base PS5: free memory after loading Kokiri from about 200 MiB to 1.9 GiB, 0 graphics refusals against 100+) / KIB=256 + EDEN_UP_HEAP_WAIT_GPU_MS=300 + EDEN_UP_SWAP_OUT_WHILE_BACK=1. One pair at 1024: control against the full set. b0 is a WARM-UP, not judged. T114's control already has waveydude's always-on parts, so compare its endings with hogcal's T112 runs too. Read per run: ending and seconds of play, largest free block and 'heap' MiB in the 20 s lines, EDEN_HEAP_MID (taken, refused, large_entries: his table of 1,024 own blocks was full at the Town gate with KIB=256) and EDEN_HEAP_CLASSES, 'EDEN_RADV_OUT_OF_MEMORY', 'radv/ps5: no memory for', 'No memory to build', EDEN_HEAP_WAIT / EDEN_HEAP_WAIT_GPU, 'EDEN_SWAP n long-cold slot(s) went out', fps against the control.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1,
+  "private_word": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run598-m2-walk-lone-mesh-off",
+ "date": "2026-11-09",
+ "time": "09:05:52",
+ "batch": "t83-m",
+ "test": "m2-walk-lone-mesh-off",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T83",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 07:47:14)",
+  "eboot_sha256_16": "6852dc61e1f93053"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 74,
+ "env_hash": "b8b54ab9f7",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 137,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 14.4,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 96.0,
+  "worst_ms": 97.3
+ },
+ "worst_frame_ms": 633.2,
+ "runtime_pipeline_builds": 2,
+ "flashes_per_min": 0.0,
+ "note": "lone mesh draws (leaves/plants) not drawn: EDEN_NX2_RADV_MESH_COMPUTE_LONE=0",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

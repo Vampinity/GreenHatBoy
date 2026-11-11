@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run937-b5-walk-fast-hog1152-vmatrim",
+ "date": "2026-11-10",
+ "time": "19:51:01",
+ "batch": "t105-b",
+ "test": "b5-walk-fast-hog1152-vmatrim",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T105",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 13:59:51)",
+  "eboot_sha256_16": "2bb7e77facfee6fd"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 86,
+ "env_hash": "62853a38a2",
+ "control": false,
+ "ending": {
+  "kind": "crash",
+  "class": "oom",
+  "seconds": 91,
+  "crash_app_s": 91.2
+ },
+ "valid": false,
+ "gameplay_s": 17.1,
+ "fps": {
+  "mean": null,
+  "source": null,
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": 664.2,
+ "runtime_pipeline_builds": 1,
+ "flashes_per_min": null,
+ "note": "repeat of B",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

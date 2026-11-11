@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run954-m2-walk-fast-four",
+ "date": "2026-11-10",
+ "time": "22:34:24",
+ "batch": "t112-n",
+ "test": "m2-walk-fast-four",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T112",
+  "commit": "d316be4",
+  "version": "01.219.028 (Nov 10 2026 22:20:36)",
+  "eboot_sha256_16": "768fe3f4740ac0b7"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 86,
+ "env_hash": "a261bb076f",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 123,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 16.2,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 169.2,
+  "worst_ms": 223.5
+ },
+ "worst_frame_ms": 624.1,
+ "runtime_pipeline_builds": 76,
+ "flashes_per_min": 2.39,
+ "note": null,
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

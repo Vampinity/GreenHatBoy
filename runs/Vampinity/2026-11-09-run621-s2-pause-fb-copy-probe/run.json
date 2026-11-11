@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run621-s2-pause-fb-copy-probe",
+ "date": "2026-11-09",
+ "time": "10:32:51",
+ "batch": "t83-s",
+ "test": "s2-pause-fb-copy-probe",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T83",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 07:47:14)",
+  "eboot_sha256_16": "6852dc61e1f93053"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-door-pause-exits.txt",
+  "script_sha": "806c963802ea"
+ },
+ "menu_settings": null,
+ "env_lines": 77,
+ "env_hash": "092ca1932b",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 211,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 110.6,
+ "fps": {
+  "mean": 25.23,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 80.3,
+  "worst_ms": 366.1
+ },
+ "worst_frame_ms": 658.7,
+ "runtime_pipeline_builds": 35,
+ "flashes_per_min": 0.0,
+ "note": "Lichii #427 FB limits (inert here: needs the intro-movie route), #805 copy barrier, #351 probe clamp",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run741-a3-walk-fast-guard-always",
+ "date": "2026-11-10",
+ "time": "02:54:44",
+ "batch": "t87-a",
+ "test": "a3-walk-fast-guard-always",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T87",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 02:51:36)",
+  "eboot_sha256_16": "c37d5c3d0eefd15d"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 83,
+ "env_hash": "7f9243da3e",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 120,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 13.15,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 95.8,
+  "worst_ms": 100.0
+ },
+ "worst_frame_ms": 693.0,
+ "runtime_pipeline_builds": 5,
+ "flashes_per_min": 0.0,
+ "note": "as a2 + EDEN_UP_AHEAD_ALWAYS: every present returns once the previous frame is done",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

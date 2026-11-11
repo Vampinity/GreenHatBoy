@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run765-a2-walk-fast-hold",
+ "date": "2026-11-10",
+ "time": "04:36:33",
+ "batch": "t91-a",
+ "test": "a2-walk-fast-hold",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T91",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 04:27:38)",
+  "eboot_sha256_16": "7b65a56dcba6d27f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 82,
+ "env_hash": "2c30701275",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 124,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.14,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 110.3,
+  "worst_ms": 132.4
+ },
+ "worst_frame_ms": 629.8,
+ "runtime_pipeline_builds": 2,
+ "flashes_per_min": 0.0,
+ "note": "v2.4-fast + ahead guard =3: copies, and guest writes made while the guard is up are applied after its fence",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

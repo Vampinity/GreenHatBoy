@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run572-k1-walk-v22-control",
+ "date": "2026-11-09",
+ "time": "06:33:44",
+ "batch": "t82-k",
+ "test": "k1-walk-v22-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T82",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 05:31:49)",
+  "eboot_sha256_16": "029293280a76d935"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 74,
+ "env_hash": "35f58d4b5b",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 131,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 14.1,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 120.8,
+  "worst_ms": 143.1
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "v2.2 + slow-frame log [base: v2.2 docked]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

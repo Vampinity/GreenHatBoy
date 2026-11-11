@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run894-r4-walk-nx2-flush-draws-512",
+ "date": "2026-11-10",
+ "time": "14:51:38",
+ "batch": "ovl-20261110-1",
+ "test": "r4-walk-nx2-flush-draws-512",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 82,
+ "env_hash": "322ba00d6b",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 134,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.4,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 158.0,
+  "worst_ms": 165.2
+ },
+ "worst_frame_ms": 648.1,
+ "runtime_pipeline_builds": 7,
+ "flashes_per_min": 9.23,
+ "note": "EDEN_NX2_FLUSH_DRAWS=512: flush native commands every 512 draws instead of 128 (vk_rasterizer.cpp:3069, read 32-1048576; Fritchii calls 128 MoltenVK-tuned, F vk_rasterizer.cpp:3548; the BC-250 fork uses 512 on RADV). Only the 4096 bundle ran before (t83-e, full wait). fps arm vs r1/r5",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

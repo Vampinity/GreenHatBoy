@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1027-k2-walk-fast-census-control",
+ "date": "2026-11-11",
+ "time": "03:00:16",
+ "batch": "t120-w",
+ "test": "k2-walk-fast-census-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 84,
+ "env_hash": "354f8351ef",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 123,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.46,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 115.5,
+  "worst_ms": 136.1
+ },
+ "worst_frame_ms": 150.6,
+ "runtime_pipeline_builds": 5,
+ "flashes_per_min": 0.0,
+ "note": null,
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

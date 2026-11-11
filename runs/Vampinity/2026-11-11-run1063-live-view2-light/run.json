@@ -1,0 +1,50 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1063-live-view2-light",
+ "date": "2026-11-11",
+ "time": "07:06:51",
+ "batch": "live-view2-light",
+ "test": "live-view2-light",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "batch-live-view2-light-zelda-owner-spot-ravine.txt",
+  "script_sha": "d1262c0596e4"
+ },
+ "menu_settings": null,
+ "env_lines": 91,
+ "env_hash": "5eb4c8d9c8",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 247,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 151.0,
+ "fps": {
+  "mean": 36.45,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 34.3,
+  "worst_ms": 148.0
+ },
+ "worst_frame_ms": 208.5,
+ "runtime_pipeline_builds": 27,
+ "flashes_per_min": 0.0,
+ "note": "fps by view, second try (the first replay lost owner's camera turn before the walk and ran Link into a rock): the LIGHT spot, the dark ravine path, standing, identical phases, GPU_TIME and statistics on. [live A/A: no switch changes, the noise between phases]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1,
+  "private_word": 2
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run393-b4-pond-guards2-split-fix",
+ "date": "2026-11-08",
+ "time": "17:49:14",
+ "batch": "t69-b",
+ "test": "b4-pond-guards2-split-fix",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T69",
+  "commit": "e7b17e4",
+  "version": "01.219.020 (Nov 8 2026 14:57:32)",
+  "eboot_sha256_16": "b65e291b1b7a5c3e"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-continue-stand-fast-wait.txt",
+  "script_sha": "076bbce66810"
+ },
+ "menu_settings": null,
+ "env_lines": 56,
+ "env_hash": "01528dbdd8",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 160,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": 70.0,
+ "fps": {
+  "mean": 26.31,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 44.7,
+  "worst_ms": 58.3
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": "split fixes + desync fix v3",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run931-a4-walk-fast-hog512-pack-refusal",
+ "date": "2026-11-10",
+ "time": "19:29:44",
+ "batch": "t105-a",
+ "test": "a4-walk-fast-hog512-pack-refusal",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T105",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 13:59:51)",
+  "eboot_sha256_16": "2bb7e77facfee6fd"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 86,
+ "env_hash": "a699c362ac",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 113,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.31,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 109.8,
+  "worst_ms": 126.3
+ },
+ "worst_frame_ms": 668.8,
+ "runtime_pipeline_builds": 4,
+ "flashes_per_min": 4.98,
+ "note": "D: C + EDEN_UP_PACK_ON_REFUSAL: packs on the spot for a refusal of 64 MiB or more; each line given back at least what was asked, under 1000 ms. STOP the pack tests at once on \"could not be unpacked\" or \"store closed: N slabs were still held\" with N above 0",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

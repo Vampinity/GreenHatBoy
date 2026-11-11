@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run429-a5-pond-cap30kp0-control",
+ "date": "2026-11-08",
+ "time": "20:03:26",
+ "batch": "t71-a",
+ "test": "a5-pond-cap30kp0-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T71",
+  "commit": "4f937d2",
+  "version": "01.219.020 (Nov 8 2026 17:54:26)",
+  "eboot_sha256_16": "5d5bf196eac47d2c"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-continue-stand-fast-wait.txt",
+  "script_sha": "076bbce66810"
+ },
+ "menu_settings": null,
+ "env_lines": 60,
+ "env_hash": "c0984f04ea",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 155,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 70.0,
+ "fps": {
+  "mean": 17.04,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 68.5,
+  "worst_ms": 74.5
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "v2 candidate",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

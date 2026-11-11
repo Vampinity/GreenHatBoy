@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run623-s4-pause-unbacked",
+ "date": "2026-11-09",
+ "time": "10:32:51",
+ "batch": "t83-s",
+ "test": "s4-pause-unbacked",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T83",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 07:47:14)",
+  "eboot_sha256_16": "6852dc61e1f93053"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-door-pause-exits.txt",
+  "script_sha": "806c963802ea"
+ },
+ "menu_settings": null,
+ "env_lines": 75,
+ "env_hash": "badf1e480c",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 205,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 110.1,
+ "fps": {
+  "mean": 25.03,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 86.1,
+  "worst_ms": 408.0
+ },
+ "worst_frame_ms": 651.0,
+ "runtime_pipeline_builds": 8,
+ "flashes_per_min": 0.0,
+ "note": "Lichii #880: image left out instead of unbacked (risk: black/partial frames under memory pressure)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

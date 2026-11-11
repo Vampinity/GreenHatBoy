@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run452-d3-walk-fw-dmasnap-semfast-skip",
+ "date": "2026-11-08",
+ "time": "22:29:23",
+ "batch": "t74-d",
+ "test": "d3-walk-fw-dmasnap-semfast-skip",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T74",
+  "commit": null,
+  "version": "01.219.028 (Nov 8 2026 22:26:30)",
+  "eboot_sha256_16": "c0936db656499b2c"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 64,
+ "env_hash": "99da1e3649",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 126,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": 35.2,
+ "fps": {
+  "mean": 7.89,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 779.6,
+  "worst_ms": 1447.7
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "+ semaphore drains",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,50 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1067-f1-exit-census",
+ "date": "2026-11-11",
+ "time": "07:40:53",
+ "batch": "exit-census-t120",
+ "test": "f1-exit-census",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-owner-forest-exit-crash1.txt",
+  "script_sha": "356ef27430be"
+ },
+ "menu_settings": null,
+ "env_lines": 85,
+ "env_hash": "ed89c86096",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 220,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 109.1,
+ "fps": {
+  "mean": 29.11,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 67.4,
+  "worst_ms": 381.9
+ },
+ "worst_frame_ms": 381.9,
+ "runtime_pipeline_builds": 46,
+ "flashes_per_min": 73.23,
+ "note": "Plain T120, owner's play env v2.6 with our memory census on, his first walk out of Kokiri Forest replayed: the census lines waveydude asked for, to set against his patches.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1,
+  "private_word": 2
+ }
+}

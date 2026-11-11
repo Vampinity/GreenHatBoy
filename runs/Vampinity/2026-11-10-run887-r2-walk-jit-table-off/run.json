@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run887-r2-walk-jit-table-off",
+ "date": "2026-11-10",
+ "time": "14:31:16",
+ "batch": "ovl-20261110-4",
+ "test": "r2-walk-jit-table-off",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 81,
+ "env_hash": "f6a898d74b",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 131,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.2,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 126.2,
+  "worst_ms": 140.2
+ },
+ "worst_frame_ms": 660.9,
+ "runtime_pipeline_builds": 2,
+ "flashes_per_min": 0.0,
+ "note": "page-table walk cost probe: if turning the JIT table off costs <1 fps, the guest memory walk does not limit the frame (fastmem would gain little)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

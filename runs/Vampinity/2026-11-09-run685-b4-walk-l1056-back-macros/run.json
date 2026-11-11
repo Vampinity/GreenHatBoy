@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run685-b4-walk-l1056-back-macros",
+ "date": "2026-11-09",
+ "time": "20:13:27",
+ "batch": "t85-b",
+ "test": "b4-walk-l1056-back-macros",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T85",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 19:12:23)",
+  "eboot_sha256_16": "8c04000889ae11f4"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 77,
+ "env_hash": "ef8097c8b7",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 129,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 13.1,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 120.9,
+  "worst_ms": 131.7
+ },
+ "worst_frame_ms": 777.8,
+ "runtime_pipeline_builds": 24,
+ "flashes_per_min": 0.0,
+ "note": "repeat",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

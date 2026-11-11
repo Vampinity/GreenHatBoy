@@ -1,0 +1,50 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1069-live-prof-light",
+ "date": "2026-11-11",
+ "time": "08:08:44",
+ "batch": "live-prof-light",
+ "test": "live-prof-light",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "batch-live-prof-light-zelda-owner-spot-ravine.txt",
+  "script_sha": "b340bbbb0e10"
+ },
+ "menu_settings": null,
+ "env_lines": 93,
+ "env_hash": "5228ac5f00",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 259,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 151.0,
+ "fps": {
+  "mean": 27.9,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 42.3,
+  "worst_ms": 62.8
+ },
+ "worst_frame_ms": 253.6,
+ "runtime_pipeline_builds": 30,
+ "flashes_per_min": 0.0,
+ "note": "Back-thread profile at the LIGHT spot (dark ravine path): EDEN_NX2_GPU_PROFILE=1, tracker on, standing. The profile costs about a quarter of the GPU thread and turns CB_BATCH off: read ms per call per zone, not fps. Pair with prof-heavy: (heavy - light) per zone over the extra draws shows where the 11 microseconds a draw go. [live A/A: no switch changes, the noise between phases]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1,
+  "private_word": 1
+ }
+}

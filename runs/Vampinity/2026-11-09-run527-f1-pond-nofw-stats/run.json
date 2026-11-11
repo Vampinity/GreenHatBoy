@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run527-f1-pond-nofw-stats",
+ "date": "2026-11-09",
+ "time": "03:22:39",
+ "batch": "t80-f",
+ "test": "f1-pond-nofw-stats",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T80",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 02:54:25)",
+  "eboot_sha256_16": "2448f4026f38bf80"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-continue-stand-fast-wait.txt",
+  "script_sha": "076bbce66810"
+ },
+ "menu_settings": null,
+ "env_lines": 71,
+ "env_hash": "4fd4fd5b9f",
+ "control": false,
+ "ending": {
+  "kind": "script_stopped",
+  "class": "freeze",
+  "seconds": 173,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": 0.0,
+ "fps": {
+  "mean": null,
+  "source": null,
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": "no frame wait + query stats (control; stats line 3 = reads before a report landed) [base: v2.1 docked]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run688-c2-walk-cold-control",
+ "date": "2026-11-09",
+ "time": "20:31:21",
+ "batch": "t85-c",
+ "test": "c2-walk-cold-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T85",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 19:12:23)",
+  "eboot_sha256_16": "8c04000889ae11f4"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 75,
+ "env_hash": "b723bb2364",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 131,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 35.1,
+ "fps": {
+  "mean": 12.3,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 209.1,
+  "worst_ms": 222.9
+ },
+ "worst_frame_ms": 4292.2,
+ "runtime_pipeline_builds": 373,
+ "flashes_per_min": 0.0,
+ "note": "B0: cold boot, no prep (stutter control)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

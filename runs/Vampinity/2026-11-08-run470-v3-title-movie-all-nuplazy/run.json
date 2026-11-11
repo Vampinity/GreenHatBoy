@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run470-v3-title-movie-all-nuplazy",
+ "date": "2026-11-08",
+ "time": "23:38:00",
+ "batch": "t77-v",
+ "test": "v3-title-movie-all-nuplazy",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T77",
+  "commit": null,
+  "version": "01.219.028 (Nov 8 2026 23:29:21)",
+  "eboot_sha256_16": "72970991e7093cda"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-title-movie-watch.txt",
+  "script_sha": "d06d9077600e"
+ },
+ "menu_settings": null,
+ "env_lines": 66,
+ "env_hash": "78ed0160d3",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 216,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 160.0,
+ "fps": {
+  "mean": 59.94,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 23.9,
+  "worst_ms": 30.4
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 10.68,
+ "note": "+ Lichii #885 lazy NUP decode",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

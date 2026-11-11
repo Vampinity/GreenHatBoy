@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run152-n4-robust-low",
+ "date": "2026-11-06",
+ "time": "20:56:45",
+ "batch": "n2",
+ "test": "n4-robust-low",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": null,
+  "eboot_sha256_16": null
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": null,
+  "script_sha": null
+ },
+ "menu_settings": null,
+ "env_lines": 21,
+ "env_hash": null,
+ "control": null,
+ "ending": {
+  "kind": "time_limit",
+  "class": null,
+  "seconds": 305,
+  "crash_app_s": null
+ },
+ "valid": null,
+ "gameplay_s": null,
+ "fps": {
+  "mean": null,
+  "source": null,
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": null,
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

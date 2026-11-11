@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1036-live-t119-condback-village",
+ "date": "2026-11-11",
+ "time": "03:56:29",
+ "batch": "live-t119-condback-village",
+ "test": "live-t119-condback-village",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "batch-live-t119-condback-village-zelda-newgame-door-wait.txt",
+  "script_sha": "8a26c5495b38"
+ },
+ "menu_settings": null,
+ "env_lines": 85,
+ "env_hash": "95b9a79f91",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 407,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 317.1,
+ "fps": {
+  "mean": 23.36,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 77.2,
+  "worst_ms": 350.2
+ },
+ "worst_frame_ms": 350.2,
+ "runtime_pipeline_builds": 3,
+ "flashes_per_min": 1.22,
+ "note": "T119 live, door-walk spot (the village with Saria's greeting up, 55 s after the door): EDEN_UP_COND_BACK off against on, ABBA x 3 [live A: EDEN_UP_COND_BACK=0; B: EDEN_UP_COND_BACK=1]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

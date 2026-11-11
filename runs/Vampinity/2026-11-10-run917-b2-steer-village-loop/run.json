@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run917-b2-steer-village-loop",
+ "date": "2026-11-10",
+ "time": "16:34:59",
+ "batch": "t102-b",
+ "test": "b2-steer-village-loop",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T102",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-door-steer-village-loop.txt",
+  "script_sha": "5f7333cdd630"
+ },
+ "menu_settings": null,
+ "env_lines": 83,
+ "env_hash": "1644159982",
+ "control": false,
+ "ending": {
+  "kind": "script_stopped",
+  "class": "ok",
+  "seconds": 289,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 149.1,
+ "fps": {
+  "mean": 25.74,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 70.2,
+  "worst_ms": 333.5
+ },
+ "worst_frame_ms": 648.6,
+ "runtime_pipeline_builds": 28,
+ "flashes_per_min": null,
+ "note": "the village loop, 5 laps by the minimap: the walking workload the door benchmark lacks",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

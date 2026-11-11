@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run881-p1-walk-fast-hold-noprep",
+ "date": "2026-11-10",
+ "time": "14:11:48",
+ "batch": "g107-c",
+ "test": "p1-walk-fast-hold-noprep",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 82,
+ "env_hash": "47e86971d7",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 125,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.4,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 110.6,
+  "worst_ms": 127.4
+ },
+ "worst_frame_ms": 648.4,
+ "runtime_pipeline_builds": 0,
+ "flashes_per_min": 2.53,
+ "note": "guard =3 with shader prep OFF (EDEN_UP_SHADER_PREP dropped): do the 1-2 dark glitch moments a run that every guard run shows since 08:00 go away without the prepared shaders",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

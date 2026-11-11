@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run645-c3-pause-lastaddr-bankflag",
+ "date": "2026-11-09",
+ "time": "17:14:23",
+ "batch": "t84-c",
+ "test": "c3-pause-lastaddr-bankflag",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T84",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 11:20:06)",
+  "eboot_sha256_16": "7a8a495119102495"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-door-pause-exits.txt",
+  "script_sha": "806c963802ea"
+ },
+ "menu_settings": null,
+ "env_lines": 76,
+ "env_hash": "9bb27256a6",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 198,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 110.1,
+ "fps": {
+  "mean": 25.14,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 84.0,
+  "worst_ms": 368.7
+ },
+ "worst_frame_ms": 635.1,
+ "runtime_pipeline_builds": 6,
+ "flashes_per_min": 0.0,
+ "note": "last_address fix + collected-write bank flags",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

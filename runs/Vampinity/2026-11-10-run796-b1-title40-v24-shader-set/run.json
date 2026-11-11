@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run796-b1-title40-v24-shader-set",
+ "date": "2026-11-10",
+ "time": "07:02:39",
+ "batch": "t98-b",
+ "test": "b1-title40-v24-shader-set",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T98",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 06:32:33)",
+  "eboot_sha256_16": "69cb3f8784eba742"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-title-wait-40min.txt",
+  "script_sha": "6abdcede67fa"
+ },
+ "menu_settings": null,
+ "env_lines": 78,
+ "env_hash": "01c42bf231",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 2483,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 2410.0,
+ "fps": {
+  "mean": 42.35,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 477.5,
+  "worst_ms": 1921.3
+ },
+ "worst_frame_ms": 1921.3,
+ "runtime_pipeline_builds": 0,
+ "flashes_per_min": 10.18,
+ "note": "shader set run B boot 1 at the title screen for 40 min: extraction of the whole game with memory free (in play it waits under the 384 MB floor), conversion, first 5000 prepared",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run679-live-query-light",
+ "date": "2026-11-09",
+ "time": "19:43:51",
+ "batch": "live-query-light",
+ "test": "live-query-light",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 19:12:23)",
+  "eboot_sha256_16": "8c04000889ae11f4"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "batch-live-query-light-zelda-continue-stand-fast-wait.txt",
+  "script_sha": "f06042ed6545"
+ },
+ "menu_settings": null,
+ "env_lines": 75,
+ "env_hash": "37bc244223",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 434,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 343.0,
+ "fps": {
+  "mean": 18.68,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 72.5,
+  "worst_ms": 79.5
+ },
+ "worst_frame_ms": 745.5,
+ "runtime_pipeline_builds": 21,
+ "flashes_per_min": 0.17,
+ "note": "[live A: EDEN_UP_QUERY_LIGHT=0; B: EDEN_UP_QUERY_LIGHT=1]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

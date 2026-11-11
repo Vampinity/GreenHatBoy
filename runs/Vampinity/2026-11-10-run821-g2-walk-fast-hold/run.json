@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run821-g2-walk-fast-hold",
+ "date": "2026-11-10",
+ "time": "09:41:45",
+ "batch": "g107-a",
+ "test": "g2-walk-fast-hold",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 83,
+ "env_hash": "1644159982",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 117,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.46,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 109.5,
+  "worst_ms": 128.4
+ },
+ "worst_frame_ms": 660.1,
+ "runtime_pipeline_builds": 7,
+ "flashes_per_min": 0.0,
+ "note": "plain guard =3 on T107 (no trace, no load-wait switch): the same four runs as on T95 just before, for the build comparison",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

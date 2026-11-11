@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run342-v2-pond-control",
+ "date": "2026-11-08",
+ "time": "09:19:19",
+ "batch": "t64-v",
+ "test": "v2-pond-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T64",
+  "commit": "ea44e93",
+  "version": "01.219.020 (Nov 8 2026 07:51:53)",
+  "eboot_sha256_16": null
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-continue-stand-fast-wait.txt",
+  "script_sha": "076bbce66810"
+ },
+ "menu_settings": null,
+ "env_lines": 53,
+ "env_hash": "a568525d11",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 164,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 70.0,
+ "fps": {
+  "mean": 18.5,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 76.4,
+  "worst_ms": 78.7
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 11.14,
+ "note": "T64 no JIT, no frame wait: flicker + 122 s crash rate",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

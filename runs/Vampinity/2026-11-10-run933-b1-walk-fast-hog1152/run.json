@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run933-b1-walk-fast-hog1152",
+ "date": "2026-11-10",
+ "time": "19:51:01",
+ "batch": "t105-b",
+ "test": "b1-walk-fast-hog1152",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T105",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 13:59:51)",
+  "eboot_sha256_16": "2bb7e77facfee6fd"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 85,
+ "env_hash": "8419aa5cde",
+ "control": false,
+ "ending": {
+  "kind": "crash",
+  "class": "oom",
+  "seconds": 102,
+  "crash_app_s": 101.6
+ },
+ "valid": false,
+ "gameplay_s": 27.1,
+ "fps": {
+  "mean": 5.7,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 3227.3,
+  "worst_ms": 3227.3
+ },
+ "worst_frame_ms": 3227.3,
+ "runtime_pipeline_builds": 2,
+ "flashes_per_min": null,
+ "note": "A: 1152 MiB taken from the pool (1024 lived in run759, 1280 ended at 91 s), census and churn lines on, heap rescue off",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

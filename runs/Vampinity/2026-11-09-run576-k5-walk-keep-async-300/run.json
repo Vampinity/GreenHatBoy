@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run576-k5-walk-keep-async-300",
+ "date": "2026-11-09",
+ "time": "06:33:44",
+ "batch": "t82-k",
+ "test": "k5-walk-keep-async-300",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T82",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 05:31:49)",
+  "eboot_sha256_16": "029293280a76d935"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 75,
+ "env_hash": "362452527f",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 125,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 14.35,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 98.9,
+  "worst_ms": 100.3
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": "same [base: v2.2 docked]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

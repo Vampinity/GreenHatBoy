@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run455-n1-newgame-movie-control",
+ "date": "2026-11-08",
+ "time": "22:44:51",
+ "batch": "t74-n",
+ "test": "n1-newgame-movie-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T74",
+  "commit": null,
+  "version": "01.219.028 (Nov 8 2026 22:26:30)",
+  "eboot_sha256_16": "c0936db656499b2c"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-full-wait.txt",
+  "script_sha": "51ec784097bd"
+ },
+ "menu_settings": null,
+ "env_lines": 60,
+ "env_hash": "a88d5aeaed",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 312,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 42.7,
+ "fps": {
+  "mean": 9.67,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 196.4,
+  "worst_ms": 375.4
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "New Game intro movie, no movie fixes",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

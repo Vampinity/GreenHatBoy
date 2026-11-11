@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1045-a2-walk-fast-guard3-always-ahead",
+ "date": "2026-11-11",
+ "time": "04:30:04",
+ "batch": "fps-ahead2b",
+ "test": "a2-walk-fast-guard3-always-ahead",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 87,
+ "env_hash": "54292fb955",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 123,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 18.16,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 90.2,
+  "worst_ms": 104.5
+ },
+ "worst_frame_ms": 158.9,
+ "runtime_pipeline_builds": 2,
+ "flashes_per_min": 49.76,
+ "note": null,
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

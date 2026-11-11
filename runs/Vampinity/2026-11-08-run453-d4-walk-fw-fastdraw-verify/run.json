@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run453-d4-walk-fw-fastdraw-verify",
+ "date": "2026-11-08",
+ "time": "22:29:23",
+ "batch": "t74-d",
+ "test": "d4-walk-fw-fastdraw-verify",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T74",
+  "commit": null,
+  "version": "01.219.028 (Nov 8 2026 22:26:30)",
+  "eboot_sha256_16": "c0936db656499b2c"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 64,
+ "env_hash": "9a1e661fcd",
+ "control": false,
+ "ending": {
+  "kind": "crash",
+  "class": "gpu-thread",
+  "seconds": 84,
+  "crash_app_s": 84.2
+ },
+ "valid": false,
+ "gameplay_s": 0.0,
+ "fps": {
+  "mean": null,
+  "source": null,
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": "Lichii #858 fast draw, verify mode: mismatch count",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

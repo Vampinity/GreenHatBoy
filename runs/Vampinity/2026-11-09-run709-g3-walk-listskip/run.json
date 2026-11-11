@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run709-g3-walk-listskip",
+ "date": "2026-11-09",
+ "time": "22:07:28",
+ "batch": "t85-g",
+ "test": "g3-walk-listskip",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T85",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 19:12:23)",
+  "eboot_sha256_16": "8c04000889ae11f4"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 78,
+ "env_hash": "3c6234e81a",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 137,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 15.8,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 93.8,
+  "worst_ms": 104.9
+ },
+ "worst_frame_ms": 636.6,
+ "runtime_pipeline_builds": 2,
+ "flashes_per_min": 0.0,
+ "note": "repeat",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run570-f4-pond-fullwait-fritchii3",
+ "date": "2026-11-09",
+ "time": "05:40:08",
+ "batch": "t82-f",
+ "test": "f4-pond-fullwait-fritchii3",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T82",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 05:31:49)",
+  "eboot_sha256_16": "029293280a76d935"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-continue-stand-fast-wait.txt",
+  "script_sha": "076bbce66810"
+ },
+ "menu_settings": null,
+ "env_lines": 76,
+ "env_hash": "d52e2fb334",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 158,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 70.0,
+ "fps": {
+  "mean": 18.58,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 74.2,
+  "worst_ms": 81.6
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "full wait + the three Fritchii fixes (no regression? fps) [base: v2.2 docked = v2.1 + layout A]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run344-v4-pond-fw",
+ "date": "2026-11-08",
+ "time": "09:19:19",
+ "batch": "t64-v",
+ "test": "v4-pond-fw",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T64",
+  "commit": "ea44e93",
+  "version": "01.219.020 (Nov 8 2026 07:51:53)",
+  "eboot_sha256_16": null
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-continue-stand-fast-wait.txt",
+  "script_sha": "076bbce66810"
+ },
+ "menu_settings": null,
+ "env_lines": 54,
+ "env_hash": "8e17ec8872",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 166,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 70.0,
+ "fps": {
+  "mean": 13.15,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 86.4,
+  "worst_ms": 88.8
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "frame wait without JIT",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

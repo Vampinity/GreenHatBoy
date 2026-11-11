@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run368-b4-pond-guards2-fix",
+ "date": "2026-11-08",
+ "time": "14:11:08",
+ "batch": "t66-b",
+ "test": "b4-pond-guards2-fix",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T66",
+  "commit": "cc27039",
+  "version": "01.219.020 (Nov 8 2026 13:33:48)",
+  "eboot_sha256_16": "257a9b3ab304ec5f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-continue-stand-fast-wait.txt",
+  "script_sha": "076bbce66810"
+ },
+ "menu_settings": null,
+ "env_lines": 54,
+ "env_hash": "3b76da39ce",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 164,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 70.0,
+ "fps": {
+  "mean": 18.39,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 80.3,
+  "worst_ms": 87.5
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 6.86,
+ "note": "slip fix v3",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

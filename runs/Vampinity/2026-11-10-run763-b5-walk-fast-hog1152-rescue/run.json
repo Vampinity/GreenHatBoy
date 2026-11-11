@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run763-b5-walk-fast-hog1152-rescue",
+ "date": "2026-11-10",
+ "time": "04:16:24",
+ "batch": "t89-b",
+ "test": "b5-walk-fast-hog1152-rescue",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T89",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 03:44:07)",
+  "eboot_sha256_16": "234d4d36b243bd8c"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 84,
+ "env_hash": "db5ec58909",
+ "control": false,
+ "ending": {
+  "kind": "crash",
+  "class": "oom",
+  "seconds": 115,
+  "crash_app_s": 112.6
+ },
+ "valid": false,
+ "gameplay_s": 38.1,
+ "fps": {
+  "mean": 9.35,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 1189.5,
+  "worst_ms": 1728.4
+ },
+ "worst_frame_ms": 3009.6,
+ "runtime_pipeline_builds": 6,
+ "flashes_per_min": null,
+ "note": "1152 MiB taken away + heap rescue + builder wait",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

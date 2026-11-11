@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run857-b2-walk-fast-hold-depthclear",
+ "date": "2026-11-10",
+ "time": "12:34:26",
+ "batch": "t106-b",
+ "test": "b2-walk-fast-hold-depthclear",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T106",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 84,
+ "env_hash": "ac6e1e2a72",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 125,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.35,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 109.8,
+  "worst_ms": 127.3
+ },
+ "worst_frame_ms": 641.5,
+ "runtime_pipeline_builds": 9,
+ "flashes_per_min": 2.49,
+ "note": "EDEN_UP_FRITCHII_DEPTH_CLEAR (Fritchii EXP56): the cleared depth target under smaller colour skips its 7.5 MiB upload; 600-frame line: cleared depth targets that skipped the join upload; uploads MiB per 600 frames and fly-over fps against the control",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

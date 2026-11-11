@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run669-h2-walk-no-tablecharge",
+ "date": "2026-11-09",
+ "time": "18:56:27",
+ "batch": "t84-h",
+ "test": "h2-walk-no-tablecharge",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T84",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 11:20:06)",
+  "eboot_sha256_16": "7a8a495119102495"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 76,
+ "env_hash": "d795cbf2c1",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 125,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 15.26,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 98.6,
+  "worst_ms": 106.8
+ },
+ "worst_frame_ms": 620.8,
+ "runtime_pipeline_builds": 12,
+ "flashes_per_min": 0.0,
+ "note": "trio without TABLECHARGE (counted)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

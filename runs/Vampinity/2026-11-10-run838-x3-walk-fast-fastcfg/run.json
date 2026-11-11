@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run838-x3-walk-fast-fastcfg",
+ "date": "2026-11-10",
+ "time": "11:18:27",
+ "batch": "x2-claim-fastcfg",
+ "test": "x3-walk-fast-fastcfg",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 09:06:51)",
+  "eboot_sha256_16": "3a42567cb024434f"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 83,
+ "env_hash": "b493996e6e",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 132,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 18.0,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 108.8,
+  "worst_ms": 133.3
+ },
+ "worst_frame_ms": 676.6,
+ "runtime_pipeline_builds": 6,
+ "flashes_per_min": 0.0,
+ "note": "claim check: EDEN_UP_FAST_CFG (EdGlantine UB-056) on the fast base: fps and GPU-thread pipeline ms against the controls (one run so far: 18.8 against 17.6 fps)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

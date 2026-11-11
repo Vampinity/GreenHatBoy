@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run723-live-poll-backoff",
+ "date": "2026-11-09",
+ "time": "23:30:58",
+ "batch": "live-poll-backoff",
+ "test": "live-poll-backoff",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 19:12:23)",
+  "eboot_sha256_16": "8c04000889ae11f4"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "batch-live-poll-backoff-zelda-continue-stand-fast-wait.txt",
+  "script_sha": "6eb39d295c8b"
+ },
+ "menu_settings": null,
+ "env_lines": 78,
+ "env_hash": "2b7d564765",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 435,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 343.0,
+ "fps": {
+  "mean": 18.59,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 73.3,
+  "worst_ms": 118.8
+ },
+ "worst_frame_ms": 701.8,
+ "runtime_pipeline_builds": 2,
+ "flashes_per_min": 0.0,
+ "note": "[live A: EDEN_UP_OOT_POLL_BACKOFF=0; B: EDEN_UP_OOT_POLL_BACKOFF=1]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,50 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1087-m4-field-menu-control",
+ "date": "2026-11-11",
+ "time": "10:19:30",
+ "batch": "field-menu2-t120",
+ "test": "m4-field-menu-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-field-menu-cycles.txt",
+  "script_sha": "c1fe16677876"
+ },
+ "menu_settings": null,
+ "env_lines": 85,
+ "env_hash": "ed89c86096",
+ "control": true,
+ "ending": {
+  "kind": "time_limit",
+  "class": "ok",
+  "seconds": 276,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 169.4,
+ "fps": {
+  "mean": 44.3,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 36.4,
+  "worst_ms": 496.0
+ },
+ "worst_frame_ms": 496.0,
+ "runtime_pipeline_builds": 0,
+ "flashes_per_min": 60.47,
+ "note": "Six pause-menu cycles in Hyrule Field from owner's overlook save, memory census on (plain T120, fast, tracker on). In his crash walk the menu deleted 772 images (546 MiB), closing it rebuilt 901 images in 7 frames and the app died of memory 20 s later. Wanted: does a menu cycle alone empty the pool, does each cycle leave less free (census lines per cycle), and does it crash. Cycle A = his own presses, cycle B = OPTIONS then CIRCLE: check the frames for what each did.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1,
+  "private_word": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run646-c4-pause-bankflag",
+ "date": "2026-11-09",
+ "time": "17:14:23",
+ "batch": "t84-c",
+ "test": "c4-pause-bankflag",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T84",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 11:20:06)",
+  "eboot_sha256_16": "7a8a495119102495"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-door-pause-exits.txt",
+  "script_sha": "806c963802ea"
+ },
+ "menu_settings": null,
+ "env_lines": 75,
+ "env_hash": "a7211595c8",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 208,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 110.6,
+ "fps": {
+  "mean": 25.03,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 82.6,
+  "worst_ms": 403.1
+ },
+ "worst_frame_ms": 660.9,
+ "runtime_pipeline_builds": 19,
+ "flashes_per_min": 0.0,
+ "note": "bank flags alone (completes the 2x2)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run612-r3-walk-writemark-redo",
+ "date": "2026-11-09",
+ "time": "09:56:31",
+ "batch": "t83-r",
+ "test": "r3-walk-writemark-redo",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T83",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 07:47:14)",
+  "eboot_sha256_16": "6852dc61e1f93053"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 76,
+ "env_hash": "9baa194c55",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 133,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 13.85,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 127.5,
+  "worst_ms": 143.4
+ },
+ "worst_frame_ms": 651.3,
+ "runtime_pipeline_builds": 16,
+ "flashes_per_min": 0.0,
+ "note": "narrow native compute write marks (Fritchii b4204230c9)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run708-g2-walk-listskip",
+ "date": "2026-11-09",
+ "time": "22:07:28",
+ "batch": "t85-g",
+ "test": "g2-walk-listskip",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T85",
+  "commit": null,
+  "version": "01.219.028 (Nov 9 2026 19:12:23)",
+  "eboot_sha256_16": "8c04000889ae11f4"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 78,
+ "env_hash": "3c6234e81a",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 121,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 15.6,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 95.8,
+  "worst_ms": 106.4
+ },
+ "worst_frame_ms": 651.3,
+ "runtime_pipeline_builds": 3,
+ "flashes_per_min": 0.0,
+ "note": "Fritchii LISTSKIP: list entries that begin between methods do not wait (GBB G2 with SEM_FAST+DRAIN_SKIP_SAME was worse one frame ahead; this is the full-wait test)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

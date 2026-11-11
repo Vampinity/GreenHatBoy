@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run484-w2-walk-frontwait-snap-decoupled",
+ "date": "2026-11-09",
+ "time": "00:35:27",
+ "batch": "t77-w",
+ "test": "w2-walk-frontwait-snap-decoupled",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T77",
+  "commit": null,
+  "version": "01.219.028 (Nov 8 2026 23:29:21)",
+  "eboot_sha256_16": "72970991e7093cda"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 69,
+ "env_hash": "45a2b53e61",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 123,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 11.95,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 110.3,
+  "worst_ms": 117.8
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 0.0,
+ "note": "front wait + UBO snapshot + fewer drains (front can run ahead)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

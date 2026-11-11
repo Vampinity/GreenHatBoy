@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run737-b2-walk-v24-overwrite-check",
+ "date": "2026-11-10",
+ "time": "02:38:22",
+ "batch": "t86-b",
+ "test": "b2-walk-v24-overwrite-check",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T86",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 01:29:38)",
+  "eboot_sha256_16": "5602e478fcef3fc0"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 77,
+ "env_hash": "bd21b8da98",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 130,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.6,
+ "fps": {
+  "mean": 13.83,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 125.2,
+  "worst_ms": 171.5
+ },
+ "worst_frame_ms": 642.8,
+ "runtime_pipeline_builds": 1,
+ "flashes_per_min": 0.0,
+ "note": "v2.4 full frame wait + overwrite check log: negative control, ahead reads expected near 0",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

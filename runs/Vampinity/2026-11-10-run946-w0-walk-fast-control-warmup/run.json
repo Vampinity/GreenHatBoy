@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run946-w0-walk-fast-control-warmup",
+ "date": "2026-11-10",
+ "time": "22:34:24",
+ "batch": "t112-n",
+ "test": "w0-walk-fast-control-warmup",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T112",
+  "commit": "d316be4",
+  "version": "01.219.028 (Nov 10 2026 22:20:36)",
+  "eboot_sha256_16": "768fe3f4740ac0b7"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 82,
+ "env_hash": "798d04db45",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 129,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.85,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 114.9,
+  "worst_ms": 141.6
+ },
+ "worst_frame_ms": 190.8,
+ "runtime_pipeline_builds": 4,
+ "flashes_per_min": 2.5,
+ "note": "T112, patch 0530 = GBB's 0915: does NaN guard + invariant position (two) and the same plus MASK_COMPONENTS + MASK_UNWRITTEN (four, GBB's set) remove the flashes of plain one-frame-ahead? Control = play env v2.4-fast (as x1-walk-control: 1 and 2 dark moments a run, fade out of order in both). w0, w1 and w2 are WARM-UPS, not counted: T112 is a new build, so every arm's prepared store starts empty (control too: its first boot prepares shaders cold and its fps window sits early), the two switches change nearly every shader (driver cache cold) and MASK_COMPONENTS changes every pipeline key. Caveat for the four arm: with EDEN_UP_PIPELINE_LIST_KEEP=1 its pipelines are never on the boot list, so every run builds them at first sight (from a warm driver cache after w2): compare flashes, treat its fps and stutter with care. Judge with check.py (dark and bright moments per run, fade order), 3 runs an arm.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

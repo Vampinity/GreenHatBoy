@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run147-l4-no-workaround-low-reactive-off",
+ "date": "2026-11-06",
+ "time": "20:27:44",
+ "batch": "l4",
+ "test": "l4-no-workaround-low-reactive-off",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": null,
+  "commit": null,
+  "version": null,
+  "eboot_sha256_16": null
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": null,
+  "script_sha": null
+ },
+ "menu_settings": null,
+ "env_lines": 20,
+ "env_hash": null,
+ "control": null,
+ "ending": {
+  "kind": "time_limit",
+  "class": null,
+  "seconds": 303,
+  "crash_app_s": null
+ },
+ "valid": null,
+ "gameplay_s": null,
+ "fps": {
+  "mean": null,
+  "source": null,
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": null,
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

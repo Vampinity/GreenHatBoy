@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run433-p4-walk-fw-gbb-tc",
+ "date": "2026-11-08",
+ "time": "21:08:06",
+ "batch": "t72-p",
+ "test": "p4-walk-fw-gbb-tc",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T72",
+  "commit": null,
+  "version": "01.219.020 (Nov 8 2026 21:05:23)",
+  "eboot_sha256_16": "ce590c345142eec9"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "6bb70207df4e"
+ },
+ "menu_settings": null,
+ "env_lines": 64,
+ "env_hash": "cff6fa4804",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 125,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 35.2,
+ "fps": {
+  "mean": 8.8,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 154.6,
+  "worst_ms": 176.9
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": 8.53,
+ "note": "GBB's texture memory limits (bridge stalls)",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

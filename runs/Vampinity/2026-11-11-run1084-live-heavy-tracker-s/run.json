@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1084-live-heavy-tracker-s",
+ "date": "2026-11-11",
+ "time": "10:01:49",
+ "batch": "live-heavy-tracker-s",
+ "test": "live-heavy-tracker-s",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "batch-live-heavy-tracker-s-zelda-steer-tunnel-mouth.txt",
+  "script_sha": "2baab1142867"
+ },
+ "menu_settings": null,
+ "env_lines": 91,
+ "env_hash": "5eb4c8d9c8",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 391,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 282.6,
+ "fps": {
+  "mean": 17.25,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 68.9,
+  "worst_ms": 211.5
+ },
+ "worst_frame_ms": 214.3,
+ "runtime_pipeline_builds": 51,
+ "flashes_per_min": 1.73,
+ "note": "[STEERED walk to the heavy spot, proven by prof-heavy-steer2 run1076: village and water in view] Live at the HEAVY spot (past the tunnel mouth, village and water in view, 17.6 fps, about 3000 draws a frame, back GPU thread busy 87 percent): the usage tracker off against on. [live A: EDEN_UP_FRITCHII_USAGE_TRACKER=0; B: EDEN_UP_FRITCHII_USAGE_TRACKER=1]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

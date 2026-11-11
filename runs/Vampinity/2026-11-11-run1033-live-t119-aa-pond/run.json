@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1033-live-t119-aa-pond",
+ "date": "2026-11-11",
+ "time": "03:33:10",
+ "batch": "live-t119-aa-pond",
+ "test": "live-t119-aa-pond",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T120",
+  "commit": "34bb8fd",
+  "version": "01.219.028 (Nov 11 2026 02:48:21)",
+  "eboot_sha256_16": "a8fd721b2b7050b2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "batch-live-t119-aa-pond-zelda-continue-stand-fast-wait.txt",
+  "script_sha": "5453a273f34e"
+ },
+ "menu_settings": null,
+ "env_lines": 85,
+ "env_hash": "95b9a79f91",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 354,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 263.0,
+ "fps": {
+  "mean": 20.81,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 82.9,
+  "worst_ms": 105.4
+ },
+ "worst_frame_ms": 105.4,
+ "runtime_pipeline_builds": 0,
+ "flashes_per_min": 203.27,
+ "note": "T119, A/A at the pond: the noise between identical phases [live A/A: no switch changes, the noise between phases]",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

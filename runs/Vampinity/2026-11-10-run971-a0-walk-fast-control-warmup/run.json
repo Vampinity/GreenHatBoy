@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run971-a0-walk-fast-control-warmup",
+ "date": "2026-11-10",
+ "time": "23:48:52",
+ "batch": "t114-a",
+ "test": "a0-walk-fast-control-warmup",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T114",
+  "commit": "277c89c",
+  "version": "01.219.028 (Nov 10 2026 23:26:29)",
+  "eboot_sha256_16": "f5cdc8836199ce11"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 83,
+ "env_hash": "1327d025a7",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 127,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.84,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 108.3,
+  "worst_ms": 129.5
+ },
+ "worst_frame_ms": 200.6,
+ "runtime_pipeline_builds": 3,
+ "flashes_per_min": 4.98,
+ "note": "T114 (T112 + waveydude's six commits + EDEN_UP_HEAP_WAIT_GPU_MS + EDEN_UP_SWAP_OUT_WHILE_BACK), first runs. a0 is a WARM-UP (new build: cold shader preparation), not judged. a1 control = play env v2.5-fast (heap wait 2000). a2 adds EDEN_HEAP_LARGE_MIB=8 (waveydude: requests of 8 MiB or more get memory of their own): read the EDEN_HEAP_MID and EDEN_HEAP_CLASSES lines, fps and 'heap' MiB against a1. a6 adds EDEN_UP_SWAP_OUT_WHILE_BACK=1: read 'EDEN_SWAP n long-cold slot(s) went out in a tick with m back' (none expected without a shortage; it must not cost fps). a3-a5: the GPU thread's own pipeline builds starved (no boot-built pipelines, no kept translations, every 3rd request of 256 KiB or more inside a run-time build refused 50 times): a3 and a5 without the new wait, a4 with EDEN_UP_HEAP_WAIT_GPU_MS=300. Read: 'EDEN_HEAP_WAIT_GPU run-time pipeline builds waited ... got none', 'No memory for a graphics pipeline: dropped' lines, the ending, and missing objects in the video. Pass for the wait = a4 has waits, 0 got none, no dropped pipeline; a3/a5 show what happens without it.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

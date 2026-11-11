@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1038-kw-walk-fast-census-control-warmup",
+ "date": "2026-11-11",
+ "time": "04:16:34",
+ "batch": "bisect-w",
+ "test": "kw-walk-fast-census-control-warmup",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T116",
+  "commit": "6db9343",
+  "version": "01.219.028 (Nov 11 2026 00:02:15)",
+  "eboot_sha256_16": "2815f78aeea2c397"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 84,
+ "env_hash": "354f8351ef",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 129,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 18.34,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 104.7,
+  "worst_ms": 127.7
+ },
+ "worst_frame_ms": 155.9,
+ "runtime_pipeline_builds": 2,
+ "flashes_per_min": 2.54,
+ "note": "Bisect of the 1 fps that T119 and T120 lose against T116 (17.4-17.8 against 18.4-18.8 in this env). The same four runs on each build: kw a WARM-UP (cold shader store), k1-k3 judged. First T116 itself again, to see whether it still gives 18.4-18.8 under the conditions of this hour; then T118 and T117 as needed. Read fps on the card and the 5 s fps lines around the door (the frames in the 45 s after the drop from 60).",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

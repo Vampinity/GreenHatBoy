@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run797-b2-stand8-v24-shader-set",
+ "date": "2026-11-10",
+ "time": "07:02:39",
+ "batch": "t98-b",
+ "test": "b2-stand8-v24-shader-set",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T98",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 06:32:33)",
+  "eboot_sha256_16": "69cb3f8784eba742"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-continue-stand-long-wait.txt",
+  "script_sha": "37876171ce7b"
+ },
+ "menu_settings": null,
+ "env_lines": 78,
+ "env_hash": "01c42bf231",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 594,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 490.0,
+ "fps": {
+  "mean": 21.32,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 65.7,
+  "worst_ms": 84.0
+ },
+ "worst_frame_ms": 693.0,
+ "runtime_pipeline_builds": 0,
+ "flashes_per_min": 0.0,
+ "note": "shader set run B boot 2: the stamp must hold (nothing extracted again); stand 8 min, audit lines",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}

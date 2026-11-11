@@ -1,0 +1,49 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run929-a2-walk-fast-hog512-pack",
+ "date": "2026-11-10",
+ "time": "19:29:44",
+ "batch": "t105-a",
+ "test": "a2-walk-fast-hog512-pack",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T105",
+  "commit": null,
+  "version": "01.219.028 (Nov 10 2026 13:59:51)",
+  "eboot_sha256_16": "2bb7e77facfee6fd"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-newgame-door-wait.txt",
+  "script_sha": "88d6669c2745"
+ },
+ "menu_settings": null,
+ "env_lines": 84,
+ "env_hash": "3ece6ad68b",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 133,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 34.1,
+ "fps": {
+  "mean": 17.76,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 111.0,
+  "worst_ms": 129.8
+ },
+ "worst_frame_ms": 777.5,
+ "runtime_pipeline_builds": 8,
+ "flashes_per_min": 0.0,
+ "note": "B: A + EDEN_UP_PACK_SHARED: cold guest memory packed into shared 2 MiB slabs; EDEN_UP_PACK store line: slabs at most 1.25x the copies + 32 MiB. STOP the pack tests at once on \"could not be unpacked\" or \"store closed: N slabs were still held\" with N above 0",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 1
+ }
+}
