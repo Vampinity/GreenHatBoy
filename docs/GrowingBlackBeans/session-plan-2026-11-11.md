@@ -4,6 +4,10 @@
 
 **Every run:** the standard route (Continue, through Link's house, out, the walking loop to the water). Copy that run's env into place before launching; afterwards, copy `eden_log.txt` and the `logs/` folder into the same run folder. If you have time, delete the console's `logs/gbb-*.bin` files between runs.
 
+**After each run:** one line on how it looked (flashes, dark moments, stutter, and roughly where). For C, G and X runs this is the measurement.
+
+**If run 1 crashes or looks wrong:** stop and tell me before going on; I'll take the new vitals line out of the other envs.
+
 **Marker:** press **touchpad + R3** whenever you see a flash, and once when you start walking. It's new and untested: check that it doesn't open anything in the game.
 
 | # | Folder | What changes | Why | Watch for |
@@ -17,9 +21,10 @@
 | 7 | `runG4` | guard fix | Second run | as run 4 |
 | 8 | `runU1` | faster buffer usage tracker (`EDEN_UP_FRITCHII_USAGE_TRACKER=1`) | Our 9 Nov back-thread profile puts the always-on usage tracker at about 7% of the back's busy time; this switch is the optimized version | Optional |
 | 9 | `runU2` | usage tracker | Second run | Optional |
-| 10 | `runF1` | vitals + back breakdown + flight recorder (dumps the 2 s before any frame of 100 ms or more) | First test of the flight recorder | One extra hitch right after a big one is the dump being written. Optional. |
-| 11 | `runP1` | build every pipeline at boot (`EDEN_NX2_PRELOAD_ALL_PIPELINES=1`) | Removes the shader stutter? (71% of runtime builds were on disk; boot only builds pipelines used in the last 2 boots) | **Boot takes longer**: say roughly how much. Stutter while walking. |
-| 12 | `runP2` | preload all | Second run | as run 11 |
+| 10 | `runC3` | control | Third baseline, next to the late arms (U, F, P) | |
+| 11 | `runF1` | vitals + back breakdown + flight recorder (dumps the 2 s before any frame of 100 ms or more) | First test of the flight recorder | One extra hitch right after a big one is the dump being written. Optional. |
+| 12 | `runP1` | build every pipeline at boot (`EDEN_NX2_PRELOAD_ALL_PIPELINES=1`) | Removes the shader stutter? (71% of runtime builds were on disk; boot only builds pipelines used in the last 2 boots) | **Boot takes longer**: say roughly how much. Stutter while walking. |
+| 13 | `runP2` | preload all | Second run | as run 12 |
 
 Preload runs are last: building everything at boot may change what the disk store keeps for later runs.
 
@@ -29,4 +34,6 @@ Preload runs are last: building everything at boot may change what the disk stor
 - **P vs C:** shaders built in play (target under 5) and the worst frames, against boot time and memory.
 - **V1 and F1:** whether vitals, the timeline, the flight recorder and the marker all work.
 
-About 10-12 runs at roughly 6 minutes each: about an hour. If short on time, do 1-7 and skip the rest.
+About 13 runs at roughly 6 minutes each: a little over an hour. If short on time, do 1-7 and skip the rest.
+
+**Certainty:** two runs a side can show a change is consistent (every run of one side beyond every run of the other) but can't prove it. Anything promising gets a third pair in the next session. Walk the standard route as closely as you can: where you walk changes the share of heavy views more than most switches do.
