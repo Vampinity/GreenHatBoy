@@ -19,11 +19,21 @@ CLI:
 
 Definitions (keep them in one place; see LOGS.md for every line family):
     play window   fps < 45 and at least 40 frames, and not a load window (worst < 500 ms)
-    regime        by the present's fence wait per frame: light < 1 ms (game CPU sets the pace),
-                  mid 1-5 ms, heavy >= 5 ms (the GPU thread sets the pace)
+    regime        by the present's fence wait per frame AND the back's idle time:
+                    light   fence < 1 ms and the back idle >= 20% (the game's CPU sets the pace)
+                    queued  fence < 1 ms but the back busy > 80%: the GPU side throttles the game through the
+                            command queue without a present wait (seen at heavy stands)
+                    mid     fence 1-5 ms
+                    heavy   fence >= 5 ms (the GPU side sets the pace)
+                  (windows without split data: light/mid/heavy by fence only)
+    phase         door = first play-ish window after 35 s with a frame >= 300 ms; standing = door+10..door+60 s,
+                  walking = door+70 s on. Hand-played routes only: scripted routes keep phase "".
+    era           "full-wait" (EDEN_NX2_FRAMES_AHEAD not 1, or standing fence > 15 ms) or "ahead-1"; never pool them.
     back busy     1000 - "back idle" from the split's per-second line, per frame (no profiler needed)
-    GPU time      EDEN_GPU_TIME lines on stderr have no timestamps; they are aligned to the 5 s windows by the
-                  END of the session (both logs stop together). Treat as approximate within one window.
+    split         "GPU split per second" lines come every 10 s with per-second averages; a window takes the line whose
+                  10 s interval holds the window's midpoint.
+    GPU time      EDEN_GPU_TIME lines on stderr have no timestamps; aligned at the session end, or one window earlier
+                  when that correlates better (GPU busy against fps): right in about 60% of runs at end-1.
 Standard library only.
 """
 from __future__ import annotations
@@ -49,6 +59,11 @@ SVCPROF = re.compile(r"EDEN_GBB_SVCPROF t(\d+) (\d+) ms, (\d+) frames \(([\d.]+)
 GUARD = re.compile(r"EDEN_UP_AHEAD_GUARD copies: (\d+) pages copied before a write .*?most (\d+) of (\d+)\), "
                    r"the pool was full (\d+) times")
 BUILD = re.compile(r"diagnostic build ([\d.]+) \(([^)]*)\), firmware sdk_version (0x[0-9a-f]+)")
+TC_CREATED = re.compile(r"Texture cache last 600 frames: created (\d+) images, deleted (\d+)")
+TC_UPLOADS = re.compile(r"Texture cache last 600 frames: (\d+) uploads from guest memory, (\d+) MiB")
+MARGINS = re.compile(r"Memory margins: base (\d+) MiB, out of memory (\d+) MiB, block slack (\d+) MiB")
+LIVE_END = re.compile(r"Live switches: phase (\d+) '([^']*)' ended after ([\d.]+) s: (\d+) frames in ([\d.]+) s = ([\d.]+) fps, "
+                      r"mean ([\d.]+) ms, 1% low ([\d.]+) ms, worst ([\d.]+) ms")
 BACKCALLS = re.compile(r"EDEN_GBB_BACK 5 s \(ms per s\): busy ([\d.]+), waiting ([\d.]+), idle hook ([\d.]+)")
 
 LIGHT_MAX, HEAVY_MIN = 1.0, 5.0
@@ -88,6 +103,8 @@ class Window:
     gpu_submissions_per_frame: float | None = None
     pipelines: int = 0
     pipeline_ms: float = 0.0
+    back_idle_ms_s: float | None = None
+    phase: str = ""           # standing / walking / "" (see module docstring)
 
 
 class Run:
@@ -127,6 +144,10 @@ class Run:
         self.svcprof: list[tuple] = []            # (t, tid, frames, ms/frame, svc/frame, outside/frame)
         self.guard: list[tuple] = []              # (t, copies, most, pool, full)
         self.backcalls: list[tuple] = []          # (t, busy, waiting, hook)
+        self.tc_created: list[tuple] = []         # (t, images created, deleted) per 600 frames
+        self.tc_uploads: list[tuple] = []         # (t, uploads, MiB) per 600 frames
+        self.margins: list[tuple] = []            # (t, out of memory MiB, block slack MiB)
+        self.live_phases: list[dict] = []         # in-run live-switch phases (EDEN_UP_LIVE_SWITCHES)
         self.families: dict[str, int] = {}
         fam = re.compile(r"^\[\s*[\d.]+\] [\w.]+ <\w+> ([\w/.\-]+):\d+:(\w+)")
         with _open(self.log_path) as fh:
@@ -164,6 +185,25 @@ class Run:
                 if g:
                     self.guard.append((t, int(g[1]), int(g[2]), int(g[3]), int(g[4])))
                     continue
+                m2 = TC_CREATED.search(line)
+                if m2:
+                    self.tc_created.append((t, int(m2[1]), int(m2[2])))
+                    continue
+                m2 = TC_UPLOADS.search(line)
+                if m2:
+                    self.tc_uploads.append((t, int(m2[1]), int(m2[2])))
+                    continue
+                m2 = MARGINS.search(line)
+                if m2:
+                    self.margins.append((t, int(m2[2]), int(m2[3])))
+                    continue
+                m2 = LIVE_END.search(line)
+                if m2:
+                    tail = line.split(" | ", 1)[1].strip() if " | " in line else ""
+                    self.live_phases.append({"t": t, "phase": int(m2[1]), "label": m2[2], "frames": int(m2[4]),
+                                             "fps": float(m2[6]), "mean_ms": float(m2[7]), "low1_ms": float(m2[8]),
+                                             "worst_ms": float(m2[9]), "switches": tail})
+                    continue
                 b = BACKCALLS.search(line)
                 if b:
                     self.backcalls.append((t, float(b[1]), float(b[2]), float(b[3])))
@@ -175,29 +215,68 @@ class Run:
 
     def _enrich(self):
         for w in self.windows:
+            mid = w.t - 2.5
+            inside = [sp for sp in self.split if sp["t"] - 10 < mid <= sp["t"]]
+            if inside and w.fps > 0:
+                sp = inside[0]
+                fr = w.fps
+                w.back_idle_ms_s = sp["back_idle"]
+                w.ring_kwords_per_frame = round(sp["ring"] / fr / 1000, 1)
+                w.back_busy_ms_per_frame = round((1000 - sp["back_idle"]) / fr, 2)
+                w.front_waited_ms_per_frame = round(sp["front_waited"] / fr, 2)
+                w.drains = {k: [round(ms / fr, 2), round(n / fr, 1)] for k, (ms, n, _) in sp["sites"].items()}
             if w.fps >= 45:
                 w.kind = "menu"
             elif w.frames < 40 or w.worst_ms >= 500:
                 w.kind = "load"
             else:
                 w.kind = "play"
-                w.regime = "light" if w.fence_ms < LIGHT_MAX else ("heavy" if w.fence_ms >= HEAVY_MIN else "mid")
-            inside = [s for s in self.split if w.t - 5 <= s["t"] <= w.t + 0.5]
-            if inside and w.fps > 0:
-                fr = w.fps
-                w.ring_kwords_per_frame = round(st.mean(s["ring"] for s in inside) / fr / 1000, 1)
-                w.back_busy_ms_per_frame = round((1000 - st.mean(s["back_idle"] for s in inside)) / fr, 2)
-                w.front_waited_ms_per_frame = round(st.mean(s["front_waited"] for s in inside) / fr, 2)
-                sites = {}
-                for s in inside:
-                    for k, (ms, n, _) in s["sites"].items():
-                        sites.setdefault(k, []).append((ms, n))
-                w.drains = {k: [round(st.mean(x[0] for x in v) / fr, 2), round(st.mean(x[1] for x in v) / fr, 1)]
-                            for k, v in sites.items()}
+                if w.fence_ms >= HEAVY_MIN:
+                    w.regime = "heavy"
+                elif w.fence_ms >= LIGHT_MAX:
+                    w.regime = "mid"
+                elif w.back_idle_ms_s is not None and w.back_idle_ms_s < 200:
+                    w.regime = "queued"
+                else:
+                    w.regime = "light"
             ps = [p for p in self.pipelines if w.t - 5 < p[0] <= w.t]
             w.pipelines, w.pipeline_ms = len(ps), round(sum(p[1] for p in ps), 1)
+        # phases (hand-played routes): door, then standing and walking
+        self.door_t = None
+        script = ((self.meta.get("route") or {}).get("script") or "")
+        if not script.endswith(".txt"):
+            for w in self.windows:
+                if w.t > 35 and w.worst_ms >= 300 and w.fps < 45:
+                    self.door_t = w.t
+                    break
+            if self.door_t is not None:
+                for w in self.windows:
+                    if w.kind == "play":
+                        if self.door_t + 10 <= w.t <= self.door_t + 60:
+                            w.phase = "standing"
+                        elif w.t >= self.door_t + 70:
+                            w.phase = "walking"
+        # era
+        stand = [w.fence_ms for w in self.windows if w.phase == "standing"]
+        fa = self.env.get("EDEN_NX2_FRAMES_AHEAD")
+        self.era = "full-wait" if (fa is not None and fa != "1") or (stand and st.median(stand) > 15) else (
+            "ahead-1" if fa == "1" else "unknown")
+        # GPU time: end-aligned, or one window earlier when that fits better
+        self.gpu_offset = None
         if self.gpu and self.windows:
-            off = len(self.windows) - len(self.gpu)
+            def corr(off):
+                pairs = [(self.gpu[k][1] / self.gpu[k][0], self.windows[k + off].fps) for k in range(len(self.gpu))
+                         if 0 <= k + off < len(self.windows) and self.windows[k + off].kind == "play"]
+                if len(pairs) < 6:
+                    return 0.0
+                xs, ys = [p[0] for p in pairs], [p[1] for p in pairs]
+                mx, my = st.mean(xs), st.mean(ys)
+                sx = sum((x - mx) ** 2 for x in xs) ** .5
+                sy = sum((y - my) ** 2 for y in ys) ** .5
+                return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / (sx * sy) if sx and sy else 0.0
+            end = len(self.windows) - len(self.gpu)
+            off = min((end, end - 1), key=corr)          # GPU busy goes down as fps goes up: most negative wins
+            self.gpu_offset = off - end
             for k, g in enumerate(self.gpu):
                 j = k + off
                 if 0 <= j < len(self.windows) and self.windows[j].frames:
@@ -230,7 +309,8 @@ class Run:
             v = [getattr(w, key) for w in ws if getattr(w, key) is not None]
             return round(st.mean(v), 2) if v else None
         play = self.play()
-        out = {"run": self.name, "build": self.build, "firmware": self.firmware,
+        out = {"run": self.name, "build": self.build, "firmware": self.firmware, "era": self.era,
+               "door_s": self.door_t, "gpu_align": self.gpu_offset,
                "author": self.meta.get("author"), "route": (self.meta.get("route") or {}).get("script"),
                "play_windows": len(play), "play_fps": agg(play, "fps"),
                "worst_ms": max((w.worst_ms for w in play), default=None),
@@ -239,7 +319,29 @@ class Run:
                "regimes": {}, "hitches": self.hitches(), "has": {
                    "split": bool(self.split), "gpu_time": bool(self.gpu), "svcprof": bool(self.svcprof),
                    "guard": bool(self.guard), "back_calls": bool(self.backcalls)}}
-        for r in ("light", "mid", "heavy"):
+        for ph in ("standing", "walking"):
+            ws = [w for w in play if w.phase == ph]
+            out[ph] = {"windows": len(ws), "fps": agg(ws, "fps"),
+                       "heavy_share": round(sum(w.regime == "heavy" for w in ws) / len(ws), 2) if ws else None}
+        if self.tc_created:
+            walk_t = [w.t for w in play if w.phase == "walking"]
+            sel = [x for x in self.tc_created if walk_t and walk_t[0] - 5 <= x[0]] or self.tc_created
+            up = [x for x in self.tc_uploads if walk_t and walk_t[0] - 5 <= x[0]] or self.tc_uploads
+            out["texture_churn_per_600_frames"] = {
+                "created": round(st.mean(x[1] for x in sel)), "deleted": round(st.mean(x[2] for x in sel)),
+                "uploads": round(st.mean(x[1] for x in up)) if up else None,
+                "upload_mib": round(st.mean(x[2] for x in up)) if up else None,
+                "scope": "walking" if walk_t else "whole run"}
+        if self.margins:
+            out["memory"] = {"out_of_memory_events": sum(1 for x in self.margins if x[1] > 0),
+                             "out_of_memory_max_mib": max(x[1] for x in self.margins),
+                             "lines": len(self.margins)}
+        if self.live_phases:
+            groups = {}
+            for ph in self.live_phases:
+                groups.setdefault(ph["label"], []).append(ph["fps"])
+            out["live_phases"] = {k: {"phases": len(v), "fps": round(st.mean(v), 2)} for k, v in groups.items()}
+        for r in ("light", "queued", "mid", "heavy"):
             ws = self.play(r)
             out["regimes"][r] = {
                 "windows": len(ws), "share": round(len(ws) / len(play), 2) if play else None,
@@ -271,16 +373,17 @@ def main(argv):
         return 2
     cmd, runs = argv[0], [a for a in argv[1:] if not a.startswith("--")]
     if cmd == "summary":
-        print(f"{'run':34s} {'build':10s} {'play':>5s} {'fps':>5s} | {'light':>11s} {'mid':>11s} {'heavy':>11s} | "
-              f"{'back/heavy':>10s} {'gpu/heavy':>9s} {'worst':>6s} {'shaders':>8s}")
+        print(f"{'run':30s} {'build':10s} {'era':9s} {'stand':>5s} {'walk':>5s} | {'light':>9s} {'queued':>9s} "
+              f"{'mid':>9s} {'heavy':>9s} | {'back/hv':>7s} {'gpu/hv':>6s} {'worst':>5s} {'shaders':>7s}")
         for path in runs:
             s = load(path).summary()
             rg = s["regimes"]
             cell = lambda r: f"{_fmt(rg[r]['fps'])}x{rg[r]['windows']}"
-            print(f"{s['run'][:34]:34s} {_fmt(s['build'])[:10]:10s} {s['play_windows']:5d} {_fmt(s['play_fps']):>5s} | "
-                  f"{cell('light'):>11s} {cell('mid'):>11s} {cell('heavy'):>11s} | "
-                  f"{_fmt(rg['heavy']['back_busy_ms']):>10s} {_fmt(rg['heavy']['gpu_ms']):>9s} "
-                  f"{_fmt(s['worst_ms'], 0):>6s} {s['pipelines_in_play']:>8d}")
+            print(f"{s['run'][:30]:30s} {_fmt(s['build'])[:10]:10s} {s['era'][:9]:9s} "
+                  f"{_fmt(s['standing']['fps']):>5s} {_fmt(s['walking']['fps']):>5s} | "
+                  f"{cell('light'):>9s} {cell('queued'):>9s} {cell('mid'):>9s} {cell('heavy'):>9s} | "
+                  f"{_fmt(rg['heavy']['back_busy_ms']):>7s} {_fmt(rg['heavy']['gpu_ms']):>6s} "
+                  f"{_fmt(s['worst_ms'], 0):>5s} {s['pipelines_in_play']:>7d}")
     elif cmd == "windows":
         run = load(runs[0])
         rows = []
@@ -294,7 +397,7 @@ def main(argv):
             wr.writerows(rows)
         else:
             for d in rows:
-                print(f"{d['t']:7.1f} {d['kind']:4s} {d['regime']:5s} fps {d['fps']:5.1f} fence {d['fence_ms']:5.1f} "
+                print(f"{d['t']:7.1f} {d['kind']:4s} {d['phase'][:5]:5s} {d['regime']:6s} fps {d['fps']:5.1f} fence {d['fence_ms']:5.1f} "
                       f"worst {d['worst_ms']:6.1f} back {_fmt(d['back_busy_ms_per_frame']):>5s} "
                       f"gpu {_fmt(d['gpu_ms_per_frame']):>5s} ring {_fmt(d['ring_kwords_per_frame']):>5s}k "
                       f"shaders {d['pipelines']}")

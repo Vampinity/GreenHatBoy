@@ -39,17 +39,21 @@ def report(path):
     if costly:
         L.append(f"- **Measurement cost in this run:** {'; '.join(costly)}. Compare fps only with runs that have the same.")
     L += ["", "## Speed", "",
-          f"{s['play_windows']} play windows of 5 s, {f(s['play_fps'])} fps mean; worst frame {f(s['worst_ms'], 0)} ms.", "",
+          f"{s['play_windows']} play windows of 5 s, {f(s['play_fps'])} fps mean; worst frame {f(s['worst_ms'], 0)} ms. "
+          f"Era: {s['era']}. Standing {f(s['standing']['fps'])} fps ({s['standing']['windows']} windows), walking "
+          f"{f(s['walking']['fps'])} fps ({s['walking']['windows']} windows, heavy share {f(s['walking']['heavy_share'], 2)})"
+          f"{'; door at ' + format(s['door_s'], '.0f') + ' s' if s['door_s'] else ''}.", "",
           "| Regime | Windows | Share | fps | Frame ms | Fence wait | Back busy | Front waits | Ring k words | Host GPU ms | GPU busy |",
           "|---|---|---|---|---|---|---|---|---|---|---|"]
-    for r in ("light", "mid", "heavy"):
+    for r in ("light", "queued", "mid", "heavy"):
         g = s["regimes"][r]
         L.append(f"| {r} | {g['windows']} | {f(g['share'], 2)} | {f(g['fps'])} | {f(g['frame_ms'])} | {f(g['fence_ms'])} | "
                  f"{f(g['back_busy_ms'])} | {f(g['front_waited_ms'])} | {f(g['ring_kwords'], 0)} | {f(g['gpu_ms'])} | "
                  f"{f(g['gpu_busy_pct'], 0)}{'%' if g['gpu_busy_pct'] is not None else ''} |")
-    L += ["", "Per-frame ms unless noted. Light = fence wait < 1 ms (the game's CPU sets the pace); heavy = ≥ 5 ms "
-          "(the GPU thread sets the pace). Back busy comes from the split's idle figure, host GPU from stderr "
-          "aligned at session end.", ""]
+    L += ["", "Per-frame ms unless noted. Light = fence wait < 1 ms with the back idle 20% or more (the game's CPU sets "
+          "the pace); queued = no fence wait but the back over 80% busy (the GPU side throttles through the command "
+          "queue); heavy = fence wait ≥ 5 ms. Back busy from the split's idle figure; host GPU from stderr, aligned "
+          f"{'one window before the end' if s.get('gpu_align') == -1 else 'at the end'} of the session.", ""]
     hv = run.play("heavy")
     if hv and any(w.drains for w in hv):
         tot = {}
@@ -73,6 +77,22 @@ def report(path):
         top = sorted(thr.items(), key=lambda x: -sum(x[1]) / len(x[1]))[:8]
         L += ["## Game threads (ms per frame outside SVCs, play)", "",
               ", ".join(f"t{t} {sum(v) / len(v):.1f}" for t, v in top), ""]
+    if s.get("texture_churn_per_600_frames") or s.get("memory"):
+        L += ["## Textures and memory", ""]
+        c = s.get("texture_churn_per_600_frames")
+        if c:
+            L.append(f"Texture churn per 600 frames ({c['scope']}): {c['created']} images created, {c['deleted']} deleted, "
+                     f"{f(c['uploads'])} uploads, {f(c['upload_mib'])} MiB.")
+        mm = s.get("memory")
+        if mm:
+            L.append(f"Memory margins: out of memory in {mm['out_of_memory_events']} of {mm['lines']} lines "
+                     f"(max {mm['out_of_memory_max_mib']} MiB).")
+        L.append("")
+    if s.get("live_phases"):
+        L += ["## In-run live-switch phases", "", "| Label | Phases | fps |", "|---|---|---|"]
+        for k, v in s["live_phases"].items():
+            L.append(f"| {k} | {v['phases']} | {v['fps']} |")
+        L += ["", "Compare the labels with `abcompare.py --live RUN` (interleaved phases: the most precise A/B we have).", ""]
     if s.get("guard"):
         g = s["guard"]
         L += ["## Copy guard", "", f"{g['copies_per_5s']} page copies per 5 s; pool peak {g['pool_peak']} of "

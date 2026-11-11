@@ -10,8 +10,13 @@ difference, a permutation p-value, and a verdict:
     likely        p < 0.2
     noise         otherwise
     consistent    the runs don't overlap and the gap exceeds the noise floor, but too few runs for a p-value
-Noise floor (our data, same build/env, standard route, 7-11 Nov): walking fps sd about 1.0 between runs, so with
-one run per arm nothing under about 2 fps can be called. Two runs per arm is the minimum we use.
+Noise floor (our hand-played route, same build and env): sd about 1.14 fps between runs, pairs up to 3.6 apart;
+with one run per side nothing under about 2-3 fps can be called. The heavy share of a run swings 0.3-0.9 with where
+you walk, so compare per regime.
+
+    abcompare.py --live RUN [RUN ...]
+compares the labelled phases of in-run live-switch schedules (EDEN_UP_LIVE_SWITCHES): phases interleave within one
+run, so place and session are shared. In-run A/A noise is about +-0.5 fps; pairs phases by round.
 Standard library only.
 """
 import argparse
@@ -29,6 +34,9 @@ METRICS = {
     "light": lambda s: s["regimes"]["light"]["fps"],
     "mid": lambda s: s["regimes"]["mid"]["fps"],
     "heavy": lambda s: s["regimes"]["heavy"]["fps"],
+    "queued": lambda s: s["regimes"]["queued"]["fps"],
+    "standing": lambda s: s["standing"]["fps"],
+    "walking": lambda s: s["walking"]["fps"],
     "heavy_share": lambda s: s["regimes"]["heavy"]["share"],
     "heavy_back": lambda s: s["regimes"]["heavy"]["back_busy_ms"],
     "heavy_gpu": lambda s: s["regimes"]["heavy"]["gpu_ms"],
@@ -36,7 +44,10 @@ METRICS = {
     "worst": lambda s: s["worst_ms"],
     "shaders": lambda s: s["pipelines_in_play"],
 }
-NOISE_FLOOR = {"play": 1.0, "light": 0.8, "mid": 1.0, "heavy": 1.0}
+# Run-to-run sd on our hand-played route (same build and env): about 1.14 fps, pairs up to 3.6 apart (Fable review,
+# 11 Nov). In-run live-switch A/A: about +-0.5 fps.
+NOISE_FLOOR = {"play": 1.2, "standing": 1.0, "walking": 1.2, "light": 1.0, "queued": 1.0, "mid": 1.2, "heavy": 1.2}
+LIVE_NOISE = 0.5
 
 
 def perm_p(a, b, rounds=20000):
@@ -60,10 +71,16 @@ def perm_p(a, b, rounds=20000):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--a", nargs="+", required=True)
-    ap.add_argument("--b", nargs="+", required=True)
-    ap.add_argument("--metric", nargs="*", default=["play", "light", "heavy", "heavy_share", "worst", "shaders"])
+    ap.add_argument("--a", nargs="+")
+    ap.add_argument("--b", nargs="+")
+    ap.add_argument("--live", nargs="+", help="runs with live-switch phases: compare their labels")
+    ap.add_argument("--metric", nargs="*", default=["standing", "walking", "light", "heavy", "heavy_share", "worst",
+                                                    "shaders"])
     a = ap.parse_args()
+    if a.live:
+        return live(a.live)
+    if not a.a or not a.b:
+        ap.error("--a and --b, or --live")
     sa = [eglog.load(p).summary() for p in a.a]
     sb = [eglog.load(p).summary() for p in a.b]
     print(f"A: {', '.join(s['run'] for s in sa)}\nB: {', '.join(s['run'] for s in sb)}\n")
@@ -88,5 +105,27 @@ def main():
     print("\nWith 2 runs per side the smallest possible p is 0.33: treat 2+2 as a screen, confirm with 3+3 or more.")
 
 
+def live(paths):
+    phases = []
+    for p in paths:
+        run = eglog.load(p)
+        phases += [dict(ph, run=run.name) for ph in run.live_phases]
+    labels = sorted({ph["label"] for ph in phases})
+    if len(labels) < 2:
+        print("need at least two phase labels; found", labels)
+        return 1
+    base = labels[0]
+    print(f"{len(phases)} phases in {len(paths)} run(s); labels {labels}; baseline '{base}'")
+    for lab in labels[1:]:
+        va = [ph["fps"] for ph in phases if ph["label"] == base]
+        vb = [ph["fps"] for ph in phases if ph["label"] == lab]
+        d = st.mean(vb) - st.mean(va)
+        p = perm_p(va, vb) if len(va) + len(vb) > 2 else 1.0
+        verdict = "real" if p < 0.05 and abs(d) > LIVE_NOISE else ("likely" if p < 0.2 and abs(d) > LIVE_NOISE else "noise")
+        print(f"'{lab}' vs '{base}': {st.mean(vb):.2f} vs {st.mean(va):.2f} fps ({len(vb)}/{len(va)} phases), "
+              f"{d:+.2f}, p {p:.3f}: {verdict}")
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
