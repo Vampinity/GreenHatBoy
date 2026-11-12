@@ -1,0 +1,306 @@
+{
+ "format": 0,
+ "author": "GrowingBlackBeans",
+ "run_id": "DV1",
+ "date": "2026-11-12",
+ "time": "16:19:57",
+ "batch": null,
+ "test": "DV1",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "t134-gbb2",
+  "commit": null,
+  "version": "01.219.918 (Nov 12 2026 19:32:52)",
+  "eboot_sha256_16": null
+ },
+ "firmware": null,
+ "console": "PS5 base 13.60",
+ "route": {
+  "script": "GrowingBlackBeans Kokiri benchmark v2 (new save, starts facing the door; not comparable with v1 for standing): Continue, house, out, walk loop to the water",
+  "script_sha": null
+ },
+ "menu_settings": null,
+ "env_lines": 100,
+ "env_hash": "22fe12d94a",
+ "control": null,
+ "ending": {
+  "kind": "hand_stopped",
+  "class": null,
+  "seconds": 185.878479,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 120.0,
+ "fps": {
+  "mean": 18.91,
+  "source": "nx2:vi2 5 s lines (play windows under 45 fps)",
+  "p99_ms": 70.1,
+  "worst_ms": 627.3
+ },
+ "worst_frame_ms": 627.3,
+ "runtime_pipeline_builds": 0,
+ "flashes_per_min": null,
+ "note": null,
+ "impressions": "two ahead + two slots + read sync + EDEN_UP_AHEAD_READ_SYNC_VERIFY=1 (diagnostic: which read-back ranges change)",
+ "flash_times": [],
+ "gbb": {
+  "windows_5s_columns": [
+   "log_s",
+   "frames",
+   "fps",
+   "1pct_low_ms",
+   "worst_ms",
+   "fence_ms"
+  ],
+  "windows_5s": [
+   [
+    40.210909,
+    282,
+    56.3,
+    51.5,
+    165.0,
+    0.1
+   ],
+   [
+    45.239557,
+    282,
+    56.3,
+    55.3,
+    99.6,
+    1.2
+   ],
+   [
+    50.237842,
+    274,
+    54.6,
+    47.9,
+    97.1,
+    1.8
+   ],
+   [
+    55.242161,
+    299,
+    59.7,
+    20.8,
+    53.3,
+    0.0
+   ],
+   [
+    60.231867,
+    295,
+    58.9,
+    39.1,
+    70.0,
+    0.0
+   ],
+   [
+    65.248673,
+    301,
+    60.2,
+    18.4,
+    19.4,
+    0.0
+   ],
+   [
+    70.238704,
+    120,
+    24.0,
+    404.1,
+    627.3,
+    0.8
+   ],
+   [
+    75.281708,
+    80,
+    15.9,
+    126.5,
+    126.5,
+    0.4
+   ],
+   [
+    80.292835,
+    92,
+    18.4,
+    65.6,
+    65.6,
+    0.4
+   ],
+   [
+    85.304574,
+    97,
+    19.4,
+    70.4,
+    70.4,
+    0.4
+   ],
+   [
+    90.404936,
+    100,
+    19.6,
+    101.1,
+    101.1,
+    0.3
+   ],
+   [
+    95.439416,
+    100,
+    19.9,
+    55.0,
+    55.0,
+    0.4
+   ],
+   [
+    100.464567,
+    99,
+    19.7,
+    59.3,
+    59.3,
+    0.4
+   ],
+   [
+    105.502315,
+    96,
+    19.1,
+    76.2,
+    76.2,
+    0.3
+   ],
+   [
+    110.506559,
+    97,
+    19.4,
+    66.9,
+    66.9,
+    0.4
+   ],
+   [
+    115.52896,
+    99,
+    19.7,
+    58.9,
+    58.9,
+    0.4
+   ],
+   [
+    120.552026,
+    99,
+    19.7,
+    56.4,
+    56.4,
+    0.3
+   ],
+   [
+    125.602382,
+    99,
+    19.6,
+    65.8,
+    65.8,
+    0.4
+   ],
+   [
+    130.624569,
+    98,
+    19.5,
+    62.1,
+    62.1,
+    0.4
+   ],
+   [
+    135.629597,
+    88,
+    17.6,
+    85.6,
+    85.6,
+    0.4
+   ],
+   [
+    140.65795,
+    72,
+    14.3,
+    112.2,
+    112.2,
+    0.4
+   ],
+   [
+    145.67539,
+    85,
+    16.9,
+    76.4,
+    76.4,
+    0.4
+   ],
+   [
+    150.681461,
+    97,
+    19.4,
+    70.8,
+    70.8,
+    0.4
+   ],
+   [
+    155.690384,
+    108,
+    21.6,
+    60.9,
+    66.2,
+    0.3
+   ],
+   [
+    160.72519,
+    91,
+    18.1,
+    88.1,
+    88.1,
+    0.3
+   ],
+   [
+    165.747006,
+    90,
+    17.9,
+    69.7,
+    69.7,
+    0.4
+   ],
+   [
+    170.781354,
+    100,
+    19.9,
+    63.3,
+    63.3,
+    0.3
+   ],
+   [
+    175.79348,
+    108,
+    21.5,
+    57.6,
+    58.2,
+    0.3
+   ],
+   [
+    180.837327,
+    81,
+    16.1,
+    80.2,
+    80.2,
+    0.5
+   ],
+   [
+    185.878479,
+    84,
+    16.7,
+    74.5,
+    74.5,
+    0.4
+   ]
+  ],
+  "heavy_windows": 0,
+  "heavy_fps": null,
+  "light_windows": 24,
+  "light_fps": 18.91,
+  "regimes": "play windows (<45 fps); heavy = present fence wait >= 5 ms per frame (GPU thread bound), light = < 1 ms (game CPU bound)"
+ },
+ "redacted": {
+  "console_user": 3
+ }
+}

@@ -4,6 +4,8 @@
   flashes.py log  RUN [RUN ...]            per-run totals and a 10 s timeline from the eden_log lines; v25 and v40
                                            count flashes as big as Vampinity's 25+ and 40+ cells of a 32 x 18 grid
                                            (4.3% and 6.9% of the screen), so the two counters compare
+  flashes.py vamp RUN|FILE [...] [--events]  count exactly by Vampinity's rule (their tools/Vampinity/flash-counter
+                                           code), from our grids resampled to what a capture card records
   flashes.py grids RUN|FILE [...] [--threshold 24] [--min-cells 4] [--min-share 0.043] [--pictures DIR]
                                            re-run the detector on the saved grids (EDEN_GBB_FLASH=2): a table per
                                            run at Vampinity's sizes, the flashes of at least --min-share of the
@@ -293,6 +295,154 @@ def cmd_grids(a):
                   f"box x {e['box'][0]}-{e['box'][2]}% y {e['box'][1]}-{e['box'][3]}%")
 
 
+def vamp_dir(arg):
+    """Vampinity's tools/Vampinity/flash-counter: --vampinity, else found next to this toolkit in the repo."""
+    cands = [arg] if arg else []
+    here = os.path.dirname(os.path.abspath(__file__))
+    cands += [os.path.join(here, "..", "..", "Vampinity", "flash-counter"),
+              os.path.expanduser("~/Desktop/work/GreenHatBoy/tools/Vampinity/flash-counter")]
+    for c in cands:
+        if c and os.path.isfile(os.path.join(c, "count_flashes.py")):
+            return os.path.abspath(c)
+    raise SystemExit("can't find Vampinity's flash-counter (tools/Vampinity/flash-counter); pass --vampinity DIR")
+
+
+def to_grid(data, w, h, gx, gy):
+    """Area average of a w x h brightness grid onto gx x gy cells (fractional overlaps weighted)."""
+    out = []
+    for cy in range(gy):
+        y0, y1 = cy * h / gy, (cy + 1) * h / gy
+        for cx in range(gx):
+            x0, x1 = cx * w / gx, (cx + 1) * w / gx
+            tot = wt = 0.0
+            for y in range(int(y0), min(h, int(y1) + 1)):
+                fy = min(y + 1, y1) - max(y, y0)
+                if fy <= 0:
+                    continue
+                row = y * w
+                for x in range(int(x0), min(w, int(x1) + 1)):
+                    fx = min(x + 1, x1) - max(x, x0)
+                    if fx > 0:
+                        tot += data[row + x] * fx * fy
+                        wt += fx * fy
+            out.append(int(round(tot / wt)) if wt else 0)
+    return bytes(out)
+
+
+def video_like(path, fps, gx, gy):
+    """What a capture card at fps would have recorded, on Vampinity's grid: at each 1/fps the frame last presented.
+    Returns (frames, first_ns)."""
+    small, times = [], []
+    for w, h, present, ns, data in read_grids(path):
+        small.append(to_grid(data, w, h, gx, gy))
+        times.append(ns)
+    if not small:
+        return [], 0
+    frames, k, step = [], 0, 1e9 / fps
+    t = times[0]
+    while t <= times[-1]:
+        while k + 1 < len(times) and times[k + 1] <= t:
+            k += 1
+        frames.append(small[k])
+        t += step
+    return frames, times[0]
+
+
+def cmd_vamp(a):
+    import importlib.util
+    d = vamp_dir(a.vampinity)
+    sys.path.insert(0, d)
+    spec = importlib.util.spec_from_file_location("vamp_count_flashes", os.path.join(d, "count_flashes.py"))
+    cf = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cf)
+    R = cf.R
+    print(f"Counted by Vampinity's rule ({d}/rule.py): {R.GX}x{R.GY} grid, outer ring left out, a cell off by "
+          f"{100 * R.DROP:.0f}% against the medians of {R.PRE_S} s before and after, {R.MIN_CELLS}+ cells a flash, "
+          f"{R.GLITCH_CELLS}+ a glitch, {R.FULL_SCENE}+ full-scene. Our grids are resampled to what a capture card "
+          "would have recorded (the frame on screen at each tick). Dark: their own count_flashes code at 30 fps. "
+          "Bright: their bright_scan rule at 60 fps on brightness only (our grids hold no colour, so no colour "
+          "flashes).")
+    print(f"{'run':<22} {'minutes':>7} {'dark':>5} {'/min':>5} {'dark40':>6} {'bright':>6} {'/min':>5} "
+          f"{'bright40':>8} {'full':>4}")
+    detail = []
+    for arg in a.files:
+        path = grid_file(arg)
+        name = os.path.basename(os.path.normpath(arg)) if os.path.isdir(arg) else os.path.basename(arg)
+        frames, _ = video_like(path, 30, R.GX, R.GY)
+        keep = cf.gameplay([sum(f) / len(f) for f in frames], 30, False)
+        dark = [f for f in cf.flashes(cf.dips(frames, keep, 30), 30, 0.0, 30) if not f["too_long"]]
+        mins = sum(keep) / 30 / 60
+        frames60, _ = video_like(path, 60, R.GX, R.GY)
+        keep60 = cf.gameplay([sum(f) / len(f) for f in frames60], 60, False)
+        bright = bright_scan_luma(frames60, keep60, R)
+        per = lambda n: n / mins if mins else 0
+        full = sum(f["cells"] >= R.FULL_SCENE for f in dark) + sum(f["cells"] >= R.FULL_SCENE for f in bright)
+        print(f"{name:<22} {mins:>7.1f} {len(dark):>5} {per(len(dark)):>5.1f} "
+              f"{sum(f['cells'] >= R.GLITCH_CELLS for f in dark):>6} {len(bright):>6} {per(len(bright)):>5.1f} "
+              f"{sum(f['cells'] >= R.GLITCH_CELLS and f['ms'] <= R.GLITCH_MS for f in bright):>8} {full:>4}")
+        detail.append((name, dark, bright))
+    if a.events:
+        for name, dark, bright in detail:
+            print(f"\n{name}: seconds after the first counted frame")
+            for f in sorted([dict(x, k="dark") for x in dark] + [dict(x, k="bright") for x in bright],
+                            key=lambda x: x["t"]):
+                print(f"  t {f['t']:8.2f}s  {f['k']:6} {f['cells']:4} cells  {f['ms']:4} ms")
+
+
+def bright_scan_luma(frames, keep, R, fps=60):
+    """Vampinity's bright_scan rule (dark and bright cells; no colour), on 60 fps brightness grids."""
+    pre = round(R.PRE_S * fps)
+    gaps = (round(R.GAP_S * fps), 24)
+    floor = 40
+    gx, gy = R.GX, R.GY
+    n = len(frames)
+    cells = [(x, y) for y in range(R.EDGE, gy - R.EDGE) for x in range(R.EDGE, gx - R.EDGE) if not (y < 3 and x < 7)]
+    off = [dict() for _ in range(n)]
+    med = lambda v: sorted(v)[len(v) // 2]
+    for (x, y) in cells:
+        i0 = y * gx + x
+        Y = [f[i0] for f in frames]
+        for i in range(pre, n - gaps[0] - pre):
+            if not keep[i]:
+                continue
+            py = med(Y[i - pre:i])
+            for gap in gaps:
+                j = i + gap
+                if j + pre > n:
+                    continue
+                qy = med(Y[j:j + pre])
+                ref = max((py + qy) / 2, floor)
+                if abs(py - qy) > R.RECOVER * ref:
+                    continue
+                if Y[i] < py * (1 - R.DROP) and Y[i] < qy * (1 - R.DROP) and py >= R.MIN_PRE:
+                    off[i][(x, y)] = "d"
+                    break
+                if Y[i] > py + R.DROP * ref and Y[i] > qy + R.DROP * ref:
+                    off[i][(x, y)] = "b"
+                    break
+    events, cur = [], None
+    for i in range(n):
+        k = len(off[i])
+        if k >= R.MIN_CELLS:
+            if cur and i - cur["last"] <= 2:
+                cur["last"] = i
+                if k > cur["cells"]:
+                    cur["cells"], cur["peak"] = k, i
+            else:
+                cur = {"first": i, "last": i, "peak": i, "cells": k}
+                events.append(cur)
+    out = []
+    for e in events:
+        f = off[e["peak"]]
+        nb = sum(v == "b" for v in f.values())
+        nd = len(f) - nb
+        if nb < 2 * nd:  # bright_scan calls it bright only when bright cells dominate; dark ones are count_flashes'
+            continue
+        out.append({"t": round(e["peak"] / fps, 3), "ms": round((e["last"] - e["first"] + 1) * 1000 / fps),
+                    "cells": e["cells"]})
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -307,8 +457,12 @@ def main():
     gr.add_argument("--min-cells", type=int, default=4)
     gr.add_argument("--pictures")
     gr.add_argument("--around", type=int, default=40, help="pictures for the first N listed flashes per run")
+    vp = sub.add_parser("vamp", help="count by Vampinity's rule (tools/Vampinity/flash-counter)")
+    vp.add_argument("files", nargs="+", help="gbb-flash-*.bin files or run folders")
+    vp.add_argument("--vampinity", help="path to tools/Vampinity/flash-counter")
+    vp.add_argument("--events", action="store_true")
     a = ap.parse_args()
-    return cmd_log(a) if a.cmd == "log" else cmd_grids(a)
+    return {"log": cmd_log, "grids": cmd_grids, "vamp": cmd_vamp}[a.cmd](a)
 
 
 if __name__ == "__main__":
