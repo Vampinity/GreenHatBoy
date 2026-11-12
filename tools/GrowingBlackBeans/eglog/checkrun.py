@@ -92,13 +92,18 @@ def main():
     if run.effective_env is not None:
         # Patch 0923 logs the env the process really had: compare it with env.txt directly.
         mine = {k: v for k, v in run.env.items() if k.startswith(("EDEN_", "RADV_", "MESA_", "ACO_"))}
-        diff = sorted(set(mine.items()) ^ set(run.effective_env.items()))
-        if diff:
-            keys = sorted({k for k, _ in diff})
-            problems.append(f"env.txt and the env the emulator logged (EDEN_GBB_ENV) differ in {len(keys)} switch(es): "
-                            f"{', '.join(keys[:8])}{' ...' if len(keys) > 8 else ''}")
+        eff = run.effective_env
+        missing = sorted(k for k in mine if k not in eff)
+        changed = sorted(k for k in mine if k in eff and eff[k] != mine[k])
+        extra = sorted(k for k in eff if k not in mine)
+        if missing or changed:
+            problems.append(f"env.txt and the env the emulator logged (EDEN_GBB_ENV) differ: "
+                            f"{len(missing)} not set in the process ({', '.join(missing[:6])}), "
+                            f"{len(changed)} with other values ({', '.join(changed[:6])})")
         else:
-            notes.append("env.txt matches the env the emulator logged (EDEN_GBB_ENV) exactly")
+            notes.append(f"every switch in env.txt is in the process with the same value (EDEN_GBB_ENV)"
+                         + (f"; {len(extra)} more are set by the launcher itself ({', '.join(extra[:5])}"
+                            f"{' ...' if len(extra) > 5 else ''})" if extra else ""))
     if run.menu:
         notes.append("menu: " + ", ".join(f"{k} {v}" for k, v in run.menu.items() if k in (
             "unsafe CPU", "fast GPU", "async shaders", "reactive flushing", "Resolution", "Console mode")))
