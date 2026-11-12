@@ -13,4 +13,4 @@ One of us steps in. Usually a short word is enough. Posts can be hidden or edite
 
 ## Telling us about a problem
 
-Click the three dots on the post or comment and choose **Report content**. Then pick the option to report it to the maintainers of this repository. Only we see it, and we read every report.
+Mention one of us in the thread (Vampinity, GrowingBlackBeans or waveydude) and we will step in. For something serious, click the three dots on the post or comment and choose **Report content**. That report goes to GitHub.
