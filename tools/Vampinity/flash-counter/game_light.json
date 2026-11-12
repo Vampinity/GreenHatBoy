@@ -1,0 +1,14 @@
+[
+ {
+  "mark": "door",
+  "what": "New game: the second the house door starts to open (mark it with --mark door=<video second>).",
+  "stretches": [[0, 7], [11, 21], [24, 33]],
+  "why": "0-7 s: daylight through the doorway as the door swings open (flashes of 10-24 cells in every run). 11-21 s: falling leaves in the area name card's fly-over (10-14 cells). 24-33 s: the greeting cutscene in the village: a fairy's glow, a waving hand and the fading name card (10-16 cells). Light changes the game makes itself, not the glitch."
+ },
+ {
+  "mark": "first_control",
+  "what": "New game: the second you first get control inside the house (mark it with --mark first_control=<video second>).",
+  "stretches": [[0, 1.5]],
+  "why": "The camera swings round as the player starts to run: flashes of 10-11 cells in a quarter of the runs, all camera and player motion when looked at frame by frame."
+ }
+]
