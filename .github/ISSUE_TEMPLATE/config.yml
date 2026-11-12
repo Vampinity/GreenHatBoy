@@ -1,1 +1,8 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question
+    url: https://github.com/Vampinity/GreenHatBoy/discussions/categories/q-a
+    about: Install, first start or settings files. Ask in Discussions, not as an issue.
+  - name: Share an idea
+    url: https://github.com/Vampinity/GreenHatBoy/discussions/categories/ideas
+    about: An idea for the build or for this project. Post it in Discussions.
