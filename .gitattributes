@@ -1,0 +1,6 @@
+# The emulator's code lives here as patch files and diffs (C++).
+*.patch linguist-language=C++ linguist-detectable
+*.diff  linguist-language=C++ linguist-detectable
+# Logs and run data.
+runs/** linguist-generated
+*.csv   linguist-generated
