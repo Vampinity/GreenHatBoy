@@ -1,0 +1,342 @@
+diff --git a/src/video_core/gbb_read_sync_pending.h b/src/video_core/gbb_read_sync_pending.h
+index 139d188..486522c 100644
+--- a/src/video_core/gbb_read_sync_pending.h
++++ b/src/video_core/gbb_read_sync_pending.h
+@@ -25,6 +25,21 @@
+ ///
+ /// Every 10 s while on: "EDEN_GBB_READ_SYNC_PENDING: last 10 s synced <n> skipped <n> (window <ms>
+ ///   ms, <n> granules noted)".
++///
++/// 0930 (same header):
++/// EDEN_GBB_READ_SYNC_CENSUS=1 (with EDEN_UP_AHEAD_READ_SYNC=1 and _VERIFY=1): for every read read sync
++///   waits on, where its time went (waiting for the frame's fence, then the flush round trip), how long
++///   ago the GPU last wrote the read's 64 KiB granule (this table), whether the game read that granule in
++///   the previous present too, and whether the check found changed bytes (the read's 4 KiB window).
++///   One line every 10 s: "EDEN_GBB_READ_SYNC_CENSUS: reads <n>, fence waited <n> (<ms> ms), flush
++///   <ms> ms; by age of the last GPU write (changed/all): <50ms a/b <100ms ... older a/b none a/b;
++///   read last present: changed a/b, not read last present: changed a/b".
++/// EDEN_GBB_READ_SYNC_ONCE=1 (with EDEN_UP_AHEAD_READ_SYNC=1): read sync once per present. The first
++///   read it would make wait in a present is synced as usual, then the ranges read sync read in the
++///   previous present are flushed in one round trip; later reads in that present that fall in those
++///   ranges go through without a wait, others are synced as usual and remembered for the next present.
++///   Line every 10 s: "EDEN_GBB_READ_SYNC_ONCE: last 10 s presents <n>, batch ranges <n>, covered <n>,
++///   synced <n>".
+ 
+ #include <atomic>
+ #include <chrono>
+@@ -55,6 +70,21 @@ inline bool On() {
+     return WindowNs() != 0;
+ }
+ 
++inline bool ExactOne(const char* name) {
++    const char* v = std::getenv(name);
++    return v != nullptr && v[0] == '1' && v[1] == '\0';
++}
++
++inline bool CensusOn() {
++    static const bool on = ExactOne("EDEN_GBB_READ_SYNC_CENSUS");
++    return on;
++}
++
++inline bool OnceOn() {
++    static const bool on = ExactOne("EDEN_GBB_READ_SYNC_ONCE");
++    return on;
++}
++
+ inline u64 NowNs() {
+     return static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                 std::chrono::steady_clock::now().time_since_epoch())
+@@ -87,7 +117,7 @@ inline Counters& Count() {
+ 
+ /// A GPU write queued for download at the next fence (BufferCache::QueueGpuWrite, GPU thread).
+ inline void NoteGpuWrite(u64 device_addr, u64 size) {
+-    if (!On() || size == 0) [[likely]] {
++    if ((!On() && !CensusOn()) || size == 0) [[likely]] {
+         return;
+     }
+     const u64 now = NowNs();
+@@ -142,4 +172,139 @@ inline bool ShouldSync(u64 device_addr, u64 size) {
+     return recent;
+ }
+ 
++
++// ---- 0930: census ----
++
++/// Age in ns of the newest GPU write noted for [device_addr, device_addr + size); ~0 when none.
++inline u64 WriteAgeNs(u64 device_addr, u64 size, u64 now) {
++    u64 best = ~u64{0};
++    const u64 first = device_addr >> GranuleBits;
++    const u64 last = (device_addr + (size ? size : 1) - 1) >> GranuleBits;
++    for (u64 g = first; g <= last; ++g) {
++        const Slot& s = SlotFor(g);
++        if (s.granule.load(std::memory_order_acquire) != g) {
++            continue;
++        }
++        const u64 written = s.written_ns.load(std::memory_order_relaxed);
++        const u64 age = written >= now ? 0 : now - written;
++        best = age < best ? age : best;
++    }
++    return best;
++}
++
++/// Which present last read each granule (a second table, same layout).
++struct ReadSlot {
++    std::atomic<u64> granule{~u64{0}};
++    std::atomic<u64> present{0};
++};
++
++inline ReadSlot* ReadTable() {
++    static ReadSlot* table = new ReadSlot[size_t{1} << TableBits];
++    return table;
++}
++
++struct Census {
++    static constexpr int Buckets = 7; // <50, <100, <200, <500, <2000 ms, older, none
++    std::atomic<u64> reads{0}, fence_waited{0}, fence_ns{0}, flush_ns{0};
++    std::atomic<u64> by_age[Buckets]{}, changed_by_age[Buckets]{};
++    std::atomic<u64> repeat{0}, repeat_changed{0}, fresh{0}, fresh_changed{0};
++    std::atomic<u64> report_ns{0};
++};
++
++inline Census& TheCensus() {
++    static Census c;
++    return c;
++}
++
++inline int AgeBucket(u64 age_ns) {
++    if (age_ns == ~u64{0}) return 6;
++    const u64 ms = age_ns / 1'000'000;
++    return ms < 50 ? 0 : ms < 100 ? 1 : ms < 200 ? 2 : ms < 500 ? 3 : ms < 2000 ? 4 : 5;
++}
++
++/// One read read sync waited on (GPU::ReadAheadSync, with the check on). `changed`: the check found
++/// changed bytes in the read's window.
++inline void NoteCensus(u64 device_addr, u64 size, u64 present, bool fence_waited, u64 fence_ns,
++                       u64 flush_ns, bool changed) {
++    Census& c = TheCensus();
++    const u64 now = NowNs();
++    const int b = AgeBucket(WriteAgeNs(device_addr, size, now));
++    c.reads.fetch_add(1, std::memory_order_relaxed);
++    if (fence_waited) c.fence_waited.fetch_add(1, std::memory_order_relaxed);
++    c.fence_ns.fetch_add(fence_ns, std::memory_order_relaxed);
++    c.flush_ns.fetch_add(flush_ns, std::memory_order_relaxed);
++    c.by_age[b].fetch_add(1, std::memory_order_relaxed);
++    if (changed) c.changed_by_age[b].fetch_add(1, std::memory_order_relaxed);
++    const u64 g = device_addr >> GranuleBits;
++    ReadSlot& r = ReadTable()[(g * 0x9E3779B97F4A7C15ULL) >> (64 - TableBits)];
++    const bool repeat = r.granule.load(std::memory_order_acquire) == g &&
++                        r.present.load(std::memory_order_relaxed) + 1 == present;
++    if (r.granule.load(std::memory_order_relaxed) != g ||
++        r.present.load(std::memory_order_relaxed) != present) {
++        r.present.store(present, std::memory_order_relaxed);
++        r.granule.store(g, std::memory_order_release);
++    }
++    (repeat ? c.repeat : c.fresh).fetch_add(1, std::memory_order_relaxed);
++    if (changed) (repeat ? c.repeat_changed : c.fresh_changed).fetch_add(1, std::memory_order_relaxed);
++    u64 last = c.report_ns.load(std::memory_order_relaxed);
++    if (last == 0) {
++        c.report_ns.compare_exchange_strong(last, now, std::memory_order_relaxed);
++        return;
++    }
++    if (now - last < 10'000'000'000ULL ||
++        !c.report_ns.compare_exchange_strong(last, now, std::memory_order_relaxed)) {
++        return;
++    }
++    u64 ch[Census::Buckets], all[Census::Buckets];
++    for (int i = 0; i < Census::Buckets; ++i) {
++        ch[i] = c.changed_by_age[i].exchange(0, std::memory_order_relaxed);
++        all[i] = c.by_age[i].exchange(0, std::memory_order_relaxed);
++    }
++    LOG_INFO(HW_GPU,
++             "EDEN_GBB_READ_SYNC_CENSUS: reads {}, fence waited {} ({} ms), flush {} ms; by age of the "
++             "last GPU write (changed/all): <50ms {}/{} <100ms {}/{} <200ms {}/{} <500ms {}/{} <2s {}/{} "
++             "older {}/{} none {}/{}; read last present: changed {}/{}, not read last present: "
++             "changed {}/{}",
++             c.reads.exchange(0, std::memory_order_relaxed),
++             c.fence_waited.exchange(0, std::memory_order_relaxed),
++             c.fence_ns.exchange(0, std::memory_order_relaxed) / 1'000'000,
++             c.flush_ns.exchange(0, std::memory_order_relaxed) / 1'000'000, ch[0], all[0], ch[1],
++             all[1], ch[2], all[2], ch[3], all[3], ch[4], all[4], ch[5], all[5], ch[6], all[6],
++             c.repeat_changed.exchange(0, std::memory_order_relaxed),
++             c.repeat.exchange(0, std::memory_order_relaxed),
++             c.fresh_changed.exchange(0, std::memory_order_relaxed),
++             c.fresh.exchange(0, std::memory_order_relaxed));
++}
++
++// ---- 0930: once per present ----
++
++struct OnceCounters {
++    std::atomic<u64> presents{0}, batch_ranges{0}, covered{0}, synced{0}, report_ns{0};
++};
++
++inline OnceCounters& Once() {
++    static OnceCounters c;
++    return c;
++}
++
++inline void OnceMaybeReport() {
++    OnceCounters& c = Once();
++    const u64 now = NowNs();
++    u64 last = c.report_ns.load(std::memory_order_relaxed);
++    if (last == 0) {
++        c.report_ns.compare_exchange_strong(last, now, std::memory_order_relaxed);
++        return;
++    }
++    if (now - last < 10'000'000'000ULL ||
++        !c.report_ns.compare_exchange_strong(last, now, std::memory_order_relaxed)) {
++        return;
++    }
++    LOG_INFO(HW_GPU,
++             "EDEN_GBB_READ_SYNC_ONCE: last 10 s presents {}, batch ranges {}, covered {}, synced {}",
++             c.presents.exchange(0, std::memory_order_relaxed),
++             c.batch_ranges.exchange(0, std::memory_order_relaxed),
++             c.covered.exchange(0, std::memory_order_relaxed),
++             c.synced.exchange(0, std::memory_order_relaxed));
++}
++
+ } // namespace VideoCore::GbbReadSyncPending
+diff --git a/src/video_core/gpu.cpp b/src/video_core/gpu.cpp
+index 12a6aeb..1754e44 100644
+--- a/src/video_core/gpu.cpp
++++ b/src/video_core/gpu.cpp
+@@ -718,6 +718,9 @@ struct GPU::Impl {
+                     [[unlikely]] {
+                     // EDEN_GBB_READ_SYNC_PENDING (0929): wait only for a range the GPU wrote
+                     // recently (video_core/gbb_read_sync_pending.h); others read as without sync.
++                    if (VideoCore::GbbReadSyncPending::OnceOn()) [[unlikely]] { // 0930
++                        return ReadSyncOnce(raster_area, addr, size, ahead == 2);
++                    }
+                     if (!VideoCore::GbbReadSyncPending::On() ||
+                         VideoCore::GbbReadSyncPending::ShouldSync(addr, size)) {
+                         return ReadAheadSync(raster_area, addr, size, ahead == 2);
+@@ -823,6 +826,81 @@ struct GPU::Impl {
+     /// range are GPU-modified, then runs OnCPURead's synchronous flush, which downloads them into
+     /// guest memory now. On guest core threads only: other threads keep no area and take the
+     /// shortcut as before. No cache mutex is held here (GetFlushArea released both).
++    /// EDEN_GBB_READ_SYNC_ONCE=1 (0930, video_core/gbb_read_sync_pending.h): read sync once per present.
++    /// The first read in a present is synced as usual (ReadAheadSync: the fence wait, then its flush),
++    /// then the ranges read sync read in the previous present are flushed in one round trip; later reads
++    /// in the present that fall in those ranges go through, others are synced and remembered.
++    VideoCore::RasterizerDownloadArea ReadSyncOnce(VideoCore::RasterizerDownloadArea raster_area,
++                                                   DAddr addr, u64 size, bool from_auto) {
++        namespace Once = VideoCore::GbbReadSyncPending;
++        if (system.GetCurrentHostThreadID() >= Core::Hardware::NUM_CPU_CORES) {
++            return ReadAheadSync(raster_area, addr, size, from_auto);
++        }
++        const u64 present = VideoCommon::AheadReadSync::g_present.load(std::memory_order_relaxed);
++        const DAddr lo = raster_area.start_address;
++        const DAddr hi = raster_area.end_address;
++        std::vector<std::pair<DAddr, DAddr>> batch;
++        bool first = false;
++        bool covered = false;
++        {
++            std::scoped_lock lock{once_mutex};
++            if (present != once_present) {
++                // Merge the last present's ranges: they are this present's batch.
++                std::sort(once_cur.begin(), once_cur.end());
++                once_prev.clear();
++                for (const auto& range : once_cur) {
++                    if (!once_prev.empty() && range.first <= once_prev.back().second) {
++                        once_prev.back().second = (std::max)(once_prev.back().second, range.second);
++                    } else {
++                        once_prev.push_back(range);
++                    }
++                }
++                once_cur.clear();
++                once_covered.clear();
++                once_present = present;
++                once_started = false;
++                Once::Once().presents.fetch_add(1, std::memory_order_relaxed);
++            }
++            once_cur.emplace_back(lo, hi);
++            if (!once_started) {
++                once_started = true;
++                first = true;
++                batch = once_prev;
++            } else {
++                for (const auto& [b, e] : once_covered) {
++                    if (b <= lo && hi <= e) {
++                        covered = true;
++                        break;
++                    }
++                }
++            }
++        }
++        if (covered) {
++            Once::Once().covered.fetch_add(1, std::memory_order_relaxed);
++            Once::OnceMaybeReport();
++            return raster_area;
++        }
++        Once::Once().synced.fetch_add(1, std::memory_order_relaxed);
++        const auto result = ReadAheadSync(raster_area, addr, size, from_auto);
++        if (first && !batch.empty()) {
++            const u64 fence = RequestSyncOperation([this, batch]() {
++                InvalidateGPUCache();
++                for (const auto& [b, e] : batch) {
++                    renderer->ReadRasterizer()->FlushRegion(b, e - b);
++                }
++            });
++            gpu_thread.TickGPU(is_async);
++            WaitForSyncOperation(fence);
++            Once::Once().batch_ranges.fetch_add(batch.size(), std::memory_order_relaxed);
++            std::scoped_lock lock{once_mutex};
++            if (once_present == present) {
++                once_covered = std::move(batch);
++            }
++        }
++        Once::OnceMaybeReport();
++        return result;
++    }
++
+     VideoCore::RasterizerDownloadArea ReadAheadSync(VideoCore::RasterizerDownloadArea raster_area,
+                                                     DAddr addr, u64 size, bool from_auto) {
+         namespace ReadSync = VideoCommon::AheadReadSync;
+@@ -848,12 +926,14 @@ struct GPU::Impl {
+             system.Host1x().MemoryManager().ReadBlockUnsafe(verify_begin, before.data(),
+                                                             verify_size);
+         }
++        bool gbb_fence_waited = false; // 0930: census
+         const u64 fence_word = ReadSync::g_fence.load(std::memory_order_relaxed);
+         const u32 fence_id = static_cast<u32>(fence_word >> 32);
+         const u32 fence_value = static_cast<u32>(fence_word);
+         if (fence_id < 192) {
+             const auto& syncpoints = system.Host1x().GetSyncpointManager();
+             if (!syncpoints.IsReadyGuest(fence_id, fence_value)) {
++                gbb_fence_waited = true; // 0930
+                 counters.fence_waits.fetch_add(1, std::memory_order_relaxed);
+                 // Bounded: a frame whose GPU work waits on a release this thread makes later
+                 // would never reach its fence. Then the flush below runs as it would today.
+@@ -880,6 +960,7 @@ struct GPU::Impl {
+                 }
+             }
+         }
++        const s64 gbb_fence_done = ReadSync::NowNs(); // 0930: census
+         const u64 fence = RequestSyncOperation([this, raster_area]() {
+             // Apply collected guest writes before downloading GPU data over guest memory.
+             InvalidateGPUCache();
+@@ -914,6 +995,12 @@ struct GPU::Impl {
+                     }
+                 }
+             }
++            if (VideoCore::GbbReadSyncPending::CensusOn()) [[unlikely]] { // 0930
++                const u64 fence_ns = static_cast<u64>(gbb_fence_done - start);
++                VideoCore::GbbReadSyncPending::NoteCensus(
++                    addr, size, ReadSync::g_present.load(std::memory_order_relaxed),
++                    gbb_fence_waited, fence_ns, took > fence_ns ? took - fence_ns : 0, changed != 0);
++            }
+             if (changed != 0) {
+                 // The line the read asked for when its own bytes changed, else the first one.
+                 const bool in_read = first_in_read != verify_size;
+@@ -1056,6 +1143,12 @@ struct GPU::Impl {
+     std::array<std::list<u32>, Service::Nvidia::MaxSyncPoints> syncpt_interrupts;
+ 
+     std::mutex sync_mutex;
++    /// EDEN_GBB_READ_SYNC_ONCE (0930): ranges read sync read this present and the last, and those the
++    /// first read of this present flushed.
++    std::mutex once_mutex;
++    u64 once_present{~u64{0}};
++    bool once_started{};
++    std::vector<std::pair<DAddr, DAddr>> once_cur, once_prev, once_covered;
+     std::mutex device_mutex;
+ 
+     std::condition_variable sync_cv;

@@ -45,3 +45,9 @@ GrowingBlackBeans. Base PS5 13.60, standard Kokiri benchmark **v2** (a new save 
 
 - The flash counter's counts at the door (posted earlier in Discussion #2): not usable. Close objects sweeping past the camera count as flashes, more so at lower fps.
 - "Ship a recorded shader cache" (Discussion #4): not allowed, since the cache holds the game's code. The legal options are building on the player's console or shipping a list of shader IDs.
+
+## Update, 12 Nov night
+
+- **Two frames ahead in real play** (`runs/GrowingBlackBeans/2026-11-12-Play2`, new game, two slots, `EDEN_UP_AHEAD_LOAD_WAIT=1`, no read sync): 12 minutes, 29.7 fps on average, half of play at 30 fps or more, heavy windows 1% (27% in the one-frame-ahead play session the day before). No title freeze. The player: smooth and fast. Flicker present, much better in small areas, worst in wide camera shots, the forest and water, which fits the read-back race: the more work the GPU has per frame, the later its copy-back lands.
+- **The first narrow read sync (0929, `EDEN_GBB_READ_SYNC_PENDING`) felt as slow as the full one** in a short play. My guess, not measured yet: the ranges read sync waits on are exactly the ones the GPU rewrites every frame, so "written in the last 200 ms" is nearly all of them. Its counters weren't saved; it's measured again on 13 Nov.
+- **Next (13 Nov):** a census of read sync's waits (0930: where the time goes, write age, repeats, changes) and a different design, read sync once per frame (one batched flush instead of ~76 round trips). Three runs a side against two frames ahead without read sync.
