@@ -25,24 +25,20 @@ Runs also get an era (full-wait or ahead-1; never pool them) and, on hand-played
 
 ## What has been tested
 
-As of 11 Nov 2026:
+As of 12 Nov 2026:
 
 | Piece | State |
 |---|---|
-| `eglog.py`, `runreport.py`, `abcompare.py` (including `--live`), `checkrun.py`, `index-gbb.py`, `ingest.sh` | **Tested** on all 1,219 runs in this repo and on raw folders; unit tests pass (`tests/`). |
+| `eglog.py`, `runreport.py`, `abcompare.py` (including `--live`), `checkrun.py`, `index-gbb.py`, `ingest.sh` | **Tested** on all runs in this repo and on raw folders; unit tests pass (`tests/`). 12 Nov: `abcompare`'s "smallest possible p" footnote was wrong for unequal run counts (fixed: 1/C, not 2/C). |
 | Menu settings from stderr (`run.menu`) | **Tested** on real logs. |
-| `timeline.py` | Tested **only on synthetic files** (`tests/test_timeline.py`). Never on a real capture. |
-| Patch 0921, `EDEN_GBB_BACK_CALLS` | Builds (t120-gbb4). **Never run.** Its cost is unknown. |
-| Patch 0922, `EDEN_GBB_VITALS`, `EDEN_GBB_TIMELINE` | Builds (t120-gbb5). **Never run.** The cost, the file write and the event mix are all unchecked. |
-| Patch 0923, `EDEN_GBB_FLIGHT`, `EDEN_GBB_ENV`, the touchpad + R3 marker | Builds (t120-gbb6). **Never run.** The pad chord is untested: check that the touchpad doesn't also tap the game's Minus. |
-| eglog parsing of the 0921-0923 lines (vitals, env, marks, flights) | Written against the format strings in the patches; **never fed real output.** |
+| `timeline.py` | **Tested on a real capture** (run V1, 12 Nov: the per-frame table showed the doubled 80-94 ms frames with one frame in flight). |
+| Patch 0921, `EDEN_GBB_BACK_CALLS` | **Ran on the console** (V1). Its own cost has not been measured on its own. |
+| Patch 0922, `EDEN_GBB_VITALS`, `EDEN_GBB_TIMELINE` | **Ran on the console**: vitals in every run since 12 Nov, timeline in V1. Vitals are on in both arms of every comparison, so their cost cancels; it hasn't been measured on its own. |
+| Patch 0923, `EDEN_GBB_FLIGHT`, `EDEN_GBB_ENV` | **Ran on the console** (F1, the 12 Nov morning runs). `checkrun.py` relies on the env line. The flight recorder still dumps during loading screens and should skip them. |
+| Touchpad + R3 marker (0923) | Works, but too awkward to press while playing; the flash counter replaces it. |
+| Patch 0928, `EDEN_GBB_FLASH`, and `flashes.py` | **Ran on the console** (12 Nov, FC3 / FX3 / XG3, t120-gbb9). Ranks control < two-slot guard < one slot like the player's eye. The detector is unit-tested on synthetic frames (pans, fades, cuts, one- and two-frame strips, a white flash). Its own log lines are too sensitive (about 1,200 small "flashes" a run, the game's own motion): use `flashes.py grids` and the v25 / v40 columns (Vampinity's sizes) as the headline. Cost not measured on its own. |
 
-To test 0921-0923 for the first time, one run on t120-gbb6 with `envs/GrowingBlackBeans/V-vitals-back-timeline.env.txt` covers vitals, back calls and timeline. Add `EDEN_GBB_FLIGHT=100` in a second run. Press touchpad + R3 a few times in each. Check:
-1. `EDEN_GBB_VITALS` lines, one a second, with sane numbers. Compare `fps` with the `nx2:vi2 5 s` lines.
-2. `EDEN_GBB_ENV` and `checkrun.py` agreeing.
-3. `EDEN_GBB_MARK` lines, with no Minus press reaching the game.
-4. `gbb-timeline-<pid>.bin` and `gbb-flight-*.bin` in `logs/`, readable with `timeline.py`.
-5. Fps against the same env without the switches (`abcompare.py`), to put a number on their cost.
+Reading flash runs: `flashes.py grids RUN [RUN ...]` takes run folders (raw, or packed here with `gbb-flash-*.bin.gz`) and finds each run's own grid file from its log; `--pictures DIR` draws the frame before, the flash and the frame after.
 
 Fix whatever breaks. The code is in `patches/GrowingBlackBeans/0921-0923` and `video_core/gbb_trace.h`.
 

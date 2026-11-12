@@ -108,7 +108,7 @@ def main():
         print(f"{m:17s} {st.mean(va):7.2f}±{sd(va):5.2f} {st.mean(vb):7.2f}±{sd(vb):5.2f} {d:+7.2f} {p:6.3f}  {verdict}")
     na, nb = len(sa), len(sb)
     from math import comb
-    print(f"\nWith {na} and {nb} runs the smallest possible p is {2 / comb(na + nb, na) if na != nb else 2 / comb(na + nb, na):.3f}; "
+    print(f"\nWith {na} and {nb} runs the smallest possible p is {1 / comb(na + nb, na) if na != nb else 2 / comb(na + nb, na):.3f}; "
           "'consistent' needs 3 or more runs a side, 'real' needs p < 0.05.")
 
 

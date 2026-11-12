@@ -18,9 +18,10 @@ For the Eglantine submodule, applied after Vampinity's T120 series (`tools/eglan
 | 0918 | with `EDEN_NX2_OVERWRITE_CHECK` | Ahead audit: stale texture, descriptor, handle and GPU-result reads per frame |
 | 0919 | `EDEN_GBB_GUARD_EARLY` | Arms `EDEN_UP_AHEAD_GUARD` before the gpu_behind second wait (fixes stale reads during it) |
 | 0920 | with `EDEN_NX2_OVERWRITE_CHECK` | Fence-download landing audit |
-| 0921 | `EDEN_GBB_BACK_CALLS` | Split back thread time per ring entry kind, method and call thunk (TSC; low overhead). Built (t120-gbb4); **never run**. |
-| 0922 | `EDEN_GBB_VITALS`, `EDEN_GBB_TIMELINE=<start s>,<s>` | Per-second vitals line on one clock; per-event timeline file (presents, front waits, back batches, syncpoint increments, fence pops, shaders) read by `eglog/timeline.py`. Also changes `headless/gpu_time_probe.inc` (feeds host GPU time to vitals). Built (t120-gbb5); **never run**. |
-| 0923 | `EDEN_GBB_FLIGHT=<ms>[,<dumps>]` | Flight recorder (last 2 s before a slow frame), `EDEN_GBB_ENV` effective env line, touchpad + R3 marker (`headless/pad.cpp`). Built (t120-gbb6); **never run**. |
+| 0921 | `EDEN_GBB_BACK_CALLS` | Split back thread time per ring entry kind, method and call thunk (TSC; low overhead). Built (t120-gbb4); ran on the console (V1, 12 Nov). |
+| 0922 | `EDEN_GBB_VITALS`, `EDEN_GBB_TIMELINE=<start s>,<s>` | Per-second vitals line on one clock; per-event timeline file (presents, front waits, back batches, syncpoint increments, fence pops, shaders) read by `eglog/timeline.py`. Also changes `headless/gpu_time_probe.inc` (feeds host GPU time to vitals). Built (t120-gbb5); ran on the console (every run since 12 Nov). |
+| 0923 | `EDEN_GBB_FLIGHT=<ms>[,<dumps>]` | Flight recorder (last 2 s before a slow frame), `EDEN_GBB_ENV` effective env line, touchpad + R3 marker (`headless/pad.cpp`). Built (t120-gbb6); ran on the console (F1, 12 Nov). |
+| 0928 | `EDEN_GBB_FLASH=1\|2[,<threshold>,<min cells>]` | Flash counter: each presented frame shrunk on the GPU to a ~120x67 brightness grid (blit chain in the swapchain copy), read back late; one- and two-frame transients counted (all, and motion-proof); `=2` writes the grids to `logs/gbb-flash-<pid>.bin` for `eglog/flashes.py`. Built (t120-gbb9, 01.219.916); ran on the console (12 Nov). |
 | 0924 | `EDEN_GBB_FRAMES_AHEAD2=1` | Two frames in flight: presents wait for the frame two back. An fps experiment; the guard covers one frame, so expect flashes. Built (t120-gbb7); **never run**. |
 
 The headless (outer repo) side of 0922/0923 is `headless-0922-0923.diff` (pad.cpp, gpu_time_probe.inc).
