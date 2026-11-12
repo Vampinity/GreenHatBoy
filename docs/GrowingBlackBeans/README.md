@@ -7,7 +7,7 @@ Base PS5, firmware 13.60, one standard route: Continue, through Link's house, ou
 - Patches: `patches/GrowingBlackBeans/`. Tools: `tools/GrowingBlackBeans/` (`pack-gbb.py` packs a run into this layout with this repo's redaction).
 - Builds: releases `gbb-t120-*`.
 - Where the split back thread spends its time (sampler, 9 Nov) and ports from other forks: `back-thread-profile.md`.
-- Next PS5 session plan: `session-plan-2026-11-11.md`.
+- Session plans: `session-plan-2026-11-11.md`, `session-plan-2026-11-12.md`. Review of the 11-12 Nov night: `review-2026-11-12-night.md`.
 - How close Kokiri is to the memory wall (1,055 runs): `memory-wall.md`.
 - waveydude's runs (Lon Lon, Lost Woods, Kakariko, Dodongo's Cavern; 9.40 boots) read against ours: `waveydude-runs-2026-11-11.md`.
 - Builds t120-gbb4 to gbb7 (untested), switches and how to test them: `builds-t120-gbb4-7.md`.
