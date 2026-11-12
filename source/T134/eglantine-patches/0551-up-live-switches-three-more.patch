@@ -1,0 +1,254 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: [PATCH] Three more live switches: flush draws, upload runs, async draw waits
+
+With EDEN_UP_LIVE_SWITCHES=1 these can change while the game runs (common/live_switch.h), so one
+start compares their values at a standing spot. Without it each is what env.txt gave at its first
+use, for ever, with its own parsing rules, as before.
+
+- EDEN_NX2_FLUSH_DRAWS (a number): the rasterizer submits its command buffer every N draws.
+  Read at each flush check; the draw counter counts and resets for every value, so each check
+  stands alone. ParseFlushDraws is the old static read character for character: digits only,
+  not zero, clamped to 32..1048576, anything else the default 128. In a live plan leave the line
+  out of env.txt (any value there, 128 too, picks another prepared-shader store: the name is in
+  TranslationSwitches, which is left alone) and write 128 for "off" in the schedule, never 0.
+  On the PS5 the check runs every 64 draws, so use multiples of 64.
+- EDEN_UP_UPLOAD_RUNS (exact 1): in-order stream uploads recorded as one command, dispatch
+  barriers fused (0536). A run that is open when the value goes to 0 is closed by the next thing
+  recorded, as always; what a recorded command needs later (the barrier after a copy, the choice
+  in a dispatch) is captured by value when it is recorded, so the worker never reads the switch.
+- EDEN_UP_ASYNC_DRAW_WAITS (exact 1): a Switch 2 draw without a depth buffer waits for its
+  pipeline instead of being skipped (0540). Read per draw. It only does something with
+  EDEN_UP_ASYNC_TRANSLATION=1 at boot; the app warns when a schedule turns it on without that.
+
+Drafted with an AI tool, reviewed twice (anchors of prepare-vulkan-port.py counted per file:
+unchanged; parser compared on edge cases and every 7th number up to two million; stacked and
+compiled with stubs). The copy guard, the heap holders and the shadow rows stay boot-fixed.
+
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -117,6 +117,15 @@
+     /// present chooses on its own whether it also waits for its own frame when the GPU is
+     /// behind, as it already does from the GPU's state (core/hle/service/nx2_gsv.h).
+     AheadAlways,
++    /// EDEN_NX2_FLUSH_DRAWS. Each flush check uses the current draw count;
++    /// counting and reset run for every interval, including the default.
++    Nx2FlushDraws,
++    /// EDEN_UP_UPLOAD_RUNS. Pending runs drain regardless of the live value;
++    /// each recorded dispatch carries its barrier choice by value.
++    UploadRuns,
++    /// EDEN_UP_ASYNC_DRAW_WAITS. Per-draw skip/wait policy; existing jobs
++    /// are adopted, claimed back or waited for through the normal paths.
++    AsyncDrawWaits,
+     Count,
+ };
+ 
+@@ -160,6 +169,21 @@
+     return text != nullptr && (text[0] == '1' || text[0] == '2') && text[1] == '\0'
+                ? text[0] - '0'
+                : 0;
++}
++
++/// EDEN_NX2_FLUSH_DRAWS: decimal digits only, nonzero, clamped to 32..1048576.
++/// Unset, zero, a sign, whitespace or trailing text means the default 128.
++[[nodiscard]] inline s64 ParseFlushDraws(const char* value) noexcept {
++    constexpr u32 fallback = 128;
++    if (value == nullptr || value[0] < '0' || value[0] > '9') {
++        return fallback;
++    }
++    char* end = nullptr;
++    const unsigned long parsed = std::strtoul(value, &end, 10);
++    if (*end != '\0' || parsed == 0) {
++        return fallback;
++    }
++    return static_cast<u32>(std::clamp(parsed, 32UL, 1'048'576UL));
+ }
+ 
+ struct Def {
+@@ -185,6 +209,9 @@
+     {"EDEN_UP_COND_BACK", ParseOneOrTwo, false, -1},
+     {"EDEN_UP_SWIZZLE_UNITS", ParseExactOne, false, -1},
+     {"EDEN_UP_AHEAD_ALWAYS", ParseExactOne, false, -1},
++    {"EDEN_NX2_FLUSH_DRAWS", ParseFlushDraws, false, -1},
++    {"EDEN_UP_UPLOAD_RUNS", ParseExactOne, false, -1},
++    {"EDEN_UP_ASYNC_DRAW_WAITS", ParseExactOne, false, -1},
+ }};
+ 
+ /// EDEN_UP_LIVE_SWITCHES=1 (exact "1"), read once.
+@@ -482,6 +509,15 @@
+                             kDefs[i].name, kDefs[needs].name);
+             });
+         }
++        if (static_cast<Id>(i) == Id::AsyncDrawWaits && !PeSwitch("EDEN_UP_ASYNC_TRANSLATION")) {
++            // Not a live switch, so not a `needs` index: the translators are made at boot.
++            Quiet([] {
++                LOG_WARNING(Common,
++                            "Live switches: EDEN_UP_ASYNC_DRAW_WAITS needs "
++                            "EDEN_UP_ASYNC_TRANSLATION=1 at boot: its phases change nothing in "
++                            "this run");
++            });
++        }
+     }
+ }
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_buffer_cache.cpp b/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
+--- a/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
+@@ -13,6 +13,7 @@
+ #include <utility>
+ #include <vector>
+ 
++#include "common/live_switch.h"
+ #include "common/pe_switch.h"
+ #include "video_core/buffer_cache/buffer_cache_base.h"
+ #include "video_core/renderer_vulkan/vk_buffer_cache.h"
+@@ -36,9 +37,9 @@
+ // work) has no barrier of its own before it, and in-order copies are not uses for
+ // CanReorderUpload, so the older copy could land last. Read where the barrier is recorded.
+ VkPipelineStageFlags PostCopyDstStages() {
+-    static const bool transfers_too = Common::PeSwitch("EDEN_UP_FRITCHII_COPY_BARRIER") ||
+-                                      Common::PeSwitch("EDEN_UP_UPLOAD_RUNS");
+-    return transfers_too ? vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER
++    static const bool transfers_too = Common::PeSwitch("EDEN_UP_FRITCHII_COPY_BARRIER");
++    const bool batch = Common::LiveSwitch::Value<Common::LiveSwitch::Id::UploadRuns>() != 0;
++    return (transfers_too || batch) ? vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER
+                          : vk::PIPELINE_STAGE_GRAPHICS_COMPUTE;
+ }
+ 
+@@ -681,20 +682,21 @@
+     }
+ 
+     scheduler.RequestOutsideRenderPassOperationContext();
+-    static const bool batch = Common::PeSwitch("EDEN_UP_UPLOAD_RUNS");
++    const bool batch = Common::LiveSwitch::Value<Common::LiveSwitch::Id::UploadRuns>() != 0;
+     if (batch && barrier && src_buffer == staging_pool.StreamBuf() && !vk_copies.empty()) {
+         scheduler.RecordUpload(src_buffer, dst_buffer,
+                                std::span<const VkBufferCopy>{vk_copies.data(), vk_copies.size()});
+         return;
+     }
+-    scheduler.Record([src_buffer, dst_buffer, vk_copies, barrier](vk::CommandBuffer cmdbuf) {
++    scheduler.Record([src_buffer, dst_buffer, vk_copies, barrier,
++                      post_copy_stages = PostCopyDstStages()](vk::CommandBuffer cmdbuf) {
+         if (barrier) {
+             cmdbuf.PipelineBarrier(vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER,
+                                    VK_PIPELINE_STAGE_TRANSFER_BIT, 0, READ_BARRIER);
+         }
+         cmdbuf.CopyBuffer(src_buffer, dst_buffer, vk_copies);
+         if (barrier) {
+-            cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, PostCopyDstStages(), 0,
++            cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, post_copy_stages, 0,
+                                    WRITE_BARRIER);
+         }
+     });
+@@ -722,8 +724,8 @@
+         .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+     };
+     scheduler.RequestOutsideRenderPassOperationContext();
+-    scheduler.Record([](vk::CommandBuffer cmdbuf) {
+-        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, PostCopyDstStages(), 0,
++    scheduler.Record([post_copy_stages = PostCopyDstStages()](vk::CommandBuffer cmdbuf) {
++        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, post_copy_stages, 0,
+                                WRITE_BARRIER);
+     });
+ }
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -4,6 +4,7 @@
+ // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include "common/live_switch.h"
+ #include "common/pe_switch.h"
+ #include <algorithm>
+ #include <chrono>
+@@ -2417,7 +2418,8 @@
+     // EDEN_UP_ASYNC_DRAW_WAITS=1 (Eglantine-Community 7a940ca, rdenno): Switch 2 titles also
+     // draw things they keep once, with more vertices and no depth buffer (font atlas glyphs):
+     // those wait for their pipeline instead of being skipped. Unset: as before.
+-    static const bool wait = Common::PeSwitch("EDEN_UP_ASYNC_DRAW_WAITS");
++    const bool wait =
++        Common::LiveSwitch::Value<Common::LiveSwitch::Id::AsyncDrawWaits>() != 0;
+     if (wait && Settings::CurrentProgramIsSwitch2()) {
+         return pipeline;
+     }
+@@ -3137,7 +3139,8 @@
+     // EDEN_UP_ASYNC_DRAW_WAITS=1: a Switch 2 draw without a depth buffer can't be skipped, as in
+     // BuiltPipeline, so it is not queued (CanTranslateAsynchronously) and is translated on this
+     // thread as without EDEN_UP_ASYNC_TRANSLATION. Unset: as before.
+-    static const bool wait = Common::PeSwitch("EDEN_UP_ASYNC_DRAW_WAITS");
++    const bool wait =
++        Common::LiveSwitch::Value<Common::LiveSwitch::Id::AsyncDrawWaits>() != 0;
+     if (wait && Settings::CurrentProgramIsSwitch2()) {
+         return false;
+     }
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -4,6 +4,7 @@
+ // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include "common/live_switch.h"
+ #include "common/pe_switch.h"
+ #include "video_core/image_pages.h"
+ #include "video_core/astc_policy.h"
+@@ -2002,7 +2003,8 @@
+         const char* const value = std::getenv("EDEN_NX2_COMPUTE_TO_DRAW");
+         return value != nullptr && value[0] != '0';
+     }();
+-    static const bool batch_dispatch = Common::PeSwitch("EDEN_UP_UPLOAD_RUNS");
++    const bool batch_dispatch =
++        Common::LiveSwitch::Value<Common::LiveSwitch::Id::UploadRuns>() != 0;
+     const auto dispatch_barrier = [](vk::CommandBuffer cmdbuf) {
+         static constexpr VkMemoryBarrier barrier{
+             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+@@ -2014,7 +2016,7 @@
+             (compute_to_draw ? VkPipelineStageFlags{VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT} : 0);
+         cmdbuf.PipelineBarrier(vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER, stages, 0, barrier);
+     };
+-    const auto record_read_barrier = [this, dispatch_barrier] {
++    const auto record_read_barrier = [this, dispatch_barrier, batch_dispatch] {
+         if (!batch_dispatch) scheduler.Record(dispatch_barrier);
+         if (compute_to_draw) scheduler.NoteComputeWrites();
+     };
+@@ -2047,7 +2049,7 @@
+         }
+         if (indirect_order && batch_dispatch) scheduler.NoteComputeWrites();
+         scheduler.Record([pipeline, indirect_buffer = buffer->Handle(),
+-                          indirect_offset = offset](vk::CommandBuffer cmdbuf) {
++                          indirect_offset = offset, batch_dispatch](vk::CommandBuffer cmdbuf) {
+             if (batch_dispatch && indirect_order) {
+                 static constexpr VkMemoryBarrier barrier{
+                     .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .pNext = nullptr,
+@@ -2076,7 +2078,7 @@
+     }
+     scheduler.RequestOutsideRenderPassOperationContext();
+     record_read_barrier();
+-    scheduler.Record([pipeline, dim, dispatch_barrier](vk::CommandBuffer cmdbuf) {
++    scheduler.Record([pipeline, dim, dispatch_barrier, batch_dispatch](vk::CommandBuffer cmdbuf) {
+         if (batch_dispatch) dispatch_barrier(cmdbuf);
+         if (!pipeline->IsBound()) {
+             return;
+@@ -3080,19 +3082,8 @@
+         return;
+     }
+     // Keep the host GPU working while native commands are still being recorded.
+-    static const u32 native_flush_draws = [] {
+-        constexpr u32 fallback = 128;
+-        const char* value = std::getenv("EDEN_NX2_FLUSH_DRAWS");
+-        if (value == nullptr || value[0] < '0' || value[0] > '9') {
+-            return fallback;
+-        }
+-        char* end = nullptr;
+-        const unsigned long parsed = std::strtoul(value, &end, 10);
+-        if (*end != '\0' || parsed == 0) {
+-            return fallback;
+-        }
+-        return static_cast<u32>(std::clamp(parsed, 32UL, 1'048'576UL));
+-    }();
++    const u32 native_flush_draws = static_cast<u32>(
++        Common::LiveSwitch::Value<Common::LiveSwitch::Id::Nx2FlushDraws>());
+     const u32 draws_to_dispatch = Tegra::g_nx2_ampere.load(std::memory_order_relaxed)
+                                      ? native_flush_draws
+                                      : DRAWS_TO_DISPATCH;

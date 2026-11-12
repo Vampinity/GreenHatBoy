@@ -1,0 +1,229 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: lean SSBO routing, global memory helpers kept as calls and routed by one switch (EDEN_UP_LEAN_SSBO)
+
+What: when the shader translator cannot tie a native pointer access to one storage buffer, it
+emits helper functions (loads, writes, atomics, compare-exchange) that pick the buffer at run time:
+the closest base at or below the address, then one "if" per candidate buffer. Ocarina's foliage
+compute programs have about 30 candidates and 40-odd such accesses, and a driver that inlines the
+helpers copies that whole chain into every access. With EDEN_UP_LEAN_SSBO=1 the helpers are marked
+DontInline (a hint to the driver: keep this a function call) and the per-buffer if-chain becomes
+one OpSwitch (a jump on the chosen index). The bases, the choice, the accesses and the "no buffer"
+fall-through are the same. The NVN size-word path (non-native pointers) is not changed.
+
+Switches: EDEN_UP_LEAN_SSBO (read once). Exact "1": the lean code. Exact "2": the old code, plus the
+count line (what 1 would route). Unset or anything else: the old code, byte for byte.
+Log (stderr, mode 1 or 2, the first 400 programs with native routing, then every power of two):
+"EDEN_UP_LEAN_SSBO mode M: program N (stage S[, mesh run as compute]), C candidate buffers,
+H helper functions[ kept as calls], R routed|would be routed by one switch, A accesses through them".
+Stage S is Shader::Stage (stage.h): 5 compute, 6 vertex A, 7 task, 8 mesh, 0-4 the other graphics
+stages. A program with native routing and no storage buffer at all gets an OpSwitch with only a
+default (valid SPIR-V, as upstream; the old code emitted no branch there).
+
+Store stamp: it changes the emitted SPIR-V, so it is added to TranslationSwitches
+(vk_pipeline_prep.cpp): kept translations (EDEN_UP_SHADER_PREP) made with and without it get
+different stamps and never mix. Unset, the stamp is unchanged (only set names are mixed in). Mode 2
+emits the old SPIR-V but, being set, gets a store of its own (harmless, a cold store for that arm).
+
+Cost when off: per translated program with global memory, one cached static read and one counter
+increment per helper function emitted (six or more per such program); nothing per draw, nothing in
+the emitted code (the SPIR-V is byte for byte the old one).
+
+Origin and credit: port of Djihads80/Eglantine 9a362357a2 by Duck912 (7 Nov 2026, branch nx2,
+"spirv: keep native global memory helpers as calls and route with one switch"; there
+EDEN_NX2_LEAN_SSBO, on by default). Both halves taken; the switch half was also ported as
+javocsoft/Lichii 00a6bdd21 (not used here). Differences from upstream: our switch is off by default
+and named EDEN_UP_; our compare-exchange helper (not in upstream) is DontInline too; mode 2 and
+the count line are ours; it sits in the stamp; it adds #include <cstdio> for its line (upstream
+added <cstdlib>, which ours already has). Upstream measured on NVIDIA only (first compile of
+three foliage programs 2.4 s -> 0.6 s); the effect on RADV is not known.
+Review fixes (review): this header's cost line (one increment per helper, not
+two in all), the stage numbers, the include note and the zero-buffer edge case. Risk on the first =1
+run: a driver that kept the calls and could not compile them would fail the foliage pipeline builds
+(not draw them wrong); look for failed pipeline builds before reading any timing.
+---
+diff --git a/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp b/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+index 3d63c4b..a7dde77 100644
+--- a/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
++++ b/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+@@ -9,6 +9,7 @@
+ #include <atomic>
+ #include <bit>
+ #include <climits>
++#include <cstdio>
+ #include <cstdlib>
+ #include <optional>
+ #include <span>
+@@ -547,6 +548,22 @@ Id DescType(EmitContext& ctx, Id sampled_type, Id pointer_type, u32 count) {
+         return pointer_type;
+     }
+ }
++
++// EDEN_UP_LEAN_SSBO (0581; Duck912, Eglantine 9a362357a2, there EDEN_NX2_LEAN_SSBO and on by
++// default): exact "1" keeps the global memory helpers as calls (DontInline) and picks the
++// candidate buffer of a native pointer access with one OpSwitch instead of one if per buffer.
++// Exact "2" emits the old code and only prints the counts. Unset or anything else: the old code.
++// It changes the emitted SPIR-V, so it is in vk_pipeline_prep.cpp's TranslationSwitches (stamp).
++u32 LeanSsboMode() {
++    static const u32 mode = [] {
++        const char* const value = std::getenv("EDEN_UP_LEAN_SSBO");
++        if (value == nullptr || value[0] == '\0' || value[1] != '\0') {
++            return 0U;
++        }
++        return value[0] == '1' ? 1U : value[0] == '2' ? 2U : 0U;
++    }();
++    return mode;
++}
+ } // Anonymous namespace
+ 
+ void VectorTypes::Define(Sirit::Module& sirit_ctx, Id base_type, std::string_view name) {
+@@ -1081,9 +1098,17 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
+     }
+     using DefPtr = Id StorageDefinitions::*;
+     const Id zero{u32_zero_value};
++    // EDEN_UP_LEAN_SSBO (0581): 1 = calls kept and one switch, 2 = old code, counts only.
++    const u32 lean_mode{LeanSsboMode()};
++    const bool lean{lean_mode == 1};
++    const spv::FunctionControlMask helper_control{lean ? spv::FunctionControlMask::DontInline
++                                                       : spv::FunctionControlMask::MaskNone};
++    u32 lean_helpers = 0;  // helper functions emitted (each one has one routing body)
++    u32 lean_switched = 0; // of them routed by one switch (mode 2: would be)
+     const auto define_body{[&](DefPtr ssbo_member, Id addr, Id element_pointer, u32 shift,
+                                auto&& callback) {
+         AddLabel();
++        ++lean_helpers;
+         const size_t num_buffers{info.storage_buffers_descriptors.size()};
+         const u64 ssbo_align_mask{~(profile.min_ssbo_alignment - 1U)};
+         const auto base_address{[&](size_t index) {
+@@ -1147,6 +1172,35 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
+                 best_distance = OpSelect(U64, better, distance, best_distance);
+                 best_index = OpSelect(U32[1], better, Const(static_cast<u32>(index)), best_index);
+             }
++            if (lean_mode != 0) {
++                ++lean_switched;
++            }
++            if (lean) {
++                // One switch on the chosen index; no case matches (~0U, no base at or below the
++                // address) goes to the default, the merge, as the if-chain fell through. Every
++                // case ends in the caller's return, as the if-chain's branches did.
++                std::vector<Sirit::Literal> literals;
++                std::vector<Id> labels;
++                literals.reserve(num_buffers);
++                labels.reserve(num_buffers);
++                for (size_t index = 0; index < num_buffers; ++index) {
++                    literals.push_back(static_cast<u32>(index));
++                    labels.push_back(OpLabel());
++                }
++                const Id default_label{OpLabel()};
++                OpSelectionMerge(default_label, spv::SelectionControlMask::MaskNone);
++                OpSwitch(best_index, default_label, literals, labels);
++                for (size_t index = 0; index < num_buffers; ++index) {
++                    AddLabel(labels[index]);
++                    const Id ssbo_id{ssbos[index].*ssbo_member};
++                    const Id ssbo_offset{OpUConvert(U32[1], OpISub(U64, addr, bases[index]))};
++                    const Id ssbo_index{OpShiftRightLogical(U32[1], ssbo_offset, Const(shift))};
++                    callback(OpAccessChain(element_pointer, ssbo_id, zero, ssbo_index), ssbo_id,
++                             ssbo_index);
++                }
++                AddLabel(default_label);
++                return num_buffers;
++            }
+             for (size_t index = 0; index < num_buffers; ++index) {
+                 access(index, bases[index],
+                        OpIEqual(U1, best_index, Const(static_cast<u32>(index))));
+@@ -1185,7 +1239,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
+     }};
+     const auto define_load{[&](DefPtr ssbo_member, Id element_pointer, Id type, u32 shift) {
+         const Id function_type{TypeFunction(type, U64)};
+-        const Id func_id{OpFunction(type, spv::FunctionControlMask::MaskNone, function_type)};
++        const Id func_id{OpFunction(type, helper_control, function_type)};
+         const Id addr{OpFunctionParameter(U64)};
+         if (split_words(shift)) {
+             const u32 count = 1U << (shift - 2);
+@@ -1213,7 +1267,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
+     }};
+     const auto define_write{[&](DefPtr ssbo_member, Id element_pointer, Id type, u32 shift) {
+         const Id function_type{TypeFunction(void_id, U64, type)};
+-        const Id func_id{OpFunction(void_id, spv::FunctionControlMask::MaskNone, function_type)};
++        const Id func_id{OpFunction(void_id, helper_control, function_type)};
+         const Id addr{OpFunctionParameter(U64)};
+         const Id data{OpFunctionParameter(type)};
+         if (split_words(shift)) {
+@@ -1294,8 +1348,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
+         }
+         const auto kind = static_cast<GlobalAtomic>(index);
+         const Id type{kind == AddF32 ? F32[1] : U32[1]};
+-        const Id func_id{OpFunction(type, spv::FunctionControlMask::MaskNone,
+-                                    TypeFunction(type, U64, type))};
++        const Id func_id{OpFunction(type, helper_control, TypeFunction(type, U64, type))};
+         const Id addr{OpFunctionParameter(U64)};
+         const Id value{OpFunctionParameter(type)};
+         const size_t candidates = define_body(&StorageDefinitions::U32, addr, storage_types.U32.element, 2,
+@@ -1343,7 +1396,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
+         global_atomic_funcs[index] = func_id;
+     }
+     if (uses_compare_exchange) {
+-        const Id func_id{OpFunction(U32[1], spv::FunctionControlMask::MaskNone,
++        const Id func_id{OpFunction(U32[1], helper_control,
+                                     TypeFunction(U32[1], U64, U32[1], U32[1]))};
+         const Id addr{OpFunctionParameter(U64)};
+         const Id comparator{OpFunctionParameter(U32[1])};
+@@ -1358,6 +1411,45 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
+         OpFunctionEnd();
+         atomic_cas_global_func_u32 = func_id;
+     }
++    if (lean_mode != 0 && lean_switched != 0) {
++        // EDEN_UP_LEAN_SSBO: one line per translated program that has native pointer routing
++        // (the first 400, then every power of two). Accesses = the program's global loads, writes
++        // and atomics, each a call into one of the routed helpers.
++        u32 accesses = 0;
++        for (const IR::Block* const block : program.blocks) {
++            for (const IR::Inst& inst : block->Instructions()) {
++                switch (inst.GetOpcode()) {
++                case IR::Opcode::LoadGlobal32:
++                case IR::Opcode::LoadGlobal64:
++                case IR::Opcode::LoadGlobal128:
++                case IR::Opcode::WriteGlobal32:
++                case IR::Opcode::WriteGlobal64:
++                case IR::Opcode::WriteGlobal128:
++                case IR::Opcode::GlobalAtomicCompareExchange32:
++                    ++accesses;
++                    break;
++                default:
++                    if (kind_of(inst.GetOpcode())) {
++                        ++accesses;
++                    }
++                    break;
++                }
++            }
++        }
++        static std::atomic<u32> lean_programs{};
++        const u32 count = ++lean_programs;
++        if (count <= 400 || std::has_single_bit(count)) {
++            std::fprintf(stderr,
++                         "EDEN_UP_LEAN_SSBO mode %u: program %u (stage %u%s), %zu candidate "
++                         "buffers, %u helper functions%s, %u %s by one switch, %u accesses "
++                         "through them\n",
++                         lean_mode, count, static_cast<u32>(program.stage),
++                         mesh_compute ? ", mesh run as compute" : "",
++                         info.storage_buffers_descriptors.size(), lean_helpers,
++                         lean ? " kept as calls" : "", lean_switched,
++                         lean ? "routed" : "would be routed", accesses);
++        }
++    }
+ }
+ 
+ void EmitContext::DefineRescalingInput(const Info& info) {
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp b/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp
+index 2f2aeaf..d26caf8 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp
+@@ -148,7 +148,8 @@ constexpr const char* TranslationSwitches[] = {
+     "EDEN_UP_FRITCHII_RELOCATE", "EDEN_UP_FRITCHII_RELOCATE_AREA_COUNT",
+     "EDEN_UP_FRITCHII_SHADOWMORE", "EDEN_UP_FRITCHII_TABLECHARGE", "EDEN_UP_FRITCHII_TOMBSTONE",
+     "EDEN_UP_FRITCHII_UNBACKED", "EDEN_UP_FRITCHII_WRITEMARK", "EDEN_UP_FRONT_BATCH",
+-    "EDEN_UP_HANDLE_FALLBACK_TRACE", "EDEN_UP_HELD_VS_DOWNLOAD", "EDEN_UP_NO_STALE_UPLOAD",
++    "EDEN_UP_HANDLE_FALLBACK_TRACE", "EDEN_UP_HELD_VS_DOWNLOAD", "EDEN_UP_LEAN_SSBO",
++    "EDEN_UP_NO_STALE_UPLOAD",
+     "EDEN_UP_NULL_POINTER_SLOTS", "EDEN_UP_OOT_FRONT_WAIT", "EDEN_UP_OOT_FSR_SHARPNESS",
+     "EDEN_UP_OOT_FSR_SPATIAL", "EDEN_UP_OOT_MIST_DEPTH", "EDEN_UP_OOT_MIST_DEPTH_ULPS",
+     "EDEN_UP_OOT_MOVIE_COPY", "EDEN_UP_QUERY_LIGHT", "EDEN_UP_QUERY_STATS",

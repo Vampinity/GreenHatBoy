@@ -1,0 +1,37 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: L974 chain gate, Maxwell3D::ProcessMethodCall reads the L974 switch only with fast draw on (no new switch)
+
+What: patch 0557 (EDEN_UP_L974_CHAIN) made ProcessMethodCall call IsL974NeutralMethod on every
+register method (about 2 million a second on the GPU back thread), before the fast-draw test, and
+that call reads the L974 switch (one LiveSwitch::Peek). Both uses of its result already need
+EDEN_UP_FAST_DRAW: the method break test is inside `Nx2FastDraw::Enabled() && ...`, and
+ProcessQueryGet(track_fast_draw) uses it only under `Nx2FastDraw::Enabled() && track_fast_draw`.
+So the call now sits behind Nx2FastDraw::Enabled(): with fast draw off nothing of 0557 is read per
+method. IsL974NeutralMethod has no side effect, and Enabled() is a value read once per process, so
+behaviour is the same with every combination of EDEN_UP_FAST_DRAW and EDEN_UP_L974_CHAIN.
+
+Switches: none new. EDEN_UP_FAST_DRAW and EDEN_UP_L974_CHAIN as before.
+
+Cost when off: less than before (one fewer relaxed load per register method with fast draw off).
+With fast draw on: the Enabled() value is read once more per method (a cached static).
+
+Origin: our own, from the heavy-spot gate of 11 Nov 2026 (the 0557 row of the patch table
+and its "cheapest fix"). A small patch on top; 0557 itself is unchanged.
+---
+diff --git a/src/video_core/engines/maxwell_3d.cpp b/src/video_core/engines/maxwell_3d.cpp
+index 189e7d7..9840b01 100644
+--- a/src/video_core/engines/maxwell_3d.cpp
++++ b/src/video_core/engines/maxwell_3d.cpp
+@@ -640,7 +640,11 @@ bool Maxwell3D::IsFastDrawExemptMethod(u32 method) {
+ }
+ 
+ void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argument, bool is_last_call) {
+-    const bool l974_neutral = IsL974NeutralMethod(method, argument);
++    // EDEN_UP_L974_CHAIN (0557): both uses of l974_neutral (the break test below and
++    // ProcessQueryGet) also need EDEN_UP_FAST_DRAW, so with fast draw off the L974 switch is not
++    // read on every register method (0580).
++    const bool l974_neutral =
++        VideoCommon::Nx2FastDraw::Enabled() && IsL974NeutralMethod(method, argument);
+     if (VideoCommon::Nx2FastDraw::Enabled() && !DrawManager::IsInstanceLoopMethod(method) &&
+         !IsFastDrawDeltaMethod(method) && !IsFastDrawExemptMethod(method) &&
+         !IsQueuedCounterReport(method, argument) && !l974_neutral) {

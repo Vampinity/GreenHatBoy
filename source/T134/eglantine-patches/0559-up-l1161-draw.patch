@@ -1,0 +1,626 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: L1161 draw, checked handle words and vertex formats keep draw reuse (EDEN_UP_L1161_DRAW)
+
+DRAFT, not built. Ports the remaining draw work of zortos293/Lichii PR #1161 (@lucastaonline,
+e05a72847e and 792e12a47b), on 0557 and 0558. Gated by EDEN_UP_L1161_DRAW (exact 1), a live
+switch (Id L1161Draw, not armed); off by default. Does something only with EDEN_UP_FAST_DRAW=1.
+Computed handle programs are evaluated again under both cache locks (only a capture taken with
+the switch on permits reuse); a write that reaches a handle buffer is compared word by word,
+secondary array words included; dynamic vertex formats keep the pipeline's attribute type check;
+range overflow widens conservatively and forbids uniform keeps. Adds "computed" and "vertex" to
+the full counts of the 10-second fast draw line (0557).
+
+Reviewed draft from job J, v2: reviewer re-anchored the live_switch.h hunks, made
+TakeReusableDraw check the whole buffer with the cached spans first and translate single handle
+words (separate handle_word_spans) only when a write reached the buffer, allocated the
+per-pipeline handle word table on the first capture with the switch on (was ~2 KB per pipeline
+always), and prefixed the ComputedHandleKind enumerators.
+---
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+index 1eb6329..7bedad4 100644
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -169,6 +169,9 @@ enum class Id : u8 {
+     /// EDEN_UP_L1216_CHAIN (does something only with EDEN_UP_L974_CHAIN on). Method answers stand
+     /// alone; a back macro call's neutral flag is taken when the front sends it.
+     L1216Chain,
++    /// EDEN_UP_L1161_DRAW. Each candidate is judged with the value read at its TakeReusableDraw;
++    /// a capture taken while it was off is never used by its new rules.
++    L1161Draw,
+     Count,
+ };
+ 
+@@ -288,6 +291,7 @@ inline constexpr std::array<Def, NumSwitches> kDefs{{
+     {"EDEN_NX2_RANGE_PREFIX", ParseLeadingOne, false, -1},
+     {"EDEN_UP_L974_CHAIN", ParseExactOne, false, -1},
+     {"EDEN_UP_L1216_CHAIN", ParseExactOne, false, -1},
++    {"EDEN_UP_L1161_DRAW", ParseExactOne, false, -1},
+ }};
+ 
+ static_assert(kDefs[static_cast<size_t>(Id::PollBackoffUs)].needs ==
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index 47a3732..44d5d9d 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -1647,7 +1647,8 @@ void BufferCache<P>::BeginGraphicsUniforms(const Nx2FastDraw::Delta* delta) {
+     const std::array<u32, NUM_STAGES> streamed = std::exchange(keep.streamed, {});
+     // EDEN_UP_FRITCHII_BANKFLAG exists to catch guest CPU writes the caches were not told about
+     // yet: no keeps while it is on.
+-    const bool usable = delta != nullptr && unwritten && !Core::BankFlagPages();
++    const bool usable = delta != nullptr && unwritten && !delta->no_uniform_keeps &&
++                        !Core::BankFlagPages();
+     if (usable) {
+         keep.writes.insert(keep.writes.end(), keep.memory_writes.begin(),
+                            keep.memory_writes.end());
+diff --git a/src/video_core/engines/maxwell_3d.cpp b/src/video_core/engines/maxwell_3d.cpp
+index 572f28d..f3dd180 100644
+--- a/src/video_core/engines/maxwell_3d.cpp
++++ b/src/video_core/engines/maxwell_3d.cpp
+@@ -69,6 +69,7 @@ Maxwell3D::Maxwell3D(MemoryManager& memory_manager_)
+         VideoCommon::Nx2FastDraw::VerifyEnabled() || VideoCommon::Nx2Profile::Enabled(),
+         std::memory_order_relaxed);
+     static_cast<void>(Common::LiveSwitch::Value<Common::LiveSwitch::Id::L1216Chain>());
++    static_cast<void>(Common::LiveSwitch::Value<Common::LiveSwitch::Id::L1161Draw>());
+     dirty.flags.flip();
+     InitializeRegisterDefaults();
+     reports_fast_draw_breaks = true;
+@@ -474,10 +475,19 @@ bool Maxwell3D::IsFastDrawParameter(u32 method) {
+     default:
+         return DrawManager::IsInstanceLoopMethod(method) || IsFastDrawDeltaMethod(method) ||
+                IsFastDrawVertexBuffer(method) || IsFastDrawExempt(method) ||
+-               IsL974DrawParameter(method);
++               IsL974DrawParameter(method) || IsL1161VertexFormat(method);
+     }
+ }
+ 
++bool Maxwell3D::IsL1161VertexFormat(u32 method) {
++    constexpr u32 first = MAXWELL3D_REG_INDEX(vertex_attrib_format);
++    const bool light = VideoCommon::Nx2FastDraw::L1161DrawEnabled() &&
++           VideoCommon::Nx2FastDraw::g_vertex_formats_dynamic.load(std::memory_order_relaxed) &&
++           method >= first && method < first + Regs::NumVertexAttributes;
++    if (light) VideoCommon::Nx2FastDraw::g_delta.vertex_formats_changed = true;
++    return light;
++}
++
+ bool Maxwell3D::IsL974DrawParameter(u32 method) {
+     if (!VideoCommon::Nx2FastDraw::L974ChainEnabled()) {
+         return false;
+diff --git a/src/video_core/engines/maxwell_3d.h b/src/video_core/engines/maxwell_3d.h
+index 41aea80..45a0a4e 100644
+--- a/src/video_core/engines/maxwell_3d.h
++++ b/src/video_core/engines/maxwell_3d.h
+@@ -3287,6 +3287,9 @@ public:
+     static bool IsFastDrawParameter(u32 method);
+     /// Methods fast draw records as light changes (constant buffer data and binds).
+     static bool IsFastDrawDeltaMethod(u32 method);
++    /// EDEN_UP_L1161_DRAW: a vertex attribute format word while vertex input is dynamic state;
++    /// marks the delta so TakeReusableDraw compares the pipeline's attribute types.
++    static bool IsL1161VertexFormat(u32 method);
+     /// EDEN_UP_L974_CHAIN: report operands, MME memory words (front macros only), the vertex id
+     /// base, counter resets and the render condition are draw parameters.
+     static bool IsL974DrawParameter(u32 method);
+diff --git a/src/video_core/nx2_fast_draw.h b/src/video_core/nx2_fast_draw.h
+index 0fe58d0..6481f78 100644
+--- a/src/video_core/nx2_fast_draw.h
++++ b/src/video_core/nx2_fast_draw.h
+@@ -3,6 +3,7 @@
+ 
+ #pragma once
+ 
++#include <algorithm>
+ #include <array>
+ #include <atomic>
+ #include <utility>
+@@ -116,6 +117,11 @@ inline constexpr std::array<const char*, static_cast<size_t>(Reason::Count)> rea
+     return Common::LiveSwitch::Peek<Common::LiveSwitch::Id::L1216Chain>() != 0;
+ }
+ 
++/// EDEN_UP_L1161_DRAW, read first by Maxwell3D's constructor (Value): one relaxed load (Peek).
++[[nodiscard]] inline bool L1161DrawEnabled() noexcept {
++    return Common::LiveSwitch::Peek<Common::LiveSwitch::Id::L1161Draw>() != 0;
++}
++
+ /// EDEN_UP_L949_UBO_KEEP=1 with EDEN_UP_FAST_DRAW=1 (zortos293/Lichii #949: 6b38851501 and
+ /// 3e86407514, zortos293): a delta draw binds a small streamed uniform buffer from the stream
+ /// allocation the previous draw made for the same stage, slot, address and size in the same
+@@ -227,12 +233,17 @@ struct Delta {
+     std::array<DAddr, MaxWrites> device_end{};
+     u32 num_device_writes{};
+ 
++    bool vertex_formats_changed{};
++    bool no_uniform_keeps{}; // ranges widened: information needed for uniform reuse was lost
++
+     [[nodiscard]] bool Empty() const {
+         return num_writes == 0 && (binds[0] | binds[1] | binds[2] | binds[3] | binds[4]) == 0;
+     }
+ 
+     /// Empties it (the ranges past the counts are never read).
+     void Clear() {
++        no_uniform_keeps = false;
++        vertex_formats_changed = false;
+         binds = {};
+         num_writes = 0;
+         num_device_writes = 0;
+@@ -281,6 +292,34 @@ inline bool AppendRange(std::array<u64, Delta::MaxWrites>& begins,
+     return true;
+ }
+ 
++/// Full range list: retain a conservative superset, never drop a guest write.
++inline void AppendConservativeRange(std::array<u64, Delta::MaxWrites>& begins,
++                                    std::array<u64, Delta::MaxWrites>& ends, u32& count,
++                                    u64 begin, u64 end) {
++    for (u32 i = 0; i < count; ++i) {
++        if (begin <= ends[i] && begins[i] <= end) {
++            begins[i] = (std::min)(begins[i], begin);
++            ends[i] = (std::max)(ends[i], end);
++            return;
++        }
++    }
++    if (count < WriteLimit()) {
++        begins[count] = begin;
++        ends[count++] = end;
++        return;
++    }
++    u32 best = 0;
++    u64 growth = ~u64{0};
++    for (u32 i = 0; i < count; ++i) {
++        const u64 added = ((std::max)(ends[i], end) - (std::min)(begins[i], begin)) -
++                          (ends[i] - begins[i]);
++        if (added < growth) { growth = added; best = i; }
++    }
++    begins[best] = (std::min)(begins[best], begin);
++    ends[best] = (std::max)(ends[best], end);
++    g_delta.no_uniform_keeps = true;
++}
++
+ inline void NoteBind(size_t stage, u32 slot) {
+     if (Enabled()) {
+         g_delta.binds[stage] |= 1U << slot;
+@@ -293,7 +332,9 @@ inline void NoteConstantData(GPUVAddr begin, GPUVAddr end) {
+         return;
+     }
+     Delta& delta = g_delta;
+-    if (!AppendRange(delta.write_begin, delta.write_end, delta.num_writes, begin, end)) {
++    if (L1161DrawEnabled()) {
++        AppendConservativeRange(delta.write_begin, delta.write_end, delta.num_writes, begin, end);
++    } else if (!AppendRange(delta.write_begin, delta.write_end, delta.num_writes, begin, end)) {
+         Break(Reason::DeltaOverflow);
+     }
+ }
+@@ -304,7 +345,9 @@ inline void NoteDeviceData(DAddr begin, DAddr end) {
+         return;
+     }
+     Delta& delta = g_delta;
+-    if (!AppendRange(delta.device_begin, delta.device_end, delta.num_device_writes, begin, end)) {
++    if (L1161DrawEnabled()) {
++        AppendConservativeRange(delta.device_begin, delta.device_end, delta.num_device_writes, begin, end);
++    } else if (!AppendRange(delta.device_begin, delta.device_end, delta.num_device_writes, begin, end)) {
+         Break(Reason::DeltaOverflow);
+     }
+ }
+diff --git a/src/video_core/renderer_vulkan/fixed_pipeline_state.cpp b/src/video_core/renderer_vulkan/fixed_pipeline_state.cpp
+index c180e43..b52cc39 100644
+--- a/src/video_core/renderer_vulkan/fixed_pipeline_state.cpp
++++ b/src/video_core/renderer_vulkan/fixed_pipeline_state.cpp
+@@ -113,6 +113,27 @@ bool MaskComponentsEnabled() {
+     return enabled;
+ }
+ 
++u64 FixedPipelineState::DynamicAttributeTypes(const Maxwell& regs) noexcept {
++    static constexpr std::array LUT{
++        0u, // Invalid
++        1u, // SignedNorm
++        1u, // UnsignedNorm
++        2u, // SignedInt
++        3u, // UnsignedInt
++        1u, // UnsignedScaled
++        1u, // SignedScaled
++        1u, // Float
++    };
++    const auto& attrs = regs.vertex_attrib_format;
++    u64 types = 0;
++    for (size_t i = 0; i < Maxwell::NumVertexAttributes; ++i) {
++        const u32 mask = attrs[i].constant != 0 ? 0 : 3;
++        const u32 type = LUT[static_cast<size_t>(attrs[i].type.Value())];
++        types |= static_cast<u64>(type & mask) << (i * 2);
++    }
++    return types;
++}
++
+ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFeatures& features) {
+     const Maxwell& regs = maxwell3d.regs;
+     const auto topology_ = maxwell3d.draw_manager.draw_state.topology;
+@@ -210,23 +231,7 @@ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFe
+     if (maxwell3d.dirty.flags[Dirty::VertexInput]) {
+         if (features.has_dynamic_vertex_input) {
+             // Dirty flag will be reset by the command buffer update
+-            static constexpr std::array LUT{
+-                0u, // Invalid
+-                1u, // SignedNorm
+-                1u, // UnsignedNorm
+-                2u, // SignedInt
+-                3u, // UnsignedInt
+-                1u, // UnsignedScaled
+-                1u, // SignedScaled
+-                1u, // Float
+-            };
+-            const auto& attrs = regs.vertex_attrib_format;
+-            attribute_types = 0;
+-            for (size_t i = 0; i < Maxwell::NumVertexAttributes; ++i) {
+-                const u32 mask = attrs[i].constant != 0 ? 0 : 3;
+-                const u32 type = LUT[static_cast<size_t>(attrs[i].type.Value())];
+-                attribute_types |= static_cast<u64>(type & mask) << (i * 2);
+-            }
++            attribute_types = DynamicAttributeTypes(regs);
+         } else {
+             maxwell3d.dirty.flags[Dirty::VertexInput] = false;
+             enabled_divisors = 0;
+diff --git a/src/video_core/renderer_vulkan/fixed_pipeline_state.h b/src/video_core/renderer_vulkan/fixed_pipeline_state.h
+index 826292c..101adbb 100644
+--- a/src/video_core/renderer_vulkan/fixed_pipeline_state.h
++++ b/src/video_core/renderer_vulkan/fixed_pipeline_state.h
+@@ -265,6 +265,8 @@ struct FixedPipelineState {
+     u32 line_stipple_factor;
+     u32 line_stipple_pattern;
+ 
++    [[nodiscard]] static u64 DynamicAttributeTypes(const Maxwell& regs) noexcept;
++
+     void Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFeatures& features);
+ 
+     /// EDEN_UP_CANONICAL_KEYS=1 (ported from Fritchii v5.5, zortos293/Lichii#895). Native
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+index c844cb2..6e69c9e 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -623,6 +623,10 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
+     }
+     boost::container::small_vector<VideoCommon::ImageViewInOut, 160> views;
+     boost::container::small_vector<VideoCommon::SamplerId, 96> samplers;
++    const bool forced_capture = std::exchange(force_l1161_capture, false);
++    const bool l1161_capture = forced_capture || VideoCommon::Nx2FastDraw::L1161DrawEnabled();
++    if (l1161_capture && !handle_words_ready) BuildHandleWords();
++    boost::container::small_vector<ComputedHandle, 16> computed_handles;
+     views.reserve(num_image_elements);
+     samplers.reserve(num_textures);
+ 
+@@ -726,14 +730,35 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
+         const auto read_handle{[&](const auto& desc, u32 index) {
+             if (desc.handle_program != ~0U) {
+                 // Read by the shader from a storage buffer: computed for this draw.
+-                return TexturePair(VideoCommon::EvaluateTextureHandle(
+-                                       info, desc.handle_program, *gpu_memory,
+-                                       [&](u32 cbuf) -> GPUVAddr {
+-                                           return cbuf < cbufs.size() && cbufs[cbuf].enabled
+-                                                      ? cbufs[cbuf].address
+-                                                      : GPUVAddr{};
+-                                       }),
+-                                   via_header_index);
++                const u32 value{VideoCommon::EvaluateTextureHandle(
++                    info, desc.handle_program, *gpu_memory,
++                    [&](u32 cbuf) -> GPUVAddr {
++                        return cbuf < cbufs.size() && cbufs[cbuf].enabled ? cbufs[cbuf].address
++                                                                          : GPUVAddr{};
++                    })};
++                if (l1161_capture) {
++                using Desc = std::remove_cvref_t<decltype(desc)>;
++                const auto [kind, first] = [&]() -> std::pair<ComputedHandleKind, const Desc*> {
++                    if constexpr (std::is_same_v<Desc, Shader::TextureBufferDescriptor>) {
++                        return {HandleTextureBuffer, info.texture_buffer_descriptors.data()};
++                    } else if constexpr (std::is_same_v<Desc, Shader::ImageBufferDescriptor>) {
++                        return {HandleImageBuffer, info.image_buffer_descriptors.data()};
++                    } else if constexpr (std::is_same_v<Desc, Shader::TextureDescriptor>) {
++                        return {HandleTexture, info.texture_descriptors.data()};
++                    } else {
++                        return {HandleImage, info.image_descriptors.data()};
++                    }
++                }();
++                const ComputedHandle computed{static_cast<u8>(stage), kind,
++                                              static_cast<u16>(&desc - first), value};
++                // An array's elements all evaluate the same program: one entry per descriptor.
++                if (l1161_capture && (computed_handles.empty() || computed_handles.back().stage != computed.stage ||
++                    computed_handles.back().kind != computed.kind ||
++                    computed_handles.back().descriptor != computed.descriptor)) {
++                    computed_handles.push_back(computed);
++                }
++                }
++                return TexturePair(value, via_header_index);
+             }
+             ASSERT(cbufs[desc.cbuf_index].enabled);
+             const u32 index_offset{index << desc.size_shift};
+@@ -864,11 +889,13 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
+         }
+         ReportTextureMemo();
+     }
++    if (!l1161_capture) computed_capture_valid = false;
+     // EDEN_UP_L949_DESC_REPLAY: this resolve's image descriptors are kept for the delta draws
+     // that follow it (KeepImageDescriptors below).
+     bool keep_images = false;
+     if (fast_draw_on && std::exchange(capture_delta, false) &&
+-        delta_blocker == DeltaBlocker::None) {
++        (delta_blocker == DeltaBlocker::None ||
++         (l1161_capture && delta_blocker == DeltaBlocker::ComputedHandles))) {
+         const auto same_view = [](const VideoCommon::ImageViewInOut& lhs,
+                                   const VideoCommon::ImageViewInOut& rhs) {
+             return lhs.index == rhs.index && lhs.id == rhs.id;
+@@ -880,6 +907,8 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
+         }
+         delta_views.assign(views.begin(), views.end());
+         delta_samplers.assign(samplers.begin(), samplers.end());
++        delta_computed_handles.assign(computed_handles.begin(), computed_handles.end());
++        computed_capture_valid = l1161_capture;
+         configured_stages = Spec::enabled_stages;
+         // A view pointed at a colour target's copy needs that copy taken again for each draw.
+         delta_views_valid = texture_cache.FeedbackViewCopies() == feedback_copies;
+@@ -1062,6 +1091,68 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
+     return ConfigureDraw(rescaling, render_area);
+ }
+ 
++void GraphicsPipeline::BuildHandleWords() {
++    handle_words = std::make_unique<HandleWordTable>();
++    {
++        for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
++            const auto add = [&](const auto& desc) {
++                if (desc.handle_program != ~0U) return;
++                const auto range = [&](u32 slot, u32 offset) {
++                    precise_handle_buffers[stage] |= 1U << slot;
++                    for (u32 i = 0; i < desc.count; ++i) {
++                        const u32 first = offset + (i << desc.size_shift);
++                        handle_words->words[stage][slot].emplace_back(first, first + 4);
++                    }
++                };
++                range(desc.cbuf_index, desc.cbuf_offset);
++                if constexpr (requires { desc.has_secondary; }) {
++                    if (desc.has_secondary) range(desc.secondary_cbuf_index, desc.secondary_cbuf_offset);
++                }
++            };
++            const auto& info = stage_infos[stage];
++            for (const auto& desc : info.texture_buffer_descriptors) add(desc);
++            for (const auto& desc : info.image_buffer_descriptors) add(desc);
++            for (const auto& desc : info.texture_descriptors) add(desc);
++            for (const auto& desc : info.image_descriptors) add(desc);
++        }
++    }
++
++    handle_words_ready = true;
++}
++
++bool GraphicsPipeline::ComputedHandlesChanged() const {
++    for (const ComputedHandle& handle : delta_computed_handles) {
++        const Shader::Info& info{stage_infos[handle.stage]};
++        const auto& cbufs{maxwell3d->state.shader_stages[handle.stage].const_buffers};
++        u32 program{};
++        switch (handle.kind) {
++        case HandleTextureBuffer:
++            program = info.texture_buffer_descriptors[handle.descriptor].handle_program;
++            break;
++        case HandleImageBuffer:
++            program = info.image_buffer_descriptors[handle.descriptor].handle_program;
++            break;
++        case HandleTexture:
++            program = info.texture_descriptors[handle.descriptor].handle_program;
++            break;
++        default:
++            program = info.image_descriptors[handle.descriptor].handle_program;
++            break;
++        }
++        // As ConfigureImpl's read_handle computes it.
++        const u32 value{VideoCommon::EvaluateTextureHandle(
++            info, program, *gpu_memory,
++            [&](u32 cbuf) -> GPUVAddr {
++                return cbuf < cbufs.size() && cbufs[cbuf].enabled ? cbufs[cbuf].address
++                                                                  : GPUVAddr{};
++            })};
++        if (value != handle.value) {
++            return true;
++        }
++    }
++    return false;
++}
++
+ bool GraphicsPipeline::ConfigureDelta(bool is_indexed) {
+     namespace Profile = VideoCommon::Nx2Profile;
+     // EDEN_UP_FAST_DRAW: ConfigureImpl without reading handles and resolving image views,
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
+index 8ec1214..b2c3af7 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
+@@ -12,6 +12,7 @@
+ #include <condition_variable>
+ #include <memory>
+ #include <mutex>
++#include <span>
+ #include <type_traits>
+ #include <utility>
+ #include <vector>
+@@ -104,6 +105,7 @@ public:
+         MeshComputeScratch* mesh_scratch = nullptr,
+         std::unique_ptr<MeshComputeShaders> mesh_compute = nullptr);
+ 
++    u64 DynamicAttributeTypes() const noexcept { return key.state.attribute_types; }
+     bool HasDynamicVertexInput() const noexcept { return key.state.dynamic_vertex_input; }
+     bool SupportsAlphaToCoverage() const noexcept {
+         return fragment_has_color0_output;
+@@ -213,8 +215,11 @@ public:
+     /// EDEN_UP_FAST_DRAW (nx2_fast_draw.h): whether draws can keep the image views and samplers
+     /// the last captured Configure resolved. Handles computed at draw time are resolved on every
+     /// draw.
+-    [[nodiscard]] bool TakesDeltaDraws() const noexcept {
+-        return delta_blocker == DeltaBlocker::None && delta_views_valid;
++    [[nodiscard]] bool TakesDeltaDraws(bool l1161 = false) const noexcept {
++        return delta_views_valid && (!l1161 || handle_words_ready) &&
++               (delta_blocker == DeltaBlocker::None ||
++                (l1161 &&
++                 delta_blocker == DeltaBlocker::ComputedHandles && computed_capture_valid));
+     }
+ 
+     /// Why TakesDeltaDraws is false (diagnostics).
+@@ -237,6 +242,16 @@ public:
+         return handle_constant_buffers;
+     }
+ 
++    void BuildHandleWords();
++    [[nodiscard]] bool ComputedHandlesChanged() const;
++    [[nodiscard]] const std::array<u32, NUM_STAGES>& PreciseHandleBuffers() const noexcept {
++        return precise_handle_buffers;
++    }
++    /// Only after BuildHandleWords (TakesDeltaDraws(true) is false before it).
++    [[nodiscard]] std::span<const std::pair<u32, u32>> HandleWords(size_t stage, u32 slot) const {
++        return handle_words->words[stage][slot];
++    }
++
+     /// EDEN_UP_FAST_DRAW: resolves and binds every buffer as Configure does (storage buffer
+     /// addresses are read from the constant buffers again) and records the draw's descriptors
+     /// with the image views, samplers and texture buffers the last captured Configure resolved.
+@@ -246,7 +261,8 @@ public:
+     /// EDEN_UP_FAST_DRAW: the next Configure keeps the views and samplers it resolves for delta
+     /// draws. With `verify`, it first compares them with the ones kept before; DeltaMismatch
+     /// reports it.
+-    void CaptureNextDelta(bool verify) noexcept {
++    void CaptureNextDelta(bool verify, bool l1161 = false) noexcept {
++        force_l1161_capture = l1161;
+         capture_delta = true;
+         verify_delta = verify;
+     }
+@@ -333,6 +349,24 @@ private:
+     bool delta_mismatch{};
+     std::array<bool, NUM_STAGES> configured_stages{};
+     std::array<u32, NUM_STAGES> handle_constant_buffers{};
++    /// EDEN_UP_L1161_DRAW: the constant buffer words each stage reads texture handles from, as
++    /// [first, end) byte offsets per buffer. Made by the first capture with the switch on: a
++    /// pipeline never used with it costs one pointer.
++    struct HandleWordTable {
++        std::array<std::array<std::vector<std::pair<u32, u32>>,
++                              Tegra::Engines::Maxwell3D::Regs::MaxConstBuffers>,
++                   NUM_STAGES>
++            words;
++    };
++    bool handle_words_ready{};
++    std::array<u32, NUM_STAGES> precise_handle_buffers{};
++    std::unique_ptr<HandleWordTable> handle_words;
++    struct ComputedHandle { u8 stage; u8 kind; u16 descriptor; u32 value; };
++    // Prefixed: plain Texture/Image enumerators would hide those names in the class's scope.
++    enum ComputedHandleKind : u8 { HandleTextureBuffer, HandleImageBuffer, HandleTexture, HandleImage };
++    std::vector<ComputedHandle> delta_computed_handles;
++    bool force_l1161_capture{};
++    bool computed_capture_valid{};
+     std::vector<VideoCommon::ImageViewInOut> delta_views;
+     std::vector<VideoCommon::SamplerId> delta_samplers;
+     /// EDEN_UP_L949_DESC_REPLAY (zortos293/Lichii #949, ee98215f14): the image descriptor entries
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 3598334..f785ae5 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -348,11 +348,20 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
+         scheduler.BoundGraphicsPipeline() != draw.pipeline) {
+         return full(FullDraw::RenderPass);
+     }
+-    if (!draw.pipeline->TakesDeltaDraws()) {
++    const bool l1161 = FastDraw::L1161DrawEnabled();
++    if (!draw.pipeline->TakesDeltaDraws(l1161)) {
+         ++fast_draw_stats.delta_blockers[static_cast<size_t>(draw.pipeline->DeltaDrawBlocker())];
+         return full(FullDraw::DeltaPipeline);
+     }
+-    const auto& handles = draw.pipeline->HandleConstantBuffers();
++
++    if ((l1161 || delta.vertex_formats_changed) && maxwell3d->dirty.flags[Dirty::VertexInput] &&
++        (!draw.pipeline->HasDynamicVertexInput() ||
++         FixedPipelineState::DynamicAttributeTypes(maxwell3d->regs) !=
++             draw.pipeline->DynamicAttributeTypes())) {
++        return full(FullDraw::VertexInput);
++    }
++    const auto& handles = l1161 ? draw.pipeline->PreciseHandleBuffers()
++                               : draw.pipeline->HandleConstantBuffers();
+     for (size_t stage = 0; stage < handles.size() && !delta.Empty(); ++stage) {
+         if ((delta.binds[stage] & handles[stage]) != 0) {
+             return full(FullDraw::HandleBind);
+@@ -369,15 +378,29 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
+             const auto& cbuf = cbufs[slot];
+             FastDraw::DeviceSpans& spans = handle_spans[stage][slot];
+             spans.Update(*gpu_memory, cbuf.address, cbuf.size);
+-            if (delta.Reaches(cbuf.address, cbuf.size, spans)) {
++            if (!delta.Reaches(cbuf.address, cbuf.size, spans)) {
++                continue; // nothing written reaches the buffer: as without the switch
++            }
++            if (!l1161) {
+                 return full(FullDraw::HandleData);
+             }
++            // EDEN_UP_L1161_DRAW: a write reached the buffer; compare the handle words themselves
++            // (secondary array words too), at their GPU addresses and their device memory. Only
++            // here is each word translated (handle_word_spans, so handle_spans keeps its range).
++            for (const auto& [first, end] : draw.pipeline->HandleWords(stage, slot)) {
++                handle_word_spans.Update(*gpu_memory, cbuf.address + first, end - first);
++                if (delta.Reaches(cbuf.address + first, end - first, handle_word_spans)) {
++                    return full(FullDraw::HandleData);
++                }
++            }
+         }
+     }
++    taken_l1161 = l1161;
+     taken_draw = draw;
+     if (FastDraw::UboKeepEnabled()) {
+         // EDEN_UP_L949_UBO_KEEP (Lichii #949): what BeginGraphicsUniforms reads, before the delta
+         // is emptied on the way out (only the binds and the device ranges).
++        taken_delta.no_uniform_keeps = delta.no_uniform_keeps;
+         taken_delta.binds = delta.binds;
+         taken_delta.num_device_writes = delta.num_device_writes;
+         std::copy_n(delta.device_begin.begin(), delta.num_device_writes,
+@@ -411,6 +434,10 @@ bool RasterizerVulkan::DeltaStillHolds(u64 serial, u64 map_serial) {
+     if (draw.pipeline->DeltaImagesChange()) {
+         return full(FullDraw::SampledImages);
+     }
++    if (taken_l1161 &&
++        draw.pipeline->ComputedHandlesChanged()) {
++        return full(FullDraw::ComputedHandles);
++    }
+     return true;
+ }
+ 
+@@ -492,7 +519,7 @@ void RasterizerVulkan::ReportFastDraws() {
+                                     reasons);
+         chain_summary += " | full counts:";
+         static constexpr std::array names{"ineligible", "kind", "state", "submit", "renderpass",
+-                                           "pipeline", "handle_bind", "handle_data", "lock", "images"};
++                                           "pipeline", "handle_bind", "handle_data", "lock", "images", "computed", "vertex"};
+         for (size_t i = 0; i < names.size(); ++i) {
+             chain_summary += fmt::format(" {}={}", names[i], stats.full[i]);
+         }
+@@ -1139,7 +1166,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
+     if (delta_draw) {
+         pipeline->ConfigureNextAsDelta();
+     } else if (fast_draw_use) {
+-        pipeline->CaptureNextDelta(verify_draw);
++        pipeline->CaptureNextDelta(verify_draw, verify_draw && taken_l1161);
+     }
+     if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
+         report_failure("configure failed");
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.h b/src/video_core/renderer_vulkan/vk_rasterizer.h
+index 46eac90..e9cd7d5 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.h
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.h
+@@ -318,6 +318,8 @@ private:
+         HandleData,
+         ChangedBeforeLock,
+         SampledImages,
++        ComputedHandles,
++        VertexInput,
+         Count,
+     };
+     /// Why a recorded draw can't be followed by a delta draw.
+@@ -371,6 +373,7 @@ private:
+                           u64 serial, u64 map_serial);
+     void ReportFastDraws();
+     ReusableDraw reusable_draw;
++    bool taken_l1161{}; ///< EDEN_UP_L1161_DRAW as TakeReusableDraw last read it
+     ReusableDraw taken_draw; ///< The draw TakeReusableDraw last returned the pipeline of
+     /// EDEN_UP_L949_UBO_KEEP: the constant buffer binds and the device ranges of the inline
+     /// constant data since the previous draw, as TakeReusableDraw last returned a pipeline.
+@@ -379,6 +382,9 @@ private:
+     std::array<std::array<VideoCommon::Nx2FastDraw::DeviceSpans, Maxwell::MaxConstBuffers>,
+                Maxwell::MaxShaderStage>
+         handle_spans;
++    /// EDEN_UP_L1161_DRAW: one handle word's device memory, translated only when a write
++    /// reached its buffer.
++    VideoCommon::Nx2FastDraw::DeviceSpans handle_word_spans;
+     FastDrawStats fast_draw_stats;
+     /// Set by DrawIndirect around its PrepareDraw.
+     bool fast_draw_indirect{};

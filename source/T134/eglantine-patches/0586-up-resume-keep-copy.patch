@@ -1,0 +1,698 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: keep a command entry's submit copy at a refresh when it walks clean (EDEN_UP_RESUME_KEEP_COPY, test aid EDEN_TEST_FRAME_WAIT_MS), off by default
+
+What: on a first start (run1233, 12 Nov) the present gave up its 4 s frame wait three times while
+the graphics side was ~25 s behind; the game ran ~25 fence steps ahead and the hand-over refresh
+(DmaPusher::Push, dma_pusher.h) read every entry of a waited list from memory again, unjudged:
+221 entries held later frames' words, junk followed and a junk shape type crashed. With
+EDEN_UP_RESUME_KEEP_COPY=2 both refreshes (hand-over and resume) judge each entry whose memory now
+differs from its submit copy: GPU-written pages, deferred entries, empty-at-submit entries,
+never-written copies (zeros where memory has commands), copies that do not walk clean from the
+carry there, and entries after an unknown carry take memory as before; every other entry keeps its
+submit copy, whether the shape changed or only data words. A resumed entry then parses that copy
+from its resume word (Step, resume_from_copy). Carry at a resume: the stream's own (as
+EDEN_NX2_DESYNC_FIX); at the hand-over 0 at the list's first entry, then entry by entry. Ocarina of
+Time on Switch 2 only (DESYNC_FIX's title gate).
+
+Switches (read once at boot): EDEN_UP_RESUME_KEEP_COPY: 1 judge and count, memory taken as before;
+2 act; 3 act, but lists copied during a suspension take memory (fallback if 2 hangs at a load);
+unset, 0 or anything else off. Idle (one line) with EDEN_NX2_RESNAPSHOT=0; stays off (one line)
+with EDEN_NX2_JUNK_GUARD=1, EDEN_NX2_PARK_SPLIT_METHODS or EDEN_NX2_SPLIT_PARSE_CHECK. Works next to
+DESYNC_FIX (counted apart); do not combine them in tests.
+Test aid EDEN_TEST_FRAME_WAIT_MS=<ms> (nx2_gsv.h WaitForFrame): the present gives up after <ms>
+(10-60000) instead of 4000 so a warm start can be made to run ahead; unset, 0 or not a number: 4000
+and the old lines. Never in a play env. EDEN_UP_OOT_FRONT_WAIT's WaitForFrameFront keeps its own
+4000 ms; with it the aid shortens only the fallback wait.
+Log (HW_GPU warnings): boot "EDEN_UP_RESUME_KEEP_COPY=2 on: keeps a command entry's submit copy at a
+refresh (hand-over and resume) when memory differs and the copy walks clean; ..."; at the first
+refresh "... active: Ocarina of Time on Switch 2 (program ...)" or "... stays off: not Ocarina";
+per acting refresh (first 256, then every 1024th) "EDEN_UP_RESUME_KEEP_COPY=2 action N: kept the
+submit copy of K of D differing entries of a E-entry list at the hand-over|a resume (list copied
+before|during the suspension), first at ...: W words differ, H header words differ; took memory for
+M" (=1: "would keep (count only, took memory)"); every 10 s "EDEN_UP_RESUME_KEEP_COPY=2 10 s: R list
+refreshes (...), D entries differed from their submit copy: kept the copy K (...), M took memory
+(g GPU-written, d deferred, n never written, c copy does not walk clean, u carry unknown, s copied
+during a suspension), f kept by EDEN_NX2_DESYNC_FIX; resumed entries parsed from the copy P; since
+boot kept T, X took memory"; the "Refresh check N:" summary gains "; EDEN_UP_RESUME_KEEP_COPY kept
+the submit copy of K of them". Aid (Service): "EDEN_TEST_FRAME_WAIT_MS=250: the present gives up on
+its frame's fence after 250 ms instead of 4000 (test aid: lets the game run ahead; never for
+play)", every 10 s "EDEN_TEST_FRAME_WAIT_MS=250 10 s: G of W frame waits gave up (T since boot)",
+and the give-up line reads "... not reached in 250 ms (now N; EDEN_TEST_FRAME_WAIT_MS)".
+
+Not in TranslationSwitches (no shader change). Not a live switch.
+
+Cost when off: one cached read per refresh (ResumeKeepCopyActing returns 0); the hand-over path,
+the resume verdicts, Step's parse rule and the Refresh check line (empty suffix) unchanged. Aid
+unset: the deadline is 4000 ms from a cached static, the old give-up text, one cached bool test per
+frame wait. Behaviour byte for byte as before; the machine code is not.
+
+Default flip (later, after the cold A/B and the normal-play check pass): video_core/dma_pusher.cpp,
+anonymous namespace after RefreshCheckEventLogged: "constexpr int ResumeKeepCopyDefault = 0;" -> 2.
+The aid never gets a default.
+
+Risks: a list the CPU really patches after submit on pages no GPU work wrote would run its old
+words (none seen: 0 of 7,675,038 copies differed with the full wait); about 3% of lists start with a
+method open, the carry-0 guess then falls back to memory (today's behaviour) for the rest of that
+list; a kept copy can wait exactly on a counter the game already passed (a wait that never ends:
+"Channel N waits on semaphore ... (op 1, X, now Y)" with X below Y after an action line); mixed
+frames stay possible through entries still read from memory.
+
+Origin and credit: our own work (first-start crash of 12 Nov 2026). Draft
+drafts-2026-11-11/ports-7/first-start/keep-submit-copy/draft.diff, placed unchanged (review:
+ready to place). Merge: patch 0588 (EDEN_UP_FRAME_WAIT_PROGRESS) builds on this patch's
+WaitForFrame deadline line.
+---
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index 3b050f2..0eb766e 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -2635,6 +2635,58 @@ private:
+         }
+     }
+ 
++    /// EDEN_TEST_FRAME_WAIT_MS=<ms> (test aid, first-start crash 12 Nov 2026; never for play):
++    /// WaitForFrame gives up after <ms> (10-60000) instead of 4000. A short value lets the game
++    /// run ahead of a slow GPU thread on a warm cache, the way three 4 s give-ups did on a first
++    /// start (run1233: the game ~25 fence steps ahead, later-frame words in the command ring), so
++    /// EDEN_UP_RESUME_KEEP_COPY can be tested without clearing the caches. Unset, 0 or not a
++    /// number: 4000, as before. Read once; logged at the first wait, and every 10 s while set.
++    static long long TestFrameWaitMs() {
++        static const long long ms = [] {
++            const char* const value = std::getenv("EDEN_TEST_FRAME_WAIT_MS");
++            const long n = value != nullptr ? std::strtol(value, nullptr, 10) : 0L;
++            return n <= 0 ? 4000LL : static_cast<long long>((std::clamp)(n, 10L, 60000L));
++        }();
++        return ms;
++    }
++    static bool TestFrameWaitSet() {
++        static const bool set = [] {
++            const char* const value = std::getenv("EDEN_TEST_FRAME_WAIT_MS");
++            return value != nullptr && std::strtol(value, nullptr, 10) > 0;
++        }();
++        return set;
++    }
++    /// EDEN_TEST_FRAME_WAIT_MS: gave-up waits in the current 10 s window and since boot.
++    void NoteTestFrameWait(bool gave_up) {
++        if (!m_test_wait_logged) {
++            m_test_wait_logged = true;
++            LOG_WARNING(Service,
++                        "EDEN_TEST_FRAME_WAIT_MS={}: the present gives up on its frame's fence "
++                        "after {} ms instead of 4000 (test aid: lets the game run ahead; never "
++                        "for play)",
++                        TestFrameWaitMs(), TestFrameWaitMs());
++            m_test_wait_window = std::chrono::steady_clock::now();
++        }
++        ++m_test_waits;
++        m_test_gave_up += gave_up ? 1 : 0;
++        m_test_gave_up_total += gave_up ? 1 : 0;
++        const auto now = std::chrono::steady_clock::now();
++        if (now - m_test_wait_window >= std::chrono::seconds{10}) {
++            LOG_WARNING(Service,
++                        "EDEN_TEST_FRAME_WAIT_MS={} 10 s: {} of {} frame waits gave up ({} since "
++                        "boot)",
++                        TestFrameWaitMs(), m_test_gave_up, m_test_waits, m_test_gave_up_total);
++            m_test_wait_window = now;
++            m_test_waits = 0;
++            m_test_gave_up = 0;
++        }
++    }
++    bool m_test_wait_logged{};
++    u64 m_test_waits{};
++    u64 m_test_gave_up{};
++    u64 m_test_gave_up_total{};
++    std::chrono::steady_clock::time_point m_test_wait_window{};
++
+     /// Waits until the fence is reached. With `unless_gpu_waits`, gives up after a few ms once a
+     /// GPU channel was seen suspended on a semaphore (it may be one this thread releases later).
+     /// Returns whether the fence was reached.
+@@ -2646,7 +2698,8 @@ private:
+         const auto start = std::chrono::steady_clock::now();
+         // Long enough to cover shader/pipeline compile stalls: a game that gets more than a few
+         // command buffers ahead misses the equal-value gates its other channels acquire.
+-        const auto deadline = start + std::chrono::milliseconds{4000};
++        // EDEN_TEST_FRAME_WAIT_MS: shorter, for tests (TestFrameWaitMs).
++        const auto deadline = start + std::chrono::milliseconds{TestFrameWaitMs()};
+         if (!syncpoints.IsReadyGuest(fence_id, fence_value)) {
+             // Woken by the GPU thread as it reaches the fence. Polling with 200 us sleeps slept
+             // about 1 ms per check on Windows, added to every frame. An action left registered
+@@ -2683,9 +2736,20 @@ private:
+         if (unless_gpu_waits && !syncpoints.IsReadyGuest(fence_id, fence_value)) {
+             return false;
+         }
++        if (TestFrameWaitSet()) [[unlikely]] {
++            NoteTestFrameWait(!syncpoints.IsReadyGuest(fence_id, fence_value));
++        }
+         if (!syncpoints.IsReadyGuest(fence_id, fence_value) && m_wait_timeouts++ < 64) {
+-            LOG_WARNING(Service, "nx2:vi2 present #{} fence ({}, {}) not reached in 4 s (now {})",
+-                        m_presents, fence_id, fence_value, syncpoints.GetGuestSyncpointValue(fence_id));
++            if (TestFrameWaitSet()) [[unlikely]] {
++                LOG_WARNING(Service,
++                            "nx2:vi2 present #{} fence ({}, {}) not reached in {} ms (now {}; "
++                            "EDEN_TEST_FRAME_WAIT_MS)",
++                            m_presents, fence_id, fence_value, TestFrameWaitMs(),
++                            syncpoints.GetGuestSyncpointValue(fence_id));
++            } else {
++                LOG_WARNING(Service, "nx2:vi2 present #{} fence ({}, {}) not reached in 4 s (now {})",
++                            m_presents, fence_id, fence_value, syncpoints.GetGuestSyncpointValue(fence_id));
++            }
+         }
+         if (m_presents <= 8 || (m_presents % 600) == 0) {
+             LOG_INFO(Service, "nx2:vi2 present #{} fence ({}, {}) now {}, waited {} us",
+diff --git a/src/video_core/dma_pusher.cpp b/src/video_core/dma_pusher.cpp
+index f7a528c..f7fb1c5 100644
+--- a/src/video_core/dma_pusher.cpp
++++ b/src/video_core/dma_pusher.cpp
+@@ -355,8 +355,228 @@ std::atomic<u64> refresh_check_details{};
+ bool RefreshCheckEventLogged(u64 event) {
+     return event <= RefreshCheckEventsLogged || (event & 0xff) == 0;
+ }
++
++// EDEN_UP_RESUME_KEEP_COPY (first-start crash, 12 Nov 2026, run1233): Ocarina of Time on Switch
++// 2 only. A refresh copies queued command lists again from memory: at a resume after a semaphore
++// wait (Step, judged) and when a list whose channel waited since its submit is handed to the
++// pusher (Push, "hand-over", not judged: memory as T63). On a first start the GPU thread stalls
++// ~25 s, the present wait gives up after 4 s three times, the game runs ahead and records later
++// frames into the same ring, and the hand-over refresh took those words for this frame's: 221
++// entries parsed later-frame words, junk, a draw with shape type 3734, SIGSEGV. In Ocarina the
++// words as submitted never change before the parse (0 of 7,675,038 with the full wait), and 485
++// runs one frame ahead with EDEN_GBB_TRUST_COPY=1 + EDEN_NX2_RESNAPSHOT=0 (submit copy always)
++// logged no junk. So at both refreshes an entry whose memory differs from its copy keeps the
++// copy when:
++// - its pages carry no GPU-written mark (GPU-written entries read the GPU's words, as before),
++// - it is not deferred (its slot holds no words yet) and the copy was written (not zeros where
++//   memory holds commands: submitted before written, upstream 256b1dc346),
++// - the copy walks clean from the stream's carry there (no word in a mode the parser drops);
++//   at the hand-over the carry restarts at 0 at the list's first entry (lists end on a method
++//   boundary, see Step), at a resume it is the stream's own,
++// - =3 only: the list was copied before the suspension, not during it.
++// Data-only differences keep the copy too: in run404 (DESYNC_FIX=1) the fix kept reshaped entries
++// but took 4 data-only ones from memory, a later frame's semaphore values (0xf04 against 0xede),
++// and channels 1, 2, 3 and 5 waited forever. A resumed entry then parses its (refreshed) copy
++// from its resume word instead of memory at the parse.
++// =1: the same judgement, counted and logged, memory taken (as off). =2 acts. =3 acts, except for
++// lists copied during a suspension (those take memory, as T63). 0, unset or anything else: off,
++// nothing read or counted. Read once. Default flip for the alpha: ResumeKeepCopyDefault.
++constexpr int ResumeKeepCopyDefault = 0; // the alpha: 2 (unset then means 2; "0" stays off)
++
++int ResumeKeepCopyMode() {
++    static const int mode = [] {
++        const char* value = std::getenv("EDEN_UP_RESUME_KEEP_COPY");
++        if (value == nullptr) {
++            return ResumeKeepCopyDefault;
++        }
++        return value[0] >= '1' && value[0] <= '3' && value[1] == '\0' ? value[0] - '0' : 0;
++    }();
++    return mode;
++}
++
++// Why a differing entry kept its copy or took memory (EDEN_UP_RESUME_KEEP_COPY).
++enum class KeepCopyCase : u32 {
++    Kept,          // copy kept (=2/3), or would be (=1)
++    GpuWritten,    // memory: GPU-written pages (parsed from the GPU's words)
++    Deferred,      // memory: deferred entry (no words in its slot)
++    Unwritten,     // memory: copy never written (zeros where memory has commands)
++    CopyBroken,    // memory: the copy drops words
++    CarryUnknown,  // memory: the walk can't know where methods start
++    DuringSuspend, // memory: =3 and the list was copied during a suspension
++    Count,
++};
++
++struct KeepCopyStats {
++    std::array<std::atomic<u64>, static_cast<size_t>(KeepCopyCase::Count)> cases{};
++    std::atomic<u64> refreshes_handover{};
++    std::atomic<u64> refreshes_resume{};
++    std::atomic<u64> differing{};
++    std::atomic<u64> kept_data_only{};
++    std::atomic<u64> kept_at_resume{};
++    std::atomic<u64> kept_by_desync_fix{};
++    std::atomic<u64> resumed_from_copy{};
++    std::atomic<u64> kept_total{};
++    std::atomic<u64> memory_total{};
++    std::atomic<u64> actions{};
++    std::atomic<u64> window_start{};
++};
++KeepCopyStats g_keep_copy;
++
++// One refresh's tally, for its action line.
++struct KeepCopyTally {
++    u32 differing = 0;
++    u32 kept = 0;
++    u32 memory = 0;
++    u64 first_address = 0;
++    u32 first_size = 0;
++    u32 first_words = 0;
++    u32 first_header_diffs = 0;
++};
++
++void NoteKeepCopy(KeepCopyCase why, bool data_only, bool at_resume, KeepCopyTally& tally,
++                  u64 address, size_t size, size_t start, std::span<const CommandHeader> copy,
++                  std::span<const CommandHeader> memory, const ShapeWalk& copy_walk,
++                  const ShapeWalk& memory_walk) {
++    g_keep_copy.cases[static_cast<size_t>(why)].fetch_add(1, std::memory_order_relaxed);
++    g_keep_copy.differing.fetch_add(1, std::memory_order_relaxed);
++    ++tally.differing;
++    if (why != KeepCopyCase::Kept) {
++        ++tally.memory;
++        g_keep_copy.memory_total.fetch_add(1, std::memory_order_relaxed);
++        return;
++    }
++    g_keep_copy.kept_total.fetch_add(1, std::memory_order_relaxed);
++    g_keep_copy.kept_data_only.fetch_add(data_only ? 1 : 0, std::memory_order_relaxed);
++    g_keep_copy.kept_at_resume.fetch_add(at_resume ? 1 : 0, std::memory_order_relaxed);
++    if (tally.kept++ == 0) {
++        tally.first_address = address;
++        tally.first_size = static_cast<u32>(size);
++        u32 differing = 0;
++        for (size_t w = start; w < size; ++w) {
++            differing += copy[w].argument != memory[w].argument ? 1 : 0;
++        }
++        tally.first_words = differing;
++        tally.first_header_diffs = (std::max)(copy_walk.header_diffs, memory_walk.header_diffs);
++    }
++}
++
++// One line per refresh that kept (or, =1, would keep) a copy: the first 256, then every 1024th.
++void ReportKeepCopyAction(int mode, bool at_resume, bool suspended_copy, size_t entries,
++                          const KeepCopyTally& tally) {
++    if (tally.kept == 0) {
++        return;
++    }
++    const u64 action = g_keep_copy.actions.fetch_add(1, std::memory_order_relaxed) + 1;
++    if (action > 256 && (action & 0x3ff) != 0) {
++        return;
++    }
++    LOG_WARNING(HW_GPU,
++                "EDEN_UP_RESUME_KEEP_COPY={} action {}: {} the submit copy of {} of {} differing "
++                "entries of a {}-entry list at {} (list copied {} the suspension), first at "
++                "{:#x}+{:#x}: {} words differ, {} header words differ; took memory for {}",
++                mode, action, mode == 1 ? "would keep (count only, took memory)" : "kept",
++                tally.kept, tally.differing, entries, at_resume ? "a resume" : "the hand-over",
++                suspended_copy ? "during" : "before", tally.first_address, tally.first_size,
++                tally.first_words, tally.first_header_diffs, tally.memory);
++}
++
++// Every 10 s, from the refresh that ends a window (nothing while no refresh runs).
++void ReportKeepCopyWindow(int mode) {
++    const u64 now = static_cast<u64>(Common::g_wall_clock.GetTimeNS().count());
++    u64 start = g_keep_copy.window_start.load(std::memory_order_relaxed);
++    if (start == 0) {
++        g_keep_copy.window_start.compare_exchange_strong(start, now, std::memory_order_relaxed);
++        return;
++    }
++    if (now - start < 10'000'000'000ULL ||
++        !g_keep_copy.window_start.compare_exchange_strong(start, now, std::memory_order_relaxed)) {
++        return;
++    }
++    const auto take = [](std::atomic<u64>& counter) {
++        return counter.exchange(0, std::memory_order_relaxed);
++    };
++    std::array<u64, static_cast<size_t>(KeepCopyCase::Count)> cases{};
++    for (size_t i = 0; i < cases.size(); ++i) {
++        cases[i] = take(g_keep_copy.cases[i]);
++    }
++    const auto at = [&cases](KeepCopyCase why) { return cases[static_cast<size_t>(why)]; };
++    const u64 handover = take(g_keep_copy.refreshes_handover);
++    const u64 resume = take(g_keep_copy.refreshes_resume);
++    const u64 differing = take(g_keep_copy.differing);
++    const u64 data_only = take(g_keep_copy.kept_data_only);
++    const u64 kept_at_resume = take(g_keep_copy.kept_at_resume);
++    const u64 desync_fix = take(g_keep_copy.kept_by_desync_fix);
++    const u64 resumed = take(g_keep_copy.resumed_from_copy);
++    const u64 kept = at(KeepCopyCase::Kept);
++    u64 memory = 0;
++    for (size_t i = 1; i < cases.size(); ++i) {
++        memory += cases[i];
++    }
++    LOG_WARNING(HW_GPU,
++                "EDEN_UP_RESUME_KEEP_COPY={} 10 s: {} list refreshes ({} at the hand-over, {} at a "
++                "resume), {} entries differed from their submit copy: {} {} ({} data words only, "
++                "{} other header words; {} at a resume), {} took memory ({} GPU-written, {} "
++                "deferred, {} never written, {} copy does not walk clean, {} carry unknown, {} "
++                "copied during a suspension), {} kept by EDEN_NX2_DESYNC_FIX; resumed entries {} "
++                "{}; since boot {} {}, {} took memory",
++                mode, handover + resume, handover, resume, differing,
++                mode == 1 ? "would keep the copy (count only)" : "kept the copy", kept, data_only,
++                kept - data_only, kept_at_resume, memory,
++                at(KeepCopyCase::GpuWritten), at(KeepCopyCase::Deferred),
++                at(KeepCopyCase::Unwritten), at(KeepCopyCase::CopyBroken),
++                at(KeepCopyCase::CarryUnknown), at(KeepCopyCase::DuringSuspend), desync_fix,
++                mode == 1 ? "that would parse the copy" : "parsed from the copy", resumed,
++                mode == 1 ? "would keep" : "kept", g_keep_copy.kept_total.load(std::memory_order_relaxed),
++                g_keep_copy.memory_total.load(std::memory_order_relaxed));
++}
++
++// The walk matches the parser only with the junk guard, split-method parking and the split parse
++// check off (as EDEN_NX2_DESYNC_FIX): with any of them set the switch stays off (logged once).
++bool KeepCopyParserClash(int split_check_mode) {
++    static const bool clash = [split_check_mode] {
++        const char* guard = std::getenv("EDEN_NX2_JUNK_GUARD");
++        const bool clash_now = (guard != nullptr && guard[0] == '1') ||
++                               std::getenv("EDEN_NX2_PARK_SPLIT_METHODS") != nullptr ||
++                               split_check_mode != 0;
++        if (clash_now) {
++            LOG_WARNING(HW_GPU, "EDEN_UP_RESUME_KEEP_COPY={} stays off: JUNK_GUARD, "
++                                "PARK_SPLIT_METHODS or SPLIT_PARSE_CHECK is set, and its walk "
++                                "doesn't model them",
++                        ResumeKeepCopyMode());
++        }
++        return clash_now;
++    }();
++    return clash;
++}
+ } // Anonymous namespace
+ 
++int DmaPusher::ResumeKeepCopyActing() const {
++    const int mode = ResumeKeepCopyMode();
++    if (mode == 0 || !ResnapshotEnabled() || KeepCopyParserClash(SplitCheckMode())) {
++        return 0;
++    }
++    if (keep_copy_title < 0) {
++        // Known once the application has its program id (the gate as EDEN_NX2_DESYNC_FIX).
++        constexpr u64 OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
++        const u64 program = system.GetApplicationProcessProgramID();
++        if (program == 0) {
++            return 0;
++        }
++        keep_copy_title = Tegra::g_nx2_ampere.load(std::memory_order_relaxed) &&
++                                  program == OcarinaOfTimeProgramId
++                              ? 1
++                              : 0;
++        static std::atomic<bool> reported{};
++        if (!reported.exchange(true)) {
++            LOG_WARNING(HW_GPU, "EDEN_UP_RESUME_KEEP_COPY={} {} (program {:#018x})", mode,
++                        keep_copy_title != 0 ? "active: Ocarina of Time on Switch 2"
++                                             : "stays off: not Ocarina of Time on Switch 2",
++                        program);
++        }
++    }
++    return keep_copy_title != 0 ? mode : 0;
++}
++
+ // EDEN_NX2_DESYNC_FIX=1 (exact "1"): see DmaPusher::RefreshSnapshot. =2: the same, except lists
+ // copied during a suspension take memory as T63 (judged for the log only). Read once.
+ int DmaPusher::DesyncFixMode() {
+@@ -431,6 +651,28 @@ DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Cont
+                     DesyncFixMode(), DesyncFixMode() == 1 ? "judged" : "as T63");
+         DesyncFixParserClash(SplitCheckMode());
+     }
++    // EDEN_UP_RESUME_KEEP_COPY: proves the switch was read; the title gate is logged at the first
++    // refresh ("active" or "stays off").
++    if (static std::atomic<bool> reported{}; ResumeKeepCopyMode() != 0 && !reported.exchange(true)) {
++        if (!ResnapshotEnabled()) {
++            LOG_WARNING(HW_GPU, "EDEN_UP_RESUME_KEEP_COPY={} idle: EDEN_NX2_RESNAPSHOT=0, no "
++                                "refresh runs, so there is nothing to keep (the submit copy is "
++                                "then parsed only with EDEN_GBB_TRUST_COPY=1)",
++                        ResumeKeepCopyMode());
++        } else {
++            LOG_WARNING(HW_GPU, "EDEN_UP_RESUME_KEEP_COPY={} on: {} a command entry's submit copy "
++                                "at a refresh (hand-over and resume) when memory differs and the "
++                                "copy walks clean; GPU-written, deferred and never-written "
++                                "entries read as before{}; Ocarina of Time on Switch 2 only",
++                        ResumeKeepCopyMode(),
++                        ResumeKeepCopyMode() == 1 ? "counts (memory taken) where it would keep"
++                                                  : "keeps",
++                        ResumeKeepCopyMode() == 3
++                            ? "; lists copied during a suspension take memory as before"
++                            : "");
++            KeepCopyParserClash(SplitCheckMode());
++        }
++    }
+ }
+ 
+ DmaPusher::~DmaPusher() = default;
+@@ -692,8 +934,15 @@ bool DmaPusher::Step() {
+     // with the method count it had. The refresh check (EDEN_NX2_DESYNC_FIX and its log) walks the
+     // stream from that point through every queued list, the injected ones too.
+     bool resume_checked = false; // the resumed entry's copy was judged with the fix on
++    // EDEN_UP_RESUME_KEEP_COPY: its value where it acts (0 off), and whether this resume's refresh
++    // judged the front list, so the resumed entry parses that copy (=2/3) or counts (=1).
++    int resume_keep_mode = 0;
++    bool resume_keep = false;
+     if (ResnapshotEnabled() && suspensions.load(std::memory_order_relaxed) != suspensions_before) {
+         const u64 now = suspensions.load(std::memory_order_acquire);
++        resume_keep_mode = ResumeKeepCopyActing();
++        resume_keep = resume_keep_mode != 0 && !dma_pushbuffer.empty() &&
++                      !dma_pushbuffer.front().submitted_offsets.empty();
+         RefreshCheck check;
+         check.fix = DesyncFixActive();
+         check.fix_suspended = check.fix && DesyncFixMode() == 1;
+@@ -942,7 +1191,11 @@ bool DmaPusher::Step() {
+         // after an acquire in Ocarina's pond that held a later frame's commands (run 306: entry
+         // 3808 resumed at word 831 read 22 of them and left a method open into entry 3809).
+         const bool trust_copy = TrustCopy();
+-        const bool resume_from_copy = command_resume_offset != 0 && (resume_checked || trust_copy);
++        // EDEN_UP_RESUME_KEEP_COPY=2/3: also the copy this resume's refresh just judged (=1 counts
++        // the entries it would move off memory, below).
++        const bool keep_resume = resume_keep && resume_keep_mode >= 2;
++        const bool resume_from_copy =
++            command_resume_offset != 0 && (resume_checked || trust_copy || keep_resume);
+         const bool submitted = (command_resume_offset == 0 || resume_from_copy) &&
+                                dma_pushbuffer_subindex < command_list.submitted_offsets.size() &&
+                                command_list.submitted_offsets[dma_pushbuffer_subindex] <
+@@ -956,6 +1209,22 @@ bool DmaPusher::Step() {
+                                !gpu_written &&
+                                !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,
+                                                                           header.size * sizeof(u32)));
++        if (resume_keep && command_resume_offset != 0 && !resume_checked && !trust_copy) {
++            // =2/3: parsed from the copy; =1: would be (the same test with the copy allowed).
++            const bool from_copy =
++                resume_keep_mode >= 2
++                    ? submitted
++                    : dma_pushbuffer_subindex < command_list.submitted_offsets.size() &&
++                          command_list.submitted_offsets[dma_pushbuffer_subindex] <
++                              command_list.submitted_words.size() &&
++                          (command_list.snapshot_suspensions & 1) == 0 &&
++                          command_list.snapshot_suspensions ==
++                              suspensions.load(std::memory_order_acquire) &&
++                          !std::ranges::binary_search(command_list.deferred_entries,
++                                                      static_cast<u32>(dma_pushbuffer_subindex)) &&
++                          !gpu_written && !use_safe;
++            g_keep_copy.resumed_from_copy.fetch_add(from_copy ? 1 : 0, std::memory_order_relaxed);
++        }
+         if (JunkTraceEnabled()) {
+             // What this entry starts from: a method the entry before left unfinished takes this
+             // entry's first words as its data (the Switch 2 split-method rule), and a resumed
+@@ -1654,6 +1923,18 @@ void DmaPusher::RefreshSnapshot(CommandList& list, u64 now, RefreshCheck* check,
+         fetch_refreshed_lists.fetch_add(1, std::memory_order_relaxed);
+     }
+     bool list_reshaped = false; // an entry from the resume point on was kept for a reshape
++    // EDEN_UP_RESUME_KEEP_COPY (ResumeKeepCopyMode): 0 off, as before. `keep_act`: it keeps
++    // copies in this list (=2, or =3 for a list copied before the suspension).
++    const int keep_mode = ResumeKeepCopyActing();
++    const bool keep_act = keep_mode >= 2 && !(keep_mode == 3 && suspended_copy);
++    KeepCopyTally keep_tally;
++    // The hand-over walk's carry: restarts at 0 at the list's first entry (see Step).
++    u32 handover_carry = 0;
++    bool handover_carry_known = true;
++    if (keep_mode != 0) {
++        (check != nullptr ? g_keep_copy.refreshes_resume : g_keep_copy.refreshes_handover)
++            .fetch_add(1, std::memory_order_relaxed);
++    }
+     // Counts a differing entry; the first of this resume numbers the resume for the log.
+     const auto note_change = [&](size_t i, u64 address, size_t size, size_t start) {
+         if (++check->differing == 1) {
+@@ -1670,6 +1951,59 @@ void DmaPusher::RefreshSnapshot(CommandList& list, u64 now, RefreshCheck* check,
+         CommandHeader* const copy = size_t{offset} + size > list.submitted_words.size()
+                                         ? nullptr
+                                         : list.submitted_words.data() + offset;
++        if (check == nullptr && keep_mode != 0) {
++            // EDEN_UP_RESUME_KEEP_COPY, the hand-over refresh (Push): judged as at a resume, from
++            // the list's own carry (0 at its first entry).
++            if (copy == nullptr) {
++                // Empty at submit, read at the parse: known only while it is all data.
++                if (handover_carry_known && handover_carry >= size) {
++                    handover_carry -= static_cast<u32>(size);
++                } else {
++                    handover_carry_known = false;
++                }
++                continue;
++            }
++            refresh_scratch.resize(size);
++            memory_manager.ReadBlockUnsafe(entry.addr, refresh_scratch.data(), size * sizeof(u32));
++            const std::span<const CommandHeader> memory{refresh_scratch.data(), size};
++            const std::span<const CommandHeader> submitted{copy, size};
++            if (std::memcmp(copy, refresh_scratch.data(), size * sizeof(u32)) == 0) {
++                if (handover_carry_known) {
++                    handover_carry = WalkCommandShape(memory, 0, handover_carry).end;
++                }
++                continue;
++            }
++            ShapeWalk copy_walk;
++            ShapeWalk memory_walk;
++            KeepCopyCase why = KeepCopyCase::Kept;
++            bool data_only = false;
++            if (std::ranges::binary_search(list.deferred_entries, static_cast<u32>(i))) {
++                why = KeepCopyCase::Deferred;
++            } else if (IsGpuWrittenCommands(entry.addr, size * sizeof(u32))) {
++                why = KeepCopyCase::GpuWritten;
++            } else if (!handover_carry_known) {
++                why = KeepCopyCase::CarryUnknown;
++            } else {
++                const RefreshVerdict verdict = JudgeRefresh(submitted, memory, 0, handover_carry,
++                                                            false, false, copy_walk, memory_walk);
++                data_only = verdict == RefreshVerdict::DataOnly;
++                why = verdict == RefreshVerdict::Unwritten ? KeepCopyCase::Unwritten
++                      : copy_walk.dropped != 0             ? KeepCopyCase::CopyBroken
++                      : keep_mode == 3 && suspended_copy   ? KeepCopyCase::DuringSuspend
++                                                           : KeepCopyCase::Kept;
++            }
++            NoteKeepCopy(why, data_only, false, keep_tally, u64{entry.addr}, size, 0, submitted,
++                         memory, copy_walk, memory_walk);
++            const bool keep = why == KeepCopyCase::Kept && keep_act;
++            if (handover_carry_known) {
++                handover_carry = keep ? copy_walk.end
++                                      : WalkCommandShape(memory, 0, handover_carry).end;
++            }
++            if (!keep) {
++                std::memcpy(copy, refresh_scratch.data(), size * sizeof(u32));
++            }
++            continue;
++        }
+         if (check == nullptr || i < first_entry) {
+             // Push, or parsed before the suspension (never parsed again): as T63.
+             if (copy != nullptr) {
+@@ -1715,6 +2049,15 @@ void DmaPusher::RefreshSnapshot(CommandList& list, u64 now, RefreshCheck* check,
+             if (unjudged != nullptr) {
+                 note_change(i, u64{entry.addr}, size, start);
+                 ++check->unchecked;
++                if (keep_mode != 0) {
++                    // EDEN_UP_RESUME_KEEP_COPY: memory, as before, counted by reason.
++                    const KeepCopyCase why =
++                        unjudged[0] == 'd'   ? KeepCopyCase::Deferred
++                        : unjudged[0] == 'G' ? KeepCopyCase::GpuWritten
++                                             : KeepCopyCase::CarryUnknown;
++                    NoteKeepCopy(why, false, true, keep_tally, u64{entry.addr}, size, start,
++                                 submitted, memory, ShapeWalk{}, ShapeWalk{});
++                }
+                 // Only differing header words make the copy and memory parse differently: those
+                 // get a line (from the carry, or from 0 when it is unknown).
+                 const u32 carry_from = check->carry_known ? check->carry : 0;
+@@ -1793,8 +2136,39 @@ void DmaPusher::RefreshSnapshot(CommandList& list, u64 now, RefreshCheck* check,
+             break;
+         }
+         note_change(i, u64{entry.addr}, size, start);
+-        const bool keep_copy =
++        bool keep_copy =
+             verdict == RefreshVerdict::Kept || verdict == RefreshVerdict::KeptForList;
++        // EDEN_UP_RESUME_KEEP_COPY: an entry the fix leaves on memory keeps its copy too when the
++        // copy was written and walks clean (data-only differences included), =3 not in a list
++        // copied during the suspension. =1 counts it and takes memory.
++        const bool keep_switch = keep_mode != 0 && !keep_copy;
++        bool would_by_switch = false;
++        if (keep_mode != 0 && keep_copy) {
++            g_keep_copy.kept_by_desync_fix.fetch_add(1, std::memory_order_relaxed);
++            g_keep_copy.differing.fetch_add(1, std::memory_order_relaxed);
++        } else if (keep_switch) {
++            const KeepCopyCase why =
++                verdict == RefreshVerdict::Unwritten ? KeepCopyCase::Unwritten
++                : copy_walk.dropped != 0             ? KeepCopyCase::CopyBroken
++                : keep_mode == 3 && suspended_copy   ? KeepCopyCase::DuringSuspend
++                                                     : KeepCopyCase::Kept;
++            NoteKeepCopy(why, verdict == RefreshVerdict::DataOnly, true, keep_tally,
++                         u64{entry.addr}, size, start, submitted, memory, copy_walk, memory_walk);
++            if (why == KeepCopyCase::Kept) {
++                if (keep_act) {
++                    keep_copy = true;
++                    ++check->keep_copy_kept;
++                } else {
++                    ++check->keep_copy_would;
++                    would_by_switch = true;
++                }
++            }
++        }
++        const bool kept_by_switch = keep_switch && keep_copy;
++        const char* const verdict_name =
++            kept_by_switch    ? "kept the submit copy (EDEN_UP_RESUME_KEEP_COPY)"
++            : would_by_switch ? "took memory (EDEN_UP_RESUME_KEEP_COPY=1 would keep the copy)"
++                              : RefreshVerdictName(verdict);
+         check->carry = keep_copy ? copy_walk.end : memory_walk.end;
+         if (suspended_copy) {
+             ++check->suspended_judged;
+@@ -1840,7 +2214,7 @@ void DmaPusher::RefreshSnapshot(CommandList& list, u64 now, RefreshCheck* check,
+                         suspended_copy ? "during" : "before", differing, copy_walk.header_diffs,
+                         copy_walk.headers, memory_walk.header_diffs, memory_walk.headers,
+                         copy_walk.dropped, memory_walk.dropped, copy_walk.end, memory_walk.end,
+-                        next_adjacent, RefreshVerdictName(verdict), word(submitted, start),
++                        next_adjacent, verdict_name, word(submitted, start),
+                         word(submitted, start + 1), word(submitted, start + 2),
+                         word(submitted, start + 3), word(memory, start), word(memory, start + 1),
+                         word(memory, start + 2), word(memory, start + 3));
+@@ -1850,6 +2224,11 @@ void DmaPusher::RefreshSnapshot(CommandList& list, u64 now, RefreshCheck* check,
+         }
+     }
+     list.deferred_entries.clear();
++    if (keep_mode != 0) {
++        ReportKeepCopyAction(keep_mode, check != nullptr, suspended_copy, list.command_lists.size(),
++                             keep_tally);
++        ReportKeepCopyWindow(keep_mode);
++    }
+ }
+ 
+ void DmaPusher::ReportRefreshCheck(const RefreshCheck& check) const {
+@@ -1873,6 +2252,13 @@ void DmaPusher::ReportRefreshCheck(const RefreshCheck& check) const {
+             ? fmt::format("{} of {} (first {} words into list +{})", check.list_starts_open,
+                           check.list_starts, check.list_open_carry, check.list_open_list)
+             : fmt::format("0 of {}", check.list_starts);
++    // EDEN_UP_RESUME_KEEP_COPY: empty unless it judged this resume (the line as before then).
++    const std::string keep_copy =
++        check.keep_copy_kept + check.keep_copy_would != 0
++            ? fmt::format("; EDEN_UP_RESUME_KEEP_COPY {} {} of them",
++                          check.keep_copy_kept != 0 ? "kept the submit copy of" : "would keep",
++                          check.keep_copy_kept + check.keep_copy_would)
++            : std::string{};
+     LOG_WARNING(HW_GPU,
+                 "Refresh check {}: resume at entry {} word {} with {} words wanted, {} lists, fix "
+                 "{}: {} entries differ: {} data only, {} kept (reshaped), {} kept (rest of the "
+@@ -1881,7 +2267,7 @@ void DmaPusher::ReportRefreshCheck(const RefreshCheck& check) const {
+                 "copied during the suspension: {} judged, {} kept, {} would keep but took memory; "
+                 "carry restarted at 0: {}; later lists entered with a method open: {}; first {}; "
+                 "later queued list on the first reshaped: {}; "
+-                "carry into an injected list: {}; carry at the end: {}",
++                "carry into an injected list: {}; carry at the end: {}{}",
+                 check.event, dma_pushbuffer_subindex, command_resume_offset,
+                 dma_state.method_count, check.list_index,
+                 !check.fix ? "off" : check.fix_suspended ? "on" : "on (=2)", check.differing,
+@@ -1890,7 +2276,8 @@ void DmaPusher::ReportRefreshCheck(const RefreshCheck& check) const {
+                 check.unchecked_carry, check.unchecked_deferred, check.unchecked_gpu,
+                 check.suspended_judged, check.suspended_kept, check.suspended_memory, restarts,
+                 list_open, check.first_change,
+-                check.later_list.empty() ? std::string{"-"} : check.later_list, injected, end);
++                check.later_list.empty() ? std::string{"-"} : check.later_list, injected, end,
++                keep_copy);
+ }
+ 
+ std::string DmaPusher::LaterListOverlapping(const CommandList& list, GPUVAddr address,
+diff --git a/src/video_core/dma_pusher.h b/src/video_core/dma_pusher.h
+index 934634a..9e314f7 100644
+--- a/src/video_core/dma_pusher.h
++++ b/src/video_core/dma_pusher.h
+@@ -272,12 +272,15 @@ public:
+         u32 unjudged_details = 0; ///< Of those, lines for unjudged entries
+         u32 injected_carry = 0;   ///< First nonzero carry into an injected list (eats its words)
+         u32 injected_list = 0;    ///< That list's index
++        u32 keep_copy_kept = 0;   ///< EDEN_UP_RESUME_KEEP_COPY=2/3: kept the copy (else memory)
++        u32 keep_copy_would = 0;  ///< EDEN_UP_RESUME_KEEP_COPY=1: would keep, took memory
+         std::string first_change; ///< The first differing entry
+         std::string later_list;   ///< A later queued list on the first reshaped entry's words
+     };
+     /// Copies the list's words from memory again, as of suspension count `now`. With `check` (a
+     /// resume, Step), also judges each entry from `first_entry`/`first_word` on whose memory
+-    /// differs from its copy (DmaPusher.cpp, RefreshSnapshot). Without (Push): as T63.
++    /// differs from its copy (DmaPusher.cpp, RefreshSnapshot). Without (Push): as T63, unless
++    /// EDEN_UP_RESUME_KEEP_COPY judges it (the hand-over refresh).
+     void RefreshSnapshot(CommandList& list, u64 now, RefreshCheck* check = nullptr,
+                          size_t first_entry = 0, size_t first_word = 0);
+     /// Copies the list's deferred entries (CommandList::deferred_entries) from memory.
+@@ -291,6 +294,12 @@ public:
+     bool DesyncFixActive() const;
+     /// The switch's value: 0 (off: unset or anything but exact "1" or "2"), 1 or 2.
+     static int DesyncFixMode();
++    /// EDEN_UP_RESUME_KEEP_COPY (DmaPusher.cpp, ResumeKeepCopyMode): its value where it may act
++    /// (Ocarina of Time on Switch 2, refreshes on, no parser switch its walk doesn't model), else
++    /// 0. 1 counts only; 2 keeps a clean submit copy at every refresh; 3 the same except lists
++    /// copied during a suspension.
++    int ResumeKeepCopyActing() const;
++    mutable int keep_copy_title = -1; ///< ResumeKeepCopyActing: -1 not known yet, 0 no, 1 yes
+     std::vector<CommandHeader> refresh_scratch; ///< RefreshSnapshot: one entry's words in memory
+     /// The queued list and entry, after `list`, whose words overlap [address, address + bytes):
+     /// for the refresh log only.

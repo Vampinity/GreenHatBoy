@@ -1,0 +1,331 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: GC write-back skip, the collector leaves an image whose write-back would grow the swizzle scratch (EDEN_UP_GC_WRITEBACK_SKIP)
+
+DRAFT, not built. Our own work (gc-scratch job), after waveydude's two GPUBack std::bad_alloc
+deaths (32 MiB new[] in SwizzleImage under RunGarbageCollector). Gated by
+EDEN_UP_GC_WRITEBACK_SKIP (exact 1, live, Id GcWritebackSkip, not armed); off by default. On: a
+collector candidate (and RefusalDownloadEvict's choice) whose block-linear write-back is split and
+larger than the scratch (and at least 256 KiB) stays for now, still GPU-written and registered.
+EDEN_UP_GC_WRITEBACK_SKIP_VERIFY=1 (boot) only checks the prediction. EDEN_TEST_GC_WRITEBACK_STARVE=1
+(boot, test aid) runs the write-back in the front's heap wait scope. 10 s line while on:
+"EDEN_UP_GC_WRITEBACK_SKIP:". Needs the front change in headless/vulkan_gc_downloads.inc (same
+commit): the Vulkan prefetch skips the same images.
+
+Reviewed draft (verdict "ready with corrections"): gc-writeback-skip.v2.patch + .front.v2.patch.
+One change to + lines, asked for: WritebackBandsCover's stub body (return false) is replaced by
+the body the review gives (fault 4), 0565's TrySwizzleLayerInBands refusals that do not depend on
+the guest range, so with both switches on the bands take what they can. live_switch.h re-anchored
+after AheadGuardHeldAgeVerify; util.h/util.cpp re-anchored after 0565; all other +/- lines
+byte-identical to the v2.
+---
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+index 3185151..ba611c2 100644
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -202,6 +202,9 @@ enum class Id : u8 {
+     /// EDEN_UP_AHEAD_GUARD_HELD_AGE_VERIFY. Log only: counts what the switch above would apply
+     /// early at each gather, and applies as before.
+     AheadGuardHeldAgeVerify,
++    /// EDEN_UP_GC_WRITEBACK_SKIP. Each collector visit decides for its own image whether its
++    /// write-back would grow the swizzle scratch; a skipped image keeps its contents and flags.
++    GcWritebackSkip,
+     Count,
+ };
+ 
+@@ -330,6 +333,7 @@ inline constexpr std::array<Def, NumSwitches> kDefs{{
+     {"EDEN_UP_AHEAD_READ_SYNC", ParseExactOne, false, -1},
+     {"EDEN_UP_AHEAD_GUARD_HELD_AGE", ParseExactOne, false, -1},
+     {"EDEN_UP_AHEAD_GUARD_HELD_AGE_VERIFY", ParseExactOne, false, -1},
++    {"EDEN_UP_GC_WRITEBACK_SKIP", ParseExactOne, false, -1},
+ }};
+ 
+ static_assert(kDefs[static_cast<size_t>(Id::PollBackoffUs)].needs ==
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 9f85ba2..dbafe28 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -357,6 +357,11 @@ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManag
+     sampler_descriptor.mipmap_filter.Assign(Tegra::Texture::TextureMipmapFilter::Linear);
+     sampler_descriptor.cubemap_anisotropy.Assign(1);
+ 
++    // EDEN_UP_GC_WRITEBACK_SKIP: the collectors Peek the switch, so read it once here.
++    static_cast<void>(Common::LiveSwitch::Value<Common::LiveSwitch::Id::GcWritebackSkip>());
++    gc_writeback_verify = Common::PeSwitch("EDEN_UP_GC_WRITEBACK_SKIP_VERIFY");
++    gc_writeback_starve_test = Common::PeSwitch("EDEN_TEST_GC_WRITEBACK_STARVE");
++
+     // These values were chosen based on typical peak swizzle data sizes seen in some titles
+     constexpr size_t SWIZZLE_DATA_BUFFER_INITIAL_CAPACITY = 8_MiB;
+     constexpr size_t UNSWIZZLE_DATA_BUFFER_INITIAL_CAPACITY = 1_MiB;
+@@ -519,6 +524,28 @@ void TextureCache<P>::RunGarbageCollector() {
+             (!high_priority_mode && must_download)) {
+             return false;
+         }
++        // EDEN_UP_GC_WRITEBACK_SKIP=1: an image whose write-back would grow the swizzle scratch
++        // (SwizzleImage's operator new[], the 32 MiB bad_alloc on GPUBack) stays for now, before
++        // anything of it changed: still GPU-written, tracked and registered, and the guest's reads
++        // still get it. The pass goes on to the next image. _VERIFY=1 only checks the prediction.
++        bool writeback_checked = false;
++        bool writeback_predicted = false;
++        size_t writeback_capacity = 0;
++        if (must_download &&
++            (Common::LiveSwitch::Peek<Common::LiveSwitch::Id::GcWritebackSkip>() != 0 ||
++             gc_writeback_verify)) [[unlikely]] {
++            writeback_checked = true;
++            writeback_capacity = swizzle_data_buffer.capacity();
++            writeback_predicted = WritebackNeedsHeap(*gpu_memory, image.gpu_addr, image.info,
++                                                     writeback_capacity);
++            if (writeback_predicted && !gc_writeback_verify) {
++                ++gc_writeback_skips;
++                return false;
++            }
++        }
++        // EDEN_TEST_GC_WRITEBACK_STARVE=1 (test aid): the write-back below, up to End(), runs in
++        // the front's heap wait scope, where EDEN_TEST_HEAP_STARVE_GPU=1 refuses requests.
++        GcWritebackStarveScope writeback_starve{must_download && gc_writeback_starve_test};
+         if (must_download) {
+             // EDEN_UP_GC_ONE_WAIT: this frame's wait is spent; the image stays, nothing is lost.
+             if (WaitHeld()) {
+@@ -533,6 +560,21 @@ void TextureCache<P>::RunGarbageCollector() {
+             ++gc_download_deletes;
+             Waited();
+         }
++        if (writeback_checked) [[unlikely]] {
++            // Here the image was written back, by the lines above or (Vulkan port) from its
++            // prefetched copy; a refused staging buffer returned before this.
++            ++gc_writeback_done;
++            if (gc_writeback_verify) {
++                // A growth to below WritebackSmallGrowthBytes is not "needs heap" (util.h).
++                const size_t capacity = swizzle_data_buffer.capacity();
++                const bool grew =
++                    capacity > writeback_capacity && capacity >= WritebackSmallGrowthBytes;
++                gc_writeback_predicted += writeback_predicted ? 1 : 0;
++                gc_writeback_grew += grew ? 1 : 0;
++                gc_writeback_mispredicts += grew != writeback_predicted ? 1 : 0;
++            }
++        }
++        writeback_starve.End();
+         // EDEN_UP_NO_STALE_UPLOAD. Kept apart from the download above: the Vulkan port
+         // (prepare-vulkan-port.py) also writes such an image back from a prefetched copy.
+         if (!must_download) {
+@@ -1513,6 +1555,16 @@ void TextureCache<P>::RefusalDownloadEvict() {
+         if (size > MaxImageBytes || chosen_bytes + size > MaxBytes) {
+             return false;
+         }
++        // EDEN_UP_GC_WRITEBACK_SKIP=1: not one whose write-back would grow the swizzle scratch.
++        // The scratch does not shrink before the swizzles below, so none of the chosen grows it
++        // by a large request (util.h WritebackSmallGrowthBytes).
++        if (Common::LiveSwitch::Peek<Common::LiveSwitch::Id::GcWritebackSkip>() != 0 &&
++            !gc_writeback_verify &&
++            WritebackNeedsHeap(*gpu_memory, image.gpu_addr, image.info,
++                               swizzle_data_buffer.capacity())) [[unlikely]] {
++            ++gc_writeback_refusal_skips;
++            return false;
++        }
+         chosen.push_back(image_id);
+         chosen_bytes += size;
+         return chosen.size() == MaxImages;
+@@ -1932,6 +1984,27 @@ void TextureCache<P>::TickFrame() {
+         HitchTrace::Op collector_trace{HitchTrace::Kind::Collector, total_used_memory, {}};
+         RunGarbageCollector();
+     }
++    if (Common::LiveSwitch::Peek<Common::LiveSwitch::Id::GcWritebackSkip>() != 0 ||
++        gc_writeback_verify) [[unlikely]] {
++        // EDEN_UP_GC_WRITEBACK_SKIP: skipped = images left because their write-back needed heap;
++        // written_back = write-backs the collector made with the check on. VERIFY: predicted
++        // must equal grew, and mispredict stay 0.
++        const auto now = std::chrono::steady_clock::now();
++        if (now - gc_writeback_log_time >= std::chrono::seconds{10}) {
++            gc_writeback_log_time = now;
++            LOG_INFO(HW_GPU,
++                     "EDEN_UP_GC_WRITEBACK_SKIP: skipped={} (since last {}) refusal_skipped={} "
++                     "written_back={} (since last {}) scratch={} KiB verify={} predicted={} "
++                     "grew={} mispredict={}",
++                     gc_writeback_skips, gc_writeback_skips - gc_writeback_skip_logged,
++                     gc_writeback_refusal_skips, gc_writeback_done,
++                     gc_writeback_done - gc_writeback_done_logged,
++                     swizzle_data_buffer.capacity() >> 10, gc_writeback_verify ? 1 : 0,
++                     gc_writeback_predicted, gc_writeback_grew, gc_writeback_mispredicts);
++            gc_writeback_skip_logged = gc_writeback_skips;
++            gc_writeback_done_logged = gc_writeback_done;
++        }
++    }
+     if (refused_views && std::chrono::steady_clock::now() >= image_refused_until) {
+         refused_views = false;
+         for (size_t id : active_channel_ids) {
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index d68840b..3de1a4d 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -195,6 +195,18 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
+     u64 gc_waited_frames{};      ///< EDEN_UP_GC_ONE_WAIT: frames with a collector wait
+     u64 gc_extra_waits{};        ///< EDEN_UP_GC_ONE_WAIT: waits past the first (pool short)
+     u64 gc_waited_frame{~0ULL};  ///< EDEN_UP_GC_ONE_WAIT: the frame of the collector's last wait
++    // EDEN_UP_GC_WRITEBACK_SKIP (GPUBack, under mutex; never reset, the log shows the differences).
++    bool gc_writeback_verify{};       ///< EDEN_UP_GC_WRITEBACK_SKIP_VERIFY=1, set in the constructor
++    bool gc_writeback_starve_test{};  ///< EDEN_TEST_GC_WRITEBACK_STARVE=1, set in the constructor
++    u64 gc_writeback_skips{};         ///< Collector images left because their write-back needs heap
++    u64 gc_writeback_skip_logged{};   ///< gc_writeback_skips at the last log line
++    u64 gc_writeback_refusal_skips{}; ///< The same, in RefusalDownloadEvict's choice
++    u64 gc_writeback_done{};          ///< Collector write-backs made with the check on
++    u64 gc_writeback_done_logged{};   ///< gc_writeback_done at the last log line
++    u64 gc_writeback_predicted{};     ///< VERIFY: write-backs the check said need heap
++    u64 gc_writeback_grew{};          ///< VERIFY: write-backs that grew the swizzle scratch
++    u64 gc_writeback_mispredicts{};   ///< VERIFY: predicted != grew
++    std::chrono::steady_clock::time_point gc_writeback_log_time{};
+     u64 async_decodes_queued{};
+     u64 images_created{};
+     u64 area_images_created{};  ///< Images created since the start (AreaEvict; never reset)
+diff --git a/src/video_core/texture_cache/util.cpp b/src/video_core/texture_cache/util.cpp
+index 20fc5c0..7e2869e 100644
+--- a/src/video_core/texture_cache/util.cpp
++++ b/src/video_core/texture_cache/util.cpp
+@@ -50,6 +50,10 @@
+ // EDEN_TEST_HEAP_STARVE with EDEN_TEST_HEAP_STARVE_GPU=1 refuses inside a texture write-back.
+ extern "C" void eden_heap_wait_scope(int enter) __attribute__((weak));
+ 
++// The front's heap wait scope (headless/heap_arenas.inc), the weak hook vk_pipeline_cache.cpp's
++// HeapWaitScope uses. Here only EDEN_TEST_GC_WRITEBACK_STARVE=1 calls it (GcWritebackStarveScope).
++extern "C" void eden_heap_wait_scope(int enter) __attribute__((weak));
++
+ namespace VideoCommon {
+ 
+ namespace {
+@@ -2038,6 +2042,85 @@ void SwizzleImage(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr, const Ima
+     }
+ }
+ 
++bool WritebackBandsCover([[maybe_unused]] const ImageInfo& info, [[maybe_unused]] s32 level,
++                         [[maybe_unused]] size_t subresource_size) {
++    // EDEN_UP_WRITEBACK_BANDS (0565): TrySwizzleLayerInBands' own refusals that do not depend on
++    // the guest range, so WritebackNeedsHeap leaves to the bands every level they would take
++    // through the kept buffer. A guest-thread DownloadMemory holding the buffer (g_band_busy)
++    // can still send such a write-back to the old path after this said yes: today's behaviour.
++    if (Common::LiveSwitch::Peek<Common::LiveSwitch::Id::WritebackBands>() == 0 ||
++        g_band_cap == 0) {
++        return false;
++    }
++    const LevelInfo level_info = MakeLevelInfo(info);
++    const Extent2D tile_size = DefaultBlockSize(info.format);
++    const u32 bytes_per_block = BytesPerBlock(info.format);
++    const Extent3D level_size = AdjustMipSize(info.size, level);
++    const Extent3D num_tiles = AdjustTileSize(level_size, tile_size);
++    const Extent3D block =
++        AdjustMipBlockSize(num_tiles, level_info.block, level, level_info.num_levels);
++    if (num_tiles.depth != 1 || block.depth != 0) {
++        return false;
++    }
++    // The same arithmetic as TrySwizzleLayerInBands (SwizzleImpl's block_size, stride_alignment 1).
++    const u32 stride = Common::AlignUpLog2(num_tiles.width, 1) * bytes_per_block;
++    const u64 row_bytes = u64{Common::DivCeilLog2(stride, GOB_SIZE_X_SHIFT)}
++                          << (GOB_SIZE_SHIFT + block.height);
++    const u32 rows = Common::DivCeilLog2(num_tiles.height, block.height + GOB_SIZE_Y_SHIFT);
++    const u64 footprint = u64{rows} * row_bytes;
++    return row_bytes != 0 && rows != 0 && footprint <= subresource_size && row_bytes <= g_band_cap;
++}
++
++bool WritebackNeedsHeap(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr, const ImageInfo& info,
++                        size_t scratch_capacity) {
++    if (info.type == ImageType::Linear) {
++        return false; // SwizzlePitchLinearImage writes line by line, with no scratch
++    }
++    // The geometry SwizzleBlockLinearImage uses, written out again so that function stays as it
++    // was: per level, the same offset, layer stride and subresource size, every layer.
++    const Extent3D size = info.size;
++    const LevelInfo level_info = MakeLevelInfo(info);
++    const Extent2D tile_size = DefaultBlockSize(info.format);
++    const u32 num_levels = info.resources.levels;
++    const std::array sizes = CalculateLevelSizes(level_info, num_levels);
++    const size_t layer_stride =
++        AlignLayerSize(CalculateLevelBytes(sizes, num_levels), size, level_info.block,
++                       tile_size.height, info.tile_width_spacing);
++    for (s32 level = 0; level < info.resources.levels; ++level) {
++        const size_t subresource_size = sizes[level];
++        // GuestMemory::Read grows the scratch only when the range is no host span and the
++        // size is above the capacity (ScratchBuffer::resize_destructive); size 0 reads nothing.
++        // A growth below WritebackSmallGrowthBytes is a small request (the heap's small path)
++        // and is allowed: after a scratch release (capacity 0) every split write-back would
++        // otherwise be left, however small.
++        if (subresource_size == 0 || subresource_size <= scratch_capacity ||
++            subresource_size < WritebackSmallGrowthBytes ||
++            WritebackBandsCover(info, level, subresource_size)) {
++            continue;
++        }
++        size_t guest_offset = CalculateLevelBytes(sizes, level);
++        for (s32 layer = 0; layer < info.resources.layers; ++layer) {
++            if (gpu_memory.GetSpan(gpu_addr + guest_offset, subresource_size) == nullptr) {
++                return true;
++            }
++            guest_offset += layer_stride;
++        }
++    }
++    return false;
++}
++
++bool GcWritebackStarveScope::Enter() noexcept {
++    if (!eden_heap_wait_scope) {
++        return false; // not on the console's heap: nothing to enter
++    }
++    eden_heap_wait_scope(1);
++    return true;
++}
++
++void GcWritebackStarveScope::Leave() noexcept {
++    eden_heap_wait_scope(0);
++}
++
+ bool IsBlockLinearSizeCompatible(const ImageInfo& lhs, const ImageInfo& rhs, u32 lhs_level,
+                                  u32 rhs_level, bool strict_size) noexcept {
+     ASSERT(lhs.type != ImageType::Linear);
+diff --git a/src/video_core/texture_cache/util.h b/src/video_core/texture_cache/util.h
+index 0251255..53fed26 100644
+--- a/src/video_core/texture_cache/util.h
++++ b/src/video_core/texture_cache/util.h
+@@ -163,6 +163,48 @@ void ArmWritebackBands();
+ /// EDEN_UP_WRITEBACK_BANDS: one log line every 10 s with its counters. TickFrame, switch on.
+ void LogWritebackBands();
+ 
++/// EDEN_UP_WRITEBACK_BANDS: whether its banded write-back takes this level's subresource through
++/// the kept buffer, with no growth of the scratch. Without that patch: false.
++[[nodiscard]] bool WritebackBandsCover(const ImageInfo& info, s32 level, size_t subresource_size);
++
++/// EDEN_UP_GC_WRITEBACK_SKIP: whether SwizzleImage of the whole image (FullDownloadCopies) would
++/// grow a scratch of scratch_capacity bytes: some block-linear subresource is not one host span,
++/// is larger than the scratch, and the band path does not take it. Reads the page tables only.
++[[nodiscard]] bool WritebackNeedsHeap(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr,
++                                      const ImageInfo& info, size_t scratch_capacity);
++
++/// EDEN_UP_GC_WRITEBACK_SKIP: a scratch growth below this many bytes does not count as needing
++/// heap. It is the console heap's small-request size (headless/heap_arenas.inc
++/// EDEN_HEAP_SMALL_REQUEST), the size from which EDEN_TEST_HEAP_STARVE refuses.
++inline constexpr size_t WritebackSmallGrowthBytes = size_t{256} << 10;
++
++/// EDEN_TEST_GC_WRITEBACK_STARVE=1 (a test aid, read at boot, never in a play env): the
++/// collector's write-back runs inside the front's heap wait scope, so EDEN_TEST_HEAP_STARVE with
++/// EDEN_TEST_HEAP_STARVE_GPU=1 refuses its requests of 256 KiB or more. Off (or not on the
++/// console's heap): nothing is called. Lives on the stack of the thread that writes back.
++class GcWritebackStarveScope {
++public:
++    explicit GcWritebackStarveScope(bool on_) noexcept : on{on_ && Enter()} {}
++    ~GcWritebackStarveScope() {
++        End();
++    }
++    GcWritebackStarveScope(const GcWritebackStarveScope&) = delete;
++    GcWritebackStarveScope& operator=(const GcWritebackStarveScope&) = delete;
++
++    void End() noexcept {
++        if (on) {
++            Leave();
++            on = false;
++        }
++    }
++
++private:
++    static bool Enter() noexcept;
++    static void Leave() noexcept;
++
++    bool on;
++};
++
+ [[nodiscard]] bool IsBlockLinearSizeCompatible(const ImageInfo& new_info,
+                                                const ImageInfo& overlap_info, u32 new_level,
+                                                u32 overlap_level, bool strict_size) noexcept;

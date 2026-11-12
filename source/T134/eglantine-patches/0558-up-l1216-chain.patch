@@ -1,0 +1,164 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: L1216 chain, dynamic strides and back macro calls keep draw reuse (EDEN_UP_L1216_CHAIN)
+
+DRAFT, not built. Ports the final commit of zortos293/Lichii PR #1216 (@sanchodecuba11-del), on
+0557. Gated by EDEN_UP_L1216_CHAIN (exact 1), a live switch (Id L1216Chain, not armed); off by
+default. Does something only with EDEN_UP_L974_CHAIN=1 and EDEN_UP_FAST_DRAW=1. The stride/enable
+word (when vertex input is dynamic state) and the render enable addresses become draw
+parameters; both are already exempt under 0441 with EDEN_UP_FAST_DRAW_OOT_EXEMPT=1. A back macro
+call (EDEN_UP_L1056_BACK_MACROS=1) is sent FastDrawNeutral when DmaReadCallIsNeutral(). Our 0485
+DeferWords already carries the flags.
+
+Reviewed draft from job J, v2: reviewer re-anchored the live_switch.h hunks, gated the back macro
+flag with DmaReadCallIsNeutral(), added a fast draw break in macro.cpp before the inline DMA
+read flushes GPU-written memory for a split_writes macro (the draft let handle words change with
+no break), and fixed comment placement in nx2_fast_draw.h and vk_pipeline_cache.h.
+---
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+index 010dacc..1eb6329 100644
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -166,6 +166,9 @@ enum class Id : u8 {
+     /// EDEN_UP_L974_CHAIN. Each "does this end reuse" answer stands alone; a report decided
+     /// neutral records its destination in the same ProcessMethodCall.
+     L974Chain,
++    /// EDEN_UP_L1216_CHAIN (does something only with EDEN_UP_L974_CHAIN on). Method answers stand
++    /// alone; a back macro call's neutral flag is taken when the front sends it.
++    L1216Chain,
+     Count,
+ };
+ 
+@@ -284,6 +287,7 @@ inline constexpr std::array<Def, NumSwitches> kDefs{{
+     {"EDEN_NX2_TABLES_SPEED", ParseExactOne, false, -1},
+     {"EDEN_NX2_RANGE_PREFIX", ParseLeadingOne, false, -1},
+     {"EDEN_UP_L974_CHAIN", ParseExactOne, false, -1},
++    {"EDEN_UP_L1216_CHAIN", ParseExactOne, false, -1},
+ }};
+ 
+ static_assert(kDefs[static_cast<size_t>(Id::PollBackoffUs)].needs ==
+diff --git a/src/video_core/engines/maxwell_3d.cpp b/src/video_core/engines/maxwell_3d.cpp
+index 07f4faf..572f28d 100644
+--- a/src/video_core/engines/maxwell_3d.cpp
++++ b/src/video_core/engines/maxwell_3d.cpp
+@@ -68,6 +68,7 @@ Maxwell3D::Maxwell3D(MemoryManager& memory_manager_)
+     VideoCommon::Nx2FastDraw::g_chain_diagnostics.store(
+         VideoCommon::Nx2FastDraw::VerifyEnabled() || VideoCommon::Nx2Profile::Enabled(),
+         std::memory_order_relaxed);
++    static_cast<void>(Common::LiveSwitch::Value<Common::LiveSwitch::Id::L1216Chain>());
+     dirty.flags.flip();
+     InitializeRegisterDefaults();
+     reports_fast_draw_breaks = true;
+@@ -481,6 +482,11 @@ bool Maxwell3D::IsL974DrawParameter(u32 method) {
+     if (!VideoCommon::Nx2FastDraw::L974ChainEnabled()) {
+         return false;
+     }
++    if (VideoCommon::Nx2FastDraw::L1216ChainEnabled() &&
++        (method == MAXWELL3D_REG_INDEX(render_enable.address_high) ||
++         method == MAXWELL3D_REG_INDEX(render_enable.address_low))) {
++        return true; // only render_enable.mode reads them
++    }
+     // MME memory A/B and data RAM address, only while macros run on the split's front (as
+     // 0446's QUERY_LIGHT rule): a macro run inline on the back (no split, EDEN_NX2_SPLIT=1 with
+     // EDEN_NX2_MME_JIT=0) flushes GPU-written memory in its DMA read (macro.cpp) with no break of
+@@ -524,6 +530,10 @@ bool Maxwell3D::IsFastDrawVertexBuffer(u32 method) {
+     constexpr u32 stream_words = sizeof(Regs::VertexStream) / sizeof(u32);
+     if (method >= streams && method < streams + Regs::NumVertexArrays * stream_words) {
+         const u32 word = (method - streams) % stream_words;
++        if (word == 0 && VideoCommon::Nx2FastDraw::L1216ChainEnabled() &&
++            VideoCommon::Nx2FastDraw::L974ChainEnabled()) {
++            return VideoCommon::Nx2FastDraw::g_vertex_formats_dynamic.load(std::memory_order_relaxed);
++        }
+         return word == 1 || word == 2; // address_high, address_low
+     }
+     constexpr u32 sizes = 0x600 / sizeof(u32); // SET_VERTEX_STREAM_SIZE_A/B (NativeVertexStreamSize)
+@@ -2452,7 +2462,13 @@ bool Maxwell3D::FrontRunOnBack(Core::System& system, VideoCommon::GpuSplit& spli
+                                          .count()));
+             }
+         },
+-        fs.parameters);
++        // Only the call is neutral. Macro methods and cache invalidations still break.
++        fs.parameters,
++        // As FrontDmaRead's calls: only with QUERY_LIGHT's plain DMA reads (no query sync or
++        // trace mode, which can write reports); the DMA read's flush breaks itself (macro.cpp).
++        VideoCommon::Nx2FastDraw::L974ChainEnabled() &&
++                VideoCommon::Nx2FastDraw::L1216ChainEnabled() && DmaReadCallIsNeutral()
++            ? VideoCommon::GpuSplit::FastDrawNeutral : 0);
+     const u64 position = split.SentPosition();
+     fs.back_last = position;
+     const bool tracked = fs.control == Regs::ShadowRamControl::Track ||
+diff --git a/src/video_core/macro.cpp b/src/video_core/macro.cpp
+index 6e3cc97..b6a9450 100644
+--- a/src/video_core/macro.cpp
++++ b/src/video_core/macro.cpp
+@@ -1559,6 +1559,15 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
+                     const bool dirty =
+                         memory.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache);
+                     if (dirty) {
++                        // EDEN_UP_L1216_CHAIN: a macro the split's back runs for the front
++                        // (split_writes, EDEN_UP_L1056_BACK_MACROS) may be a fast-draw-neutral
++                        // call: GPU-written data landing in guest memory ends reuse, as in
++                        // FrontDmaRead's neutral calls. Unconditional: the flag was taken when the
++                        // front sent the call; without it the call broke already, and such a
++                        // macro writes no draw method (BackWritable), so nothing else changes.
++                        if (split_writes != nullptr) {
++                            VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Call);
++                        }
+                         memory.FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
+                         static u64 flushes{};
+                         if (++flushes % 2000 == 1) {
+diff --git a/src/video_core/nx2_fast_draw.h b/src/video_core/nx2_fast_draw.h
+index 0681edc..0fe58d0 100644
+--- a/src/video_core/nx2_fast_draw.h
++++ b/src/video_core/nx2_fast_draw.h
+@@ -111,6 +111,11 @@ inline constexpr std::array<const char*, static_cast<size_t>(Reason::Count)> rea
+     return Common::LiveSwitch::Peek<Common::LiveSwitch::Id::L974Chain>() != 0;
+ }
+ 
++/// EDEN_UP_L1216_CHAIN, read first by Maxwell3D's constructor (Value): one relaxed load (Peek).
++[[nodiscard]] inline bool L1216ChainEnabled() noexcept {
++    return Common::LiveSwitch::Peek<Common::LiveSwitch::Id::L1216Chain>() != 0;
++}
++
+ /// EDEN_UP_L949_UBO_KEEP=1 with EDEN_UP_FAST_DRAW=1 (zortos293/Lichii #949: 6b38851501 and
+ /// 3e86407514, zortos293): a delta draw binds a small streamed uniform buffer from the stream
+ /// allocation the previous draw made for the same stage, slot, address and size in the same
+@@ -152,6 +157,10 @@ inline constexpr std::array<const char*, static_cast<size_t>(Reason::Count)> rea
+ /// Vulkan rasterizer (PipelineCache::StridesOutsideKey). Until then, and on other renderers, a
+ /// stride change ends reuse with EDEN_UP_FAST_DRAW_OOT_EXEMPT too.
+ inline std::atomic<bool> g_strides_outside_key{false};
++/// EDEN_UP_L1216_CHAIN: whether the host binds vertex input (strides, formats) as dynamic state:
++/// extended dynamic state and dynamic vertex input (PipelineCache::VertexFormatsDynamic), set
++/// once by the Vulkan rasterizer. A subset of g_strides_outside_key.
++inline std::atomic<bool> g_vertex_formats_dynamic{false};
+ 
+ inline std::atomic<u64> g_serial{1};
+ /// The last break's reason and, for Register and Method, its 3D method (diagnostics).
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.h b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+index cf81e1c..ac73499 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.h
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+@@ -151,6 +151,11 @@ public:
+         return last_compute_hash;
+     }
+ 
++    /// EDEN_UP_L1216_CHAIN / EDEN_UP_L1161_DRAW: extended dynamic state and dynamic vertex input.
++    [[nodiscard]] bool VertexFormatsDynamic() const noexcept {
++        return dynamic_features.has_extended_dynamic_state && dynamic_features.has_dynamic_vertex_input;
++    }
++
+     /// Whether vertex stream strides (and enables) stay out of graphics pipeline keys: extended
+     /// dynamic state and no static vertex repack, as BuildCleanWatch decides (EDEN_UP_FAST_DRAW).
+     [[nodiscard]] bool StridesOutsideKey() const noexcept {
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 54c44ce..3598334 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -264,6 +264,8 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
+       fence_manager(*this, gpu, texture_cache, buffer_cache, query_cache, device, scheduler),
+       wfi_event(device.GetLogical().CreateEvent()) {
+     scheduler.SetQueryCache(query_cache);
++    VideoCommon::Nx2FastDraw::g_vertex_formats_dynamic.store(pipeline_cache.VertexFormatsDynamic(),
++                                                            std::memory_order_relaxed);
+     VideoCommon::Nx2FastDraw::g_strides_outside_key.store(pipeline_cache.StridesOutsideKey(),
+                                                           std::memory_order_relaxed);
+     if (VideoCommon::Nx2FastDraw::OotExemptEnabled()) {

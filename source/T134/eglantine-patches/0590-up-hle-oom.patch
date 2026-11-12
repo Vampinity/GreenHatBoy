@@ -1,0 +1,653 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: HLE reply buffers kept per service thread, and a refused reply set-up retried once (EDEN_UP_HLE_REPLY_BUFFER, EDEN_UP_HLE_OOM_RETRY), off by default
+
+What: both warm first-start runs of 12 Nov (run1234, run1236, T130) ended a second after the house
+door opened, with std::bad_alloc on fsp-srv (the one file-service thread) in the reply wrapper's
+output buffer for one IStorage::Read (902,912 and 480,902 bytes): the heap had about 0.9 GiB free in
+pieces and could not grow. CmifReplyWrapImpl (cmif_serialization.h) makes three fresh ScratchBuffers
+for every request, so every request with an output buffer is one new[] of the game's buffer size.
+With EDEN_UP_HLE_REPLY_BUFFER=1 each service thread keeps three thread-local buffers and swaps them
+into the wrapper's own array for a request (a pointer swap, no copy), ReadInArgument and
+WriteOutArgument run unchanged on them, and the lease's destructor swaps them back after the reply
+is written (also on an exception). A kept buffer grows to the largest request its thread has seen
+and never shrinks; a request over the cap, or one that comes while the thread's buffers are in use
+further up the same thread (a core-3 service fiber), gets a one-off buffer as before. Only slots
+that are real output buffers are touched (compile-time OutBufferSlotMask); a command with no output
+buffer gets no lease. With EDEN_UP_HLE_OOM_RETRY=1 a std::bad_alloc in the wrapper's set-up only
+(the lease's Take and ReadInArgument, before the service's code runs and before the reply is
+written into the command buffer) is caught: the buffers that were to grow are freed, the heap
+trims (eden_heap_trim), the thread counts as a waiting request (eden_heap_want, front part:
+headless/heap_arenas.inc, so the caches see memory short and the texture collector evicts at its
+hardest) for the pause, and the set-up runs once more; refused again, the same exception is thrown
+on (the session ends as before). A refusal inside the service's own code is never caught.
+
+Switches (read once, at the first reply-wrapper request): EDEN_UP_HLE_REPLY_BUFFER=1 (exact "1");
+EDEN_UP_HLE_REPLY_BUFFER_CAP_MIB (1-64, unset 4); EDEN_UP_HLE_OOM_RETRY=1 (exact "1");
+EDEN_UP_HLE_OOM_RETRY_MS (0-2000, unset 200). Test aid, never in a play env:
+EDEN_TEST_HLE_ALLOC_FAIL=<n>[,<after_s>[,<service>]]: from <after_s> s after the read, the n-th
+output-buffer set-up that is about to allocate throws std::bad_alloc, once; <service> (its
+GetServiceName(), IStorage for the door's file read) limits the count to that service.
+Log (stderr, snprintf + fputs, no heap use): at the read "EDEN_UP_HLE_REPLY_BUFFER each service
+thread keeps its reply buffers (up to 4 MiB each) instead of a new one per request", "EDEN_UP_HLE_OOM_RETRY
+a refused reply set-up trims the heap, waits 200 ms with memory wanted, and runs once more",
+"EDEN_TEST_HLE_ALLOC_FAIL reply buffer allocation number N, counted from S s on (service X),
+throws std::bad_alloc (once)"; first act "EDEN_UP_HLE_REPLY_BUFFER acts: a reply of N bytes built
+in a kept buffer of M, no allocation"; first over-cap "... is over the 4 MiB cap: one-off buffer as
+before"; per caught refusal "EDEN_UP_HLE_OOM_RETRY <service> command <n> was refused memory before
+it ran (output buffers a/b/c bytes): the heap gave back X MiB, waiting N ms, then once more", then
+"EDEN_UP_HLE_OOM_RETRY served on the second try" or "... refused again: failing as before"; per
+test throw "EDEN_TEST_HLE_ALLOC_FAIL throws std::bad_alloc for a reply buffer of N bytes"; every
+10 s from a request while any is on "EDEN_UP_HLE_REPLY_BUFFER buffers= allocations_saved=
+allocated= grew= over_cap= nested= held_kib= threads= largest=" (or "EDEN_UP_HLE_REPLY_BUFFER off:
+buffers= allocated= largest="), "| EDEN_UP_HLE_OOM_RETRY caught= served= failed= gave_back_mib=",
+"| EDEN_TEST_HLE_ALLOC_FAIL counted= thrown=".
+
+Not in TranslationSwitches (no shader change).
+
+Cost when off: one check of a function-local static per reply-wrapper request (HleReply::Get().any)
+and one empty std::optional made and dropped for a command with an output buffer; ReadInArgument
+runs in an inlined lambda; no thread-local touched, no line, no try block (a refusal is thrown from
+where it is thrown today). The front function is never called unless the retry is on.
+
+Default flip (later, after the test-aid arms and the real door): core/hle/service/hle_reply_buffers.h
+ReadConfig(): "config.reuse = ExactOne("EDEN_UP_HLE_REPLY_BUFFER");" becomes on unless set to 0,
+the same for "config.retry = ExactOne("EDEN_UP_HLE_OOM_RETRY");". One line each.
+
+Risks: with reuse, bytes a service did not write reach the game as the previous reply's bytes on
+that thread instead of fresh-heap leftovers (both undefined; not the real console's behaviour
+either); kept buffers are held for good (per thread up to 3 x cap, held_kib); on a core-3 service
+fiber the retry's pause blocks every game thread on core 3; the retry may move the failure to the
+graphics side, which was also out of memory at that door. Unwinding from the PS5 operator new
+through the wrapper is unproven on the console (the real-door arm is the proof).
+
+Origin and credit: our own. Design precedent only (no code taken): the console's service framework
+as rebuilt by Atmosphere (libstratosphere) keeps one pointer buffer per session. Eden master and
+both Lichii nx2 forks have the same per-request buffers. Draft
+drafts-2026-11-11/ports-7/first-start/hle-oom/draft.v2.diff (the reviewed version: memory-wanted
+mark always taken back, the test aid's service field, one non-template Prepare), placed unchanged;
+front part draft-front.diff (eden_heap_want), placed unchanged in the same commit.
+---
+diff --git a/src/core/hle/service/cmif_serialization.h b/src/core/hle/service/cmif_serialization.h
+index acc63f0..d79586d 100644
+--- a/src/core/hle/service/cmif_serialization.h
++++ b/src/core/hle/service/cmif_serialization.h
+@@ -9,8 +9,11 @@
+ #include "common/div_ceil.h"
+ 
+ #include "core/hle/service/cmif_types.h"
++#include "core/hle/service/hle_reply_buffers.h"
+ #include "core/hle/service/ipc_helpers.h"
+ #include "core/hle/service/service.h"
++#include <optional>
++#include <type_traits>
+ #include <typeinfo>
+ 
+ namespace Service {
+@@ -244,6 +247,40 @@ constexpr RequestLayout GetReplyOutLayout(bool is_domain) {
+ }
+ 
+ using OutTemporaryBuffers = std::array<Common::ScratchBuffer<u8>, 3>;
++static_assert(std::is_same_v<OutTemporaryBuffers, HleReply::Slots>);
++
++// EDEN_UP_HLE_REPLY_BUFFER / EDEN_UP_HLE_OOM_RETRY / EDEN_TEST_HLE_ALLOC_FAIL (hle_reply_buffers.h):
++// the output-buffer slots of a command that ReadInArgument sizes (bit i: temp[i] is an OutBuffer).
++// Slots count OutLargeData and OutBuffer arguments, as ReadInArgument's OutBufferIndex does.
++template <typename MethodArguments, size_t ArgIndex = 0, size_t OutIndex = 0>
++constexpr u32 OutBufferSlotMask() {
++    if constexpr (ArgIndex >= std::tuple_size_v<MethodArguments>) {
++        return 0;
++    } else {
++        constexpr ArgumentType Type = ArgumentTraits<std::tuple_element_t<ArgIndex, MethodArguments>>::Type;
++        if constexpr (Type == ArgumentType::OutBuffer) {
++            return (OutIndex < 3 ? (1U << OutIndex) : 0U) | OutBufferSlotMask<MethodArguments, ArgIndex + 1, OutIndex + 1>();
++        } else if constexpr (Type == ArgumentType::OutLargeData) {
++            return OutBufferSlotMask<MethodArguments, ArgIndex + 1, OutIndex + 1>();
++        } else {
++            return OutBufferSlotMask<MethodArguments, ArgIndex + 1, OutIndex>();
++        }
++    }
++}
++
++// The size ReadInArgument gives each such slot (the same two calls it makes).
++inline HleReply::Sizes OutBufferGuestSizes(HLERequestContext& ctx, u32 mask) {
++    HleReply::Sizes sizes{};
++    for (size_t i = 0; i < sizes.size(); ++i) {
++        if ((mask & (1U << i)) != 0 && ctx.CanWriteBuffer(i)) {
++            sizes[i] = ctx.GetWriteBufferSize(i);
++        }
++    }
++    return sizes;
++}
++
++// Stands in for the lease of a command with no output buffer.
++struct NoReplyLease {};
+ 
+ template <typename MethodArguments, typename CallArguments, size_t PrevAlign = 1, size_t DataOffset = 0, size_t HandleIndex = 0, size_t InBufferIndex = 0, size_t OutBufferIndex = 0, bool RawDataFinished = false, size_t ArgIndex = 0>
+ void ReadInArgument(bool is_domain, CallArguments& args, const u8* raw_data, HLERequestContext& ctx, OutTemporaryBuffers& temp) {
+@@ -459,9 +496,31 @@ void CmifReplyWrapImpl(HLERequestContext& ctx, T& t, Result (T::*f)(A...)) {
+     OutTemporaryBuffers buffers{};
+     auto call_arguments = std::tuple<typename UnwrapArg<A>::Type...>();
+ 
++    // EDEN_UP_HLE_REPLY_BUFFER / EDEN_UP_HLE_OOM_RETRY / EDEN_TEST_HLE_ALLOC_FAIL (hle_reply_buffers.h).
++    // Declared after `buffers`, so it hands the thread's kept buffers back after the reply is written
++    // (WriteOutArgument, below) and before `buffers` goes. Unused while all three are off.
++    constexpr u32 out_mask = OutBufferSlotMask<MethodArguments>();
++    [[maybe_unused]] std::conditional_t<out_mask != 0, std::optional<HleReply::Lease>, NoReplyLease> lease;
++
+     // Read inputs.
+     const size_t offset_plus_command_id = ctx.GetDataPayloadOffset() + 2;
+-    ReadInArgument<MethodArguments>(is_domain, call_arguments, reinterpret_cast<u8*>(ctx.CommandBuffer() + offset_plus_command_id), ctx, buffers);
++    const auto read_inputs = [&] {
++        ReadInArgument<MethodArguments>(is_domain, call_arguments, reinterpret_cast<u8*>(ctx.CommandBuffer() + offset_plus_command_id), ctx, buffers);
++    };
++    if (HleReply::Get().any) [[unlikely]] {
++        // Only this set-up runs inside the retry: the call below has not started.
++        HleReply::Lease* held = nullptr;
++        HleReply::Sizes sizes{};
++        if constexpr (out_mask != 0) {
++            held = &lease.emplace(buffers, out_mask);
++            sizes = OutBufferGuestSizes(ctx, out_mask);
++        }
++        HleReply::Prepare(
++            held, sizes, [](void* inputs) { (*static_cast<decltype(read_inputs)*>(inputs))(); },
++            const_cast<void*>(static_cast<const void*>(&read_inputs)), t.GetServiceName(), u32(ctx.GetCommand()));
++    } else {
++        read_inputs();
++    }
+ 
+     // Call.
+     const auto Callable = [&]<typename... CallArgs>(CallArgs&... args) {
+diff --git a/src/core/hle/service/hle_reply_buffers.h b/src/core/hle/service/hle_reply_buffers.h
+new file mode 100644
+index 0000000..30c906c
+--- /dev/null
++++ b/src/core/hle/service/hle_reply_buffers.h
+@@ -0,0 +1,488 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++// The HLE reply wrapper's output buffers (cmif_serialization.h, CmifReplyWrapImpl), and what it does
++// when the heap refuses one. Three switches, all off unless set, all read once at the first request
++// that has an output buffer (the services start after main has applied env.txt and the game's env file):
++//
++// EDEN_UP_HLE_REPLY_BUFFER=1: each service thread keeps the buffers its replies were built in and
++//   builds the next reply in them, instead of a new one per request. A buffer grows to the largest
++//   request its thread has seen and never shrinks; a request over EDEN_UP_HLE_REPLY_BUFFER_CAP_MIB
++//   (1 to 64, unset 4) gets a one-off buffer as before, and so does a request that comes while its
++//   thread's buffers are already in use further up the same thread (never seen; counted as "nested").
++//   Why: both warm first-start runs of 12 Nov 2026 (run1234, run1236, T130) ended at the house door
++//   with std::bad_alloc on fsp-srv, the one file-service thread, in this wrapper's buffer for one
++//   IStorage::Read of 902,912 and 480,902 bytes: the heap held about 0.9 GiB free, but in pieces, and
++//   could not grow. Off, every request with an output buffer asks the heap for a new one; on, the file
++//   thread asks only when a read is larger than any before it.
++// EDEN_UP_HLE_OOM_RETRY=1: a std::bad_alloc while the wrapper reads a request's inputs and sets up its
++//   output buffers (before the service's own code runs) is caught: the buffers that were growing go,
++//   the heap gives its empty spaces back (eden_heap_trim), the caches are told memory is wanted
++//   (eden_heap_want, headless/heap_arenas.inc: the texture collector evicts at its hardest) for
++//   EDEN_UP_HLE_OOM_RETRY_MS (0 to 2000, unset 200) while this thread sleeps, and the same set-up runs
++//   once more. Refused again: the exception goes on as before (the session ends as today). Only the
++//   set-up is ever run twice: the service's code has not run, the reply has not been written, and the
++//   set-up only reads (see NOTES.md, "Why a retry cannot run anything twice").
++// EDEN_TEST_HLE_ALLOC_FAIL=<n>[,<after_s>[,<service>]] (a test): from <after_s> seconds after the switches
++//   were read, the n-th output buffer set-up that is about to allocate throws std::bad_alloc, once.
++//   <service>: only that service's set-ups count (its GetServiceName(); IStorage is the door's read on
++//   fsp-srv); without it every service thread counts and the throw lands wherever the n-th one is. Off the fix,
++//   every request with an output buffer allocates, so this ends the session at the n-th one as at the
++//   door; with EDEN_UP_HLE_OOM_RETRY the retry serves it; with EDEN_UP_HLE_REPLY_BUFFER the n-th
++//   allocation comes much later or never.
++// Lines (stderr, written with snprintf and fputs: nothing here asks the heap for memory): one at the
++// read, one when a switch first acts, one per caught refusal, one per thrown test refusal, and the
++// counters every 10 s while a switch is on (from a request: none in a quiet 10 s).
++
++#include <algorithm>
++#include <array>
++#include <atomic>
++#include <chrono>
++#include <cstddef>
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <new>
++#include <string_view>
++#include <thread>
++
++#include "common/scratch_buffer.h"
++
++// headless/heap_arenas.inc (the PS5 heap); absent elsewhere, where these steps are skipped.
++extern "C" std::size_t eden_heap_trim(void) __attribute__((weak));
++extern "C" void eden_heap_want(int enter) __attribute__((weak));
++
++namespace Service::HleReply {
++
++using Slots = std::array<Common::ScratchBuffer<std::uint8_t>, 3>;
++using Sizes = std::array<std::size_t, 3>;
++
++inline std::int64_t NowNs() noexcept {
++    return std::chrono::duration_cast<std::chrono::nanoseconds>(
++               std::chrono::steady_clock::now().time_since_epoch())
++        .count();
++}
++
++// Unsigned decimal at `text`, held within [low, high]; `fallback` when it does not start with a digit.
++// `end` (if given) gets the first character after the digits.
++inline unsigned long long ParseNumber(const char* text, unsigned long long fallback, unsigned long long low,
++                                      unsigned long long high, const char** end = nullptr) {
++    if (end != nullptr) {
++        *end = text;
++    }
++    if (text == nullptr || text[0] < '0' || text[0] > '9') {
++        return fallback;
++    }
++    unsigned long long value = 0;
++    const char* c = text;
++    for (; *c >= '0' && *c <= '9'; ++c) {
++        value = (std::min)(value * 10 + static_cast<unsigned long long>(*c - '0'), 1'000'000'000'000ULL);
++    }
++    if (end != nullptr) {
++        *end = c;
++    }
++    return (std::clamp)(value, low, high);
++}
++
++inline bool ExactOne(const char* name) noexcept {
++    const char* const value = std::getenv(name);
++    return value != nullptr && value[0] == '1' && value[1] == '\0';
++}
++
++struct Config {
++    bool reuse = false;
++    std::size_t cap_bytes = 0;
++    bool retry = false;
++    unsigned retry_pause_ms = 0;
++    unsigned long long fail_nth = 0;   // 0: the test is off
++    std::int64_t fail_from_ns = 0;
++    char fail_service[64]{};           // empty: every service counts; else only this GetServiceName()
++    bool any = false;                 // one of the three is on: the wrapper takes the new path
++};
++
++inline Config ReadConfig() {
++    Config config;
++    // A later default flip: return true here when the variable is unset.
++    config.reuse = ExactOne("EDEN_UP_HLE_REPLY_BUFFER");
++    config.cap_bytes =
++        static_cast<std::size_t>(ParseNumber(std::getenv("EDEN_UP_HLE_REPLY_BUFFER_CAP_MIB"), 4, 1, 64)) << 20;
++    config.retry = ExactOne("EDEN_UP_HLE_OOM_RETRY");
++    config.retry_pause_ms =
++        static_cast<unsigned>(ParseNumber(std::getenv("EDEN_UP_HLE_OOM_RETRY_MS"), 200, 0, 2000));
++    if (const char* const test = std::getenv("EDEN_TEST_HLE_ALLOC_FAIL"); test != nullptr) {
++        const char* end = nullptr;
++        const unsigned long long nth = ParseNumber(test, 0, 0, 1'000'000'000ULL, &end);
++        unsigned long long after_s = 0;
++        bool good = nth != 0 && end != nullptr;
++        if (good && *end == ',') {
++            const char* after_end = nullptr;
++            after_s = ParseNumber(end + 1, ~0ULL, 0, 86'400, &after_end);
++            good = after_s != ~0ULL && after_end != nullptr;
++            if (good && *after_end == ',') {
++                // v2 (review): a third field names the one service whose set-ups count (its
++                // GetServiceName(), e.g. IStorage for the door's file reads), so the throw lands on
++                // the same thread and command as the real crash. Without it every service counts.
++                const char* name = after_end + 1;
++                const std::size_t length = std::strlen(name);
++                good = length != 0 && length < sizeof(config.fail_service);
++                if (good) {
++                    std::memcpy(config.fail_service, name, length + 1);
++                }
++            } else if (good) {
++                good = *after_end == '\0';
++            }
++        } else if (good) {
++            good = *end == '\0';
++        }
++        if (good) {
++            config.fail_nth = nth;
++            config.fail_from_ns = NowNs() + static_cast<std::int64_t>(after_s) * 1'000'000'000LL;
++            std::fprintf(stderr,
++                         "EDEN_TEST_HLE_ALLOC_FAIL reply buffer allocation number %llu, counted from %llu s on "
++                         "(service %s), throws std::bad_alloc (once)\n",
++                         nth, after_s, config.fail_service[0] != '\0' ? config.fail_service : "any");
++        }
++    }
++    config.any = config.reuse || config.retry || config.fail_nth != 0;
++    if (config.reuse) {
++        std::fprintf(stderr,
++                     "EDEN_UP_HLE_REPLY_BUFFER each service thread keeps its reply buffers (up to %zu MiB each) "
++                     "instead of a new one per request\n",
++                     config.cap_bytes >> 20);
++    }
++    if (config.retry) {
++        std::fprintf(stderr,
++                     "EDEN_UP_HLE_OOM_RETRY a refused reply set-up trims the heap, waits %u ms with memory "
++                     "wanted, and runs once more\n",
++                     config.retry_pause_ms);
++    }
++    return config;
++}
++
++inline const Config& Get() {
++    static const Config config = ReadConfig();
++    return config;
++}
++
++// Totals since start, for the 10 s line.
++struct Counters {
++    std::atomic<std::uint64_t> setups{0};     // output buffers set up with a size above 0 (retries too)
++    std::atomic<std::uint64_t> saved{0};      // ... built in a kept buffer, with no allocation
++    std::atomic<std::uint64_t> allocated{0};  // ... that allocated (off the reuse: all of them)
++    std::atomic<std::uint64_t> grew{0};       // a kept buffer grew (counted in allocated too)
++    std::atomic<std::uint64_t> over_cap{0};   // one-off buffer: over the cap
++    std::atomic<std::uint64_t> nested{0};     // one-off buffer: the thread's buffers were in use
++    std::atomic<std::int64_t> held_bytes{0};  // bytes the kept buffers hold now, every thread
++    std::atomic<std::uint64_t> largest{0};    // largest output buffer seen
++    std::atomic<std::uint32_t> threads{0};    // threads that keep a buffer
++    std::atomic<std::uint64_t> caught{0};     // EDEN_UP_HLE_OOM_RETRY: refusals caught
++    std::atomic<std::uint64_t> served{0};     // ... the retry got its memory
++    std::atomic<std::uint64_t> failed{0};     // ... refused again: thrown on, as before
++    std::atomic<std::uint64_t> gave_back{0};  // ... bytes eden_heap_trim gave back at those refusals
++    std::atomic<std::uint64_t> test_seen{0};  // EDEN_TEST_HLE_ALLOC_FAIL: allocating set-ups counted
++    std::atomic<std::uint64_t> test_thrown{0};
++    std::atomic<std::int64_t> last_line_ns{0};
++    std::atomic<bool> said_reuse{false};
++    std::atomic<bool> said_over_cap{false};
++};
++inline Counters counters;
++
++inline void Line(const char* text) noexcept {
++    std::fputs(text, stderr);
++}
++
++inline void NoteLargest(std::uint64_t bytes) noexcept {
++    std::uint64_t seen = counters.largest.load(std::memory_order_relaxed);
++    while (bytes > seen &&
++           !counters.largest.compare_exchange_weak(seen, bytes, std::memory_order_relaxed)) {
++    }
++}
++
++inline void MaybeTenSecondLine() noexcept {
++    const Config& config = Get();
++    const std::int64_t now = NowNs();
++    std::int64_t last = counters.last_line_ns.load(std::memory_order_relaxed);
++    if (last == 0) {
++        // The first request starts the clock.
++        counters.last_line_ns.compare_exchange_strong(last, now, std::memory_order_relaxed);
++        return;
++    }
++    if (now - last < 10'000'000'000LL ||
++        !counters.last_line_ns.compare_exchange_strong(last, now, std::memory_order_relaxed)) {
++        return;
++    }
++    constexpr auto r = std::memory_order_relaxed;
++    char line[512];
++    int at = 0;
++    const auto add = [&](int written) {
++        if (written > 0) {
++            at = (std::min)(at + written, static_cast<int>(sizeof(line)) - 1);
++        }
++    };
++    if (config.reuse) {
++        add(std::snprintf(line + at, sizeof(line) - at,
++                          "EDEN_UP_HLE_REPLY_BUFFER buffers=%llu allocations_saved=%llu allocated=%llu grew=%llu "
++                          "over_cap=%llu nested=%llu held_kib=%lld threads=%u largest=%llu",
++                          static_cast<unsigned long long>(counters.setups.load(r)),
++                          static_cast<unsigned long long>(counters.saved.load(r)),
++                          static_cast<unsigned long long>(counters.allocated.load(r)),
++                          static_cast<unsigned long long>(counters.grew.load(r)),
++                          static_cast<unsigned long long>(counters.over_cap.load(r)),
++                          static_cast<unsigned long long>(counters.nested.load(r)),
++                          static_cast<long long>(counters.held_bytes.load(r) >> 10), counters.threads.load(r),
++                          static_cast<unsigned long long>(counters.largest.load(r))));
++    } else {
++        add(std::snprintf(line + at, sizeof(line) - at,
++                          "EDEN_UP_HLE_REPLY_BUFFER off: buffers=%llu allocated=%llu largest=%llu",
++                          static_cast<unsigned long long>(counters.setups.load(r)),
++                          static_cast<unsigned long long>(counters.allocated.load(r)),
++                          static_cast<unsigned long long>(counters.largest.load(r))));
++    }
++    if (config.retry) {
++        add(std::snprintf(line + at, sizeof(line) - at,
++                          " | EDEN_UP_HLE_OOM_RETRY caught=%llu served=%llu failed=%llu gave_back_mib=%llu",
++                          static_cast<unsigned long long>(counters.caught.load(r)),
++                          static_cast<unsigned long long>(counters.served.load(r)),
++                          static_cast<unsigned long long>(counters.failed.load(r)),
++                          static_cast<unsigned long long>(counters.gave_back.load(r) >> 20)));
++    }
++    if (config.fail_nth != 0) {
++        add(std::snprintf(line + at, sizeof(line) - at, " | EDEN_TEST_HLE_ALLOC_FAIL counted=%llu thrown=%llu",
++                          static_cast<unsigned long long>(counters.test_seen.load(r)),
++                          static_cast<unsigned long long>(counters.test_thrown.load(r))));
++    }
++    // Cut to fit if it ever must, but always one whole line.
++    at = (std::min)(at, static_cast<int>(sizeof(line)) - 2);
++    line[at] = '\n';
++    line[at + 1] = '\0';
++    Line(line);
++}
++
++// EDEN_TEST_HLE_ALLOC_FAIL: whether this allocating set-up is the one that throws.
++inline bool TestFailNow(bool test_counts) noexcept {
++    const Config& config = Get();
++    if (config.fail_nth == 0 || !test_counts || NowNs() < config.fail_from_ns) {
++        return false;
++    }
++    return counters.test_seen.fetch_add(1, std::memory_order_relaxed) + 1 == config.fail_nth;
++}
++
++// This thread's kept buffers, and whether a request on this thread is using them now.
++inline thread_local Slots t_slots;
++inline thread_local bool t_slots_in_use = false;
++inline thread_local bool t_thread_counted = false;
++
++// One request's hold on its output buffers (`buffers`: the wrapper's own, which ReadInArgument and
++// WriteOutArgument use as before). With the reuse on, the thread's kept buffers are swapped into
++// `buffers` for the request and swapped back when it ends (destructor: after the reply is written,
++// and on any exception). `mask`: the slots that are output buffers (OutBufferSlotMask).
++class Lease {
++public:
++    Lease(Slots& buffers, std::uint32_t mask) noexcept : m_buffers{buffers}, m_mask{mask} {}
++    ~Lease() {
++        Return();
++    }
++    Lease(const Lease&) = delete;
++    Lease& operator=(const Lease&) = delete;
++
++    // Before ReadInArgument. `sizes`: what ReadInArgument will size each slot to. Throws
++    // std::bad_alloc only for the test; the allocations themselves stay in ReadInArgument.
++    // `test_counts`: this request's service is the one EDEN_TEST_HLE_ALLOC_FAIL counts.
++    void Take(const Sizes& sizes, bool test_counts) {
++        const Config& config = Get();
++        if (config.reuse && !m_own && !m_tried_own) {
++            m_tried_own = true;
++            if (!t_slots_in_use) {
++                t_slots_in_use = true;
++                m_own = true;
++            }
++        }
++        for (std::size_t i = 0; i < sizes.size(); ++i) {
++            const std::uint32_t bit = 1U << i;
++            if ((m_mask & bit) == 0 || sizes[i] == 0) {
++                continue;
++            }
++            counters.setups.fetch_add(1, std::memory_order_relaxed);
++            NoteLargest(sizes[i]);
++            if (m_own && sizes[i] <= config.cap_bytes) {
++                if ((m_taken & bit) == 0) {
++                    m_buffers[i].swap(t_slots[i]);
++                    m_before[i] = m_buffers[i].capacity();
++                    m_taken |= bit;
++                }
++                if (sizes[i] <= m_buffers[i].capacity()) {
++                    counters.saved.fetch_add(1, std::memory_order_relaxed);
++                    if (!counters.said_reuse.exchange(true, std::memory_order_relaxed)) {
++                        char line[160];
++                        std::snprintf(line, sizeof(line),
++                                      "EDEN_UP_HLE_REPLY_BUFFER acts: a reply of %zu bytes built in a kept buffer "
++                                      "of %zu, no allocation\n",
++                                      sizes[i], m_buffers[i].capacity());
++                        Line(line);
++                    }
++                    continue;
++                }
++                counters.grew.fetch_add(1, std::memory_order_relaxed);
++            } else if (config.reuse) {
++                if (m_own) {
++                    counters.over_cap.fetch_add(1, std::memory_order_relaxed);
++                    if (!counters.said_over_cap.exchange(true, std::memory_order_relaxed)) {
++                        char line[160];
++                        std::snprintf(line, sizeof(line),
++                                      "EDEN_UP_HLE_REPLY_BUFFER a reply of %zu bytes is over the %zu MiB cap: "
++                                      "one-off buffer as before\n",
++                                      sizes[i], config.cap_bytes >> 20);
++                        Line(line);
++                    }
++                } else {
++                    counters.nested.fetch_add(1, std::memory_order_relaxed);
++                }
++            }
++            if (sizes[i] <= m_buffers[i].capacity()) {
++                continue; // a retry's slot that kept its buffer: no allocation
++            }
++            // ReadInArgument's resize_destructive allocates for this slot.
++            counters.allocated.fetch_add(1, std::memory_order_relaxed);
++            if (TestFailNow(test_counts)) {
++                counters.test_thrown.fetch_add(1, std::memory_order_relaxed);
++                char line[160];
++                std::snprintf(line, sizeof(line),
++                              "EDEN_TEST_HLE_ALLOC_FAIL throws std::bad_alloc for a reply buffer of %zu bytes\n",
++                              sizes[i]);
++                Line(line);
++                throw std::bad_alloc{};
++            }
++        }
++    }
++
++    // After a refusal, before the retry: the buffers that were to grow go now (their old room is of
++    // no use to the request, and growth asks for the new one before the old goes).
++    void DropGrowing(const Sizes& sizes) noexcept {
++        for (std::size_t i = 0; i < sizes.size(); ++i) {
++            if ((m_mask & (1U << i)) != 0 && sizes[i] > m_buffers[i].capacity()) {
++                m_buffers[i].release();
++            }
++        }
++    }
++
++    void Return() noexcept {
++        if (m_own) {
++            std::int64_t delta = 0;
++            for (std::size_t i = 0; i < t_slots.size(); ++i) {
++                if ((m_taken & (1U << i)) == 0) {
++                    continue;
++                }
++                m_buffers[i].swap(t_slots[i]);
++                delta += static_cast<std::int64_t>(t_slots[i].capacity()) -
++                         static_cast<std::int64_t>(m_before[i]);
++            }
++            if (delta != 0) {
++                counters.held_bytes.fetch_add(delta, std::memory_order_relaxed);
++            }
++            if (!t_thread_counted &&
++                std::any_of(t_slots.begin(), t_slots.end(), [](const auto& s) { return s.capacity() != 0; })) {
++                t_thread_counted = true;
++                counters.threads.fetch_add(1, std::memory_order_relaxed);
++            }
++            t_slots_in_use = false;
++            m_own = false;
++            m_taken = 0;
++        }
++        if (!m_lined) {
++            m_lined = true;
++            MaybeTenSecondLine();
++        }
++    }
++
++private:
++    Slots& m_buffers;
++    const std::uint32_t m_mask;
++    std::uint32_t m_taken = 0;
++    std::array<std::size_t, 3> m_before{};
++    bool m_own = false;
++    bool m_tried_own = false;
++    bool m_lined = false;
++};
++
++// v2 (review): the "memory wanted" mark held for the pause and the second try, taken back on every
++// way out (also an exception that is not std::bad_alloc), so the caches never stay at their hardest.
++class WantScope {
++public:
++    WantScope() noexcept {
++        if (eden_heap_want) {
++            eden_heap_want(1);
++        }
++    }
++    ~WantScope() {
++        if (eden_heap_want) {
++            eden_heap_want(0);
++        }
++    }
++    WantScope(const WantScope&) = delete;
++    WantScope& operator=(const WantScope&) = delete;
++};
++
++// The wrapper's set-up (ReadInArgument, and the lease's Take) with the retry around it. `lease` is
++// null for a command with no output buffer. Off the retry, no try block: a refusal goes on from where
++// it was thrown, as before. v2 (review): not a template, so one copy for all ~1,300 commands; the
++// wrapper hands its ReadInArgument in as `read_inputs(read_context)`.
++inline void Prepare(Lease* lease, const Sizes& sizes, void (*read_inputs)(void*), void* read_context,
++                    std::string_view service, std::uint32_t command) {
++    const Config& config = Get();
++    const bool test_counts =
++        config.fail_nth != 0 && (config.fail_service[0] == '\0' || service == config.fail_service);
++    if (!config.retry) {
++        if (lease != nullptr) {
++            lease->Take(sizes, test_counts);
++        }
++        read_inputs(read_context);
++        return;
++    }
++    try {
++        if (lease != nullptr) {
++            lease->Take(sizes, test_counts);
++        }
++        read_inputs(read_context);
++        return;
++    } catch (const std::bad_alloc&) {
++        // Below, outside the handler: nothing of the service has run.
++    }
++    counters.caught.fetch_add(1, std::memory_order_relaxed);
++    if (lease != nullptr) {
++        lease->DropGrowing(sizes);
++    }
++    const std::size_t gave_back = eden_heap_trim ? eden_heap_trim() : 0;
++    counters.gave_back.fetch_add(gave_back, std::memory_order_relaxed);
++    {
++        char line[256];
++        std::snprintf(line, sizeof(line),
++                      "EDEN_UP_HLE_OOM_RETRY %.*s command %u was refused memory before it ran (output buffers "
++                      "%zu/%zu/%zu bytes): the heap gave back %zu MiB, waiting %u ms, then once more\n",
++                      static_cast<int>(service.size()), service.data(), command, sizes[0], sizes[1], sizes[2],
++                      gave_back >> 20, config.retry_pause_ms);
++        Line(line);
++    }
++    {
++        const WantScope wanted;
++        if (config.retry_pause_ms != 0) {
++            std::this_thread::sleep_for(std::chrono::milliseconds(config.retry_pause_ms));
++        }
++        try {
++            if (lease != nullptr) {
++                lease->Take(sizes, test_counts);
++            }
++            read_inputs(read_context);
++        } catch (const std::bad_alloc&) {
++            counters.failed.fetch_add(1, std::memory_order_relaxed);
++            Line("EDEN_UP_HLE_OOM_RETRY refused again: failing as before\n");
++            throw;
++        }
++    }
++    counters.served.fetch_add(1, std::memory_order_relaxed);
++    Line("EDEN_UP_HLE_OOM_RETRY served on the second try\n");
++}
++
++} // namespace Service::HleReply

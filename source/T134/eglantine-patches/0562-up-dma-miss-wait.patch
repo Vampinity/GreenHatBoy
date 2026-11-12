@@ -1,0 +1,192 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: DMA snapshot miss waits for its flush entry only (EDEN_UP_DMA_MISS_WAIT)
+
+DRAFT, not built. Our own work (no upstream port). Gated by EDEN_UP_DMA_MISS_WAIT (exact 1), a
+live switch (Id DmaMissWait, not armed); off by default. Only a plain DMA snapshot miss in
+Maxwell3D::FrontDmaRead (split front, EDEN_NX2_DMA_SNAPSHOT) takes it: the front waits until the
+back ran everything sent (new GpuSplit::WaitForSent), not also for the back's idle hook and
+back_quiet. Ignored (full drain, one warning) with EDEN_NX2_READBACK_WAIT on.
+EDEN_UP_DMA_MISS_WAIT_VERIFY=1 (boot) drains in full anyway and compares the words. 10 s line
+while on: "EDEN_UP_DMA_MISS_WAIT: N misses waited ...".
+
+Reviewed draft from the draws job, v2: reviewer moved the switch read from every FrontDmaRead
+(about 20k/s, 92% hits) into the plain-miss branch only, so hits, the snapshot verify and the
+L1028 narrowed path never read it; re-wrapped one comment. Gain and test metric corrected in
+the review (L949 idle hooks and sleeps, not "a drain's hook").
+---
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+index 19bca03..3a9df29 100644
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -175,6 +175,9 @@ enum class Id : u8 {
+     /// EDEN_UP_AREA_BUDGET. Read once per frame end in AreaEvict; a window already open keeps the
+     /// budget it opened with.
+     AreaBudget,
++    /// EDEN_UP_DMA_MISS_WAIT. Each drained macro read chooses its wait; both give the words after
++    /// the same flush entry.
++    DmaMissWait,
+     Count,
+ };
+ 
+@@ -296,6 +299,7 @@ inline constexpr std::array<Def, NumSwitches> kDefs{{
+     {"EDEN_UP_L1216_CHAIN", ParseExactOne, false, -1},
+     {"EDEN_UP_L1161_DRAW", ParseExactOne, false, -1},
+     {"EDEN_UP_AREA_BUDGET", ParseExactOne, false, -1},
++    {"EDEN_UP_DMA_MISS_WAIT", ParseExactOne, false, -1},
+ }};
+ 
+ static_assert(kDefs[static_cast<size_t>(Id::PollBackoffUs)].needs ==
+diff --git a/src/video_core/engines/maxwell_3d.cpp b/src/video_core/engines/maxwell_3d.cpp
+index f3dd180..52907c6 100644
+--- a/src/video_core/engines/maxwell_3d.cpp
++++ b/src/video_core/engines/maxwell_3d.cpp
+@@ -37,6 +37,7 @@
+ #include "video_core/nx2_query_light.h"
+ #include "video_core/query_dma.h"
+ #include "video_core/rasterizer_interface.h"
++#include "video_core/readback_wait.h"
+ #include "video_core/submit_stats.h"
+ #include "video_core/textures/texture.h"
+ #include "video_core/ubo_ahead.h"
+@@ -2694,6 +2695,11 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
+             static u64 differences{};
+             static u64 report_reads{};
+             static std::array<u64, 4> miss_reasons{};
++            // EDEN_UP_DMA_MISS_WAIT counters (front thread only).
++            static u64 miss_waits_short{};
++            static u64 miss_waits_already{};
++            static u64 miss_wait_checked{};
++            static u64 miss_wait_differences{};
+             const u64 first_page = *device >> 12;
+             const u64 last_page = (*device + read_bytes - 1) >> 12;
+             bool hit = true;
+@@ -2717,6 +2723,8 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
+             if (!hit || !rasterizer->HasCachedReports(*device - 12, u64{read_bytes} + 12)) {
+                 thread_local std::vector<u32> snap_words;
+                 snap_words.resize(words);
++                // EDEN_UP_DMA_MISS_WAIT: set only by the plain miss below (front thread).
++                bool miss_wait = false;
+                 const auto drained_read = [&](u32* out, VideoCommon::DrainSite site) {
+                     split.Defer([memory = &memory_manager, rasterizer_ptr = rasterizer, macro,
+                                  method, source, read_bytes, neutral] {
+@@ -2739,7 +2747,16 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
+                         VideoCommon::QueryDma::AfterBufferFlush(*memory, *rasterizer_ptr, source,
+                                                                 read_bytes);
+                     }, neutral ? VideoCommon::GpuSplit::FastDrawNeutral : 0);
+-                    split.Drain(site);
++                    if (site == VideoCommon::DrainSite::DmaSnapshotMiss && miss_wait) {
++                        // EDEN_UP_DMA_MISS_WAIT: the entry above has run once this returns.
++                        if (split.WaitForSent(site)) {
++                            ++miss_waits_short;
++                        } else {
++                            ++miss_waits_already;
++                        }
++                    } else {
++                        split.Drain(site);
++                    }
+                     memory_manager.ReadBlockUnsafe(source, out, read_bytes);
+                 };
+                 if (hit) {
+@@ -2817,7 +2834,65 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
+                             }
+                         }
+                     } else {
++                        // EDEN_UP_DMA_MISS_WAIT (live, exact "1"): this miss waits until the back
++                        // has run its flush entry (GpuSplit::WaitForSent), not also for the back's
++                        // idle hook and back_quiet. The entry does all the drained read relies on
++                        // for these bytes (BeforeRead, the whole-page FlushRegion,
++                        // AfterBufferFlush, all synchronous); the hook only submits recorded work.
++                        // With EDEN_NX2_READBACK_WAIT the hook also waits for downloads to land
++                        // before going quiet: there every miss keeps the full drain. Read here, so
++                        // hits and narrowed reads never look at the switch.
++                        const bool miss_wait_asked =
++                            Common::LiveSwitch::Value<Common::LiveSwitch::Id::DmaMissWait>() != 0;
++                        miss_wait = miss_wait_asked && VideoCore::Readback::Mode() == 0;
+                         drained_read(snap_words.data(), VideoCommon::DrainSite::DmaSnapshotMiss);
++                        if (miss_wait) {
++                            // EDEN_UP_DMA_MISS_WAIT_VERIFY=1: drain in full anyway (the flush
++                            // entry already ran: no second one), read again and compare; the
++                            // macro gets the drained words.
++                            static const bool miss_wait_verify =
++                                Common::PeSwitch("EDEN_UP_DMA_MISS_WAIT_VERIFY");
++                            if (miss_wait_verify) {
++                                std::vector<u32> exact(words);
++                                split.Drain(VideoCommon::DrainSite::DmaSnapshotCheck);
++                                memory_manager.ReadBlockUnsafe(source, exact.data(), read_bytes);
++                                ++miss_wait_checked;
++                                if (exact != snap_words) {
++                                    if (miss_wait_differences++ < 32) {
++                                        LOG_WARNING(HW_GPU,
++                                                    "EDEN_UP_DMA_MISS_WAIT check: macro {:#x} read "
++                                                    "of {} words at {:#x} after the short wait "
++                                                    "differs from the drained read ({:#x} vs "
++                                                    "{:#x})",
++                                                    macro, words, source, snap_words[0], exact[0]);
++                                    }
++                                    snap_words = std::move(exact);
++                                }
++                            }
++                            static std::chrono::steady_clock::time_point miss_wait_next_log{};
++                            const auto now = std::chrono::steady_clock::now();
++                            if (now >= miss_wait_next_log) {
++                                if (miss_wait_next_log !=
++                                    std::chrono::steady_clock::time_point{}) {
++                                    LOG_INFO(HW_GPU,
++                                             "EDEN_UP_DMA_MISS_WAIT: {} misses waited for the "
++                                             "flush entry ({} already run), verify {} checked {} "
++                                             "differed",
++                                             miss_waits_short + miss_waits_already,
++                                             miss_waits_already, miss_wait_checked,
++                                             miss_wait_differences);
++                                }
++                                miss_wait_next_log = now + std::chrono::seconds{10};
++                            }
++                        } else if (miss_wait_asked) {
++                            static bool miss_wait_refused{};
++                            if (!miss_wait_refused) {
++                                miss_wait_refused = true;
++                                LOG_WARNING(HW_GPU, "EDEN_UP_DMA_MISS_WAIT=1 ignored with "
++                                                    "EDEN_NX2_READBACK_WAIT on: its idle hook "
++                                                    "waits for downloads, every miss drains");
++                            }
++                        }
+                         if (count_misses) {
+                             AsyncReadback::Add(AsyncReadback::g_counters.dma_drained, 1);
+                             AsyncReadback::Add(AsyncReadback::g_counters.dma_drained_ns,
+diff --git a/src/video_core/gpu_split.cpp b/src/video_core/gpu_split.cpp
+index 6418f53..5b2402a 100644
+--- a/src/video_core/gpu_split.cpp
++++ b/src/video_core/gpu_split.cpp
+@@ -527,6 +527,16 @@ void GpuSplit::Drain(DrainSite site) {
+     }
+ }
+ 
++// EDEN_UP_DMA_MISS_WAIT: the open Regs entry is published first, as DrainAt does, so the wait
++// covers it; publish_every goes back to 8 words, as after a drain, so what the front sends next
++// reaches the back soon. No idle hook is asked for: the back runs its own after its spin.
++bool GpuSplit::WaitForSent(DrainSite site) {
++    CloseRegs();
++    const bool waited = WaitFor(write_position, site);
++    publish_every = 8;
++    return waited;
++}
++
+ bool GpuSplit::WaitForWriters(DrainSite site) {
+     return WaitFor(std::min(last_writer_position, write_position), site);
+ }
+diff --git a/src/video_core/gpu_split.h b/src/video_core/gpu_split.h
+index 419b9d0..4a5dc7d 100644
+--- a/src/video_core/gpu_split.h
++++ b/src/video_core/gpu_split.h
+@@ -688,6 +688,11 @@ public:
+     void Drain();
+     /// As Drain, counting the wait under `site` (EDEN_NX2_SPLIT_WAITS, EDEN_NX2_GPU_PROFILE).
+     void Drain(DrainSite site);
++    /// EDEN_UP_DMA_MISS_WAIT (Maxwell3D::FrontDmaRead): as Drain(site), without waiting for the
++    /// back's idle hook and back_quiet: returns once the back executed everything sent so far.
++    /// The caller must not use what the back owns (the scheduler, the caches) afterwards, only
++    /// guest memory that those entries wrote synchronously. Front only. Returns whether it waited.
++    bool WaitForSent(DrainSite site);
+ 
+     // EDEN_UP_DRAIN_SKIP_SAME=1 (puller.cpp ReadSemaphoreWord): a semaphore word read again with
+     // nothing sent to the back since its drained read (flush the word on the back, drain, read)

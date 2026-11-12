@@ -1,0 +1,285 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: L974 chain, reports and MME words keep draw reuse (EDEN_UP_L974_CHAIN)
+
+DRAFT, not built. Ports zortos293/Lichii PR #974 (@mstampfli). Gated by EDEN_UP_L974_CHAIN
+(exact 1), a live switch (common/live_switch.h, Id L974Chain, not armed); off by default. It
+only changes anything with EDEN_UP_FAST_DRAW=1. Report operands, the vertex id base, counter
+resets and the render condition become draw parameters; MME memory words 0x154-0x156 only while
+macros run on the split's front. Reports that are not fence releases still execute and record
+their 4/16-byte destination (NoteFastDrawConstantData); fence releases still end reuse. With
+EDEN_NX2_GPU_PROFILE or EDEN_UP_FAST_DRAW_VERIFY the 10-second "Fast draw per second:" line gains
+"| chained C/N (P%...) | break events: ... | full counts: ...". No buffer work is removed.
+
+Reviewed draft from job J, v2: reviewer re-anchored the live_switch.h Id/kDefs hunks on the T122
+tail, made MME words 0x154-0x156 neutral only under FrontMacros() (inline back macros flush
+GPU-written memory with no break), read the switch with LiveSwitch::Peek, aligned the
+diagnostics flag with ReportFastDraws' condition, and moved maxwell_3d.h comments back.
+---
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+index 9817441..010dacc 100644
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -163,6 +163,9 @@ enum class Id : u8 {
+     /// EDEN_NX2_RANGE_PREFIX (starting with '1' is on). Each lookup answers from the entry as it
+     /// is; entries are a full walk of their own range whatever made them.
+     RangePrefix,
++    /// EDEN_UP_L974_CHAIN. Each "does this end reuse" answer stands alone; a report decided
++    /// neutral records its destination in the same ProcessMethodCall.
++    L974Chain,
+     Count,
+ };
+ 
+@@ -280,6 +283,7 @@ inline constexpr std::array<Def, NumSwitches> kDefs{{
+     {"EDEN_UP_OOT_POLL_BACKOFF_US", ParsePollBackoffUs, false, 3},
+     {"EDEN_NX2_TABLES_SPEED", ParseExactOne, false, -1},
+     {"EDEN_NX2_RANGE_PREFIX", ParseLeadingOne, false, -1},
++    {"EDEN_UP_L974_CHAIN", ParseExactOne, false, -1},
+ }};
+ 
+ static_assert(kDefs[static_cast<size_t>(Id::PollBackoffUs)].needs ==
+diff --git a/src/video_core/engines/maxwell_3d.cpp b/src/video_core/engines/maxwell_3d.cpp
+index e318266..07f4faf 100644
+--- a/src/video_core/engines/maxwell_3d.cpp
++++ b/src/video_core/engines/maxwell_3d.cpp
+@@ -63,6 +63,11 @@ Maxwell3D::Maxwell3D(MemoryManager& memory_manager_)
+ #endif
+     , upload_state{memory_manager, regs.upload}
+ {
++    static_cast<void>(Common::LiveSwitch::Value<Common::LiveSwitch::Id::L974Chain>());
++    // As ReportFastDraws decides whether it logs.
++    VideoCommon::Nx2FastDraw::g_chain_diagnostics.store(
++        VideoCommon::Nx2FastDraw::VerifyEnabled() || VideoCommon::Nx2Profile::Enabled(),
++        std::memory_order_relaxed);
+     dirty.flags.flip();
+     InitializeRegisterDefaults();
+     reports_fast_draw_breaks = true;
+@@ -467,10 +472,53 @@ bool Maxwell3D::IsFastDrawParameter(u32 method) {
+         return true;
+     default:
+         return DrawManager::IsInstanceLoopMethod(method) || IsFastDrawDeltaMethod(method) ||
+-               IsFastDrawVertexBuffer(method) || IsFastDrawExempt(method);
++               IsFastDrawVertexBuffer(method) || IsFastDrawExempt(method) ||
++               IsL974DrawParameter(method);
+     }
+ }
+ 
++bool Maxwell3D::IsL974DrawParameter(u32 method) {
++    if (!VideoCommon::Nx2FastDraw::L974ChainEnabled()) {
++        return false;
++    }
++    // MME memory A/B and data RAM address, only while macros run on the split's front (as
++    // 0446's QUERY_LIGHT rule): a macro run inline on the back (no split, EDEN_NX2_SPLIT=1 with
++    // EDEN_NX2_MME_JIT=0) flushes GPU-written memory in its DMA read (macro.cpp) with no break of
++    // its own, so there these words must keep ending reuse.
++    if (method >= 0x154 && method <= 0x156 && VideoCommon::GpuSplit::Get().FrontMacros()) {
++        return true;
++    }
++    switch (method) {
++    case MAXWELL3D_REG_INDEX(vertex_id_base):
++    case MAXWELL3D_REG_INDEX(report_semaphore.address_high):
++    case MAXWELL3D_REG_INDEX(report_semaphore.address_low):
++    case MAXWELL3D_REG_INDEX(report_semaphore.payload):
++    case MAXWELL3D_REG_INDEX(clear_report_value):
++    case MAXWELL3D_REG_INDEX(render_enable.mode):
++    case MAXWELL3D_REG_INDEX(report_semaphore.query):
++        return true;
++    default:
++        return false;
++    }
++}
++
++bool Maxwell3D::IsL974NeutralMethod(u32 method, u32 argument) {
++    if (!VideoCommon::Nx2FastDraw::L974ChainEnabled()) {
++        return false;
++    }
++    if (method == MAXWELL3D_REG_INDEX(report_semaphore.query)) {
++        // Decode the argument, not a possibly older shadow/register word. Keep fence releases
++        // conservative already in J1: they may flush, wait or run callbacks writing memory.
++        Regs::ReportSemaphore report{};
++        report.query.raw = argument;
++        return report.query.operation == Regs::ReportSemaphore::Operation::ReportOnly ||
++               (report.query.operation == Regs::ReportSemaphore::Operation::Release &&
++                report.query.short_query == 0);
++    }
++    return method == MAXWELL3D_REG_INDEX(clear_report_value) ||
++           method == MAXWELL3D_REG_INDEX(render_enable.mode);
++}
++
+ bool Maxwell3D::IsFastDrawVertexBuffer(u32 method) {
+     constexpr u32 streams = MAXWELL3D_REG_INDEX(vertex_streams);
+     constexpr u32 stream_words = sizeof(Regs::VertexStream) / sizeof(u32);
+@@ -571,9 +619,10 @@ bool Maxwell3D::IsFastDrawExemptMethod(u32 method) {
+ }
+ 
+ void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argument, bool is_last_call) {
++    const bool l974_neutral = IsL974NeutralMethod(method, argument);
+     if (VideoCommon::Nx2FastDraw::Enabled() && !DrawManager::IsInstanceLoopMethod(method) &&
+         !IsFastDrawDeltaMethod(method) && !IsFastDrawExemptMethod(method) &&
+-        !IsQueuedCounterReport(method, argument)) {
++        !IsQueuedCounterReport(method, argument) && !l974_neutral) {
+         VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Method, method);
+     }
+     if (GetNativeMacroEngine().native_turing && method == MAXWELL3D_REG_INDEX(clear_surface)) {
+@@ -639,7 +688,7 @@ void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argume
+     case MAXWELL3D_REG_INDEX(bind_groups[4].raw_config):
+         return ProcessCBBind(4);
+     case MAXWELL3D_REG_INDEX(report_semaphore.query):
+-        return ProcessQueryGet();
++        return ProcessQueryGet(l974_neutral);
+     case MAXWELL3D_REG_INDEX(render_enable.mode):
+         return ProcessQueryCondition();
+     case MAXWELL3D_REG_INDEX(clear_report_value):
+@@ -887,7 +936,7 @@ void Maxwell3D::StampQueryResult(Core::System& system, u64 payload, bool long_qu
+     }
+ }
+ 
+-void Maxwell3D::ProcessQueryGet() {
++void Maxwell3D::ProcessQueryGet(bool track_fast_draw) {
+     // EDEN_UP_QUERY_STATS (nx2_query_light.h)
+     const bool query_stats = VideoCommon::QueryLight::StatsEnabled();
+     const u64 stats_start = query_stats ? VideoCommon::Nx2Profile::Now() : 0;
+@@ -905,6 +954,15 @@ void Maxwell3D::ProcessQueryGet() {
+         static_cast<VideoCommon::QueryType>(regs.report_semaphore.query.report.Value());
+     const u32 payload = regs.report_semaphore.payload;
+     const u32 subreport = regs.report_semaphore.query.sub_report;
++    if (VideoCommon::Nx2FastDraw::Enabled() && track_fast_draw) {
++        const auto operation = regs.report_semaphore.query.operation.Value();
++        if (operation == Regs::ReportSemaphore::Operation::Release ||
++            operation == Regs::ReportSemaphore::Operation::ReportOnly) {
++            // This runs on the back before the query is queued, including aliased mappings.
++            const u64 bytes = regs.report_semaphore.query.short_query != 0 ? 4 : 16;
++            NoteFastDrawConstantData(sequence_address, sequence_address + bytes);
++        }
++    }
+     switch (regs.report_semaphore.query.operation) {
+     case Regs::ReportSemaphore::Operation::Release:
+         if (regs.report_semaphore.query.short_query != 0) {
+diff --git a/src/video_core/engines/maxwell_3d.h b/src/video_core/engines/maxwell_3d.h
+index 88b0965..41aea80 100644
+--- a/src/video_core/engines/maxwell_3d.h
++++ b/src/video_core/engines/maxwell_3d.h
+@@ -3287,6 +3287,12 @@ public:
+     static bool IsFastDrawParameter(u32 method);
+     /// Methods fast draw records as light changes (constant buffer data and binds).
+     static bool IsFastDrawDeltaMethod(u32 method);
++    /// EDEN_UP_L974_CHAIN: report operands, MME memory words (front macros only), the vertex id
++    /// base, counter resets and the render condition are draw parameters.
++    static bool IsL974DrawParameter(u32 method);
++    /// EDEN_UP_L974_CHAIN: a report that is not a fence release, a counter reset or a render
++    /// condition: executed, ends no reuse (the report's destination is recorded).
++    static bool IsL974NeutralMethod(u32 method, u32 argument);
+     /// A vertex stream's address, size or limit (not its stride or enable).
+     static bool IsFastDrawVertexBuffer(u32 method);
+     /// EDEN_UP_FAST_DRAW_OOT_EXEMPT: state that nothing a delta draw keeps depends on...
+@@ -3358,7 +3364,7 @@ private:
+     void ProcessFirmwareCall4();
+ 
+     /// Handles a write to the QUERY_GET register.
+-    void ProcessQueryGet();
++    void ProcessQueryGet(bool track_fast_draw);
+ 
+     /// Writes the query result accordingly.
+     void StampQueryResult(Core::System& system, u64 payload, bool long_query);
+diff --git a/src/video_core/nx2_fast_draw.h b/src/video_core/nx2_fast_draw.h
+index 9314655..0681edc 100644
+--- a/src/video_core/nx2_fast_draw.h
++++ b/src/video_core/nx2_fast_draw.h
+@@ -105,6 +105,12 @@ inline constexpr std::array<const char*, static_cast<size_t>(Reason::Count)> rea
+     return exempt;
+ }
+ 
++/// EDEN_UP_L974_CHAIN, read first by Maxwell3D's constructor (Value), before either GPU thread
++/// runs: one relaxed load (Peek), without Value's first-use guard.
++[[nodiscard]] inline bool L974ChainEnabled() noexcept {
++    return Common::LiveSwitch::Peek<Common::LiveSwitch::Id::L974Chain>() != 0;
++}
++
+ /// EDEN_UP_L949_UBO_KEEP=1 with EDEN_UP_FAST_DRAW=1 (zortos293/Lichii #949: 6b38851501 and
+ /// 3e86407514, zortos293): a delta draw binds a small streamed uniform buffer from the stream
+ /// allocation the previous draw made for the same stage, slot, address and size in the same
+@@ -151,9 +157,21 @@ inline std::atomic<u64> g_serial{1};
+ /// The last break's reason and, for Register and Method, its 3D method (diagnostics).
+ inline std::atomic<u32> g_last_break{};
+ 
++/// Set once by Maxwell3D's constructor: the 10-second log line will be written
++/// (EDEN_NX2_GPU_PROFILE or EDEN_UP_FAST_DRAW_VERIFY), so Break counts each reason.
++inline std::atomic<bool> g_chain_diagnostics{false};
++[[nodiscard]] inline bool ChainDiagnosticsEnabled() noexcept {
++    return g_chain_diagnostics.load(std::memory_order_relaxed);
++}
++
++inline std::array<std::atomic<u64>, static_cast<size_t>(Reason::Count)> g_break_counts{};
++
+ /// Any thread.
+ inline void Break(Reason reason, u32 method = 0) {
+     if (Enabled()) {
++        if (ChainDiagnosticsEnabled()) {
++            g_break_counts[static_cast<size_t>(reason)].fetch_add(1, std::memory_order_relaxed);
++        }
+         g_serial.fetch_add(1, std::memory_order_relaxed);
+         g_last_break.store(static_cast<u32>(reason) | (method << 8), std::memory_order_relaxed);
+     }
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 722a144..54c44ce 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -476,18 +476,37 @@ void RasterizerVulkan::ReportFastDraws() {
+     const auto per_second = [&](FullDraw reason) {
+         return static_cast<double>(stats.full[static_cast<size_t>(reason)]) / seconds;
+     };
++    std::string chain_summary;
++    if (VideoCommon::Nx2FastDraw::ChainDiagnosticsEnabled()) {
++        const u64 total = stats.prepare_draws[0] + stats.prepare_draws[1];
++        std::string reasons;
++        for (size_t i = 0; i < VideoCommon::Nx2FastDraw::g_break_counts.size(); ++i) {
++            const u64 count = VideoCommon::Nx2FastDraw::g_break_counts[i].exchange(
++                0, std::memory_order_relaxed);
++            reasons += fmt::format(" {}={}", VideoCommon::Nx2FastDraw::reason_names[i], count);
++        }
++        chain_summary = fmt::format(" | chained {}/{} ({:.2f}%, verify includes would-chain) | break events:{}",
++                                    stats.chained, total, total ? 100.0 * stats.chained / total : 0.0,
++                                    reasons);
++        chain_summary += " | full counts:";
++        static constexpr std::array names{"ineligible", "kind", "state", "submit", "renderpass",
++                                           "pipeline", "handle_bind", "handle_data", "lock", "images"};
++        for (size_t i = 0; i < names.size(); ++i) {
++            chain_summary += fmt::format(" {}={}", names[i], stats.full[i]);
++        }
++    }
+     LOG_INFO(Render_Vulkan,
+              "Fast draw per second: {:.0f} delta | full: {:.0f} after an ineligible draw, {:.0f} "
+              "different kind, {:.0f} state changed, {:.0f} after a submit, {:.0f} render pass or "
+              "pipeline changed, {:.0f} pipeline takes no delta draws, {:.0f} handle buffer bound, "
+              "{:.0f} handle data written, {:.0f} changed before the lock, {:.0f} sampled image to "
+-             "prepare",
++             "prepare{}",
+              static_cast<double>(stats.delta) / seconds, per_second(FullDraw::NoCandidate),
+              per_second(FullDraw::Kind), per_second(FullDraw::StateChanged),
+              per_second(FullDraw::Submitted), per_second(FullDraw::RenderPass),
+              per_second(FullDraw::DeltaPipeline), per_second(FullDraw::HandleBind),
+              per_second(FullDraw::HandleData), per_second(FullDraw::ChangedBeforeLock),
+-             per_second(FullDraw::SampledImages));
++             per_second(FullDraw::SampledImages), chain_summary);
+     static constexpr std::array<const char*, static_cast<size_t>(Ineligible::Count)>
+         ineligible_names{"indirect",       "mesh",           "not built",
+                          "writes images",  "transform feedback", "inline index",
+@@ -1134,6 +1153,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
+             ++fast_draw_stats.binding_mismatches;
+         }
+     }
++    if ((delta_draw || verify_draw) && FastDraw::ChainDiagnosticsEnabled()) ++fast_draw_stats.chained;
+     mesh_compute_draw = mesh_runs_as_compute ? pipeline->LastMeshComputeDraw()
+                                              : GraphicsPipeline::MeshComputeDraw{};
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.h b/src/video_core/renderer_vulkan/vk_rasterizer.h
+index 7334d62..46eac90 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.h
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.h
+@@ -339,6 +339,7 @@ private:
+     };
+     enum class DrawPath : u8 { Full, Delta, Count };
+     struct FastDrawStats {
++        u64 chained{}; // actual delta or verified would-chain, after Configure succeeds
+         u64 delta{};
+         std::array<u64, static_cast<size_t>(FullDraw::Count)> full{};
+         std::array<u64, static_cast<size_t>(Ineligible::Count)> ineligible{};

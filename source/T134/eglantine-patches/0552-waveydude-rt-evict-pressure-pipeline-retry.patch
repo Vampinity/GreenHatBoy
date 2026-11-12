@@ -1,0 +1,399 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: [PATCH] waveydude: fresh render targets leave early under memory pressure; a pipeline worker retries once after out of memory
+
+Two of the three changes of waveydude/Eglantine-PS5- (branch ocarina-t85-town, commit d7b5103bd),
+ported onto this tree; the third, his driver patch for the scratch rings, is in the driver series as
+lead-mesh-26. All are off unless set.
+
+- EDEN_NX2_RT_EVICT_PRESSURE=1 (exact 1; his inner patch 0913, from PS5_Lichii 0227 by mihawk-99,
+  Fritchii#34 / Lichii#1023 by Ghostwolf13). A render target of a Switch 2 title that the GPU has
+  never written starts undefined instead of loading the guest memory under it, and is queued.
+  While the texture cache is over its expected size, a queued target not used for
+  EDEN_NX2_RT_EVICT_AGE_FRAMES frames (1 to 3600, 60 when unset or unreadable) is deleted without
+  a download. One that is bound, decoding or waiting for a download is checked again, four times
+  at most, then counts as lasting. Boot-fixed: the queue is state. His tree takes the age in the
+  switch itself (=120); here that form logs one line saying how to write it.
+  On top of his logic, from our review: a target whose contents the guest reads back is never
+  dropped (relocation_guard_noted, forced_flushed, dma_downloaded: the cold sweep's own rule), at
+  most 16 deletions a frame as the cold sweep, and the hitch trace names the reason "rt-evict".
+  The image flag is bit 25 (24 is GuestBytes here).
+- EDEN_NX2_GRAPHICS_PIPELINE_OOM_RETRY=1 (exact 1; his inner patch 0912). A graphics pipeline
+  built on a worker that fails with out of host or device memory asks the front end for 16 MiB
+  back (eden_radv_out_of_memory, the same call the driver's own retry makes), sleeps 16 ms and
+  tries once more; a second failure takes the existing path (0532: the pipeline is left out). A
+  live switch (common/live_switch.h): each creation reads it once and keeps nothing.
+  One log line per 10 s at most: "... recovered a pipeline" or "... retry failed".
+
+What the console has to show for the first: a target that starts undefined shows garbage if a game
+draws onto guest-prepared memory without clearing it, and one dropped after its idle time and read
+later would be stale or black (a pause or map backdrop). Look for "RT evict: N unused fresh render
+targets deleted early so far".
+
+Drafted with an AI tool and reviewed (anchors of prepare-vulkan-port.py counted per file:
+unchanged); not left in: his inner 0488, which our 0516 already covers.
+
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -126,6 +126,9 @@
+     /// EDEN_UP_ASYNC_DRAW_WAITS. Per-draw skip/wait policy; existing jobs
+     /// are adopted, claimed back or waited for through the normal paths.
+     AsyncDrawWaits,
++    /// EDEN_NX2_GRAPHICS_PIPELINE_OOM_RETRY. Each worker creation chooses one bounded retry;
++    /// a retry already started finishes even if the switch changes in the meantime.
++    PipelineOomRetry,
+     Count,
+ };
+ 
+@@ -212,6 +215,7 @@
+     {"EDEN_NX2_FLUSH_DRAWS", ParseFlushDraws, false, -1},
+     {"EDEN_UP_UPLOAD_RUNS", ParseExactOne, false, -1},
+     {"EDEN_UP_ASYNC_DRAW_WAITS", ParseExactOne, false, -1},
++    {"EDEN_NX2_GRAPHICS_PIPELINE_OOM_RETRY", ParseExactOne, false, -1},
+ }};
+ 
+ /// EDEN_UP_LIVE_SWITCHES=1 (exact "1"), read once.
+diff --git a/src/common/slot_vector.h b/src/common/slot_vector.h
+--- a/src/common/slot_vector.h
++++ b/src/common/slot_vector.h
+@@ -138,6 +138,15 @@
+         ResetStorageBit(id.Value());
+     }
+ 
++    /// Whether `id` names a live slot (queues that keep ids across frames check before use).
++    [[nodiscard]] bool contains(SlotId id) const noexcept {
++        if (!id) {
++            return false;
++        }
++        const u32 index = id.Value();
++        return index / 64 < stored_bitset.size() && ((stored_bitset[index / 64] >> (index % 64)) & 1) != 0;
++    }
++
+     [[nodiscard]] Iterator begin() noexcept {
+         const auto it = std::ranges::find_if(stored_bitset, [](u64 value) { return value != 0; });
+         if (it == stored_bitset.end()) {
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -12,6 +12,12 @@
+ #include <iostream>
+ #include <optional>
+ #include <span>
++#ifdef PS5_NATIVE
++#include <chrono>
++#include <cstdint>
++#include <thread>
++#include "common/live_switch.h"
++#endif
+ 
+ #include <boost/container/small_vector.hpp>
+ #include <boost/container/static_vector.hpp>
+@@ -36,7 +42,7 @@
+ #include "video_core/texture_cache/texture_cache.h"
+ #include "video_core/vulkan_common/vulkan_device.h"
+ #include "video_core/gpu_logging/gpu_logging.h"
+-#include "common/pe_switch.h"
++#include "common/live_switch.h"
+ #include "common/settings.h"
+ #include "video_core/nx2_fast_draw.h"
+ #include "video_core/nx2_profile.h"
+@@ -48,6 +54,12 @@
+ #define LAMBDA_FORCEINLINE [[msvc::forceinline]]
+ #else
+ #define LAMBDA_FORCEINLINE
++#endif
++
++#ifdef PS5_NATIVE
++// headless/performance.cpp: what the driver calls when its own memory runs out (the heap's empty
++// pages, cold guest memory). Weak: a build without the PS5 front end retries without it.
++extern "C" std::uint64_t eden_radv_out_of_memory(std::uint64_t bytes) __attribute__((weak));
+ #endif
+ 
+ namespace Vulkan {
+@@ -485,11 +497,12 @@
+         }
+     }
+ 
+-    auto func{[this, shader_notify, &render_pass_cache, pipeline_statistics] {
++    auto func{[this, shader_notify, &render_pass_cache, pipeline_statistics,
++               on_worker = worker_thread != nullptr] {
+         const VkRenderPass render_pass{render_pass_cache.Get(MakeRenderPassKey(key.state, device))};
+         Validate();
+         try {
+-            MakePipeline(render_pass);
++            MakePipeline(render_pass, on_worker);
+             if (RunsMeshAsCompute()) {
+                 MakeMeshComputePipelines();
+             }
+@@ -1331,7 +1344,7 @@
+     return true;
+ }
+ 
+-void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
++void GraphicsPipeline::MakePipeline(VkRenderPass render_pass, [[maybe_unused]] bool on_worker) {
+     FixedPipelineState::DynamicState dynamic{};
+     if (!key.state.extended_dynamic_state) {
+         dynamic = key.state.dynamic_state;
+@@ -1776,8 +1789,7 @@
+         flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+     }
+ 
+-    pipeline = DriverBuildReport::Build(DriverBuildReport::Kind::Graphics, [&] {
+-        return device.GetLogical().CreateGraphicsPipeline({
++    const VkGraphicsPipelineCreateInfo pipeline_ci{
+         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+         .pNext = nullptr,
+         .flags = flags,
+@@ -1797,8 +1809,60 @@
+         .subpass = 0,
+         .basePipelineHandle = nullptr,
+         .basePipelineIndex = 0,
+-    }, *pipeline_cache);
+-    });
++    };
++#ifdef PS5_NATIVE
++    const bool retry_enabled = Common::LiveSwitch::Value<Common::LiveSwitch::Id::PipelineOomRetry>() != 0;
++    if (retry_enabled && on_worker) {
++        try {
++            pipeline = DriverBuildReport::Build(DriverBuildReport::Kind::Graphics, [&] {
++                return device.GetLogical().CreateGraphicsPipeline(pipeline_ci, *pipeline_cache);
++            });
++        } catch (const vk::Exception& exception) {
++            const VkResult result = exception.GetResult();
++            if (result != VK_ERROR_OUT_OF_HOST_MEMORY && result != VK_ERROR_OUT_OF_DEVICE_MEMORY) {
++                throw;
++            }
++            // The driver call has unwound. Only on a pipeline worker: the renderer's inline
++            // builds do not wait here. Out of host memory is mostly the shader compiler's own
++            // allocations, which the driver's retry (lead-mesh-22) never sees: ask for the same
++            // memory it would (16 MiB), give the collector a frame, and try once more.
++            const std::uint64_t freed =
++                eden_radv_out_of_memory ? eden_radv_out_of_memory(std::uint64_t{16} << 20) : 0;
++            std::this_thread::sleep_for(std::chrono::milliseconds{16});
++            // One shared rate limit for both outcomes, including concurrent workers.
++            static std::atomic<s64> last_log_ns{};
++            const auto log_due = [&] {
++                const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                    std::chrono::steady_clock::now().time_since_epoch()).count();
++                s64 last = last_log_ns.load(std::memory_order_relaxed);
++                return now - last >= 10'000'000'000LL &&
++                       last_log_ns.compare_exchange_strong(last, now, std::memory_order_relaxed);
++            };
++            try {
++                pipeline = DriverBuildReport::Build(DriverBuildReport::Kind::Graphics, [&] {
++                    return device.GetLogical().CreateGraphicsPipeline(pipeline_ci, *pipeline_cache);
++                });
++            } catch (const vk::Exception&) {
++                if (log_due()) {
++                    LOG_WARNING(Render_Vulkan,
++                                "EDEN_NX2_GRAPHICS_PIPELINE_OOM_RETRY retry failed ({} MiB given back)",
++                                freed >> 20);
++                }
++                throw;
++            }
++            if (log_due()) {
++                LOG_INFO(Render_Vulkan,
++                         "EDEN_NX2_GRAPHICS_PIPELINE_OOM_RETRY recovered a pipeline ({} MiB given back)",
++                         freed >> 20);
++            }
++        }
++    } else
++#endif
++    {
++        pipeline = DriverBuildReport::Build(DriverBuildReport::Kind::Graphics, [&] {
++                return device.GetLogical().CreateGraphicsPipeline(pipeline_ci, *pipeline_cache);
++            });
++    }
+ 
+     // Log graphics pipeline creation
+     if (GPU::Logging::IsActive()) {
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
+@@ -282,7 +282,7 @@
+     bool ConfigureDraw(const RescalingPushConstant& rescaling,
+                        const RenderAreaPushConstant& render_are);
+ 
+-    void MakePipeline(VkRenderPass render_pass);
++    void MakePipeline(VkRenderPass render_pass, bool on_worker);
+     void MakeMeshComputePipelines();
+     bool RecordMeshComputePasses(const void* descriptor_data, VkDeviceSize descriptor_buffer_offset,
+                                  u32 descriptor_buffer_chunk, const RescalingPushConstant& rescaling,
+diff --git a/src/video_core/texture_cache/image_base.h b/src/video_core/texture_cache/image_base.h
+--- a/src/video_core/texture_cache/image_base.h
++++ b/src/video_core/texture_cache/image_base.h
+@@ -68,6 +68,8 @@
+     /// then not the newest, so MarkStale leaves these pages alone. A new image joined from
+     /// others takes it from them (JoinImages). Never cleared; only set with the switch on.
+     GuestBytes = 1 << 24,
++    /// A render target the GPU had never written when it was bound (EDEN_NX2_RT_EVICT_PRESSURE).
++    TransientTarget = 1 << 25,
+ };
+ DECLARE_ENUM_FLAG_OPERATORS(ImageFlagBits)
+ 
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -1567,6 +1567,77 @@
+         debug_stats = Common::Log::IsLevelEnabled(Common::Log::Class::HW_GPU, Common::Log::Level::Debug);
+         gc_deletes = gc_costly_deletes = gc_download_deletes = async_decodes_queued = 0;
+         images_created = images_deleted = 0;
++    }
++    if (const u64 rt_evict = RtEvictPressureFrames();
++        rt_evict != 0 && total_used_memory > expected_memory) {
++        const auto queued = [](ImageId image_id, const auto& downloads) {
++            return std::ranges::any_of(downloads, [image_id](const auto& download) {
++                return download.is_swizzle && download.object_id == image_id;
++            });
++        };
++        // At most 16 deletions a frame, as the cold sweep: a burst of them is a hitch.
++        for (size_t budget = transient_targets.size(), deleted = 0;
++             budget != 0 && deleted < 16 && !transient_targets.empty(); --budget) {
++            TransientTarget entry = transient_targets.front();
++            if (frame_tick - entry.check_tick < rt_evict) {
++                break;
++            }
++            transient_targets.pop_front();
++            if (!slot_images.contains(entry.id)) {
++                continue;
++            }
++            Image& image = slot_images[entry.id];
++            if (image.allocation_tick != entry.allocation_tick ||
++                False(image.flags & ImageFlagBits::TransientTarget) ||
++                False(image.flags & ImageFlagBits::Registered)) {
++                continue;
++            }
++            const bool bound = std::ranges::any_of(image.image_view_ids, [this](ImageViewId view) {
++                return render_targets.depth_buffer_id == view ||
++                       std::ranges::find(render_targets.color_buffer_ids, view) !=
++                           render_targets.color_buffer_ids.end();
++            });
++            const u64 last_use = image.lru_index != SIZE_MAX ? lru_cache.Tick(image.lru_index) : frame_tick;
++            // Never a target whose contents the guest reads back: the cold sweep's own rule.
++            if (frame_tick - last_use < rt_evict || bound ||
++                True(image.flags & ImageFlagBits::IsDecoding) ||
++                image.relocation_guard_noted != 0 || image.info.forced_flushed ||
++                image.info.dma_downloaded ||
++                queued(entry.id, uncommitted_downloads) ||
++                std::ranges::any_of(committed_downloads,
++                                    [&](const auto& downloads) { return queued(entry.id, downloads); })) {
++                if (++entry.survived < 4) {
++                    entry.check_tick = frame_tick;
++                    transient_targets.push_back(entry);
++                } else {
++                    image.flags &= ~ImageFlagBits::TransientTarget;
++                }
++                continue;
++            }
++            transient_evicted_bytes += image.unswizzled_size_bytes;
++            MarkStale(image);
++            if (True(image.flags & ImageFlagBits::Tracked)) {
++                UntrackImage(image, entry.id);
++            }
++            trace_delete_reason = "rt-evict";
++            UnregisterImage(entry.id);
++            DeleteImage(entry.id, false);
++            ++transient_evictions;
++            ++deleted;
++        }
++    } else if (transient_targets.size() > 8192) {
++        transient_targets.erase(transient_targets.begin(),
++                                transient_targets.begin() + (transient_targets.size() - 8192));
++    }
++    const auto transient_now = RtEvictPressureFrames() != 0
++                                   ? std::chrono::steady_clock::now()
++                                   : std::chrono::steady_clock::time_point{};
++    if (transient_evictions != logged_transient_evictions &&
++        transient_now - transient_log_time >= std::chrono::seconds{10}) {
++        LOG_INFO(HW_GPU, "RT evict: {} unused fresh render targets deleted early so far ({} MiB), {} waiting",
++                 transient_evictions, transient_evicted_bytes >> 20, transient_targets.size());
++        logged_transient_evictions = transient_evictions;
++        transient_log_time = transient_now;
+     }
+     // EDEN_UP_FRITCHII_CHURN=1 (Fritchii dcbd696438): what the caches made and destroyed.
+     if (Churn::Enabled() && frame_tick % 600 == 0) {
+@@ -6076,6 +6147,21 @@
+         return ImageViewId{};
+     }
+     Image& image = slot_images[image_id];
++    if (RtEvictPressureFrames() != 0 && Tegra::g_nx2_ampere.load(std::memory_order_relaxed) &&
++        image.modification_tick == 0 && True(image.flags & ImageFlagBits::CpuModified) &&
++        False(image.flags & ImageFlagBits::GpuModified) &&
++        False(image.flags & (ImageFlagBits::SparseLayers | ImageFlagBits::SparseTiles |
++                             ImageFlagBits::Unbacked)) &&
++        image.dirty_layers.empty()) {
++        image.flags &= ~ImageFlagBits::CpuModified;
++        if (False(image.flags & ImageFlagBits::Tracked)) {
++            TrackImage(image, image_id);
++        }
++        if (False(image.flags & ImageFlagBits::TransientTarget)) {
++            image.flags |= ImageFlagBits::TransientTarget;
++            transient_targets.push_back({image_id, image.allocation_tick, frame_tick, 0});
++        }
++    }
+     const ImageViewType view_type = RenderTargetImageViewType(info);
+     SubresourceBase base;
+     if (image.info.type == ImageType::Linear) {
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -6,7 +6,9 @@
+ 
+ #pragma once
+ 
++#include <algorithm>
+ #include <atomic>
++#include <cstdlib>
+ #include <chrono>
+ #include <deque>
+ #include <limits>
+@@ -30,6 +32,7 @@
+ #include "common/hash.h"
+ #include "common/literals.h"
+ #include "common/lru_cache.h"
++#include "common/logging.h"
+ #include "common/pe_switch.h"
+ #include <ranges>
+ #include "common/scratch_buffer.h"
+@@ -1040,6 +1043,41 @@
+ 
+     std::vector<PendingDownload> uncommitted_downloads;
+     std::deque<std::vector<PendingDownload>> committed_downloads;
++
++    /// EDEN_NX2_RT_EVICT_PRESSURE=1 (off unless set; PS5_Lichii 0227, Fritchii#34,
++    /// Lichii#1023): a render target the GPU never wrote starts undefined instead of loading the
++    /// guest memory under it, and is queued. While the cache is over its expected size, a queued
++    /// target unused for that many frames is deleted without a download; one still in use is
++    /// checked again, up to 4 times, then counts as lasting.
++    struct TransientTarget {
++        ImageId id;
++        u64 allocation_tick;
++        u64 check_tick;
++        u32 survived;
++    };
++    std::deque<TransientTarget> transient_targets;
++    u64 transient_evictions{};
++    u64 transient_evicted_bytes{};
++    u64 logged_transient_evictions{};
++    std::chrono::steady_clock::time_point transient_log_time{};
++    [[nodiscard]] static u64 RtEvictPressureFrames() {
++        static const u64 frames = [] {
++            if (!Common::PeSwitch("EDEN_NX2_RT_EVICT_PRESSURE")) {
++                // waveydude's tree takes the age here (=120); ours takes exact 1 and says so.
++                const char* const raw = std::getenv("EDEN_NX2_RT_EVICT_PRESSURE");
++                if (raw != nullptr && raw[0] != '\0' && raw[0] != '0') {
++                    LOG_WARNING(HW_GPU, "EDEN_NX2_RT_EVICT_PRESSURE={} is off: write =1 and "
++                                        "EDEN_NX2_RT_EVICT_AGE_FRAMES=<frames>", raw);
++                }
++                return u64{0};
++            }
++            // The age is a boot setting of its own: 1 to 3600 frames, 60 when unset or unreadable.
++            const char* value = std::getenv("EDEN_NX2_RT_EVICT_AGE_FRAMES");
++            const u64 age = value != nullptr ? std::strtoull(value, nullptr, 10) : u64{0};
++            return age == 0 ? u64{60} : (std::min)(age, u64{3600});
++        }();
++        return frames;
++    }
+     std::vector<AsyncBuffer> uncommitted_async_buffers;
+     std::deque<std::vector<AsyncBuffer>> async_buffers;
+     std::deque<AsyncBuffer> async_buffers_death_ring;

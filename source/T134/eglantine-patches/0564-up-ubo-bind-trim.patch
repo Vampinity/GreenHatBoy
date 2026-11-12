@@ -1,0 +1,298 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: uniform bind trims, one GPU-modified walk and one bank set insert (EDEN_UP_UBO_BIND_TRIM)
+
+DRAFT, not built. Our own work (no upstream port). Gated by EDEN_UP_UBO_BIND_TRIM (exact 1), a
+live switch (Id UboBindTrim, not armed); off by default, needs nothing at boot. On: a uniform
+bind reuses its first GPU-modified walk for use_fast_buffer unless a tracker-changing block ran
+in between, and skips native_indirect_uniforms_this_frame.insert for a bank its per-slot memo
+stamped this frame. EDEN_UP_UBO_BIND_TRIM_VERIFY=1 (boot, BufferCache constructor) makes both
+anyway and compares. 10 s line while on: "EDEN_UP_UBO_BIND_TRIM: X s, N draws; ...".
+
+Reviewed draft from the draws job, v2: reviewer decided the plain reuse case inline in the &&
+chain instead of an out-of-line call, and replaced the one-frame "skip size now" field with
+"skip size 0 in N of M frames (now X)" (two new counters); gain estimate lowered to about
++0.05-0.15 fps in the review.
+---
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+index 0ca4328..3a80fc5 100644
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -181,6 +181,10 @@ enum class Id : u8 {
+     /// EDEN_UP_UBO_SHARE. Each small uniform bind looks for a donor; a donor's copy holds exactly
+     /// its slot bytes, checked against guest memory at every use.
+     UboShare,
++    /// EDEN_UP_UBO_BIND_TRIM. Each uniform bind reuses its own GPU-modified walk or walks again,
++    /// and skips the bank set's insert only for a bank its memo stamped this frame; the memo is
++    /// written only while it is on and checked against the frame, so any draw may flip it.
++    UboBindTrim,
+     Count,
+ };
+ 
+@@ -304,6 +308,7 @@ inline constexpr std::array<Def, NumSwitches> kDefs{{
+     {"EDEN_UP_AREA_BUDGET", ParseExactOne, false, -1},
+     {"EDEN_UP_DMA_MISS_WAIT", ParseExactOne, false, -1},
+     {"EDEN_UP_UBO_SHARE", ParseExactOne, false, -1},
++    {"EDEN_UP_UBO_BIND_TRIM", ParseExactOne, false, -1},
+ }};
+ 
+ static_assert(kDefs[static_cast<size_t>(Id::PollBackoffUs)].needs ==
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index be885ff..7e34b80 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -48,6 +48,13 @@ BufferCache<P>::BufferCache(Tegra::MaxwellDeviceMemoryManager& device_memory_, R
+     // A new runtime has a new scheduler (its ticks restart) and a new stream buffer: whatever the
+     // stream uniform reuse remembers refers to the old ones. Before the early return below.
+     VideoCommon::ResetUniformStreamReuse<Runtime>();
++    // EDEN_UP_UBO_BIND_TRIM: the first use reads the start value, so the binds can Peek it.
++    static_cast<void>(Common::LiveSwitch::Value<Common::LiveSwitch::Id::UboBindTrim>());
++    nx2_ubo_trim_verify = Common::PeSwitch("EDEN_UP_UBO_BIND_TRIM_VERIFY");
++    if (nx2_ubo_trim_verify) {
++        LOG_INFO(HW_GPU, "EDEN_UP_UBO_BIND_TRIM_VERIFY on: while EDEN_UP_UBO_BIND_TRIM is on, "
++                         "skipped walks and set lookups are made anyway and compared");
++    }
+     // Ensure the first slot is used for the null buffer
+     void(slot_buffers.insert(runtime, NullBufferParams{}));
+     gpu_modified_ranges.Clear();
+@@ -229,6 +236,12 @@ void BufferCache<P>::TickFrame() {
+ 
+     const bool skip_preferred = hits * 256 < shots * 251;
+     channel_state->uniform_buffer_skip_cache_size = skip_preferred ? DEFAULT_SKIP_CACHE_SIZE : 0;
++    if (Common::LiveSwitch::Peek<Common::LiveSwitch::Id::UboBindTrim>() != 0) [[unlikely]] {
++        Nx2UboTrimReport();
++    } else if (nx2_ubo_trim_stats.since != std::chrono::steady_clock::time_point{}) [[unlikely]] {
++        // Switched off: the next on window starts afresh.
++        nx2_ubo_trim_stats = {};
++    }
+ 
+     // If we can obtain the memory info, use it instead of the estimate.
+     if (runtime.CanReportMemoryUsage()) {
+@@ -1549,6 +1562,9 @@ void BufferCache<P>::DisableGraphicsUniformBuffer(size_t stage, u32 index) {
+ 
+ template <class P>
+ void BufferCache<P>::UpdateGraphicsBuffers(bool is_indexed) {
++    if (Common::LiveSwitch::Peek<Common::LiveSwitch::Id::UboBindTrim>() != 0) [[unlikely]] {
++        ++nx2_ubo_trim_stats.draws; // EDEN_UP_UBO_BIND_TRIM: the 10 s line's per-draw figures
++    }
+     do {
+         channel_state->has_deleted_buffers = false;
+         DoUpdateGraphicsBuffers(is_indexed);
+@@ -3042,11 +3058,23 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32
+         const char* const value = std::getenv("EDEN_NX2_BANK_STATS");
+         return value != nullptr && value[0] != '0';
+     }();
+-    const bool native_bank = has_host_buffer && size != 0 && gpu_memory != nullptr &&
+-                             gpu_memory->UsesNativeTiling() &&
+-                             !memory_tracker.IsRegionGpuModified(device_addr, size);
++    // EDEN_UP_UBO_BIND_TRIM (live): the GPU-modified walk below is kept for use_fast_buffer, which
++    // walks the same range again, unless a block between the two can change the tracker's bits
++    // (tracker_touched). Off: the second walk is made as before. Same calls in the same order.
++    const bool trim = Common::LiveSwitch::Peek<Common::LiveSwitch::Id::UboBindTrim>() != 0;
++    bool gpu_walked = false;
++    bool gpu_modified = false;
++    bool tracker_touched = false;
++    const bool walk_bank = has_host_buffer && size != 0 && gpu_memory != nullptr &&
++                           gpu_memory->UsesNativeTiling();
++    if (walk_bank) {
++        gpu_modified = memory_tracker.IsRegionGpuModified(device_addr, size);
++        gpu_walked = true;
++    }
++    const bool native_bank = walk_bank && !gpu_modified;
+     if ((bank_mode == '4' || bank_stats) && native_bank &&
+         (*channel_state->uniform_buffer_sizes)[stage][index] == 0x10000) {
++        tracker_touched = true;
+         Nx2CheckBankPages(device_addr, size, bank_mode == '4', bank_stats);
+     }
+     // EDEN_UP_BANK_HASH_SKIP: a bank the once-per-frame upload below just took from guest memory
+@@ -3056,7 +3084,9 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32
+     if (bank_mode != '0' && bank_mode != '4' && native_bank &&
+         (bank_mode == '3' || (*channel_state->uniform_buffer_sizes)[stage][index] == 0x10000) &&
+         (bank_mode == '2' || bank_mode == '3' ||
+-         native_indirect_uniforms_this_frame.insert(device_addr).second)) {
++         (trim ? Nx2BankFirstThisFrame(stage, index, device_addr)
++               : native_indirect_uniforms_this_frame.insert(device_addr).second))) {
++        tracker_touched = true; // UploadMemory, MarkRegionAsCpuModified, the hash skip's calls
+         // The bank size is only an upper limit: stop at the end of the mapped memory.
+         u64 mapped_size = 0;
+         while (mapped_size < size &&
+@@ -3140,11 +3170,19 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32
+     // guest's current bytes. Independent of EDEN_NX2_BANK_REUPLOAD: no snapshots, no compares.
+     if (Core::BankFlagPages() && native_bank &&
+         (*channel_state->uniform_buffer_sizes)[stage][index] == 0x10000) {
++        tracker_touched = true;
+         Nx2BankFlagPages(device_addr, size);
+     }
+     const bool use_fast_buffer = needs_alignment_stream
+         || (has_host_buffer && size <= channel_state->uniform_buffer_skip_cache_size
+-            && !memory_tracker.IsRegionGpuModified(device_addr, size));
++            && !(trim ? (gpu_walked && !tracker_touched && !nx2_ubo_trim_verify
++                             ? (++nx2_ubo_trim_stats.walks_saved, gpu_modified)
++                             : Nx2UboTrimGpuModified(device_addr, size, gpu_walked,
++                                                     tracker_touched, gpu_modified))
++                      : memory_tracker.IsRegionGpuModified(device_addr, size)));
++    if (trim) [[unlikely]] {
++        ++(use_fast_buffer ? nx2_ubo_trim_stats.stream_binds : nx2_ubo_trim_stats.classic_binds);
++    }
+     if (use_fast_buffer) {
+         OverwriteNoteRead(device_addr, size);
+         if constexpr (IS_OPENGL) {
+@@ -3474,6 +3512,110 @@ void BufferCache<P>::Nx2BankHashForget(DAddr device_addr, u64 size) {
+     }
+ }
+ 
++template <class P>
++bool BufferCache<P>::Nx2UboTrimGpuModified(DAddr device_addr, u32 size, bool walked,
++                                           bool touched, bool first) {
++    // EDEN_UP_UBO_BIND_TRIM: GPU-modified bits change only on GPUBack under this cache's mutex,
++    // held for the whole draw, so without a tracker-changing block since the first walk a walk
++    // of the same range gives the same answer.
++    Nx2UboTrimStats& stats = nx2_ubo_trim_stats;
++    if (!walked || touched) {
++        ++(walked ? stats.walks_redone : stats.walks_plain);
++        return memory_tracker.IsRegionGpuModified(device_addr, size);
++    }
++    if (!nx2_ubo_trim_verify) [[likely]] {
++        ++stats.walks_saved;
++        return first;
++    }
++    const bool now = memory_tracker.IsRegionGpuModified(device_addr, size);
++    ++stats.walks_verified;
++    if (now != first) {
++        ++stats.verify_bad;
++        if (nx2_ubo_trim_warnings < 32) {
++            ++nx2_ubo_trim_warnings;
++            LOG_WARNING(HW_GPU,
++                        "EDEN_UP_UBO_BIND_TRIM_VERIFY: the second walk of {:#x}+{:#x} says GPU "
++                        "modified {}, the first {}; the second is used",
++                        device_addr, size, now, first);
++        }
++    }
++    return now;
++}
++
++template <class P>
++bool BufferCache<P>::Nx2BankFirstThisFrame(size_t stage, u32 index, DAddr device_addr) {
++    // EDEN_UP_UBO_BIND_TRIM: native_indirect_uniforms_this_frame only grows between the
++    // TickFrame calls that clear it and move frame_tick, so a stamp of this frame for this
++    // address means the insert below ran this frame for it and would now answer false.
++    Nx2UboTrimStats& stats = nx2_ubo_trim_stats;
++    const u64 stamp = frame_tick + 1;
++    const bool in_range = stage < NUM_STAGES && index < NUM_GRAPHICS_UNIFORM_BUFFERS;
++    if (in_range && nx2_bank_seen_frame[stage][index] == stamp &&
++        nx2_bank_seen_addr[stage][index] == device_addr) {
++        if (!nx2_ubo_trim_verify) [[likely]] {
++            ++stats.bank_insert_skipped;
++            return false;
++        }
++        if (native_indirect_uniforms_this_frame.contains(device_addr)) {
++            ++stats.bank_insert_verified;
++            return false;
++        }
++        // Not in the set after all: the insert below gives the old answer (an upload).
++        ++stats.verify_bad;
++        if (nx2_ubo_trim_warnings < 32) {
++            ++nx2_ubo_trim_warnings;
++            LOG_WARNING(HW_GPU,
++                        "EDEN_UP_UBO_BIND_TRIM_VERIFY: bank {:#x} (stage {} slot {}) was stamped "
++                        "this frame but is not in the set; inserted and uploaded",
++                        device_addr, stage, index);
++        }
++    }
++    const bool first = native_indirect_uniforms_this_frame.insert(device_addr).second;
++    ++stats.bank_insert_done;
++    if (in_range) {
++        nx2_bank_seen_addr[stage][index] = device_addr;
++        nx2_bank_seen_frame[stage][index] = stamp;
++    }
++    return first;
++}
++
++template <class P>
++void BufferCache<P>::Nx2UboTrimReport() {
++    // EDEN_UP_UBO_BIND_TRIM: one line every 10 s while on (TickFrame).
++    Nx2UboTrimStats& stats = nx2_ubo_trim_stats;
++    // The skip size TickFrame just set holds for the frame that starts now: count each frame's.
++    ++stats.frames;
++    if (channel_state->uniform_buffer_skip_cache_size == 0) {
++        ++stats.frames_skip_off;
++    }
++    const auto now = std::chrono::steady_clock::now();
++    if (stats.since == std::chrono::steady_clock::time_point{}) {
++        stats.since = now;
++        return;
++    }
++    const auto elapsed = now - stats.since;
++    if (elapsed < std::chrono::seconds{10}) {
++        return;
++    }
++    const double seconds = std::chrono::duration<double>(elapsed).count();
++    const double draws = stats.draws != 0 ? static_cast<double>(stats.draws) : 1.0;
++    const u64 bank_checks =
++        stats.bank_insert_skipped + stats.bank_insert_verified + stats.bank_insert_done;
++    LOG_INFO(HW_GPU,
++             "EDEN_UP_UBO_BIND_TRIM: {:.1f} s, {} draws; per draw {:.2f} stream binds, {:.2f} "
++             "classic binds, {:.2f} bank set checks; skip size 0 in {} of {} frames (now {}); "
++             "second walks: {} saved, {} redone (tracker touched), {} plain (no first walk), {} "
++             "verified; bank set inserts: {} skipped, {} done, {} verified; verify differences {}",
++             seconds, stats.draws, static_cast<double>(stats.stream_binds) / draws,
++             static_cast<double>(stats.classic_binds) / draws,
++             static_cast<double>(bank_checks) / draws, stats.frames_skip_off, stats.frames,
++             channel_state->uniform_buffer_skip_cache_size, stats.walks_saved, stats.walks_redone,
++             stats.walks_plain, stats.walks_verified, stats.bank_insert_skipped,
++             stats.bank_insert_done, stats.bank_insert_verified, stats.verify_bad);
++    stats = {};
++    stats.since = now;
++}
++
+ template <class P>
+ void BufferCache<P>::Nx2BankFlagPages(DAddr device_addr, u64 size) {
+     // The flags must cover every device address (Frizti/Fritchii 9e8cb73ede).
+diff --git a/src/video_core/buffer_cache/buffer_cache_base.h b/src/video_core/buffer_cache/buffer_cache_base.h
+index f503d7b..30842ca 100644
+--- a/src/video_core/buffer_cache/buffer_cache_base.h
++++ b/src/video_core/buffer_cache/buffer_cache_base.h
+@@ -529,6 +529,44 @@ public:
+     bool any_buffer_uploaded = false;
+     /// Indirectly read banks of native programs already uploaded this frame.
+     std::unordered_set<DAddr> native_indirect_uniforms_this_frame;
++    /// EDEN_UP_UBO_BIND_TRIM (live): per (stage, cbuf index), the bank address whose insert into
++    /// native_indirect_uniforms_this_frame ran last while the switch was on, and frame_tick + 1 of
++    /// that frame (0: never). The set only grows until TickFrame clears it, and TickFrame moves
++    /// frame_tick in the same call, so a stamp of this frame for this address means the set holds
++    /// it. GPUBack, under mutex (all binds and TickFrame).
++    std::array<std::array<DAddr, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES> nx2_bank_seen_addr{};
++    std::array<std::array<u64, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES> nx2_bank_seen_frame{};
++    /// EDEN_UP_UBO_BIND_TRIM_VERIFY=1 (exact "1", read in the constructor): the skipped walk and
++    /// the skipped set lookup are made anyway and compared; on a difference their answer is used.
++    bool nx2_ubo_trim_verify = false;
++    /// EDEN_UP_UBO_BIND_TRIM: what the trims did since the last 10 s line. Counted only while the
++    /// switch is on; GPUBack, under mutex.
++    struct Nx2UboTrimStats {
++        u64 draws{};               ///< UpdateGraphicsBuffers calls (one per draw)
++        u64 stream_binds{};        ///< uniform binds that took the stream (fast) path
++        u64 classic_binds{};       ///< uniform binds that took the cached path
++        u64 walks_saved{};         ///< second GPU-modified walks answered from the first
++        u64 walks_verified{};      ///< ... made anyway and compared (_VERIFY)
++        u64 walks_redone{};        ///< second walks made: a tracker-changing block ran between
++        u64 walks_plain{};         ///< second walks made: no first walk (not a native title)
++        u64 bank_insert_skipped{}; ///< bank set inserts answered "seen" from the memo
++        u64 bank_insert_verified{}; ///< ... looked up anyway and found (_VERIFY)
++        u64 bank_insert_done{};    ///< bank set inserts made
++        u64 verify_bad{};          ///< _VERIFY differences (the made answer was used)
++        u64 frames{};              ///< TickFrame calls in this window
++        u64 frames_skip_off{};     ///< ... that left uniform_buffer_skip_cache_size at 0
++        std::chrono::steady_clock::time_point since{}; ///< start of this line's window
++    } nx2_ubo_trim_stats;
++    u64 nx2_ubo_trim_warnings = 0; ///< _VERIFY difference lines logged, at most 32
++    /// EDEN_UP_UBO_BIND_TRIM: the second GPU-modified walk of a uniform bind. `walked`: the first
++    /// walk ran, `touched`: a block that can change tracker bits ran after it, `first`: its answer.
++    [[nodiscard]] bool Nx2UboTrimGpuModified(DAddr device_addr, u32 size, bool walked,
++                                             bool touched, bool first);
++    /// EDEN_UP_UBO_BIND_TRIM: native_indirect_uniforms_this_frame.insert(device_addr).second, or
++    /// false without the insert when this slot's memo says the insert ran this frame.
++    [[nodiscard]] bool Nx2BankFirstThisFrame(size_t stage, u32 index, DAddr device_addr);
++    /// EDEN_UP_UBO_BIND_TRIM: the 10 s counter line (TickFrame, while on).
++    void Nx2UboTrimReport();
+     /// EDEN_UP_BANK_HASH_SKIP (zortos293/Lichii PR 1131): a native 64 KiB bank's bytes as its
+     /// last once-per-frame upload took them, by device address. An entry stands only while the
+     /// host buffer there still holds those bytes: every other write into its range drops it

@@ -1,0 +1,511 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: compact reports and recycled fence lists (EDEN_UP_REPORT_NO_ALLOC)
+
+DRAFT, not built. Ports Frizti/Fritchii 112ba4d (@Frizti) and the report part of
+zortos293/Lichii PR #1161, 792e12a47b (@lucastaonline). Gated by EDEN_UP_REPORT_NO_ALLOC (exact
+1), read once at boot (not a live switch: the free query-ID FIFOs are mode-specific); off by
+default. Independent of 0557-0559. On: cleared fence operation lists are recycled (up to 32), free
+query IDs use a vector/head FIFO, reports use a trivial 16-byte callable that looks up guest
+pointers after FinishReads, dead-bank host query resets go to the Vulkan worker, the equal-tick
+semaphore CAS is skipped, and report pages outside the read-back extrema skip the buffer cache
+lock. The on boot logs "EDEN_UP_REPORT_NO_ALLOC=1: compact reports and recycled fence lists".
+The matching tools/check-fence-requirements.py change lands in the front tree in the same commit.
+
+Reviewed draft from job J, v2: reviewer re-anchored the vk_rasterizer.cpp include hunk, kept the
+fence operation lists std::deque in both modes (the draft made them std::vector even when off),
+dropped the reserve(64) on the on path, and adapted check-fence-requirements.py's mocks to deque.
+---
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index 47a3732..469623c 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -22,6 +22,7 @@
+ 
+ #include "common/range_sets.inc"
+ #include "core/gpu_dirty_memory_manager.h"
++#include "video_core/report_no_alloc.h"
+ #include "video_core/buffer_cache/buffer_cache_base.h"
+ #include "video_core/buffer_cache/uniform_stream_reuse.h"
+ #include "video_core/churn_counters.h"
+@@ -1000,6 +1001,12 @@ void BufferCache<P>::NoteReadBack(DAddr begin, DAddr end, bool gpu_modified) {
+                         std::ranges::min_element(read_back_pages, {}, &ReadBackPage::last_read));
+                     it = std::ranges::lower_bound(read_back_pages, page, {}, &ReadBackPage::page);
+                 }
++                if (ReportNoAllocEnabled()) {
++                    read_back_first.store((std::min)(page, read_back_first.load(std::memory_order_relaxed)),
++                                          std::memory_order_release);
++                    read_back_last.store((std::max)(page, read_back_last.load(std::memory_order_relaxed)),
++                                         std::memory_order_release);
++                }
+                 it = read_back_pages.insert(it, ReadBackPage{.page = page, .written = true});
+             }
+             if (!it->written) {
+diff --git a/src/video_core/buffer_cache/buffer_cache_base.h b/src/video_core/buffer_cache/buffer_cache_base.h
+index 66c0244..f503d7b 100644
+--- a/src/video_core/buffer_cache/buffer_cache_base.h
++++ b/src/video_core/buffer_cache/buffer_cache_base.h
+@@ -347,6 +347,12 @@ public:
+     /// go right behind it (RecordEarlyDownloads). Those the host GPU has run land in guest memory.
+     void NoteWorkRecorded(bool dispatch);
+ 
++    [[nodiscard]] bool MayBeReadBackPage(DAddr device_addr) const noexcept {
++        const DAddr page = Common::AlignDown(device_addr, Core::DEVICE_PAGESIZE);
++        return page >= read_back_first.load(std::memory_order_acquire) &&
++               page <= read_back_last.load(std::memory_order_acquire);
++    }
++
+     std::optional<VideoCore::RasterizerDownloadArea> GetFlushArea(DAddr device_addr, u64 size);
+ 
+     /// Without downloads at every fence, a guest CPU read is the only way GPU-written buffer
+@@ -1293,6 +1299,8 @@ private:
+     /// flush on demand.
+     static constexpr u64 EarlyBytesPerFrame = 1_MiB;
+     static constexpr u32 MaxPendingEarlyDownloads = 32;
++    std::atomic<DAddr> read_back_first{~DAddr{0}};
++    std::atomic<DAddr> read_back_last{0};
+     std::vector<ReadBackPage> read_back_pages; ///< Sorted by page
+     /// NoteReportPending's results not yet written, oldest first.
+     struct PendingReport {
+diff --git a/src/video_core/fence_manager.h b/src/video_core/fence_manager.h
+index 24b7da6..77f0a27 100644
+--- a/src/video_core/fence_manager.h
++++ b/src/video_core/fence_manager.h
+@@ -36,6 +36,7 @@
+ #include "video_core/nx2_query_light.h"
+ #include "video_core/rasterizer_interface.h"
+ #include "video_core/readback_wait.h"
++#include "video_core/report_no_alloc.h"
+ 
+ namespace VideoCommon {
+ 
+@@ -316,8 +317,12 @@ private:
+                 held_increments.push_back({syncpoint, needs, std::chrono::steady_clock::now()});
+                 PublishHeldPush();
+             }
+-            pending_operations.emplace_back(std::move(uncommitted_operations));
+-            uncommitted_operations.clear(); // moved-from: make it empty explicitly
++            if (ReportNoAllocEnabled()) {
++                pending_operations.emplace_back(TakeUncommittedOperations());
++            } else {
++                pending_operations.emplace_back(std::move(uncommitted_operations));
++                uncommitted_operations.clear(); // moved-from: make it empty explicitly
++            }
+         }
+         pending_flushes.push_back(committed_flushes);
+         QueueFence(new_fence);
+@@ -563,6 +568,7 @@ protected:
+                           TQueryCache& query_cache_)
+         : rasterizer{rasterizer_}, gpu{gpu_}, syncpoint_manager{gpu.Host1x().GetSyncpointManager()},
+           texture_cache{texture_cache_}, buffer_cache{buffer_cache_}, query_cache{query_cache_} {
++        InitReportNoAlloc();
+         if constexpr (can_async_check) {
+             fence_thread =
+                 std::jthread([this](std::stop_token token) { ReleaseThreadFunc(token); });
+@@ -597,6 +603,30 @@ protected:
+     TQueryCache& query_cache;
+ 
+ private:
++    // The list type stays a deque, so with the switch off nothing here runs and every list is
++    // built and freed as before. On: a cleared deque keeps its blocks (libc++ keeps up to two),
++    // so a recycled list takes the next fence's operations without a new block.
++    using OperationList = std::deque<std::function<void()>>;
++    static constexpr size_t MaxSpareOperationLists = 32;
++
++    // Both helpers require uncommitted_guard; callbacks and destruction run outside that lock.
++    OperationList TakeUncommittedOperations() {
++        OperationList taken = std::move(uncommitted_operations);
++        uncommitted_operations.clear(); // moved-from: make it empty explicitly
++        if (!spare_operations.empty()) {
++            uncommitted_operations.swap(spare_operations.back());
++            spare_operations.pop_back();
++        }
++        return taken;
++    }
++
++    // `list` must already be cleared (its operations ran and were destroyed outside the lock).
++    void KeepSpareOperations(OperationList& list) {
++        if (spare_operations.size() < MaxSpareOperationLists) {
++            spare_operations.push_back(std::move(list));
++        }
++    }
++
+     template <bool force_wait>
+     void TryReleasePendingFences() {
+         while (!fences.empty()) {
+@@ -616,6 +646,11 @@ private:
+             for (auto& operation : operations) {
+                 operation();
+             }
++            if (ReportNoAllocEnabled()) {
++                operations.clear();
++                std::scoped_lock lock{uncommitted_guard};
++                KeepSpareOperations(operations);
++            }
+             {
+                 std::unique_lock lock(ring_guard);
+                 delayed_destruction_ring.Push(std::move(current_fence));
+@@ -701,6 +736,15 @@ private:
+                 for (auto& operation : released.operations) {
+                     operation();
+                 }
++                if (ReportNoAllocEnabled()) {
++                    released.operations.clear();
++                }
++            }
++            if (ReportNoAllocEnabled()) {
++                std::scoped_lock lock{uncommitted_guard};
++                for (Released& released : batch) {
++                    KeepSpareOperations(released.operations);
++                }
+             }
+             if (!batch.empty()) {
+                 VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Fence);
+@@ -803,6 +847,8 @@ private:
+     std::queue<TFence> fences;
+     std::deque<std::function<void()>> uncommitted_operations;
+     std::deque<std::deque<std::function<void()>>> pending_operations;
++    /// EDEN_UP_REPORT_NO_ALLOC=1: cleared lists kept for later fences (empty when off).
++    std::vector<std::deque<std::function<void()>>> spare_operations; ///< Guarded by uncommitted_guard
+     std::deque<u8> pending_flushes; ///< Per fence: the caches that committed downloads
+     u32 skipped_fences{}; ///< Empty fences skipped since the last one made (GPU thread only)
+ 
+diff --git a/src/video_core/query_cache/query_cache.h b/src/video_core/query_cache/query_cache.h
+index 8df62cb..60055f9 100644
+--- a/src/video_core/query_cache/query_cache.h
++++ b/src/video_core/query_cache/query_cache.h
+@@ -12,6 +12,7 @@
+ #include <deque>
+ #include <memory>
+ #include <mutex>
++#include <type_traits>
+ #include "common/container/unordered_map.h"
+ #include <utility>
+ 
+@@ -34,6 +35,7 @@
+ #include "video_core/query_cache/types.h"
+ #include "video_core/rasterizer_interface.h"
+ #include "video_core/readback_wait.h"
++#include "video_core/report_no_alloc.h"
+ #include "video_core/ubo_snapshot.h"
+ 
+ namespace VideoCommon {
+@@ -196,6 +198,7 @@ QueryCacheBase<Traits>::QueryCacheBase(Tegra::GPU& gpu_,
+                                        Tegra::MaxwellDeviceMemoryManager& device_memory_,
+                                        RuntimeType& runtime_)
+     : cached_queries{} {
++    InitReportNoAlloc();
+     impl = std::make_unique<QueryCacheBase<Traits>::QueryCacheBaseImpl>(
+         this, rasterizer_, device_memory_, runtime_, gpu_);
+ }
+@@ -293,8 +296,8 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
+         return std::make_pair<u64, u32>(cur_addr >> Core::DEVICE_PAGEBITS,
+                                         static_cast<u32>(cur_addr & Core::DEVICE_PAGEMASK));
+     };
+-    u8* pointer = impl->device_memory.template GetPointer<u8>(cpu_addr);
+-    u8* pointer_timestamp = impl->device_memory.template GetPointer<u8>(cpu_addr + 8);
++    u8* pointer = ReportNoAllocEnabled() ? nullptr : impl->device_memory.template GetPointer<u8>(cpu_addr);
++    u8* pointer_timestamp = ReportNoAllocEnabled() ? nullptr : impl->device_memory.template GetPointer<u8>(cpu_addr + 8);
+     // EDEN_NX2_QUERY_KEEP_PENDING=1 (Lichii PR 337, Inc0rporate): a fence-flagged report stays
+     // registered until its fence runs, as at High accuracy, without making other fences wait.
+     static const bool keep_pending = [] {
+@@ -318,7 +321,91 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
+                            counter_type == QueryType::Payload;
+     const bool report_noted = !immediate && VideoCore::AsyncReadback::EarlyEnabled() &&
+                               impl->rasterizer.NoteReportPending(cpu_addr, report_size);
+-    std::function<void()> operation([this, is_synced, streamer, query_base = query, query_location,
++    struct ReportOperation {
++        QueryCacheBase* cache;
++        QueryLocation location;
++        u8 bits; // synced, stats settlement, pending-report note, timestamp width
++        void operator()() const {
++            auto* report_streamer = cache->impl->streamers[location.stream_id.Value()];
++            auto* query_base = report_streamer->GetQuery(location.query_id.Value());
++            // The slot stays registered until this callback and UnregisterPending; a synced
++            // fence runs the callback before CounterReport frees it. No saved guest pointer.
++            const DAddr device_addr = query_base->guest_address;
++            const bool synced = (bits & 1) != 0;
++            const bool settle_stats = (bits & 2) != 0;
++            const bool noted = (bits & 4) != 0;
++            const bool wide = (bits & 8) != 0;
++            const u64 bytes = wide ? 16 : 4;
++            SCOPE_EXIT {
++                if (noted) {
++                    cache->impl->rasterizer.FinishReport(device_addr, bytes);
++                }
++            };
++            if (settle_stats) [[unlikely]] {
++                QueryLight::NoteReportSettled(device_addr);
++            }
++            if (True(query_base->flags & QueryFlagBits::IsInvalidated)) {
++                if (!synced) [[likely]] {
++                    cache->impl->pending_unregister.push_back(location);
++                }
++                return;
++            }
++            if (False(query_base->flags & QueryFlagBits::IsFinalValueSynced)) [[unlikely]] {
++                LOG_ERROR(HW_GPU,
++                          "Query report value not synchronized. Consider increasing GPU accuracy.");
++                if (!synced) [[likely]] {
++                    cache->impl->pending_unregister.push_back(location);
++                }
++                return;
++            }
++            query_base->value += report_streamer->GetAmendValue();
++            report_streamer->SetAccumulationValue(query_base->value);
++            if (ZpassCut::Enabled() &&
++                report_streamer->GetId() == static_cast<size_t>(QueryType::ZPassPixelCount64)) [[unlikely]] {
++                ZpassCut::NoteReport(device_addr, query_base->value, query_base->cut_note);
++            }
++            if (ForceZpassReports() &&
++                report_streamer->GetId() == static_cast<size_t>(QueryType::ZPassPixelCount64)) {
++                static std::atomic<u64> forced{};
++                query_base->value = forced.fetch_add(0x10000, std::memory_order_relaxed) + 0x10000;
++            }
++            cache->FinishReads(device_addr, True(query_base->flags & QueryFlagBits::HasTimestamp) ? 16 : 4);
++            u8* data = cache->impl->device_memory.template GetPointer<u8>(device_addr);
++            u8* ticks_data = wide ? cache->impl->device_memory.template GetPointer<u8>(device_addr + 8) : nullptr;
++            if (data == nullptr || (wide && ticks_data == nullptr)) {
++                if (!synced) cache->impl->pending_unregister.push_back(location);
++                return;
++            }
++            if (wide) {
++                u64 timestamp = cache->impl->gpu.GetTicks();
++                std::memcpy(ticks_data, &timestamp, sizeof(timestamp));
++                std::memcpy(data, &query_base->value, sizeof(query_base->value));
++                // EDEN_UP_UBO_SNAPSHOT: reports reach the frame's constant buffer copies too.
++                UboSnapshot::OnGpuWrite(device_addr + 8, &timestamp, sizeof(timestamp));
++                UboSnapshot::OnGpuWrite(device_addr, &query_base->value, sizeof(query_base->value));
++            } else {
++                u32 value = static_cast<u32>(query_base->value);
++                std::memcpy(data, &value, sizeof(value));
++                UboSnapshot::OnGpuWrite(device_addr, &value, sizeof(value));
++            }
++            Tegra::Nx2SemaphoreWaiters::Get().OnWrite(device_addr, static_cast<u32>(query_base->value));
++            if (!synced) [[likely]] {
++                cache->impl->pending_unregister.push_back(location);
++            }
++        }
++    };
++    static_assert(sizeof(ReportOperation) <= 2 * sizeof(void*));
++    static_assert(std::is_trivially_copyable_v<ReportOperation>);
++    static_assert(std::is_nothrow_copy_constructible_v<ReportOperation>);
++    std::function<void()> operation;
++    if (ReportNoAllocEnabled()) {
++        if (!immediate) {
++            operation = ReportOperation{this, query_location,
++                static_cast<u8>((is_synced ? 1 : 0) | (stats_settle ? 2 : 0) |
++                                (report_noted ? 4 : 0) | (has_timestamp ? 8 : 0))};
++        }
++    } else {
++        operation = std::function<void()>([this, is_synced, streamer, query_base = query, query_location,
+                                      pointer, pointer_timestamp, cpu_addr, stats_settle,
+                                      report_size, report_noted] {
+         SCOPE_EXIT {
+@@ -372,6 +459,7 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
+             impl->pending_unregister.push_back(query_location);
+         }
+     });
++    }
+     if (is_fence || hold_release) {
+         VideoCore::g_signaling_query_report_fence = keep_pending || hold_release;
+         VideoCore::Readback::g_signaling_held_release = hold_release;
+@@ -380,6 +468,10 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
+         VideoCore::g_signaling_query_report_fence = false;
+     } else {
+         if (!Settings::IsGPULevelHigh() && counter_type == QueryType::Payload) {
++            if (ReportNoAllocEnabled()) {
++                pointer = impl->device_memory.template GetPointer<u8>(cpu_addr);
++                pointer_timestamp = impl->device_memory.template GetPointer<u8>(cpu_addr + 8);
++            }
+             FinishReads(cpu_addr, has_timestamp ? 16 : 4);
+             if (has_timestamp) {
+                 u64 timestamp = impl->gpu.GetTicks();
+diff --git a/src/video_core/query_cache/query_stream.h b/src/video_core/query_cache/query_stream.h
+index 98778d8..1054610 100644
+--- a/src/video_core/query_cache/query_stream.h
++++ b/src/video_core/query_cache/query_stream.h
+@@ -6,6 +6,7 @@
+ 
+ #pragma once
+ 
++#include <cstddef>
+ #include <deque>
+ #include <optional>
+ #include <vector>
+@@ -15,6 +16,7 @@
+ #include "video_core/query_cache/bank_base.h"
+ #include "video_core/query_cache/query_base.h"
+ #include "video_core/zpass_cut.h"
++#include "video_core/report_no_alloc.h"
+ 
+ namespace VideoCommon {
+ 
+@@ -111,7 +113,7 @@ protected:
+ template <typename QueryType>
+ class SimpleStreamer : public StreamerInterface {
+ public:
+-    explicit SimpleStreamer(size_t id_) : StreamerInterface{id_} {}
++    explicit SimpleStreamer(size_t id_) : StreamerInterface{id_} { InitReportNoAlloc(); }
+     virtual ~SimpleStreamer() = default;
+ 
+ protected:
+@@ -130,6 +132,15 @@ protected:
+     template <typename... Args, typename = decltype(QueryType(std::declval<Args>()...))>
+     size_t BuildQuery(Args&&... args) {
+         std::scoped_lock lk(guard);
++        if (ReportNoAllocEnabled() && old_queries_head != spare_queries.size()) {
++            const size_t new_id = spare_queries[old_queries_head++];
++            if (old_queries_head == spare_queries.size()) {
++                spare_queries.clear();
++                old_queries_head = 0;
++            }
++            new (&slot_queries[new_id]) QueryType(std::forward<Args>(args)...);
++            return new_id;
++        }
+         if (!old_queries.empty()) {
+             size_t new_id = old_queries.front();
+             old_queries.pop_front();
+@@ -144,7 +155,16 @@ protected:
+     void ReleaseQuery(size_t query_id) {
+ 
+         if (query_id < slot_queries.size()) {
+-            old_queries.push_back(query_id);
++            if (ReportNoAllocEnabled()) {
++                if (old_queries_head >= 1024 && old_queries_head >= spare_queries.size() / 2) {
++                    spare_queries.erase(spare_queries.begin(),
++                                        spare_queries.begin() + static_cast<std::ptrdiff_t>(old_queries_head));
++                    old_queries_head = 0;
++                }
++                spare_queries.push_back(query_id);
++            } else {
++                old_queries.push_back(query_id);
++            }
+             return;
+         }
+         UNREACHABLE();
+@@ -152,7 +172,9 @@ protected:
+ 
+     std::mutex guard;
+     std::deque<QueryType> slot_queries;
+-    std::deque<size_t> old_queries;
++    std::deque<size_t> old_queries; // baseline FIFO, used only with the switch off
++    std::vector<size_t> spare_queries;
++    size_t old_queries_head{};
+ };
+ 
+ } // namespace VideoCommon
+diff --git a/src/video_core/renderer_vulkan/vk_master_semaphore.cpp b/src/video_core/renderer_vulkan/vk_master_semaphore.cpp
+index ca68ce8..a9e6609 100644
+--- a/src/video_core/renderer_vulkan/vk_master_semaphore.cpp
++++ b/src/video_core/renderer_vulkan/vk_master_semaphore.cpp
+@@ -5,6 +5,7 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include <thread>
++#include "video_core/report_no_alloc.h"
+ 
+ #include <ranges>
+ #include "common/hang_site.h"
+@@ -19,6 +20,7 @@ namespace Vulkan {
+ constexpr u64 FENCE_RESERVE_SIZE = 8;
+ 
+ MasterSemaphore::MasterSemaphore(const Device& device_) : device(device_) {
++    VideoCommon::InitReportNoAlloc();
+     if (!device.HasTimelineSemaphore()) {
+         static constexpr VkFenceCreateInfo fence_ci{
+             .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .pNext = nullptr, .flags = 0};
+@@ -71,7 +73,8 @@ void MasterSemaphore::Refresh() {
+     do {
+         this_tick = gpu_tick.load(std::memory_order_acquire);
+         counter = semaphore.GetCounter();
+-        if (counter < this_tick) {
++        if (counter < this_tick ||
++            (VideoCommon::ReportNoAllocEnabled() && counter == this_tick)) {
+             return;
+         }
+     } while (!gpu_tick.compare_exchange_weak(this_tick, counter, std::memory_order_release,
+diff --git a/src/video_core/renderer_vulkan/vk_query_cache.cpp b/src/video_core/renderer_vulkan/vk_query_cache.cpp
+index 75bf03d..d0aa270 100644
+--- a/src/video_core/renderer_vulkan/vk_query_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_query_cache.cpp
+@@ -5,6 +5,7 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ #include <cstdlib>
++#include "video_core/report_no_alloc.h"
+ #include <cstddef>
+ #include <limits>
+ #include <map>
+@@ -47,6 +48,7 @@ public:
+     static constexpr size_t QUERY_SIZE = 8;
+     explicit SamplesQueryBank(const Device& device_, Scheduler& scheduler_, size_t index_)
+         : BankBase(BANK_SIZE), device{device_}, scheduler{scheduler_}, index{index_} {
++        VideoCommon::InitReportNoAlloc();
+         const auto& dev = device.GetLogical();
+         query_pool = dev.CreateQueryPool({
+             .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+@@ -65,8 +67,14 @@ public:
+         ASSERT(references == 0);
+         VideoCommon::BankBase::Reset();
+         if (device.IsHostQueryResetSupported()) {
+-            const auto& dev = device.GetLogical();
+-            dev.ResetQueryPool(*query_pool, 0, BANK_SIZE);
++            if (VideoCommon::ReportNoAllocEnabled()) {
++                scheduler.Record([dev = &device.GetLogical(), pool = *query_pool](vk::CommandBuffer) {
++                    dev->ResetQueryPool(pool, 0, BANK_SIZE);
++                });
++            } else {
++                const auto& dev = device.GetLogical();
++                dev.ResetQueryPool(*query_pool, 0, BANK_SIZE);
++            }
+         } else {
+             scheduler.RequestOutsideRenderPassOperationContext();
+             scheduler.Record([pool = *query_pool](vk::CommandBuffer cmdbuf) {
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 722a144..e9128c6 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include "common/live_switch.h"
+ #include "common/pe_switch.h"
++#include "video_core/report_no_alloc.h"
+ #include "video_core/image_pages.h"
+ #include "video_core/astc_policy.h"
+ #include <algorithm>
+@@ -2274,6 +2275,9 @@ void RasterizerVulkan::FinishRead(DAddr addr, u64 size) {
+ }
+ 
+ bool RasterizerVulkan::NoteReportPending(DAddr addr, u64 size) {
++    if (VideoCommon::ReportNoAllocEnabled() && !buffer_cache.MayBeReadBackPage(addr)) {
++        return false;
++    }
+     if (!VideoCore::AsyncReadback::EarlyEnabled()) {
+         return false;
+     }
+diff --git a/src/video_core/report_no_alloc.h b/src/video_core/report_no_alloc.h
+new file mode 100644
+index 0000000..c8e27ec
+--- /dev/null
++++ b/src/video_core/report_no_alloc.h
+@@ -0,0 +1,20 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#pragma once
++#include <atomic>
++#include "common/pe_switch.h"
++#include "common/logging.h"
++namespace VideoCommon {
++inline std::atomic<bool> g_report_no_alloc{false};
++inline void InitReportNoAlloc() {
++    // Boot-fixed: query free IDs are stored only in the chosen mode's FIFO.
++    static const bool on = [] {
++        const bool enabled = Common::PeSwitch("EDEN_UP_REPORT_NO_ALLOC");
++        if (enabled) LOG_INFO(HW_GPU, "EDEN_UP_REPORT_NO_ALLOC=1: compact reports and recycled fence lists");
++        return enabled;
++    }();
++    g_report_no_alloc.store(on, std::memory_order_relaxed);
++}
++[[nodiscard]] inline bool ReportNoAllocEnabled() noexcept {
++    return g_report_no_alloc.load(std::memory_order_relaxed);
++}
++} // namespace VideoCommon

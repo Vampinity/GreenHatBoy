@@ -1,0 +1,392 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: DMA miss stats, why the front's DMA snapshot misses (EDEN_UP_DMA_MISS_STATS, log only)
+
+DRAFT, not built. Measurement (job K2, AI draft). EDEN_UP_DMA_MISS_STATS (exact 1, live, Id
+DmaMissStats, not armed); off by default. On: each FrontDmaRead is counted once, a miss by its
+cause (new page, the latest compute/copy or unranged writer by method class, an overlapping noted
+write, lost history); waits and validity are unchanged. 10 s line "EDEN_UP_DMA_MISS_STATS",
+ending early at a gap of over 1 s (end=gap).
+
+Reviewed draft (job K review, verdict "ready with corrections"): draft-k2-dma-miss-stats.v2.patch.
+live_switch.h re-anchored after RadvOomLend; all +/- lines byte-identical.
+---
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+index 844b30a..d8356c4 100644
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -210,6 +210,8 @@ enum class Id : u8 {
+     /// that many 2 MiB blocks under its floor or does not; a lend already made stays made, and the
+     /// reserve keeper fills it again 2 s later whatever the switch says then.
+     RadvOomLend,
++    /// Log-only front-owned DMA snapshot attribution; no validity decisions.
++    DmaMissStats,
+     Count,
+ };
+ 
+@@ -347,6 +349,7 @@ inline constexpr std::array<Def, NumSwitches> kDefs{{
+     {"EDEN_UP_AHEAD_GUARD_HELD_AGE_VERIFY", ParseExactOne, false, -1},
+     {"EDEN_UP_GC_WRITEBACK_SKIP", ParseExactOne, false, -1},
+     {"EDEN_UP_RADV_OOM_LEND", ParseLendBlocks, false, -1},
++    {"EDEN_UP_DMA_MISS_STATS", ParseExactOne, false, -1},
+ }};
+ 
+ static_assert(kDefs[static_cast<size_t>(Id::PollBackoffUs)].needs ==
+diff --git a/src/video_core/dma_pusher.cpp b/src/video_core/dma_pusher.cpp
+index 32d041f..f7a528c 100644
+--- a/src/video_core/dma_pusher.cpp
++++ b/src/video_core/dma_pusher.cpp
+@@ -1426,11 +1426,29 @@ void DmaPusher::CallMethod(u32 argument) {
+         SCOPE_EXIT {
+             if (writer) {
+                 split.NoteWriter();
++                if (split.DmaMissStatsEnabled()) {
++                    using Cause = VideoCommon::GpuSplit::DmaCause;
++                    const auto type = subchannel_type[dma_state.subchannel];
++                    const u32 first = dma_state.method;
++                    const u32 last = first + 1;
++                    // These are conservative method classes, not observed GPU writes.
++                    split.NoteDmaWriterCause(type == Engines::EngineTypes::MaxwellDMA ? Cause::Copy
++                        : first >= MacroRegistersStart ? Cause::ComputeMacro
++                        : (first < 0xb1 && last > 0xae) || (first <= 0x107 && last > 0x107)
++                            ? Cause::ComputeLaunch
++                        : first <= 0x6c3 && last > 0x6c3 ? Cause::ComputeReport
++                        : first < 0x6e && last > 0x6c ? Cause::ComputeUpload : Cause::ComputeOther);
++                }
+                 if (subchannel_type[dma_state.subchannel] == Engines::EngineTypes::MaxwellDMA) {
+                     split.NoteCopyWriter(); // EDEN_UP_FRITCHII_LISTSKIP; nothing unless set
+                 }
+             } else if (memory_writer) {
+-                split.NoteUnrangedWriter();
++                split.NoteUnrangedWriterOnly();
++                if (split.DmaMissStatsEnabled()) {
++                    using Cause = VideoCommon::GpuSplit::DmaCause;
++                    split.NoteDmaUnrangedCause(subchannel_type[dma_state.subchannel] ==
++                        Engines::EngineTypes::KeplerMemory ? Cause::KeplerMemory : Cause::Fermi2D);
++                }
+             }
+         };
+         if (split.Active()) {
+@@ -1498,11 +1516,29 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
+         SCOPE_EXIT {
+             if (writer) {
+                 split.NoteWriter();
++                if (split.DmaMissStatsEnabled()) {
++                    using Cause = VideoCommon::GpuSplit::DmaCause;
++                    const auto type = subchannel_type[dma_state.subchannel];
++                    const u32 first = dma_state.method;
++                    const u32 last = first + (dma_state.non_incrementing ? 1 : num_methods);
++                    // These are conservative method classes, not observed GPU writes.
++                    split.NoteDmaWriterCause(type == Engines::EngineTypes::MaxwellDMA ? Cause::Copy
++                        : first >= MacroRegistersStart ? Cause::ComputeMacro
++                        : (first < 0xb1 && last > 0xae) || (first <= 0x107 && last > 0x107)
++                            ? Cause::ComputeLaunch
++                        : first <= 0x6c3 && last > 0x6c3 ? Cause::ComputeReport
++                        : first < 0x6e && last > 0x6c ? Cause::ComputeUpload : Cause::ComputeOther);
++                }
+                 if (subchannel_type[dma_state.subchannel] == Engines::EngineTypes::MaxwellDMA) {
+                     split.NoteCopyWriter(); // EDEN_UP_FRITCHII_LISTSKIP; nothing unless set
+                 }
+             } else if (memory_writer) {
+-                split.NoteUnrangedWriter();
++                split.NoteUnrangedWriterOnly();
++                if (split.DmaMissStatsEnabled()) {
++                    using Cause = VideoCommon::GpuSplit::DmaCause;
++                    split.NoteDmaUnrangedCause(subchannel_type[dma_state.subchannel] ==
++                        Engines::EngineTypes::KeplerMemory ? Cause::KeplerMemory : Cause::Fermi2D);
++                }
+             }
+         };
+         if (split.Active()) {
+diff --git a/src/video_core/engines/maxwell_3d.cpp b/src/video_core/engines/maxwell_3d.cpp
+index 52907c6..189e7d7 100644
+--- a/src/video_core/engines/maxwell_3d.cpp
++++ b/src/video_core/engines/maxwell_3d.cpp
+@@ -2067,7 +2067,7 @@ void Maxwell3D::FrontNoteMemoryWrite(VideoCommon::GpuSplit& split, FrontState& f
+         }
+         // Counters and timed releases land when the host query completes, not when the back
+         // runs them: the snapshot also asks the query cache whether a report is still listed.
+-        split.NoteMemoryWrite(*device, 16);
++        split.NoteMemoryWrite(*device, 16, VideoCommon::GpuSplit::DmaCause::Report);
+         return;
+     }
+     constexpr u32 base = MAXWELL3D_REG_INDEX(upload);
+@@ -2095,7 +2095,7 @@ void Maxwell3D::FrontNoteMemoryWrite(VideoCommon::GpuSplit& split, FrontState& f
+                 split.NoteUnrangedWriter();
+                 return;
+             }
+-            split.NoteMemoryWrite(*device, size);
++            split.NoteMemoryWrite(*device, size, VideoCommon::GpuSplit::DmaCause::Upload);
+         }
+         return;
+     }
+@@ -2108,14 +2108,16 @@ void Maxwell3D::FrontNoteMemoryWrite(VideoCommon::GpuSplit& split, FrontState& f
+             return;
+         }
+         split.NoteMemoryWrite(*device, fs.regs[base] * u64{(std::max)(fs.regs[base + 1], 1U)} +
+-                                           u64{fs.regs[base + 4]} * fs.regs[base + 1]);
++                                           u64{fs.regs[base + 4]} * fs.regs[base + 1],
++                              VideoCommon::GpuSplit::DmaCause::Upload);
+         return;
+     }
+     const u32 remaining_bytes =
+         fs.upload_offset < fs.upload_size ? fs.upload_size - fs.upload_offset : 0;
+     const u32 written = (std::min<u32>)(count * 4, remaining_bytes);
+     if (written != 0) {
+-        split.NoteMemoryWrite(fs.upload_device + fs.upload_offset, written);
++        split.NoteMemoryWrite(fs.upload_device + fs.upload_offset, written,
++                              VideoCommon::GpuSplit::DmaCause::Upload);
+     }
+     fs.upload_offset += written;
+ }
+@@ -2682,12 +2684,25 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
+     // EDEN_UP_LIVE_SWITCHES (common/live_switch.h): in an off phase every read takes the
+     // drained path below. The front's write notes run on (FrontMemoryNotesEnabled), so a
+     // snapshot from before the phase is judged by everything sent since, as always.
++    using DmaCause = VideoCommon::GpuSplit::DmaCause;
++    const bool dma_stats = split.DmaMissStatsEnabled();
++    DmaCause dma_cause = DmaCause::Ineligible;
+     const int snapshot_mode =
+         Common::LiveSwitch::Value<Common::LiveSwitch::Id::DmaSnapshot>() != 0 ? DmaSnapshotMode()
+                                                                               : 0;
++    if (dma_stats) {
++        // A read the snapshot never takes first (one into the MME data RAM, or no words), then
++        // the switch's off phase, then the query DMA traces, which also keep it out.
++        dma_cause = method != 0x158 || words == 0 ? DmaCause::Ineligible
++            : snapshot_mode == 0                  ? DmaCause::Disabled
++                                                  : DmaCause::Trace;
++    }
+     if (snapshot_mode != 0 && method == 0x158 && words != 0 &&
+         !VideoCommon::QueryDma::TraceEnabled() && !VideoCommon::QueryDma::FlipTraceEnabled()) {
+         const auto device = memory_manager.GpuToCpuAddress(source);
++        if (dma_stats) {
++            dma_cause = device ? DmaCause::Noncontiguous : DmaCause::Unmapped;
++        }
+         if (device &&
+             memory_manager.GpuToCpuAddress(source + read_bytes - 1) == *device + read_bytes - 1) {
+             static u64 hits{};
+@@ -2713,6 +2728,10 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
+                                        : split.LastWriterPosition() > it->second   ? 1
+                                        : split.LastUnrangedPosition() > it->second ? 2
+                                                                                    : 3;
++                    if (dma_stats) {
++                        dma_cause = it == fs.dma_snapshots.end() ? DmaCause::NewPage
++                            : split.DmaSnapshotCause(it->second, *device, read_bytes);
++                    }
+                     ++miss_reasons[reason];
+                     VideoCommon::SubmitStats::NoteDma(static_cast<VideoCommon::SubmitStats::Dma>(
+                         static_cast<u32>(VideoCommon::SubmitStats::Dma::MissNewPage) + reason));
+@@ -2761,6 +2780,7 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
+                 };
+                 if (hit) {
+                     ++hits;
++                    if (dma_stats) dma_cause = DmaCause::Hit;
+                     VideoCommon::SubmitStats::NoteDma(VideoCommon::SubmitStats::Dma::Hit);
+                     memory_manager.ReadBlockUnsafe(source, snap_words.data(), read_bytes);
+                     if (snapshot_mode == 2) {
+@@ -2926,12 +2946,15 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
+                 for (u32 i = 0; i < words; ++i) {
+                     fs.parameters.push_back(snap_words[i]);
+                 }
++                if (dma_stats) split.CountDmaRead(dma_cause);
+                 return;
+             }
++            if (dma_stats) dma_cause = DmaCause::ListedReport;
+             ++report_reads;
+             VideoCommon::SubmitStats::NoteDma(VideoCommon::SubmitStats::Dma::ListedReport);
+         }
+     }
++    if (dma_stats) split.CountDmaRead(dma_cause);
+     if (!split.DmaReadAhead() || words > 64) {
+         split.Defer([this, memory = &memory_manager, macro, method, source, read_bytes, neutral] {
+             // EDEN_NX2_QUERY_DMA_TRACE / EDEN_NX2_QUERY_DMA_SYNC: below High accuracy, counter
+diff --git a/src/video_core/engines/puller.cpp b/src/video_core/engines/puller.cpp
+index 21459eb..f081fca 100644
+--- a/src/video_core/engines/puller.cpp
++++ b/src/video_core/engines/puller.cpp
+@@ -125,9 +125,9 @@ void NoteReleaseWrite(DmaPusher& dma_pusher, GPUVAddr address, GPUVAddr mirror =
+             continue;
+         }
+         if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(target)) {
+-            split.NoteMemoryWrite(*device & ~u64{0xf}, 16);
++            split.NoteMemoryWrite(*device & ~u64{0xf}, 16, VideoCommon::GpuSplit::DmaCause::PullerRelease);
+         } else {
+-            split.NoteUnrangedWriter();
++            split.NoteUnrangedWriter(VideoCommon::GpuSplit::DmaCause::PullerRelease);
+         }
+     }
+ }
+@@ -652,7 +652,7 @@ void Puller::ProcessFenceActionMethod(DmaPusher& dma_pusher) {
+             });
+         }
+         if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
+-            split.NoteUnrangedWriter(); // EDEN_NX2_DMA_SNAPSHOT: lands where the front can't say
++            split.NoteUnrangedWriter(VideoCommon::GpuSplit::DmaCause::PullerFence); // EDEN_NX2_DMA_SNAPSHOT: lands where the front can't say
+         }
+         break;
+     default:
+diff --git a/src/video_core/gpu_split.cpp b/src/video_core/gpu_split.cpp
+index 5b2402a..291b2fc 100644
+--- a/src/video_core/gpu_split.cpp
++++ b/src/video_core/gpu_split.cpp
+@@ -122,6 +122,7 @@ void GpuSplit::CheckOwner(const char* where) {
+ GpuSplit GpuSplit::instance;
+ 
+ void GpuSplit::MaybeStart(Core::System& system_) {
++    static_cast<void>(Common::LiveSwitch::Value<Common::LiveSwitch::Id::DmaMissStats>());
+     static const bool blocks = Common::PeSwitch("EDEN_PE_REG_BLOCKS");
+     reg_blocks = blocks;
+     Nx2Profile::ReadSwitch();
+@@ -231,6 +232,11 @@ void GpuSplit::Stop() {
+     regs_count = 0;
+     write_position = 0;
+     last_writer_position = 0;
++    dma_writer_at = dma_unranged_at = ~u64{0};
++    dma_ranged_serial.fill(0);
++    dma_stats_counts.fill(0);
++    dma_stats_start = {};
++    dma_stats_last = {};
+     published_local = 0;
+     consumed_cache = 0;
+     publish_every = PublishEvery;
+diff --git a/src/video_core/gpu_split.h b/src/video_core/gpu_split.h
+index 4a5dc7d..95651b8 100644
+--- a/src/video_core/gpu_split.h
++++ b/src/video_core/gpu_split.h
+@@ -4,6 +4,8 @@
+ #pragma once
+ 
+ #include "common/pe_switch.h"
++#include "common/live_switch.h"
++#include <cstdio>
+ #include <algorithm>
+ #include <array>
+ #include <atomic>
+@@ -729,6 +731,78 @@ public:
+         same_read_position = write_position;
+     }
+ 
++    /// EDEN_UP_DMA_MISS_STATS=1 (live, log only): what each macro DMA read of FrontDmaRead ended
++    /// as, and for a snapshot miss which kind of writer, sent since the page's snapshot, made it.
++    enum class DmaCause : u8 {
++        Hit, NewPage, ComputeLaunch, ComputeReport, ComputeUpload, ComputeMacro, ComputeOther, Copy, PullerFence,
++        PullerRelease, KeplerMemory, Fermi2D, Unranged, Report, Upload,
++        Ranged, HistoryLost, Unknown, ListedReport, Disabled, Ineligible,
++        Trace, Unmapped, Noncontiguous, Count,
++    };
++    static bool DmaMissStatsEnabled() noexcept {
++        return Common::LiveSwitch::Peek<Common::LiveSwitch::Id::DmaMissStats>() != 0;
++    }
++    // Front thread only (counts, clock and printing). Never consulted by snapshot validity or
++    // waits. A window ends after 10 s, or early at a gap of over a second between two counted
++    // reads (an off phase of the switch, a load): then its line covers up to its last read and
++    // says end=gap, so a rate taken from it never spreads its reads over time nobody counted.
++    void CountDmaRead(DmaCause cause) {
++        const auto now = std::chrono::steady_clock::now();
++        if (dma_stats_start == std::chrono::steady_clock::time_point{}) {
++            dma_stats_start = now;
++        } else if (now - dma_stats_last > std::chrono::seconds{1}) {
++            PrintDmaStats(dma_stats_last, "gap");
++            dma_stats_start = now;
++        }
++        dma_stats_last = now;
++        ++dma_stats_counts[static_cast<size_t>(cause)];
++        if (now - dma_stats_start >= std::chrono::seconds{10}) {
++            PrintDmaStats(now, "full");
++            dma_stats_start = now;
++        }
++    }
++    void PrintDmaStats(std::chrono::steady_clock::time_point end, const char* why) {
++        static constexpr std::array<const char*, static_cast<size_t>(DmaCause::Count)> names{
++            "hit", "new_page", "compute_launch_method", "compute_report", "compute_upload", "compute_macro", "compute_other", "copy",
++            "puller_fence", "puller_release", "kepler_memory", "fermi2d", "unranged",
++            "report", "upload", "ranged", "history_lost", "unknown_history",
++            "listed_report", "snapshot_off", "ineligible", "trace", "unmapped", "noncontiguous"};
++        char line[1024];
++        int used = std::snprintf(line, sizeof(line), "EDEN_UP_DMA_MISS_STATS seconds=%.3f end=%s",
++            std::chrono::duration<double>(end - dma_stats_start).count(), why);
++        for (size_t i = 0; i < names.size() && used > 0 && size_t(used) < sizeof(line); ++i) {
++            used += std::snprintf(line + used, sizeof(line) - size_t(used), " %s=%llu",
++                names[i], static_cast<unsigned long long>(dma_stats_counts[i]));
++        }
++        std::fprintf(stderr, "%s\n", line);
++        dma_stats_counts.fill(0);
++    }
++    [[nodiscard]] DmaCause DmaSnapshotCause(u64 since, u64 begin, u64 size) const {
++        if (last_writer_position > since) {
++            return dma_writer_at == last_writer_position ? dma_writer_cause : DmaCause::Unknown;
++        }
++        if (last_unranged_position > since) {
++            return dma_unranged_at == last_unranged_position ? dma_unranged_cause : DmaCause::Unknown;
++        }
++        const u64 remembered = (std::min<u64>)(pending_write_count, pending_writes.size());
++        for (u64 scanned = 0; scanned < remembered; ++scanned) {
++            const u64 serial = pending_write_count - scanned;
++            const size_t index = (serial - 1) % pending_writes.size();
++            const auto& write = pending_writes[index];
++            if (write.position <= since) {
++                return DmaCause::Unknown;
++            }
++            if (write.begin < begin + size && begin < write.end) {
++                return dma_ranged_serial[index] == serial ? dma_ranged_cause[index]
++                                                         : DmaCause::Unknown;
++            }
++        }
++        return remembered == pending_writes.size() ? DmaCause::HistoryLost : DmaCause::Unknown;
++    }
++    void NoteDmaWriterCause(DmaCause cause) noexcept {
++        dma_writer_at = last_writer_position;
++        dma_writer_cause = cause;
++    }
+     /// Compute or copy work was just sent: what can write GPU-written command lists.
+     void NoteWriter() {
+         CloseRegs();
+@@ -743,18 +817,33 @@ public:
+     // read flushed whole can tell whether anything sent since may have changed it.
+     /// Memory-writing work whose range the front does not know was just sent (KeplerMemory and
+     /// Fermi2D methods, syncpoint operations). Ends every macro DMA read snapshot.
+-    void NoteUnrangedWriter() {
++    void NoteUnrangedWriterOnly() {
+         last_memory_writer_position = write_position;
+         last_unranged_position = write_position;
+     }
++    void NoteDmaUnrangedCause(DmaCause cause) noexcept {
++        dma_unranged_at = write_position;
++        dma_unranged_cause = cause;
++    }
++    void NoteUnrangedWriter(DmaCause cause = DmaCause::Unranged) {
++        NoteUnrangedWriterOnly();
++        if (DmaMissStatsEnabled()) {
++            NoteDmaUnrangedCause(cause);
++        }
++    }
+     /// Work that writes the device range [begin, begin + size) was just sent (an inline upload, a
+     /// report, a semaphore release).
+-    void NoteMemoryWrite(u64 begin, u64 size) {
++    void NoteMemoryWrite(u64 begin, u64 size, DmaCause cause = DmaCause::Ranged) {
+         last_memory_writer_position = write_position;
+         PendingWrite& write = pending_writes[pending_write_count++ % pending_writes.size()];
+         write.begin = begin;
+         write.end = begin + size;
+         write.position = write_position;
++        if (DmaMissStatsEnabled()) {
++            const size_t index = (pending_write_count - 1) % pending_writes.size();
++            dma_ranged_serial[index] = pending_write_count;
++            dma_ranged_cause[index] = cause;
++        }
+     }
+     /// The ring position of everything sent so far.
+     [[nodiscard]] u64 SentPosition() const {
+@@ -980,6 +1069,13 @@ private:
+     };
+     std::array<PendingWrite, 4096> pending_writes{};
+     u64 pending_write_count{};
++    u64 dma_writer_at{~u64{0}}, dma_unranged_at{~u64{0}};
++    DmaCause dma_writer_cause{DmaCause::Unknown}, dma_unranged_cause{DmaCause::Unknown};
++    std::array<u64, 4096> dma_ranged_serial{};
++    std::array<DmaCause, 4096> dma_ranged_cause{};
++    std::array<u64, static_cast<size_t>(DmaCause::Count)> dma_stats_counts{};
++    std::chrono::steady_clock::time_point dma_stats_start{};
++    std::chrono::steady_clock::time_point dma_stats_last{};
+     u64 published_local{};
+     u64 consumed_cache{};
+     /// Words between publishes: small right after a drain, while the back has nothing to do.

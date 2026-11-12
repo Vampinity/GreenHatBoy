@@ -1,0 +1,748 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: fast translate, cheaper shader translation with the same SPIR-V (EDEN_UP_FAST_TRANSLATE)
+
+DRAFT, not built. Port of Djihads80's work (Djihads80/Eglantine PR #825: e4197fb88 SSA definitions
+in blocks, 398dfbc1d scalar constant ids remembered, 87b0f018a failed storage-buffer searches
+pruned), read from zortos293/Lichii PR #1320 by StiensWout. Gated by EDEN_UP_FAST_TRANSLATE=1
+(boot, not a live switch); off by default. EDEN_UP_FAST_TRANSLATE_VERIFY=1 (boot) runs the old and
+the new way side by side and counts differences (ssa, storage buffers, constants). Both names are
+in vk_pipeline_prep's TranslationSwitches (the shader-store stamp): a run with either picks its own
+prepared-shader store. Not gated: 192 bytes per IR::Block. New file shader_recompiler/fast_translate.h.
+
+Reviewed draft (ports review, verdict "ready with corrections"): shader-translate-speed.v2.patch;
+all +/- lines byte-identical, context unchanged.
+---
+diff --git a/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp b/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+index 50611c5..3d63c4b 100644
+--- a/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
++++ b/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+@@ -594,7 +594,11 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
+     DefineRenderArea(program.info);
+ }
+ 
+-EmitContext::~EmitContext() = default;
++EmitContext::~EmitContext() {
++    if (translate_mode != FastTranslate::Mode::Off) {
++        FastTranslate::Note(FastTranslate::Part::Constants, translate_counts);
++    }
++}
+ 
+ Id EmitContext::Def(const IR::Value& value) {
+     if (!value.IsImmediate()) {
+diff --git a/src/shader_recompiler/backend/spirv/spirv_emit_context.h b/src/shader_recompiler/backend/spirv/spirv_emit_context.h
+index 20302cc..0aae63c 100644
+--- a/src/shader_recompiler/backend/spirv/spirv_emit_context.h
++++ b/src/shader_recompiler/backend/spirv/spirv_emit_context.h
+@@ -7,11 +7,14 @@
+ #pragma once
+ 
+ #include <array>
++#include <bit>
+ 
+ #include <sirit/sirit.h>
++#include "common/container/unordered_map.h"
+ #include "common/container/unordered_set.h"
+ 
+ #include "shader_recompiler/backend/bindings.h"
++#include "shader_recompiler/fast_translate.h"
+ #include "shader_recompiler/frontend/ir/program.h"
+ #include "shader_recompiler/profile.h"
+ #include "shader_recompiler/runtime_info.h"
+@@ -186,7 +189,10 @@ public:
+     [[nodiscard]] Id BitOffset16(const IR::Value& offset);
+ 
+     Id Const(u32 value) {
+-        return Constant(U32[1], value);
++        if (translate_mode == FastTranslate::Mode::Off) {
++            return Constant(U32[1], value);
++        }
++        return CachedConstant(u32_constants, U32[1], value);
+     }
+ 
+     Id Const(u32 element_1, u32 element_2) {
+@@ -220,7 +226,10 @@ public:
+     }
+ 
+     Id Const(f32 value) {
+-        return Constant(F32[1], value);
++        if (translate_mode == FastTranslate::Mode::Off) {
++            return Constant(F32[1], value);
++        }
++        return CachedConstant(f32_constants, F32[1], value);
+     }
+ 
+     const Profile& profile;
+@@ -434,6 +443,37 @@ public:
+     bool uses_nonuniform_storage_texel_buffer{};
+ 
+ private:
++    /// EDEN_UP_FAST_TRANSLATE (Djihads80 398dfbc1d): Sirit deduplicates constants, but by hashing
++    /// a freshly allocated copy of their words on every call; immediates are emitted over and
++    /// over, so the ids of scalar constants are remembered. Keys are bit patterns, like Sirit's
++    /// (0.0f and -0.0f, and NaN payloads, stay distinct). _VERIFY asks Sirit on every call, as
++    /// before, counts the remembered ids that differ from Sirit's and returns Sirit's.
++    template <typename T>
++    Id CachedConstant(::Common::unordered_map<u32, Id>& cache, Id type, T value) {
++        const auto [it, is_new]{cache.try_emplace(std::bit_cast<u32>(value))};
++        if (is_new) {
++            it->second = Constant(type, value);
++            return it->second;
++        }
++        ++translate_counts.work;
++        if (translate_mode != FastTranslate::Mode::Verify) {
++            return it->second;
++        }
++        const Id plain{Constant(type, value)};
++        ++translate_counts.checks;
++        if (plain.value != it->second.value) {
++            ++translate_counts.mismatches;
++        }
++        return plain;
++    }
++
++    /// Read once per program, at construction; the constant caches are this context's own (the
++    /// translating thread's).
++    const FastTranslate::Mode translate_mode{FastTranslate::CurrentMode()};
++    FastTranslate::PassCounts translate_counts{.mode = translate_mode};
++    ::Common::unordered_map<u32, Id> u32_constants;
++    ::Common::unordered_map<u32, Id> f32_constants;
++
+     void DefineCommonTypes(const Info& info);
+     void DefineCommonConstants();
+     void DefineInterfaces(const IR::Program& program);
+diff --git a/src/shader_recompiler/fast_translate.h b/src/shader_recompiler/fast_translate.h
+new file mode 100644
+index 0000000..528e48a
+--- /dev/null
++++ b/src/shader_recompiler/fast_translate.h
+@@ -0,0 +1,147 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++// EDEN_UP_FAST_TRANSLATE=1 (default off): three shader translation speed-ups by Djihads80
++// (Djihads80/Eglantine#825; e4197fb88, 398dfbc1d, 87b0f018a), as zortos293/Lichii#1320
++// (StiensWout) carries them:
++//   - the SSA pass keeps the definitions of predicates, flags and the indirect branch variable in
++//     the blocks, like registers, instead of one node map per variable (ssa_rewrite_pass.cpp);
++//   - SPIR-V emission remembers the ids of scalar u32 and f32 constants (spirv_emit_context.h);
++//   - storage buffer tracking does not walk again what a failed search already walked
++//     (global_memory_to_storage_buffer_pass.cpp, BreadthFirstSearchPruned).
++// The SPIR-V is the same; only the time to make it changes.
++//
++// EDEN_UP_FAST_TRANSLATE_VERIFY=1: every translation runs both ways in lockstep and keeps the old
++// answer: each definition read, storage buffer search and constant id of the new way is compared
++// with the old way's, and the programs where any of them differs are counted. Logged every 10 s
++// while translating and at the end of shader preparation.
++//
++// The switches are read once per pass call (one program); the hot paths test a copy of the mode
++// held by the pass's own state. Every count is local to the translating thread until the pass
++// ends, then added here with relaxed atomics.
++
++#pragma once
++
++#include <array>
++#include <atomic>
++#include <chrono>
++#include <cstddef>
++#include <string_view>
++
++#include "common/common_types.h"
++#include "common/logging.h"
++#include "common/pe_switch.h"
++
++namespace Shader::FastTranslate {
++
++enum class Mode : u8 {
++    Off,    ///< the translation as before
++    Fast,   ///< EDEN_UP_FAST_TRANSLATE=1: the new way
++    Verify, ///< EDEN_UP_FAST_TRANSLATE_VERIFY=1: both ways, the old answer is used
++};
++
++/// Read once per process; callers copy it into their pass state.
++[[nodiscard]] inline Mode CurrentMode() noexcept {
++    static const Mode mode = Common::PeSwitch("EDEN_UP_FAST_TRANSLATE_VERIFY") ? Mode::Verify
++                             : Common::PeSwitch("EDEN_UP_FAST_TRANSLATE")      ? Mode::Fast
++                                                                               : Mode::Off;
++    return mode;
++}
++
++enum class Part : size_t {
++    Ssa,       ///< work: definitions kept in blocks; checks: definition reads
++    Storage,   ///< work: instructions a search skipped; checks: searches
++    Constants, ///< work: ids answered from the cache; checks: constant lookups
++};
++inline constexpr size_t NumParts = 3;
++
++/// What one pass call counted (owned by the translating thread).
++struct PassCounts {
++    Mode mode{Mode::Off};
++    u64 work{};
++    u64 checks{};
++    u64 mismatches{};
++};
++
++struct PartTotals {
++    std::atomic<u64> programs{};
++    std::atomic<u64> work{};
++    std::atomic<u64> compared{};
++    std::atomic<u64> differ{};
++    std::atomic<u64> checks{};
++    std::atomic<u64> mismatches{};
++};
++
++inline std::array<PartTotals, NumParts> totals{};
++inline std::atomic<s64> next_log_ns{};
++
++inline void Log(std::string_view when) noexcept {
++    try {
++        const PartTotals& ssa = totals[static_cast<size_t>(Part::Ssa)];
++        const PartTotals& storage = totals[static_cast<size_t>(Part::Storage)];
++        const PartTotals& constants = totals[static_cast<size_t>(Part::Constants)];
++        LOG_INFO(Shader,
++                 "Fast translate {}: ssa {} programs, {} definitions kept in blocks; storage "
++                 "buffers {} programs, {} instructions not walked again; constants {} programs, "
++                 "{} ids from the cache",
++                 when, ssa.programs.load(std::memory_order_relaxed),
++                 ssa.work.load(std::memory_order_relaxed),
++                 storage.programs.load(std::memory_order_relaxed),
++                 storage.work.load(std::memory_order_relaxed),
++                 constants.programs.load(std::memory_order_relaxed),
++                 constants.work.load(std::memory_order_relaxed));
++        if (CurrentMode() != Mode::Verify) {
++            return;
++        }
++        LOG_INFO(Shader,
++                 "Fast translate verify {}: ssa {} programs compared, {} differ ({} of {} reads); "
++                 "storage buffers {} compared, {} differ ({} of {} searches); constants {} "
++                 "compared, {} differ ({} of {} lookups)",
++                 when, ssa.compared.load(std::memory_order_relaxed),
++                 ssa.differ.load(std::memory_order_relaxed),
++                 ssa.mismatches.load(std::memory_order_relaxed),
++                 ssa.checks.load(std::memory_order_relaxed),
++                 storage.compared.load(std::memory_order_relaxed),
++                 storage.differ.load(std::memory_order_relaxed),
++                 storage.mismatches.load(std::memory_order_relaxed),
++                 storage.checks.load(std::memory_order_relaxed),
++                 constants.compared.load(std::memory_order_relaxed),
++                 constants.differ.load(std::memory_order_relaxed),
++                 constants.mismatches.load(std::memory_order_relaxed),
++                 constants.checks.load(std::memory_order_relaxed));
++    } catch (...) {
++        // A log line that cannot be formatted is not worth a translation.
++    }
++}
++
++/// Adds what one pass call counted; at most one thread logs, every 10 s. Only called with the
++/// mode not Off.
++inline void Note(Part part, const PassCounts& counts) noexcept {
++    auto& total = totals[static_cast<size_t>(part)];
++    total.programs.fetch_add(1, std::memory_order_relaxed);
++    total.work.fetch_add(counts.work, std::memory_order_relaxed);
++    if (counts.mode == Mode::Verify) {
++        total.compared.fetch_add(1, std::memory_order_relaxed);
++        total.checks.fetch_add(counts.checks, std::memory_order_relaxed);
++        total.mismatches.fetch_add(counts.mismatches, std::memory_order_relaxed);
++        if (counts.mismatches != 0) {
++            total.differ.fetch_add(1, std::memory_order_relaxed);
++        }
++    }
++    constexpr s64 every_ns = 10'000'000'000;
++    const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
++                        std::chrono::steady_clock::now().time_since_epoch())
++                        .count();
++    s64 next = next_log_ns.load(std::memory_order_relaxed);
++    if (next == 0) {
++        next_log_ns.compare_exchange_strong(next, now + every_ns, std::memory_order_relaxed);
++        return;
++    }
++    if (now < next ||
++        !next_log_ns.compare_exchange_strong(next, now + every_ns, std::memory_order_relaxed)) {
++        return;
++    }
++    Log("every 10 s");
++}
++
++} // namespace Shader::FastTranslate
+diff --git a/src/shader_recompiler/frontend/ir/basic_block.h b/src/shader_recompiler/frontend/ir/basic_block.h
+index d3a66ca..6fd522e 100644
+--- a/src/shader_recompiler/frontend/ir/basic_block.h
++++ b/src/shader_recompiler/frontend/ir/basic_block.h
+@@ -89,6 +89,26 @@ public:
+         return ssa_reg_values[RegIndex(reg)];
+     }
+ 
++    /// EDEN_UP_FAST_TRANSLATE (Djihads80 e4197fb88): the SSA pass's predicates and its other
++    /// fixed-count variables, stored in blocks like registers. Unused with the switch off.
++    void SetSsaPredValue(IR::Pred pred, const Value& value) noexcept {
++        ssa_pred_values[PredIndex(pred)] = value;
++    }
++    const Value& SsaPredValue(IR::Pred pred) const noexcept {
++        return ssa_pred_values[PredIndex(pred)];
++    }
++
++    enum class SsaVariable : u32 { ZeroFlag, SignFlag, CarryFlag, OverflowFlag, IndirectBranch };
++    static constexpr size_t NUM_SSA_VARIABLES =
++        static_cast<size_t>(SsaVariable::IndirectBranch) + 1;
++
++    void SetSsaValue(SsaVariable variable, const Value& value) noexcept {
++        ssa_values[static_cast<size_t>(variable)] = value;
++    }
++    const Value& SsaValue(SsaVariable variable) const noexcept {
++        return ssa_values[static_cast<size_t>(variable)];
++    }
++
+     void SsaSeal() noexcept {
+         is_ssa_sealed = true;
+     }
+@@ -182,6 +202,9 @@ private:
+ 
+     /// Intrusively store the value of a register in the block.
+     std::array<Value, NUM_REGS> ssa_reg_values;
++    /// EDEN_UP_FAST_TRANSLATE: the values of predicates and the other fixed-count variables.
++    std::array<Value, NUM_USER_PREDS> ssa_pred_values;
++    std::array<Value, NUM_SSA_VARIABLES> ssa_values;
+     /// Intrusively store if the block is sealed in the SSA pass.
+     bool is_ssa_sealed{false};
+ 
+diff --git a/src/shader_recompiler/frontend/ir/breadth_first_search.h b/src/shader_recompiler/frontend/ir/breadth_first_search.h
+index ad19917..d4c0093 100644
+--- a/src/shader_recompiler/frontend/ir/breadth_first_search.h
++++ b/src/shader_recompiler/frontend/ir/breadth_first_search.h
+@@ -12,6 +12,7 @@
+ #include <type_traits>
+ #include <queue>
+ #include <unordered_set>
++#include <vector>
+ 
+ #include <boost/container/small_vector.hpp>
+ 
+@@ -75,4 +76,35 @@ auto BreadthFirstSearch(Value value, Pred&& pred, Resolve&& resolve = {})
+     return std::nullopt;
+ }
+ 
++/// EDEN_UP_FAST_TRANSLATE (Djihads80 87b0f018a): BreadthFirstSearch for many searches with the
++/// same predicate and resolver over IR that does not change. `exhausted` holds instructions from
++/// which nothing reachable matches: a failed search adds every instruction it visited, and later
++/// searches resolve those to an immediate and skip them. The result is BreadthFirstSearch's: what
++/// a skipped instruction reaches is exhausted too, so every instruction that can still lead to a
++/// match is queued by the same instruction in the same order. `skipped` counts the skips.
++template <typename Pred, typename Resolve = std::identity>
++auto BreadthFirstSearchPruned(Value value, Pred&& pred, std::unordered_set<const Inst*>& exhausted,
++                              u64& skipped, Resolve&& resolve = {})
++    -> std::invoke_result_t<Pred, const Inst*> {
++    std::vector<const Inst*> visited;
++    const auto result{BreadthFirstSearch(
++        value,
++        [&](const Inst* inst) {
++            visited.push_back(inst);
++            return pred(inst);
++        },
++        [&](const Value& operand) {
++            const Value resolved{resolve(operand)};
++            if (!resolved.IsImmediate() && exhausted.contains(resolved.InstRecursive())) {
++                ++skipped;
++                return Value{u32{0}};
++            }
++            return resolved;
++        })};
++    if (!result) {
++        exhausted.insert(visited.begin(), visited.end());
++    }
++    return result;
++}
++
+ } // namespace Shader::IR
+diff --git a/src/shader_recompiler/ir_opt/global_memory_to_storage_buffer_pass.cpp b/src/shader_recompiler/ir_opt/global_memory_to_storage_buffer_pass.cpp
+index 117ba0c..5ba5502 100644
+--- a/src/shader_recompiler/ir_opt/global_memory_to_storage_buffer_pass.cpp
++++ b/src/shader_recompiler/ir_opt/global_memory_to_storage_buffer_pass.cpp
+@@ -23,6 +23,7 @@
+ 
+ #include "common/alignment.h"
+ #include "shader_recompiler/environment.h"
++#include "shader_recompiler/fast_translate.h"
+ #include "shader_recompiler/exception.h"
+ #include "shader_recompiler/frontend/ir/basic_block.h"
+ #include "shader_recompiler/frontend/ir/breadth_first_search.h"
+@@ -92,6 +93,11 @@ struct StorageInfo {
+     /// instructions (the IR does not change while storage buffers are collected).
+     std::unordered_map<const IR::Inst*, std::optional<StorageBufferAddr>> biased_tracks;
+     std::unordered_map<const IR::Inst*, std::optional<StorageBufferAddr>> unbiased_tracks;
++    /// EDEN_UP_FAST_TRANSLATE (Djihads80 87b0f018a): instructions from which a search with (or
++    /// without) the bias cannot succeed, so later searches from other addresses skip what failed
++    /// ones walked. Empty with the switch off.
++    std::unordered_set<const IR::Inst*> biased_exhausted;
++    std::unordered_set<const IR::Inst*> unbiased_exhausted;
+     std::unordered_map<const IR::Inst*, small_vector<StorageBufferAddr, 4>> native_candidates;
+     /// Native accesses whose candidates include slots of a dynamically indexed pointer array.
+     std::unordered_set<const IR::Inst*> native_dynamic;
+@@ -395,8 +401,11 @@ std::optional<LowAddrInfo> TrackLowAddress(IR::Inst* inst) {
+     };
+ }
+ 
+-/// Tries to track the storage buffer address used by a global memory instruction
+-std::optional<StorageBufferAddr> Track(const IR::Value& value, const Bias* bias) {
++/// Tries to track the storage buffer address used by a global memory instruction. With `exhausted`
++/// (EDEN_UP_FAST_TRANSLATE), what earlier failed searches walked is not walked again.
++std::optional<StorageBufferAddr> Track(const IR::Value& value, const Bias* bias,
++                                       std::unordered_set<const IR::Inst*>* exhausted = nullptr,
++                                       u64* skipped = nullptr) {
+     const auto pred{[bias](const IR::Inst* inst) -> std::optional<StorageBufferAddr> {
+         if (inst->GetOpcode() != IR::Opcode::GetCbufU32 &&
+             inst->GetOpcode() != IR::Opcode::GetCbufU32x2) {
+@@ -437,6 +446,9 @@ std::optional<StorageBufferAddr> Track(const IR::Value& value, const Bias* bias)
+         }
+         return operand;
+     };
++    if (exhausted) {
++        return BreadthFirstSearchPruned(value, pred, *exhausted, *skipped, stop_at_memory);
++    }
+     return BreadthFirstSearch(value, pred, stop_at_memory);
+ }
+ 
+@@ -1353,7 +1365,8 @@ small_vector<StorageBufferAddr, 4> NativePointerCandidates(const IR::U32& low_ad
+ 
+ /// Collects the storage buffer used by a global memory instruction and the instruction itself
+ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, Environment& env,
+-                           const TrackingConditions& conditions) {
++                           const TrackingConditions& conditions,
++                           FastTranslate::PassCounts& fast) {
+     // NVN puts storage buffers in a specific range, we have to bias towards these addresses to
+     // avoid getting false positives
+     static constexpr Bias nvn_bias{
+@@ -1479,15 +1492,33 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info,
+         }
+         storage_buffer = paired_pointer;
+     }
+-    const auto cached_track = [&](const Bias* bias, auto& cache) {
+-        if (low_addr.IsImmediate()) {
++    // EDEN_UP_FAST_TRANSLATE: the search skips what failed searches walked; _VERIFY runs it
++    // beside the plain search, counts the results that differ and keeps the plain one.
++    const auto track = [&](const Bias* bias, std::unordered_set<const IR::Inst*>& exhausted) {
++        if (fast.mode == FastTranslate::Mode::Off) {
+             return Track(low_addr, bias);
+         }
++        if (fast.mode == FastTranslate::Mode::Fast) {
++            return Track(low_addr, bias, &exhausted, &fast.work);
++        }
++        const std::optional<StorageBufferAddr> pruned{
++            Track(low_addr, bias, &exhausted, &fast.work)};
++        const std::optional<StorageBufferAddr> plain{Track(low_addr, bias)};
++        ++fast.checks;
++        if (pruned != plain) {
++            ++fast.mismatches;
++        }
++        return plain;
++    };
++    const auto cached_track = [&](const Bias* bias, auto& cache, auto& exhausted) {
++        if (low_addr.IsImmediate()) {
++            return track(bias, exhausted);
++        }
+         const IR::Inst* const start{low_addr.InstRecursive()};
+         if (const auto it = cache.find(start); it != cache.end()) {
+             return it->second;
+         }
+-        const std::optional<StorageBufferAddr> result{Track(low_addr, bias)};
++        const std::optional<StorageBufferAddr> result{track(bias, exhausted)};
+         cache.emplace(start, result);
+         return result;
+     };
+@@ -1498,11 +1529,11 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info,
+         storage_buffer = TrackAddend(low_addr);
+     }
+     if (!storage_buffer) {
+-        storage_buffer = cached_track(&nvn_bias, info.biased_tracks);
++        storage_buffer = cached_track(&nvn_bias, info.biased_tracks, info.biased_exhausted);
+     }
+     if (!storage_buffer) {
+         // If it fails, track without a bias
+-        storage_buffer = cached_track(nullptr, info.unbiased_tracks);
++        storage_buffer = cached_track(nullptr, info.unbiased_tracks, info.unbiased_exhausted);
+         if (!storage_buffer) {
+             // If that also fails, use NVN fallbacks
+             LOG_WARNING(Shader, "Storage buffer failed to track, using global memory fallbacks");
+@@ -2254,6 +2285,8 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
+         return;
+     }
+     TrackingConditions conditions{program};
++    // EDEN_UP_FAST_TRANSLATE: read once per program; counts of this call, added at the end.
++    FastTranslate::PassCounts fast{.mode = FastTranslate::CurrentMode()};
+     StorageInfo info;
+     info.iterator_words = CollectIteratorWords(program);
+     info.atomic_pointers = CollectAtomicPointers(program);
+@@ -2264,7 +2297,7 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
+                     continue;
+                 }
+                 conditions.current = block;
+-                CollectStorageBuffers(*block, inst, info, env, conditions);
++                CollectStorageBuffers(*block, inst, info, env, conditions, fast);
+             }
+         }
+     };
+@@ -2299,6 +2332,9 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
+     } else if (info.tables_seen) {
+         info.bindings_full = true;
+     }
++    if (fast.mode != FastTranslate::Mode::Off) {
++        FastTranslate::Note(FastTranslate::Part::Storage, fast);
++    }
+     if (info.bindings_full) {
+         LOG_WARNING(Shader, "All {} storage buffer bindings taken, the rest stay global",
+                     StorageBufferLimit(env));
+diff --git a/src/shader_recompiler/ir_opt/ssa_rewrite_pass.cpp b/src/shader_recompiler/ir_opt/ssa_rewrite_pass.cpp
+index b5cd233..4d7f33c 100644
+--- a/src/shader_recompiler/ir_opt/ssa_rewrite_pass.cpp
++++ b/src/shader_recompiler/ir_opt/ssa_rewrite_pass.cpp
+@@ -20,6 +20,8 @@
+ #include <map>
+ #include <span>
+ #include "common/container/unordered_map.h"
++#include "common/hash.h"
++#include <utility>
+ #include <variant>
+ #include <vector>
+ 
+@@ -27,6 +29,7 @@
+ #include "shader_recompiler/frontend/ir/opcodes.h"
+ #include "shader_recompiler/frontend/ir/pred.h"
+ #include "shader_recompiler/frontend/ir/reg.h"
++#include "shader_recompiler/fast_translate.h"
+ #include "shader_recompiler/frontend/ir/value.h"
+ #include "shader_recompiler/ir_opt/passes.h"
+ 
+@@ -35,10 +38,20 @@ namespace {
+ struct FlagTag {
+     auto operator<=>(const FlagTag&) const noexcept = default;
+ };
+-struct ZeroFlagTag : FlagTag {};
+-struct SignFlagTag : FlagTag {};
+-struct CarryFlagTag : FlagTag {};
+-struct OverflowFlagTag : FlagTag {};
++// The flags and the indirect branch variable name the block slot that stores their definitions
++// under EDEN_UP_FAST_TRANSLATE (BlockDefTable).
++struct ZeroFlagTag : FlagTag {
++    static constexpr auto slot{IR::Block::SsaVariable::ZeroFlag};
++};
++struct SignFlagTag : FlagTag {
++    static constexpr auto slot{IR::Block::SsaVariable::SignFlag};
++};
++struct CarryFlagTag : FlagTag {
++    static constexpr auto slot{IR::Block::SsaVariable::CarryFlag};
++};
++struct OverflowFlagTag : FlagTag {
++    static constexpr auto slot{IR::Block::SsaVariable::OverflowFlag};
++};
+ 
+ struct GotoVariable : FlagTag {
+     GotoVariable() = default;
+@@ -51,6 +64,8 @@ struct GotoVariable : FlagTag {
+ 
+ struct IndirectBranchVariable {
+     auto operator<=>(const IndirectBranchVariable&) const noexcept = default;
++
++    static constexpr auto slot{IR::Block::SsaVariable::IndirectBranch};
+ };
+ 
+ using Variant = std::variant<IR::Reg, IR::Pred, ZeroFlagTag, SignFlagTag, CarryFlagTag, OverflowFlagTag, GotoVariable, IndirectBranchVariable>;
+@@ -124,6 +139,86 @@ struct DefTable {
+     ValueMap overflow_flag;
+ };
+ 
++// EDEN_UP_FAST_TRANSLATE (Djihads80 e4197fb88): every read walks back through blocks and looks up
++// or writes a definition in each. Fixed-count variables keep their definitions in the blocks:
++// node-based maps per variable made those lookups and their allocations a large part of the pass.
++// A read copies the definition out at once (ReadVariable), so the flat goto table needs no stable
++// references.
++struct BlockDefTable {
++    const IR::Value& Def(IR::Block* block, IR::Reg variable) {
++        return block->SsaRegValue(variable);
++    }
++    void SetDef(IR::Block* block, IR::Reg variable, const IR::Value& value) {
++        block->SetSsaRegValue(variable, value);
++    }
++
++    const IR::Value& Def(IR::Block* block, IR::Pred variable) {
++        return block->SsaPredValue(variable);
++    }
++    void SetDef(IR::Block* block, IR::Pred variable, const IR::Value& value) {
++        ++kept;
++        block->SetSsaPredValue(variable, value);
++    }
++
++    const IR::Value& Def(IR::Block* block, GotoVariable variable) {
++        const auto it{goto_vars.find({block, variable.index})};
++        return it != goto_vars.end() ? it->second : empty;
++    }
++    void SetDef(IR::Block* block, GotoVariable variable, const IR::Value& value) {
++        goto_vars.insert_or_assign({block, variable.index}, value);
++    }
++
++    template <typename Tag>
++        requires requires { Tag::slot; }
++    const IR::Value& Def(IR::Block* block, Tag) {
++        return block->SsaValue(Tag::slot);
++    }
++    template <typename Tag>
++        requires requires { Tag::slot; }
++    void SetDef(IR::Block* block, Tag, const IR::Value& value) {
++        ++kept;
++        block->SetSsaValue(Tag::slot, value);
++    }
++
++    Common::unordered_map<std::pair<IR::Block*, u32>, IR::Value, Common::PairHash> goto_vars;
++    const IR::Value empty{};
++    /// Definitions of predicates, flags and the indirect branch variable kept in blocks.
++    u64 kept{};
++};
++
++// EDEN_UP_FAST_TRANSLATE_VERIFY: both tables get every definition; a read compares their
++// answers and returns the old table's. Registers are in the blocks both ways (one slot, nothing
++// to compare), so they are neither written twice nor counted as reads.
++struct VerifyDefTable {
++    const IR::Value& Def(IR::Block* block, IR::Reg variable) {
++        return old_table.Def(block, variable);
++    }
++    void SetDef(IR::Block* block, IR::Reg variable, const IR::Value& value) {
++        old_table.SetDef(block, variable, value);
++    }
++
++    template <typename Type>
++    const IR::Value& Def(IR::Block* block, Type variable) {
++        const IR::Value& old_def{old_table.Def(block, variable)};
++        const IR::Value new_def{new_table.Def(block, variable)};
++        ++checks;
++        if (!(old_def == new_def)) {
++            ++mismatches;
++        }
++        return old_def;
++    }
++    template <typename Type>
++    void SetDef(IR::Block* block, Type variable, const IR::Value& value) {
++        old_table.SetDef(block, variable, value);
++        new_table.SetDef(block, variable, value);
++    }
++
++    DefTable old_table;
++    BlockDefTable new_table;
++    u64 checks{};
++    u64 mismatches{};
++};
++
+ IR::Opcode UndefOpcode(IR::Reg) noexcept {
+     return IR::Opcode::UndefU32;
+ }
+@@ -160,6 +255,7 @@ struct ReadState {
+     Status pc{Status::Start};
+ };
+ 
++template <typename Table>
+ class Pass {
+ public:
+     template <typename Type>
+@@ -302,10 +398,13 @@ private:
+ 
+     // TODO: Windows dies with stack exhaustion?
+     std::unordered_map<IR::Block*, std::map<Variant, IR::Inst*>> incomplete_phis;
+-    DefTable current_def;
++
++public:
++    Table current_def;
+ };
+ 
+-void VisitInst(Pass& pass, IR::Block* block, IR::Inst& inst) {
++template <typename Table>
++void VisitInst(Pass<Table>& pass, IR::Block* block, IR::Inst& inst) {
+     switch (inst.GetOpcode()) {
+     case IR::Opcode::SetRegister:
+         if (const IR::Reg reg{inst.Arg(0).Reg()}; reg != IR::Reg::RZ) {
+@@ -368,7 +467,8 @@ void VisitInst(Pass& pass, IR::Block* block, IR::Inst& inst) {
+     }
+ }
+ 
+-void VisitBlock(Pass& pass, IR::Block* block) {
++template <typename Table>
++void VisitBlock(Pass<Table>& pass, IR::Block* block) {
+     for (IR::Inst& inst : block->Instructions()) {
+         VisitInst(pass, block, inst);
+     }
+@@ -394,14 +494,37 @@ IR::Type GetConcreteType(IR::Inst* inst) {
+     }
+     return IR::Type::Opaque;
+ }
+-} // Anonymous namespace
+ 
+-void SsaRewritePass(IR::Program& program) {
+-    Pass pass;
++template <typename Table>
++void RewriteBlocks(IR::Program& program, Pass<Table>& pass) {
+     const auto end{program.post_order_blocks.rend()};
+     for (auto block = program.post_order_blocks.rbegin(); block != end; ++block) {
+         VisitBlock(pass, *block);
+     }
++}
++} // Anonymous namespace
++
++void SsaRewritePass(IR::Program& program) {
++    // EDEN_UP_FAST_TRANSLATE: read once per program; the plain table without the switch.
++    const FastTranslate::Mode mode{FastTranslate::CurrentMode()};
++    if (mode == FastTranslate::Mode::Off) {
++        Pass<DefTable> pass;
++        RewriteBlocks(program, pass);
++    } else if (mode == FastTranslate::Mode::Fast) {
++        Pass<BlockDefTable> pass;
++        RewriteBlocks(program, pass);
++        FastTranslate::Note(FastTranslate::Part::Ssa,
++                            {.mode = mode, .work = pass.current_def.kept});
++    } else {
++        Pass<VerifyDefTable> pass;
++        RewriteBlocks(program, pass);
++        const VerifyDefTable& table{pass.current_def};
++        FastTranslate::Note(FastTranslate::Part::Ssa, {.mode = mode,
++                                                       .work = table.new_table.kept,
++                                                       .checks = table.checks,
++                                                       .mismatches = table.mismatches});
++    }
++    const auto end{program.post_order_blocks.rend()};
+     for (auto block = program.post_order_blocks.rbegin(); block != end; ++block) {
+         for (IR::Inst& inst : (*block)->Instructions()) {
+             if (inst.GetOpcode() == IR::Opcode::Phi) {
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index d174402..79b086c 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -42,6 +42,7 @@
+ #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
+ #include "shader_recompiler/backend/spirv/emit_spirv_mesh_readback.h"
+ #include "shader_recompiler/environment.h"
++#include "shader_recompiler/fast_translate.h"
+ #include "shader_recompiler/frontend/maxwell/control_flow.h"
+ #include "shader_recompiler/frontend/maxwell/translate_program.h"
+ #include "shader_recompiler/ir_opt/passes.h"
+@@ -4590,6 +4591,13 @@ void PipelineCache::PrepareKept(std::stop_token stop_loading,
+              state.finished == 0 ? 0.0
+                                  : build_seconds * 1000.0 / static_cast<double>(state.finished),
+              device.HasBrokenParallelShaderCompiling() ? size_t{1} : worker_count);
++    // EDEN_UP_FAST_TRANSLATE: what the faster translation did while preparing (and, with
++    // _VERIFY, how many programs it compared and how many differ).
++    if (Shader::FastTranslate::CurrentMode() != Shader::FastTranslate::Mode::Off) {
++        // Totals since the process started: draw-time translations before and during the
++        // preparation are counted too.
++        Shader::FastTranslate::Log("at the end of shader preparation (totals since start)");
++    }
+ }
+ 
+ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateKeptGraphicsPipeline(
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp b/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp
+index 508878d..8fae788 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp
+@@ -134,7 +134,8 @@ constexpr const char* TranslationSwitches[] = {
+     "EDEN_UP_DJ_FRAG_BARRIER", "EDEN_UP_DJ_GATHER_OWNERS", "EDEN_UP_DRAIN_SKIP_SAME",
+     "EDEN_UP_EVICT_KEEP_SSBO",
+     "EDEN_UP_FAST_DRAW", "EDEN_UP_FAST_DRAW_OOT_EXEMPT", "EDEN_UP_FAST_DRAW_VERIFY",
+-    "EDEN_UP_FAST_POLL", "EDEN_UP_FRITCHII_BLITSTATE", "EDEN_UP_FRITCHII_CHURN",
++    "EDEN_UP_FAST_POLL", "EDEN_UP_FAST_TRANSLATE", "EDEN_UP_FAST_TRANSLATE_VERIFY",
++    "EDEN_UP_FRITCHII_BLITSTATE", "EDEN_UP_FRITCHII_CHURN",
+     "EDEN_UP_FRITCHII_CLOCK", "EDEN_UP_FRITCHII_CLOCK_SYNCPT", "EDEN_UP_FRITCHII_COLD",
+     "EDEN_UP_FRITCHII_COLD_FRAMES", "EDEN_UP_FRITCHII_COLD_GUARDED",
+     "EDEN_UP_FRITCHII_COPY_BARRIER", "EDEN_UP_FRITCHII_DMALIST", "EDEN_UP_FRITCHII_DRIFT",

@@ -1,0 +1,293 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: [PATCH] Hot pages stay untrapped (EDEN_UP_HOT_PAGES)
+
+EDEN_UP_HOT_PAGES=1 (exact 1, off without it; Frizti/Fritchii d20c32704c, there EDEN_NX2_EXP48,
+a port of Eglantine f27522bfb9 by kraibse). A buffer page the CPU rewrites again and again is no
+longer write-trapped after each upload: it uploads once a frame whether it changed or not, and the
+trap, the gather and the re-protect of every first write to it are saved. Upstream: 71% fewer
+protect calls and 5% of frame time on a PC.
+
+- A page becomes hot when a trapped write finds it re-protected twice inside a 128-frame window;
+  a page the GPU wrote never does. Hot state is kept per 4 MiB region and made with the region.
+- It refuses to act with the copy guard on (EDEN_UP_AHEAD_GUARD), and says so in the log: the
+  guard's ALL_WRITES path relies on the cache's trap for pages outside its guessed set. So this
+  is for the full frame wait ("clean" mode), not for fast mode.
+- The switch is read once, in the memory tracker's constructor, into a plain flag: the readers
+  (CpuWriteEpoch per draw, ChangeRegionState, ForEachModifiedRange) do one load with it off.
+- From our review, on top of the draft: the per-draw sync memo keeps working inside a frame
+  (CpuWriteEpoch adds the frame number for regions with hot state, instead of returning "always
+  changed"); the bank-flag recheck no longer takes "modified" for "uploaded by this bind"; the
+  state is allocated with the region, not inside noexcept functions.
+
+The price upstream names, to be checked on video: a write to a hot page AFTER its upload of the
+frame reaches the GPU one frame late (two draws' uniform blocks in one 4 KiB page): a one-frame
+jitter of one object, a particle or a HUD element.
+
+Drafted with an AI tool and reviewed (off path compared with the old code on 20,000 random
+tracker operations with 5 seeds: identical; buffer_cache.h's 7 anchors unchanged).
+
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -159,6 +159,9 @@
+ 
+ template <class P>
+ void BufferCache<P>::TickFrame() {
++    if (VideoCommon::HotPagesEnabled()) {
++        VideoCommon::g_hot_page_epoch.fetch_add(1, std::memory_order_relaxed);
++    }
+     // Homebrew console apps don't create or bind any channels, so this will be nullptr.
+     if (!channel_state) {
+         return;
+@@ -3499,7 +3502,7 @@
+         }
+         const DAddr begin = (std::max<DAddr>)(page, device_addr);
+         const u64 length = (std::min<DAddr>)(page + Core::DEVICE_PAGESIZE, end) - begin;
+-        if (memory_tracker.IsRegionCpuModified(begin, length)) {
++        if (!VideoCommon::HotPagesEnabled() && memory_tracker.IsRegionCpuModified(begin, length)) {
+             // Uploaded by this bind anyway.
+             ++nx2_bank_flag_stats.already_modified;
+             continue;
+diff --git a/src/video_core/buffer_cache/memory_tracker_base.h b/src/video_core/buffer_cache/memory_tracker_base.h
+--- a/src/video_core/buffer_cache/memory_tracker_base.h
++++ b/src/video_core/buffer_cache/memory_tracker_base.h
+@@ -33,7 +33,9 @@
+     using Manager = WordManager<DeviceTracker, WORDS_STACK_NEEDED, HIGHER_PAGE_SIZE>;
+ 
+ public:
+-    MemoryTrackerBase(DeviceTracker& device_tracker_) : device_tracker{&device_tracker_} {}
++    MemoryTrackerBase(DeviceTracker& device_tracker_) : device_tracker{&device_tracker_} {
++        InitHotPages(); // EDEN_UP_HOT_PAGES is read here, before any region exists
++    }
+     ~MemoryTrackerBase() = default;
+ 
+     /// Returns the inclusive CPU modified range in a begin end pair
+@@ -82,6 +84,11 @@
+         if (last >= NUM_HIGH_PAGES) {
+             return ~u64{0};
+         }
++        // EDEN_UP_HOT_PAGES: a hot page takes CPU writes without a trap, so no epoch moves with
++        // them. A region with hot state therefore also moves with each frame: a hot page uploads
++        // at most once a frame, so a memo that holds until the frame changes sees every upload.
++        const bool hot_pages = HotPagesEnabled();
++        const u64 frame = hot_pages ? g_hot_page_epoch.load(std::memory_order_relaxed) : 0;
+         u64 sum = 0;
+         for (u64 page = first; page <= last; ++page) {
+             const Manager* const manager = top_tier[page];
+@@ -89,6 +96,9 @@
+                 return ~u64{0};
+             }
+             sum += manager->cpu_epoch;
++            if (hot_pages && manager->hot_state) {
++                sum += frame;
++            }
+         }
+         return sum;
+     }
+diff --git a/src/video_core/buffer_cache/word_manager.h b/src/video_core/buffer_cache/word_manager.h
+--- a/src/video_core/buffer_cache/word_manager.h
++++ b/src/video_core/buffer_cache/word_manager.h
+@@ -8,6 +8,9 @@
+ 
+ #include <algorithm>
+ #include <bit>
++#include <array>
++#include <atomic>
++#include <memory>
+ #include <limits>
+ #include <span>
+ #include <utility>
+@@ -17,6 +20,8 @@
+ #include "common/common_funcs.h"
+ #include "common/common_types.h"
+ #include "common/div_ceil.h"
++#include "common/pe_switch.h"
++#include "video_core/ahead_guard.h"
+ #include "video_core/host1x/gpu_device_memory_manager.h"
+ 
+ namespace VideoCommon {
+@@ -34,6 +39,39 @@
+     Max
+ };
+ 
++// EDEN_UP_HOT_PAGES=1 (exact "1", off without it; Frizti/Fritchii d20c32704c, there
++// EDEN_NX2_EXP48, a port of Eglantine f27522bfb9 by kraibse): a page the CPU rewrites again and
++// again is no longer write-trapped after each upload. It uploads once a frame instead, whether it
++// changed or not, and the trap, the gather and the re-protect of every first write are saved.
++// The price upstream names: a write to such a page AFTER its upload of the frame reaches the GPU
++// one frame late.
++inline std::atomic<u32> g_hot_page_epoch{0};
++inline std::atomic<bool> g_hot_pages{false};
++
++/// Reads the switch, once, before any region exists (the memory tracker's constructor calls it).
++/// Boot-only: hot pages stop reporting CPU writes, and the copy guard's ALL_WRITES path needs
++/// the ordinary cache trap on pages outside its guessed set, so with the guard on this refuses.
++inline void InitHotPages() {
++    static const bool on = [] {
++        if (!Common::PeSwitch("EDEN_UP_HOT_PAGES")) {
++            return false;
++        }
++        if (AheadGuard::Enabled()) {
++            LOG_INFO(HW_GPU, "EDEN_UP_HOT_PAGES: refused while EDEN_UP_AHEAD_GUARD is enabled");
++            return false;
++        }
++        LOG_INFO(HW_GPU, "EDEN_UP_HOT_PAGES=1: repeated CPU writes leave buffer pages untracked");
++        return true;
++    }();
++    g_hot_pages.store(on, std::memory_order_relaxed);
++}
++
++/// One plain load: the readers are the hottest paths of the buffer cache, and a first-use check
++/// here would cost them a guard and a stack frame with the switch off.
++[[nodiscard]] inline bool HotPagesEnabled() noexcept {
++    return g_hot_pages.load(std::memory_order_relaxed);
++}
++
+ template <class DeviceTracker, size_t stack_words, size_t size_bytes>
+ struct WordManager {
+     static constexpr size_t num_words = Common::DivCeil(size_bytes, BYTES_PER_WORD);
+@@ -48,6 +86,9 @@
+         u64 const last_word = (~u64{0} << shift) >> shift;
+         heap[num_words * size_t(Type::CPU) + num_words - 1] = last_word;
+         heap[num_words * size_t(Type::Untracked) + num_words - 1] = last_word;
++        if (HotPagesEnabled()) {
++            hot_state = std::make_unique<HotState>();
++        }
+     }
+     explicit WordManager() = default;
+ 
+@@ -115,7 +156,35 @@
+             func(offset, continuous_bits);
+             mask = continuous_bits < PAGES_PER_WORD ? (mask >> continuous_bits) : 0;
+             offset += continuous_bits;
++        }
++    }
++
++    /// EDEN_UP_HOT_PAGES: per region, which pages are hot (rewritten after an upload at least twice
++    /// in the current 128-frame window), which never may be (the GPU wrote them), and which hot
++    /// pages have had their upload of this frame.
++    struct HotState {
++        std::array<u64, num_words> hot{}, flip{}, no_hot{}, clean{};
++        u32 epoch{}, frame{};
++    };
++
++    void RefreshHotEpoch() {
++        if (!hot_state) {
++            hot_state = std::make_unique<HotState>();
++        }
++        const u32 frame = g_hot_page_epoch.load(std::memory_order_relaxed);
++        if (frame != hot_state->frame) {
++            hot_state->frame = frame;
++            hot_state->clean.fill(0);
++            // Untrapped CPU writes do not bump either epoch. Defeat the full-region clean
++            // shortcut and UBO epoch memoisation on every frame that can upload hot pages.
++            ++upload_epoch;
++            ++cpu_epoch;
+         }
++        if ((frame >> 7) != hot_state->epoch) {
++            hot_state->epoch = frame >> 7;
++            hot_state->hot.fill(0);
++            hot_state->flip.fill(0);
++        }
+     }
+ 
+     /// @brief Change the state of a range of pages
+@@ -124,6 +193,10 @@
+     /// @param dirty_addr    Base address to mark or unmark as modified
+     /// @param size          Size in bytes to mark or unmark as modified
+     void ChangeRegionState(Type type, bool enable, u64 dirty_addr, u64 size) noexcept {
++        const bool hot_pages = HotPagesEnabled();
++        if (hot_pages) {
++            RefreshHotEpoch();
++        }
+         if (enable && (type == Type::CPU || type == Type::CachedCPU)) {
+             ++upload_epoch;
+         }
+@@ -132,6 +205,19 @@
+         [[maybe_unused]] std::span<u64> cached_words = Span(Type::CachedCPU);
+         std::vector<std::pair<VAddr, u64>> ranges;
+         IterateWords(dirty_addr - cpu_addr, size, [&](size_t index, u64 mask) {
++            if (hot_pages && enable) {
++                if (type == Type::CPU) {
++                    hot_state->clean[index] &= ~mask;
++                    const u64 flipped = ~untracked_words[index] & mask;
++                    hot_state->hot[index] |= hot_state->flip[index] & flipped &
++                                             ~hot_state->no_hot[index];
++                    hot_state->flip[index] |= flipped;
++                } else if (type == Type::GPU) {
++                    hot_state->no_hot[index] |= mask;
++                    hot_state->hot[index] &= ~mask;
++                    hot_state->clean[index] &= ~mask;
++                }
++            }
+             if (type == Type::CPU || type == Type::CachedCPU) {
+                 CollectChangedRanges(!enable, index, untracked_words[index], mask, ranges);
+             }
+@@ -165,7 +251,11 @@
+     /// @param func            Function to call for each turned off region
+     template <bool cache_upload = false, typename Func>
+     void ForEachModifiedRange(Type type, bool clear, VAddr query_cpu_range, s64 size, Func&& func) {
+-        const bool cache_clean = cache_upload && type == Type::CPU && clear;
++        const bool hot_pages = HotPagesEnabled() && clear && type == Type::CPU;
++        if (hot_pages) {
++            RefreshHotEpoch();
++        }
++        const bool cache_clean = cache_upload && type == Type::CPU && clear && !hot_pages;
+         const u64 epoch = upload_epoch;
+         if (cache_clean && clean_upload_epoch == epoch) {
+             return;
+@@ -186,21 +276,27 @@
+         IterateWords(offset, size, [&](size_t index, u64 mask) {
+             if (type == Type::GPU)
+                 mask &= ~untracked_words[index];
+-            const u64 word = state_words[index] & mask;
++            const u64 hot = hot_pages ? hot_state->hot[index] & mask : 0;
++            const u64 word = state_words[index] & mask &
++                             ~(hot_pages ? hot & hot_state->clean[index] : 0);
+             if (word == 0 &&
+                 (!clear || ((type != Type::CPU && type != Type::CachedCPU) ||
+                             (untracked_words[index] & mask) == 0))) {
+                 return;
+             }
+             if (clear) {
++                if (hot_pages) {
++                    hot_state->clean[index] |= hot & word;
++                }
++                const u64 clear_mask = mask & ~hot;
+                 if (type == Type::CPU || type == Type::CachedCPU) {
+-                    CollectChangedRanges(true, index, untracked_words[index], mask, ranges);
++                    CollectChangedRanges(true, index, untracked_words[index], clear_mask, ranges);
+                 }
+-                state_words[index] &= ~mask;
++                state_words[index] &= ~clear_mask;
+                 if (type == Type::CPU || type == Type::CachedCPU)
+-                    untracked_words[index] &= ~mask;
++                    untracked_words[index] &= ~clear_mask;
+                 if (type == Type::CPU)
+-                    cached_words[index] &= ~word;
++                    cached_words[index] &= ~(word & ~hot);
+             }
+             const size_t base_offset = index * PAGES_PER_WORD;
+             IteratePages(word, [&](size_t pages_offset, size_t pages_size) {
+@@ -271,6 +367,13 @@
+ 
+     void FlushCachedWrites() noexcept {
+         ++upload_epoch;
++        if (HotPagesEnabled()) {
++            RefreshHotEpoch();
++            const auto pending = Span(Type::CachedCPU);
++            for (size_t index = 0; index < num_words; ++index) {
++                hot_state->clean[index] &= ~pending[index];
++            }
++        }
+         auto const cached_words = Span(Type::CachedCPU);
+         auto const untracked_words = Span(Type::Untracked);
+         auto const cpu_words = Span(Type::CPU);
+@@ -350,6 +453,7 @@
+     std::array<u64, size_t(Type::Max) * num_words> heap = {};
+     DeviceTracker* tracker = nullptr;
+     VAddr cpu_addr = 0;
++    std::unique_ptr<HotState> hot_state; // allocated only with HOT_PAGES on and the guard off
+ };
+ 
+ } // namespace VideoCommon
