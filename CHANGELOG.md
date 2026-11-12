@@ -7,9 +7,11 @@ Newest first, with each day's test builds in brackets. Results are from our own 
 - **The black screen after the opening movie on a fresh install is solved with two settings.** On default settings every first start froze or crashed there (3 of 3). With the two settings, 3 of 3 got past it.
 - **The title movie plays smoothly with two settings.** Frames thrown away: 652 and 709 without them, 74 and 87 with them.
 - **A crash after longer play:** with the fix on, 2 of 2 runs played on through a forced memory shortage. Without it, 2 of 2 crashed. Off by default, not yet seen in real play.
-- **Still open: the house and the door on a fresh install.** 1 start out of 6 got through today. On our own console, with the graphics already stored, a new game got through the door 10 times out of 10.
+- **The house door on a fresh install, from the second start on: solved in our tests.** With the best settings, which build drawing programs on two threads instead of eight (one in one test group), 16 of 16 second and third starts got through the door into the village. Not on by default yet.
+- **Still open: the very first start on a fresh install.** In the morning's first round 1 start out of 6 got through. With the best settings of the day, 4 of 9 first starts reached the village; the others crashed, most of them at the house door, about nine to ten minutes in. None of the 4 had memory to spare.
+- **What causes it:** on a first start about 40 new drawing programs are built at once at the door, and memory use jumps by half a gigabyte or more in a few seconds. Two safety settings (wait for memory, take it from the emulator's other memory stores) and a setting that frees memory earlier did not stop it: 2 of 4 first starts with all of them on. A cap on how many are built at once was written, but two reviews showed it would not help: building one at a time was already measured that day and the wave was just as large. Next is a build that measures which part of the emulator takes the memory.
 - Built, not tested yet: movie errors no longer end the game (T133).
-- From others: one of the first-start settings is GrowingBlackBeans' trust copy; the movie error fix comes from Fritchii.
+- From others: one of the first-start settings is GrowingBlackBeans' trust copy; the movie error fix comes from Fritchii; the setting that frees memory earlier is a port of a Lichii fix.
 
 ## 11 November 2026 (builds T117 to T131)
 
@@ -69,6 +71,6 @@ Newest first, with each day's test builds in brackets. Results are from our own 
 
 ## What is next
 
-- The house and the door on a fresh install. New settings are in test now. This holds the alpha back.
+- The very first start on a fresh install: find out which part of the emulator takes the memory at the house door (a measuring build is next), then fix that. This holds the alpha back.
 - The opening should play smoothly on a first start.
 - Then: speed in wide open areas.
