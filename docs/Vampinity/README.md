@@ -21,15 +21,22 @@ Search by the switch name, the patch number or the build number. Plain words wor
 
 If the switch or the idea is already here, build on it. If it is new, claim it first in the pinned "Who is working on what" thread in Discussions.
 
-## Being worked on now (12 Nov 2026, 10:45)
+## Being worked on now (12 Nov 2026, evening)
 
-- **The house door on a fresh install.** A new game on empty caches still crashes at the house door: the heap grows about 0.7 GiB in seconds there ([door-burst-source](findings/door-burst-source-2026-11-12.md), [fresh-install-v6](findings/fresh-install-v6-2026-11-12.md)). Test round v7 is running now: settings-only ways to get through, on T134.
-- **T135, planned.** It takes:
+- **The very first start on a fresh install.** Five settings-only rounds on T134 (v7 to v11) settled it:
+  - From the second start on, the house door is solved: 16 of 16 warm starts reached the village, with `EDEN_NX2_PIPELINE_WORKERS=2` (one group had `=1`).
+  - A true first start (empty caches) reached the village 4 of 9 times with the best settings, none with memory to spare. The deaths are mostly at the house door, most of them a `std::bad_alloc` on the file-service thread (about 0.9 MB asked, where the size was logged).
+  - The cause is the wave at a cold door: about 40 new pipelines are built there at once and the heap grows by 0.4-0.8 GiB within ~2 s. `EDEN_UP_NEW_WAIT_MS=2000`, `EDEN_UP_HEAP_RESCUE=1` and the two `EDEN_UP_IR_FREE` lines did not stop it: 2 of 4 first starts with all of them on.
+  - Notes: [fresh-install-v7](findings/fresh-install-v7-2026-11-12.md), [fresh-install-v8](findings/fresh-install-v8-2026-11-12.md), [fresh-install-v10](findings/fresh-install-v10-2026-11-12.md). Rounds v9 and v11 have no note of their own: v9 lost both first starts with the wait and the rescue on (the wait fired for an 871,571-byte file-service request, waited its 2000 ms and gave up), and v11 lost both first starts with v10's first group's settings.
+- **A first fix, turned down in review, not built.** A byte budget for pipeline builds in flight (`EDEN_UP_BUILD_BUDGET_MIB`). With two builders it can only mean one build at a time, and one builder was already measured cold on 12 Nov: door waves of +640 and +608 MiB, against +544 and +448 MiB with two. So fewer builds at once does not shrink the wave.
+- **Next: a measuring build.** One log line per window at the door that names the thread whose requests made the heap grow (the existing per-thread growth counter, printed with thread names). The wave is 450 to 810 MiB in heap pieces while live bytes rise only 26 to 66 MiB, so the owner is not known yet; it may sit outside the builder threads.
+- **T135, written, not built.** It hands back whole heap spaces that hold only idle arenas (`EDEN_UP_ARENA_SPACES=1`, off by default). Two reviews put its net gain before the door at about -100 to +130 MiB, against a wave of ~800 MiB, so it is a measurement build at most, not the fix.
+- **Planned for a coming build, unchanged since the morning:**
   - waveydude's fixes from his branch `w11-two-frame-guard` (the ones that apply to our tree; credited to him),
   - the title-movie settings as code defaults: 8 decoder threads and a frame delay of 4 ([title-movie-test](findings/title-movie-test-2026-11-12.md)),
   - the first-start settings that got 6 of 6 starts past the black screen ([fresh-install-v6](findings/fresh-install-v6-2026-11-12.md)).
 
-Nothing in T135 is built yet. If you want to take one of these parts, say so in the thread first.
+If you want to take one of these parts, say so in the thread first.
 
 ## Notes on these files
 

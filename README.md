@@ -25,7 +25,7 @@ The aim is the whole game, start to finish, on a base PS5.
 
 ## Is there a download?
 
-**Not for newcomers yet.** The game starts, the opening plays and the first village is playable. But on a fresh install it still crashes on the way there, and we do not want your first try to end like that.
+**Not for newcomers yet.** The game starts, the opening plays and the first village is playable. But on a fresh install the very first start still crashes on the way there about half the time, even with the best settings we have, and we do not want your first try to end like that. Starting again gets in: with the best settings, every second and third start in our tests reached the village.
 
 - The builds under [Releases](https://github.com/Vampinity/GreenHatBoy/releases) marked **Pre-release** are tester builds, for people who already help test and know the setup. Please do not start with those.
 - **The first alpha** (an early test version) comes when a fresh install gets through its first start and into the first village without crashing on the way. We test exactly that on a real console, and the result goes on this page. No date until it passes.
@@ -46,8 +46,8 @@ Each build is tried on a real console before it goes up.
 
 We would rather tell you now than have you find out on your own.
 
-- **It can crash, most of all on the very first start.** On a fresh install the screen stays black for about half a minute after the opening movie. That is normal, so wait. The game can also crash in the first minutes after that.
-- **If it crashes, start it again.** Each start gets further than the one before. If it keeps crashing at the same spot, tell us with the crash form (see below).
+- **It can crash, most of all on the very first start.** On a fresh install the screen stays black for between about 45 seconds and a minute and a half after the opening movie. That is normal, so wait. After that, the first start crashes about half the time in its first ten minutes, most often at the house door: 4 of 9 first starts reached the village in our tests with the best settings.
+- **If it crashes, start it again.** From the second start on, the door is no problem: with the best settings, 16 of 16 starts got through it in our tests. If it keeps crashing at the same spot, tell us with the crash form (see below).
 - **The game saves by itself, and often.** It does so as you walk and each time you go through a door. After a crash, choose Continue and you are back close to where you were. One thing to know: New Game overwrites that autosave. The game asks before it does.
 - **Why a restart helps:** the first time you see a scene, the emulator has to build the small drawing programs for it. That takes time and memory. It keeps them on the PS5, so the next start can skip that work. For now the first start after an update counts as a first start too.
 - **The opening stutters the first time you watch it**, and the sound can drop out for a moment. From the second start it plays nearly smooth.
@@ -82,13 +82,14 @@ Measured on 11 November on a base PS5, firmware 12.40, docked, full resolution, 
 - The white fog over everything, and the bare trees: the forest looks as it should.
 - Dark full-screen flashes in the default settings.
 - **The black screen and crash on the very first start.** With two settings, 3 of 3 first starts got past it in our tests on 12 November, against 0 of 3 without. The two settings are not on by default yet.
+- **The crash at the house door, from the second start on.** With the test settings, which build drawing programs on two threads instead of eight (on one in one test group), 16 of 16 second and third starts on a fresh install got through the door and into the village in our tests on 12 November. These settings are not on by default yet, and the very first start is not fixed (see below).
 - **The choppy movie behind the title screen.** Two settings cut the movie frames that were thrown away from over 650 to under 90, in both test starts on 12 November. They are not on by default yet either.
 - **Icons and hearts jumping to the wrong place in the fast settings.** A guard removes that; standing in the village it costs about 3% speed.
 - Freezes the first time a place is seen are shorter: about a second at most, where it was about four.
 - The opening movies were badly out of sync. They are much better now, not perfect yet.
 
 **Being improved right now**
-- **The house and the house door on a fresh install.** This is what holds the alpha back. Our own console already has the village's graphics stored, and there a new game got through the door 10 times out of 10. On an empty install the game ran out of memory in the house on the first start and at the door on the second, in every test on the morning of 12 November. One of two third starts reached the village. The next round of fixes is being tested.
+- **The very first start on a fresh install.** This is what holds the alpha back. From the second start on the house door is solved: with the best settings, 16 of 16 starts got through it in our tests. A true first start still crashes in its first ten minutes about half the time: with the best settings, 4 of 9 reached the village on 12 November. Starting again gets in. The cause: on a first start about 40 new drawing programs are built at once at the door, and that makes a wave of memory use of half a gigabyte or more in a few seconds. No setting we tried stops that wave. A first fix (building fewer at once) was written, but two reviews showed it would not make the wave smaller. The next build measures which part of the emulator takes that memory; the fix follows from that.
 - **Crashes after long play.** We know the cause, and the fix is being tested.
 - **Speed in wide open areas.** The more objects there are on screen, the slower it runs. The limit there is the emulator's own work for each object, not the PS5's graphics chip.
 - **The opening the first time you watch it**: stutter, and a white flash on one camera cut.
