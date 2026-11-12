@@ -92,6 +92,6 @@ Code from these projects is ported into the build, most of it behind switches th
 - **[Duck912](https://github.com/Duck912)**: the frame wait that removed the dark flashes.
 - **[lethevimlet](https://github.com/lethevimlet)** (oot-bc250), **justin-wq1337** (the audio crackle fix), **javocsoft**, **kraibse**, **cLohan** and **nxnative**: ideas and fixes named in the build notes.
 - **Testers who sent logs**: [Alecsg09](https://github.com/Alecsg09), [remolatron](https://github.com/remolatron), [phtibuios-stack](https://github.com/phtibuios-stack).
-- Everyone else whose code is in the build: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+- Everyone else whose code is in the build. The emulator underneath has many authors; their names are in the source files of each build.
 
 Most of the new code is written with Claude, some first drafts with Codex. Every build is tried on a real console before it goes up, and the notes for each build say which changes are not tested yet.
