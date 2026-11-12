@@ -20,8 +20,8 @@ Newest first, with each day's test builds in brackets. Results are from our own 
 - **Less stutter when you close the pause menu in a wide area:** worst frame 126 to 257 ms, against 316 to 468 ms. A first test, with other settings on at the same time; not yet confirmed on its own. Not a crash fix.
 - **A hitch the first time a prepared shader is drawn:** 3 to 7 ms per shader with the new setting, against 60 to 90 ms.
 - **Faster in the village** with Fritchii's usage tracker: 1.45 fps more at one test spot, 0.60 at another.
-- Built, not tested yet: starting without keys and firmware files, and settings files saved on Windows.
-- From others: waveydude's three crash fixes for long sessions (not yet needed in our tests). The start without keys is a port of heydemoura's work.
+- Built, not tested yet: games that need no key or firmware files start without them, and settings files saved on Windows.
+- From others: waveydude's three crash fixes for long sessions (not yet needed in our tests). That start path is a port of heydemoura's work.
 
 ## 10 November 2026 (builds T87 to T116)
 

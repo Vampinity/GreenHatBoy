@@ -2,7 +2,7 @@
 
 Thank you for wanting to help. Here are the ways, easiest first.
 
-There is no download for newcomers yet. Until the first alpha is out, the ways below are mostly for people who already test.
+There is no public download yet. The ways below are mostly for people who already test.
 
 ## 1. Send a run log
 

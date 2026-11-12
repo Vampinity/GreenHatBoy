@@ -5,7 +5,7 @@ A few people make this in their free time. Please help keep it a good place to b
 - **Be kind.** Many people here are new to this. Every question is fine.
 - **Talk about the build, not the person.** "It crashes at the door" helps. Blaming someone does not.
 - **No spoilers.** Some of us are playing the game for the first time. Keep story details and later places vague.
-- **No piracy talk.** Do not share or ask for game files, keys or firmware, or links to them. Everyone uses their own copy, dumped from their own console.
+- **No piracy talk.** Do not share or ask for game files, keys or firmware, or links to them. Everyone uses only their own legally obtained copy. Questions about where to get the game, keys or firmware are removed.
 
 ## If someone ignores this
 

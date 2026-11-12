@@ -4,8 +4,8 @@
 
 # Green Hat Boy
 
-The Switch 2 version of Ocarina of Time on a jailbroken base PS5, through an emulator, at the game's full docked resolution.<br>
-The aim is the whole game, start to finish, on a base PS5.
+Emulator test builds, patches and test logs for a jailbroken base PS5. Bring your own game.<br>
+This repository is emulator work and test logs. It is not the game and does not contain or link to it.
 
 **Made by [Vampinity](https://github.com/Vampinity), together with [GrowingBlackBeans](https://github.com/GrowingBlackBeans) and [waveydude](https://github.com/waveydude)**
 
@@ -16,7 +16,7 @@ The aim is the whole game, start to finish, on a base PS5.
 </div>
 
 > [!IMPORTANT]
-> **Unofficial and experimental. No game is included here, and none is linked.** This repository holds no game files, no keys and no firmware. You need your own copy of the game, dumped from your own console. Expect crashes and save often. Not affiliated with or endorsed by Nintendo, Sony, the Eglantine team or the Eden team; please send problems with these builds here, not to them. It is free, and it is not for sale.
+> **Unofficial and experimental. No game is included here, and none is linked.** This repository holds no game files, no keys and no firmware. You need your own legally obtained copy of the game. Shader caches and saves are made on your own console and are never shared here. "Green Hat Boy" is this project's own name; it is not from or endorsed by the game's maker. Expect crashes and save often. Not affiliated with or endorsed by Nintendo, Sony, the Eglantine team or the Eden team; please send problems with these builds here, not to them. It is free, and it is not for sale.
 
 <p align="center">
   <img src="docs/img/field-view.jpg" width="100%" alt="The boy in the green cap, seen from behind in the sun at the edge of the forest, looks out over a wide green field, while an owl flies off and feathers drift down">
@@ -27,7 +27,7 @@ The aim is the whole game, start to finish, on a base PS5.
 
 **Not for newcomers yet.** The game starts, the opening plays and the first village is playable. But on a fresh install the very first start still crashes on the way there about half the time, even with the best settings we have, and we do not want your first try to end like that. Starting again gets in: with the best settings, every second and third start in our tests reached the village.
 
-- The builds under [Releases](https://github.com/Vampinity/GreenHatBoy/releases) marked **Pre-release** are tester builds, for people who already help test and know the setup. Please do not start with those.
+- Test builds are shared directly with people who already help test. There is no public download here.
 - **The first alpha** (an early test version) comes when a fresh install gets through its first start and into the first village without crashing on the way. We test exactly that on a real console, and the result goes on this page. No date until it passes.
 
 ## Progress so far
@@ -109,13 +109,13 @@ These steps are for people who help test. If you are new here, please wait for t
 | **A jailbroken PS5** | Base model, firmware 12.x or 13.x (tested on 12.40 and 13.60). PS5 Pro is not tested. This page does not explain jailbreaking. |
 | **ShadowMountPlus 1.7beta4 or newer** | Runs with your jailbreak and puts homebrew apps on the home screen. |
 | **A USB drive** | Formatted as exFAT, with room for the game (about 25 GB). FTP or a file manager app on the PS5 work too. |
-| **Your own game, keys and firmware** | All dumped from your own Switch 2: the game as one `.nup` file, the `prod.keys` file and the firmware `.nca` files. None of these are included or linked, and this page does not explain how to dump them. |
+| **Your own game and files** | Your own legally obtained game and the files the app asks for, from your own console. None of these are included or linked here, and this page does not explain how to get them. |
 
 **Steps**
 
-1. **Download.** Open [Releases](https://github.com/Vampinity/GreenHatBoy/releases), take the newest tester build, and under **Assets** download the zip. Not "Source code".
+1. **Get the build** from the tester who sent it to you.
 2. **Unzip it.** Inside are a folder `PPSA98515` (the app), the settings files, `LICENSE` and the build's notes.
-3. **Put it on the USB drive.** On the drive, make a folder called `homebrew` and put the whole `PPSA98515` folder in it. Then make a second folder for your own files, for example `eglantine`, with three folders inside it: `keys`, `firmware` and `roms`. Copy `prod.keys` into `keys`, all firmware `.nca` files into `firmware`, and your game's `.nup` file into `roms`.
+3. **Put it on the USB drive.** On the drive, make a folder called `homebrew` and put the whole `PPSA98515` folder in it. Then make a second folder for your own files, for example `eglantine`, with three folders inside it: `keys`, `firmware` and `roms`. Put your own files in the folder the app names for each.
 4. **Plug the drive into the PS5** with your jailbreak running. A tile called **EglantinePS5** appears on the home screen. No tile? Restart the PS5 and run your jailbreak again.
 5. **Tell the app where your files are.** Open EglantinePS5, go to **Settings > Game files**, browse to the `eglantine` folder on the USB drive and select it. Close the app and open it again.
 6. **Play.** Open **Library**, pick the game and choose New Game. If the app says **Setup required**, a file from step 3 is missing or in the wrong folder.

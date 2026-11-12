@@ -118,31 +118,24 @@ Before, during, after. One game frame each.
 **1. i2, +5.05 s: highlights blow out.** Golden sparkling streaks on fence, planks and stream; falling leaves white;
 a patch of sky shows top left where the haze is missing. Trees, rocks and their detail are unchanged.
 
-![i2 golden streaks](frame-ahead-glitches-2026-11-09/1-i2-golden-streaks.jpg)
 
 **2. i2, +9.10 s: sun drop.** The warm light and the haze in the beams are gone for two game frames; a brown patch
 where the haze was.
 
-![i2 sun drop](frame-ahead-glitches-2026-11-09/2-i2-sun-drop.jpg)
 
 **3. i5, +5.80 s: particles swell.** The tiny dust motes become soft white discs.
 
-![i5 particle blobs](frame-ahead-glitches-2026-11-09/3-i5-particle-blobs.jpg)
 
 **4. i3, +5.85 s: haze thinner plus white streaks.** Dark and bright in the same frame.
 
-![i3 haze drop with white streaks](frame-ahead-glitches-2026-11-09/4-i3-haze-drop-white-streaks.jpg)
 
 **5. i3, +3.65 s: particles swell, two game frames.** Big white blob in the middle, discs and dark specks all over.
 
-![i3 particle blobs](frame-ahead-glitches-2026-11-09/5-i3-particle-blobs-2-frames.jpg)
 
 **7 and 8. The same two kinds in D5 (t85-a, run a3).** The white-out at +5.77 s is the particle layer covering the
 whole picture (409 of 576 cells); the discs at +4.33 s are the same as in picture 3.
 
-![D5 a3 white-out](frame-ahead-glitches-2026-11-09/7-d5-a3-white-out.jpg)
 
-![D5 a3 particle blobs](frame-ahead-glitches-2026-11-09/8-d5-a3-particle-blobs.jpg)
 
 ## The cut to Link's house (new in t85-i)
 
@@ -150,12 +143,10 @@ About 20.5 to 21 s after the door the fly-over fades to black and the game cuts 
 
 Control (i1), one picture per 50 ms: black, then a fade-in from dark to normal.
 
-![cut, control i1](frame-ahead-glitches-2026-11-09/6a-cut-control-i1.jpg)
 
 gbb-everyday (i2): black, two frames of the old fly-over forest, one dim frame, one washed-out over-bright frame, then
 the scene too bright and settling.
 
-![cut, gbb-everyday i2](frame-ahead-glitches-2026-11-09/6b-cut-everyday-i2.jpg)
 
 Whole-picture brightness after the black (0-255), from `cut.py`:
 
@@ -281,7 +272,6 @@ What this adds:
 - **h3, async read-back (already parked): one real glitch.** At +8.50 s thick grey fog patches swell for one game
   frame, 61 cells, dark and bright together. 1 of 2 runs.
 
-  ![h3 fog patches](frame-ahead-glitches-2026-11-09/9-h3-readback-fog-patches.jpg)
 - **c4, cold prep: one real glitch.** At +16.68 s a diagonal shaft of light for one game frame in the fly-over,
   50 cells. 1 of 2 runs, no frame-ahead in that run. Where it comes from is not known.
 - **Late runs.** c1 and c5 (cold starts) and b1 play 1.8 to 2.8 s later than the script line says. Counting by

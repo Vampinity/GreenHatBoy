@@ -79,7 +79,7 @@ He reports a bad result as fast as a good one: when his own branch crashed two m
 Code from these projects is ported into the build, most of it behind switches that are off by default. Each port is named in the build notes.
 
 - **[viejunerd](https://github.com/viejunerd)**: the EglantinePS5 NUP build this project is based on, a crash fix, and the ReserveOver memory fix. His repo also hosted the thread where this project grew.
-- **[heydemoura](https://github.com/heydemoura)**: EglantinePS5, the PS5 app this all runs in. Ported from his code: starting without keys and firmware files (his PR #94), and two changes to how the graphics work is split and handed over.
+- **[heydemoura](https://github.com/heydemoura)**: EglantinePS5, the PS5 app this all runs in. Ported from his code: games that need no key or firmware files start without them (his PR #94), and two changes to how the graphics work is split and handed over.
 - **[Djihads80](https://github.com/Djihads80) and the Eglantine team**: the emulator core, and translating new shaders on separate threads. **The Eden team** before them.
 - **BlackBearReloaded**: ProsperoEden and the PS5 app base the app is packaged with. 22 ports from ProsperoEden: memory cleanup, the pipeline cache, image pages, texture decoding and command reading ahead. **drakmor**: ShadowMountPlus.
 - **EdGlantine-PS5**: skipping out-of-date texture uploads (the speed gain in the default settings) and a faster shader lookup.
