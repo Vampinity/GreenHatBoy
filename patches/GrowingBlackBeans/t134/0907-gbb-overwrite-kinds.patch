@@ -1,0 +1,94 @@
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index de7be13..da8db49 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -2321,17 +2321,25 @@ void BufferCache<P>::OverwriteCloseWindow(u64 present_number) {
+                                 .count();
+         LOG_INFO(HW_GPU,
+                  "OverwriteCheck present #{} wall {}: ahead writes {} ({} B), ahead reads {} ({} "
+-                 "B, first {:#x}); early writes {} ({} B, first {:#x})",
++                 "B, first {:#x}); early writes {} ({} B, first {:#x}); ahead reads by kind: "
++                 "gfx uniform {} ({} B, first {:#x}), compute uniform {} ({} B, first {:#x}), "
++                 "upload {} ({} B, first {:#x})",
+                  present_number, wall_ms, counts.ahead_writes, counts.ahead_write_bytes,
+                  counts.ahead_reads, counts.ahead_read_bytes, counts.first_ahead_read,
+-                 counts.early_writes, counts.early_write_bytes, counts.first_early_write);
++                 counts.early_writes, counts.early_write_bytes, counts.first_early_write,
++                 counts.ahead_kind_reads[0], counts.ahead_kind_bytes[0], counts.ahead_kind_first[0],
++                 counts.ahead_kind_reads[1], counts.ahead_kind_bytes[1], counts.ahead_kind_first[1],
++                 counts.ahead_kind_reads[2], counts.ahead_kind_bytes[2], counts.ahead_kind_first[2]);
+     }
+     if (now - summary.start >= std::chrono::seconds{5}) {
+         LOG_INFO(HW_GPU,
+                  "OverwriteCheck 5 s: {} frames, {} with ahead writes, {} with ahead reads, {} "
+-                 "with early writes, {} with both",
++                 "with early writes, {} with both; ahead reads gfx uniform {}, compute uniform {}, "
++                 "upload {}",
+                  summary.frames, summary.frames_ahead_writes, summary.frames_ahead_reads,
+-                 summary.frames_early_writes, summary.frames_both);
++                 summary.frames_early_writes, summary.frames_both, overwrite_kind_total[0],
++                 overwrite_kind_total[1], overwrite_kind_total[2]);
++        overwrite_kind_total = {};
+         const u64 lines = summary.lines;
+         summary = {};
+         summary.start = now;
+@@ -3200,7 +3208,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32
+         ++(use_fast_buffer ? nx2_ubo_trim_stats.stream_binds : nx2_ubo_trim_stats.classic_binds);
+     }
+     if (use_fast_buffer) {
+-        OverwriteNoteRead(device_addr, size);
++        OverwriteNoteRead(device_addr, size, 0);
+         if constexpr (IS_OPENGL) {
+             if (runtime.HasFastBufferSubData()) {
+                 // Fast path for Nvidia
+@@ -4028,7 +4036,7 @@ void BufferCache<P>::BindHostComputeUniformBuffers() {
+              !memory_tracker.IsRegionGpuModified(binding.device_addr, size));
+         if constexpr (!IS_OPENGL) {
+             if (use_fast_buffer) {
+-                OverwriteNoteRead(binding.device_addr, size);
++                OverwriteNoteRead(binding.device_addr, size, 1);
+                 const std::span<u8> span =
+                     runtime.BindMappedUniformBuffer(0, binding_index, size);
+                 ReadGuestForBuffer(binding.device_addr, span.data(), size, false);
+diff --git a/src/video_core/buffer_cache/buffer_cache_base.h b/src/video_core/buffer_cache/buffer_cache_base.h
+index 30842ca..56afa23 100644
+--- a/src/video_core/buffer_cache/buffer_cache_base.h
++++ b/src/video_core/buffer_cache/buffer_cache_base.h
+@@ -1212,7 +1212,9 @@ private:
+         }
+         device_memory.ReadBlockUnsafe(device_addr, out, size);
+     }
+-    void OverwriteNoteRead(DAddr device_addr, u64 size) {
++    /// `kind` (GrowingBlackBeans): 0 graphics uniform stream, 1 compute uniform stream, 2 buffer
++    /// upload (vertex, index, storage, synced uniform), for the per-kind counts.
++    void OverwriteNoteRead(DAddr device_addr, u64 size, u32 kind = 2) {
+         // EDEN_UP_AHEAD_GUARD (ahead_guard.h): the pages a frame reads are guarded from guest
+         // writes while the next such frame is in flight.
+         if (VideoCommon::AheadGuard::Enabled()) [[unlikely]] {
+@@ -1231,7 +1233,16 @@ private:
+         }
+         ++overwrite_counts.ahead_reads;
+         overwrite_counts.ahead_read_bytes += bytes;
++        kind = (std::min)(kind, 2U);
++        if (overwrite_counts.ahead_kind_reads[kind] == 0) {
++            overwrite_counts.ahead_kind_first[kind] = device_addr;
++        }
++        ++overwrite_counts.ahead_kind_reads[kind];
++        overwrite_counts.ahead_kind_bytes[kind] += bytes;
++        ++overwrite_kind_total[kind];
+     }
++    /// Ahead reads per kind since the last 5 s summary (EDEN_NX2_OVERWRITE_CHECK).
++    std::array<u64, 3> overwrite_kind_total{};
+     struct OverwriteCounts {
+         u64 ahead_writes{};
+         u64 ahead_write_bytes{};
+@@ -1241,6 +1252,9 @@ private:
+         u64 early_writes{};
+         u64 early_write_bytes{};
+         DAddr first_early_write{};
++        std::array<u64, 3> ahead_kind_reads{};
++        std::array<u64, 3> ahead_kind_bytes{};
++        std::array<DAddr, 3> ahead_kind_first{};
+     };
+     /// Empty unless EDEN_NX2_OVERWRITE_CHECK=1 (only OverwriteNoteCpuWrites adds to it).
+     Common::RangeSet<DAddr> overwrite_ahead_ranges;

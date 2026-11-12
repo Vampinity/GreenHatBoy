@@ -1,0 +1,322 @@
+diff --git a/src/core/arm/dynarmic/arm_dynarmic_64.cpp b/src/core/arm/dynarmic/arm_dynarmic_64.cpp
+index 5461067..7cbe7e4 100644
+--- a/src/core/arm/dynarmic/arm_dynarmic_64.cpp
++++ b/src/core/arm/dynarmic/arm_dynarmic_64.cpp
+@@ -12,6 +12,7 @@
+ #if defined(_M_X64) || defined(__x86_64__)
+ #include <immintrin.h>
+ #endif
++#include "core/gbb_cost.h"
+ #include "common/cpu_features.h"
+ #include "common/settings.h"
+ #include "common/page_table.h"
+@@ -93,6 +94,7 @@ DynarmicCallbacks64::DynarmicCallbacks64(ArmDynarmic64& parent, Kernel::KProcess
+ {}
+ 
+ u64 DynarmicCallbacks64::MemoryRead(u64 vaddr, size_t size) {
++    Core::GbbCost::Scope gbb_cost{Core::GbbCost::MemCb}; // 0917
+     CheckMemoryAccess(vaddr, size, Kernel::DebugWatchpointType::Read);
+     u64 value{};
+     switch (size) {
+@@ -114,6 +116,7 @@ u64 DynarmicCallbacks64::MemoryRead(u64 vaddr, size_t size) {
+     return value;
+ }
+ Dynarmic::A64::Vector DynarmicCallbacks64::MemoryRead128(u64 vaddr) {
++    Core::GbbCost::Scope gbb_cost{Core::GbbCost::MemCb}; // 0917
+     CheckMemoryAccess(vaddr, 16, Kernel::DebugWatchpointType::Read);
+     return {m_memory.Read64(vaddr), m_memory.Read64(vaddr + 8)};
+ }
+@@ -130,6 +133,7 @@ std::optional<u32> DynarmicCallbacks64::MemoryReadCode(u64 vaddr) {
+ }
+ 
+ void DynarmicCallbacks64::MemoryWrite(Dynarmic::A64::VAddr vaddr, u64 value, std::size_t size) {
++    Core::GbbCost::Scope gbb_cost{Core::GbbCost::MemCb}; // 0917
+     if (CheckMemoryAccess(vaddr, size, Kernel::DebugWatchpointType::Write)) {
+         switch (size) {
+         case sizeof(u64): return m_memory.Write64(vaddr, u64(value));
+@@ -141,6 +145,7 @@ void DynarmicCallbacks64::MemoryWrite(Dynarmic::A64::VAddr vaddr, u64 value, std
+     }
+ }
+ void DynarmicCallbacks64::MemoryWrite128(u64 vaddr, Dynarmic::A64::Vector value) {
++    Core::GbbCost::Scope gbb_cost{Core::GbbCost::MemCb}; // 0917
+     if (CheckMemoryAccess(vaddr, 16, Kernel::DebugWatchpointType::Write)) {
+         m_memory.Write64(vaddr, value[0]);
+         m_memory.Write64(vaddr + 8, value[1]);
+@@ -580,3 +585,8 @@ void ArmDynarmic64::InvalidateCacheRange(u64 addr, std::size_t size) {
+ }
+ 
+ } // namespace Core
++
++// 0917: dynarmic reports each block compile's ticks here (weak symbol on its side).
++extern "C" void eden_gbb_cost_jit(unsigned long long ticks) {
++    Core::GbbCost::Add(Core::GbbCost::JitCompile, ticks);
++}
+diff --git a/src/core/gbb_cost.h b/src/core/gbb_cost.h
+new file mode 100644
+index 0000000..c78a04a
+--- /dev/null
++++ b/src/core/gbb_cost.h
+@@ -0,0 +1,96 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// EDEN_GBB_COST=1 (GrowingBlackBeans, patch 0917): where a guest thread's time outside its SVCs goes
++// besides its own translated code. For the guest threads EDEN_GBB_SVC_PROFILE names, host time in:
++// guest writes to GPU-tracked pages (Memory::HandleRasterizerWrite, all of it), the buffer cache
++// lock those writes wait for (RasterizerVulkan::OnCPUWrite, part of the former), guest reads of
++// GPU-tracked pages (HandleRasterizerDownload), the JIT's memory callbacks (DynarmicCallbacks64
++// Read/Write, which contain the above when they reach such pages) and JIT compilation. Counted
++// in TSC ticks on the host thread that runs the guest thread (the slot is chosen at EnterContext),
++// reported in the 0913 line every 5 s.
++#pragma once
++
++#include <array>
++#include <atomic>
++#include <cstdlib>
++#include <string>
++#include <x86intrin.h>
++#include "common/common_types.h"
++
++namespace Core::GbbCost {
++
++enum Cat : u32 { WriteCb, WriteLock, ReadCb, MemCb, JitCompile, Count };
++inline constexpr const char* Names[Count] = {"guest writes to GPU pages", "of which buffer cache lock",
++                                             "guest reads of GPU pages", "JIT memory callbacks",
++                                             "JIT compile"};
++
++struct Slot {
++    u64 tid{~u64{}};
++    std::array<std::atomic<u64>, Count> ticks{};
++    std::array<std::atomic<u64>, Count> calls{};
++};
++
++inline bool Enabled() {
++    static const bool on = [] {
++        const char* const value = std::getenv("EDEN_GBB_COST");
++        return value != nullptr && value[0] == '1';
++    }();
++    return on;
++}
++
++inline std::array<Slot, 16>& Slots() {
++    // Built in place: a slot holds atomics, which can't be copied.
++    static std::array<Slot, 16> slots;
++    static const bool filled = [] {
++        const char* text = std::getenv("EDEN_GBB_SVC_PROFILE");
++        size_t n = 0;
++        for (const char* at = text; at != nullptr && *at != 0 && n < slots.size();) {
++            char* end = nullptr;
++            const u64 id = std::strtoull(at, &end, 10);
++            if (end == at) break;
++            slots[n++].tid = id;
++            at = (*end == ',') ? end + 1 : nullptr;
++        }
++        return true;
++    }();
++    (void)filled;
++    return slots;
++}
++
++inline Slot* Find(u64 tid) {
++    for (auto& slot : Slots()) {
++        if (slot.tid == tid) return &slot;
++    }
++    return nullptr;
++}
++
++/// The slot of the guest thread the calling host thread runs now (null: not counted).
++inline thread_local Slot* current = nullptr;
++
++/// PhysicalCore::EnterContext.
++inline void OnEnter(u64 tid) {
++    if (Enabled()) current = Find(tid);
++}
++
++inline void Add(Cat cat, u64 ticks) {
++    if (Slot* const slot = current) {
++        slot->ticks[cat].fetch_add(ticks, std::memory_order_relaxed);
++        slot->calls[cat].fetch_add(1, std::memory_order_relaxed);
++    }
++}
++
++struct Scope {
++    Slot* slot;
++    Cat cat;
++    u64 start{};
++    explicit Scope(Cat cat_) : slot{current}, cat{cat_} {
++        if (slot) start = __rdtsc();
++    }
++    ~Scope() {
++        if (slot) {
++            slot->ticks[cat].fetch_add(__rdtsc() - start, std::memory_order_relaxed);
++            slot->calls[cat].fetch_add(1, std::memory_order_relaxed);
++        }
++    }
++};
++
++} // namespace Core::GbbCost
+diff --git a/src/core/hle/kernel/physical_core.cpp b/src/core/hle/kernel/physical_core.cpp
+index feb8f2e..f63cfff 100644
+--- a/src/core/hle/kernel/physical_core.cpp
++++ b/src/core/hle/kernel/physical_core.cpp
+@@ -7,6 +7,7 @@
+ #include <chrono>
+ #include <cstdlib>
+ #include <thread>
++#include "core/gbb_cost.h"
+ #include "common/scope_exit.h"
+ #include "common/settings.h"
+ #include "core/core.h"
+@@ -54,6 +55,7 @@ void PhysicalCore::RunThread(KernelCore& kernel, Kernel::KThread* thread) {
+         // with the guest thread this core last entered; kept through the thread's SVCs.
+         if (m_core_index < 8) {
+             eden_core_guest_tid[m_core_index] = thread->GetThreadId();
++        Core::GbbCost::OnEnter(thread->GetThreadId()); // 0917
+         }
+ 
+         // Acquire the lock on the thread parameters.
+diff --git a/src/core/hle/kernel/svc.cpp b/src/core/hle/kernel/svc.cpp
+index c89dd75..97579d8 100644
+--- a/src/core/hle/kernel/svc.cpp
++++ b/src/core/hle/kernel/svc.cpp
+@@ -8,12 +8,14 @@
+ 
+ #include <atomic>
+ #include <string>
++#include <x86intrin.h>
+ #include <algorithm>
+ #include <chrono>
+ #include <cstdlib>
+ #include <cstring>
+ #include <type_traits>
+ 
++#include "core/gbb_cost.h"
+ #include "core/arm/arm_interface.h"
+ #include "core/core.h"
+ #include "core/hle/kernel/k_process.h"
+@@ -2517,6 +2519,7 @@ struct GbbSvcProfile {
+     u64 id{~u64{}};
+     std::chrono::steady_clock::time_point window_start{};
+     u64 window_presents{};
++    u64 window_tsc{}; // 0917
+     std::array<u64, 256> count{};
+     std::array<u64, 256> ns{};
+     std::array<u64, 256> max_ns{};
+@@ -2615,6 +2618,7 @@ void GbbProfileExit(GbbSvcProfile& profile, u32 imm, u64 a0, std::chrono::steady
+     if (profile.window_start == std::chrono::steady_clock::time_point{}) {
+         profile.window_start = now;
+         profile.window_presents = presents;
++        profile.window_tsc = __rdtsc();
+         return;
+     }
+     const double wall_ms = std::chrono::duration<double, std::milli>(now - profile.window_start).count();
+@@ -2651,11 +2655,27 @@ void GbbProfileExit(GbbSvcProfile& profile, u32 imm, u64 a0, std::chrono::steady
+                  }
+                  return out;
+              }());
++    if (Core::GbbCost::Enabled()) {
++        // 0917: the same window's host time in emulator work for this thread.
++        if (Core::GbbCost::Slot* const slot = Core::GbbCost::Find(profile.id)) {
++            const u64 tsc_now = __rdtsc();
++            const double tsc_per_ms = wall_ms > 0 ? (tsc_now - profile.window_tsc) / wall_ms : 1.0;
++            std::string parts;
++            for (u32 c = 0; c < Core::GbbCost::Count; ++c) {
++                const u64 ticks = slot->ticks[c].exchange(0, std::memory_order_relaxed);
++                const u64 calls = slot->calls[c].exchange(0, std::memory_order_relaxed);
++                parts += fmt::format("{}{} {:.2f}/frame ({} calls)", parts.empty() ? "" : "; ",
++                                     Core::GbbCost::Names[c], ticks / tsc_per_ms * per, calls);
++            }
++            LOG_INFO(Kernel_SVC, "EDEN_GBB_COST t{} ms per frame: {}", profile.id, parts);
++        }
++    }
+     const u64 id = profile.id;
+     profile = {};
+     profile.id = id;
+     profile.window_start = now;
+     profile.window_presents = presents;
++    profile.window_tsc = __rdtsc();
+ }
+ } // namespace
+ void Call(Core::System& system, u32 imm) {
+diff --git a/src/core/memory.cpp b/src/core/memory.cpp
+index 7fe1eba..e8fa84d 100644
+--- a/src/core/memory.cpp
++++ b/src/core/memory.cpp
+@@ -18,6 +18,7 @@
+ #include <utility>
+ #include <vector>
+ 
++#include "core/gbb_cost.h"
+ #include "common/assert.h"
+ #include "common/atomic_ops.h"
+ #include "common/common_types.h"
+@@ -845,6 +846,8 @@ struct Memory::Impl {
+     }
+ 
+     void HandleRasterizerDownload(VAddr v_address, size_t size) {
++
++        Core::GbbCost::Scope gbb_cost{Core::GbbCost::ReadCb}; // 0917
+         const auto* p = GetPointerImpl(
+             v_address, []() {}, []() {});
+         if (!gpu_device_memory) [[unlikely]] {
+@@ -906,6 +909,8 @@ struct Memory::Impl {
+     }
+ 
+     void HandleRasterizerWrite(VAddr v_address, size_t size) {
++
++        Core::GbbCost::Scope gbb_cost{Core::GbbCost::WriteCb}; // 0917
+         const auto* p = GetPointerImpl(
+             v_address, []() {}, []() {});
+         constexpr size_t sys_core = Core::Hardware::NUM_CPU_CORES - 1;
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/a64_interface.cpp b/src/dynarmic/src/dynarmic/backend/x64/a64_interface.cpp
+index bb07212..05964f0 100644
+--- a/src/dynarmic/src/dynarmic/backend/x64/a64_interface.cpp
++++ b/src/dynarmic/src/dynarmic/backend/x64/a64_interface.cpp
+@@ -27,6 +27,10 @@
+ #include "dynarmic/ir/basic_block.h"
+ #include "dynarmic/ir/opt_passes.h"
+ 
++#include <x86intrin.h>
++// 0917 (GrowingBlackBeans): Eden counts compile time per guest thread when it defines this.
++extern "C" void eden_gbb_cost_jit(unsigned long long ticks) __attribute__((weak));
++
+ namespace Dynarmic::A64 {
+ 
+ using namespace Backend::X64;
+@@ -254,6 +258,14 @@ private:
+         block_of_code.EnsureMemoryCommitted(MINIMUM_REMAINING_CODESIZE);
+ 
+         // JIT Compile
++        // 0917: reports the compile's ticks when this function returns (the section below is
++        // replaced by the PS5 build, so the timer sits before it).
++        struct EdenCompileTimer {
++            unsigned long long start;
++            ~EdenCompileTimer() {
++                if (start != 0) eden_gbb_cost_jit(__rdtsc() - start);
++            }
++        } eden_compile_timer{eden_gbb_cost_jit ? __rdtsc() : 0ULL};
+         const auto get_code = [this](u64 vaddr) { return conf.callbacks->MemoryReadCode(vaddr); };
+         // LocationDescriptor ctor() does important ops (like tflags) do not skip
+         auto const arch_descriptor = A64::LocationDescriptor{descriptor};
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 85b401e..1a0bc06 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -5,6 +5,7 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include "common/live_switch.h"
++#include "core/gbb_cost.h"
+ #include "common/pe_switch.h"
+ #include "video_core/report_no_alloc.h"
+ #include "video_core/image_pages.h"
+@@ -2686,7 +2687,11 @@ bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
+     static const bool held_vs_download = Common::PeSwitch("EDEN_UP_HELD_VS_DOWNLOAD");
+     bool held = false;
+     {
++        const u64 gbb_lock_start = Core::GbbCost::current ? __rdtsc() : 0; // 0917
+         std::scoped_lock lock{buffer_cache.mutex};
++        if (gbb_lock_start != 0) {
++            Core::GbbCost::Add(Core::GbbCost::WriteLock, __rdtsc() - gbb_lock_start);
++        }
+         if (buffer_cache.OnCPUWrite(addr, size)) {
+             if (!held_vs_download) {
+                 return true;

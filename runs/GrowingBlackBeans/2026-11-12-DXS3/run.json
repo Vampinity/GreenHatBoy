@@ -1,0 +1,298 @@
+{
+ "format": 0,
+ "author": "GrowingBlackBeans",
+ "run_id": "DXS3",
+ "date": "2026-11-12",
+ "time": "16:15:03",
+ "batch": null,
+ "test": "DXS3",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "t134-gbb2",
+  "commit": null,
+  "version": "01.219.918 (Nov 12 2026 19:32:52)",
+  "eboot_sha256_16": null
+ },
+ "firmware": null,
+ "console": "PS5 base 13.60",
+ "route": {
+  "script": "GrowingBlackBeans Kokiri benchmark v2 (new save, starts facing the door; not comparable with v1 for standing): Continue, house, out, walk loop to the water",
+  "script_sha": null
+ },
+ "menu_settings": null,
+ "env_lines": 99,
+ "env_hash": "ef0e263383",
+ "control": null,
+ "ending": {
+  "kind": "hand_stopped",
+  "class": null,
+  "seconds": 181.969391,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 115.0,
+ "fps": {
+  "mean": 18.63,
+  "source": "nx2:vi2 5 s lines (play windows under 45 fps)",
+  "p99_ms": 66.8,
+  "worst_ms": 638.9
+ },
+ "worst_frame_ms": 638.9,
+ "runtime_pipeline_builds": 0,
+ "flashes_per_min": null,
+ "note": null,
+ "impressions": "two ahead + two slots + read sync (retry; first start froze, DXS3-freeze1); player: door clean",
+ "flash_times": [],
+ "gbb": {
+  "windows_5s_columns": [
+   "log_s",
+   "frames",
+   "fps",
+   "1pct_low_ms",
+   "worst_ms",
+   "fence_ms"
+  ],
+  "windows_5s": [
+   [
+    41.231221,
+    284,
+    56.7,
+    54.3,
+    166.2,
+    0.1
+   ],
+   [
+    46.267822,
+    281,
+    56.0,
+    72.7,
+    98.2,
+    1.2
+   ],
+   [
+    51.259861,
+    248,
+    49.5,
+    53.1,
+    459.3,
+    3.9
+   ],
+   [
+    56.263216,
+    299,
+    59.8,
+    26.7,
+    52.3,
+    0.0
+   ],
+   [
+    61.27344,
+    297,
+    59.3,
+    47.4,
+    58.3,
+    0.0
+   ],
+   [
+    66.273358,
+    300,
+    60.0,
+    18.4,
+    30.7,
+    0.0
+   ],
+   [
+    71.299486,
+    88,
+    17.5,
+    638.9,
+    638.9,
+    3.8
+   ],
+   [
+    76.344784,
+    83,
+    16.5,
+    79.1,
+    79.1,
+    0.4
+   ],
+   [
+    81.387096,
+    95,
+    18.8,
+    63.9,
+    63.9,
+    0.3
+   ],
+   [
+    86.433572,
+    98,
+    19.4,
+    61.7,
+    61.7,
+    0.3
+   ],
+   [
+    91.476445,
+    100,
+    19.8,
+    56.6,
+    56.6,
+    0.4
+   ],
+   [
+    96.513543,
+    100,
+    19.9,
+    55.8,
+    55.8,
+    0.3
+   ],
+   [
+    101.558575,
+    100,
+    19.8,
+    58.9,
+    58.9,
+    0.3
+   ],
+   [
+    106.608283,
+    98,
+    19.4,
+    63.5,
+    63.5,
+    0.4
+   ],
+   [
+    111.645908,
+    98,
+    19.5,
+    58.2,
+    58.2,
+    0.3
+   ],
+   [
+    116.665525,
+    99,
+    19.7,
+    59.9,
+    59.9,
+    0.3
+   ],
+   [
+    121.682452,
+    99,
+    19.7,
+    66.8,
+    66.8,
+    0.4
+   ],
+   [
+    126.685905,
+    98,
+    19.6,
+    67.6,
+    67.6,
+    0.3
+   ],
+   [
+    131.698882,
+    87,
+    17.4,
+    121.8,
+    121.8,
+    0.4
+   ],
+   [
+    136.703146,
+    71,
+    14.2,
+    93.0,
+    93.0,
+    0.5
+   ],
+   [
+    141.721502,
+    90,
+    17.9,
+    70.4,
+    70.4,
+    0.4
+   ],
+   [
+    146.750019,
+    100,
+    19.9,
+    59.6,
+    59.6,
+    0.3
+   ],
+   [
+    151.757713,
+    108,
+    21.6,
+    66.8,
+    83.8,
+    0.3
+   ],
+   [
+    156.769612,
+    91,
+    18.2,
+    82.0,
+    82.0,
+    0.3
+   ],
+   [
+    161.811491,
+    86,
+    17.1,
+    70.2,
+    70.2,
+    0.4
+   ],
+   [
+    166.839052,
+    92,
+    18.3,
+    65.5,
+    65.5,
+    0.4
+   ],
+   [
+    171.880282,
+    106,
+    21.0,
+    59.7,
+    61.3,
+    0.3
+   ],
+   [
+    176.923709,
+    85,
+    16.9,
+    77.3,
+    77.3,
+    0.4
+   ],
+   [
+    181.969391,
+    83,
+    16.4,
+    69.4,
+    69.4,
+    0.4
+   ]
+  ],
+  "heavy_windows": 0,
+  "heavy_fps": null,
+  "light_windows": 22,
+  "light_fps": 18.68,
+  "regimes": "play windows (<45 fps); heavy = present fence wait >= 5 ms per frame (GPU thread bound), light = < 1 ms (game CPU bound)"
+ },
+ "redacted": {
+  "console_user": 3
+ }
+}
