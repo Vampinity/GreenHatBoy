@@ -57,6 +57,15 @@ def overlap(sp, lo, hi):
     return tot
 
 
+def top_site(waits):
+    """The drain site with the most wait time among (start, end, site) spans."""
+    tot = {}
+    for s, e, a in waits:
+        name = SITES[a] if a < len(SITES) else str(a)
+        tot[name] = tot.get(name, 0) + (e - s)
+    return max(tot, key=tot.get) if tot else ""
+
+
 def frames(tl):
     ev = tl["events"]
     pres = {}
@@ -86,7 +95,7 @@ def frames(tl):
             "back_busy_ms": round(overlap(back, begin, nxt) / 1e6, 2),
             "front_wait_ms": round(overlap(front, begin, nxt) / 1e6, 2),
             "front_waits": len(fw),
-            "top_wait_site": (max(((SITES[a] if a < len(SITES) else str(a)), 0) for s, e, a in fw)[0] if fw else ""),
+            "top_wait_site": top_site(fw),
             "shaders_ms": round(overlap(pipes, begin, nxt) / 1e6, 2),
             "fence_pops": bisect.bisect_left(pops, nxt) - bisect.bisect_left(pops, begin),
             "fence_signalled_after_present_ms": round((sig - begin) / 1e6, 2) if sig else None,

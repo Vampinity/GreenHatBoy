@@ -9,7 +9,8 @@ difference, a permutation p-value, and a verdict:
     real          p < 0.05 and the difference exceeds the noise floor
     likely        p < 0.2
     noise         otherwise
-    consistent    the runs don't overlap and the gap exceeds the noise floor, but too few runs for a p-value
+    consistent    3+ runs a side, the runs don't overlap and the gap exceeds the noise floor, p not yet < 0.05
+    screen only   2 runs on a side and the runs split: noise does that 1 time in 3, so only a lead
 Noise floor (our hand-played route, same build and env): sd about 1.14 fps between runs, pairs up to 3.6 apart;
 with one run per side nothing under about 2-3 fps can be called. The heavy share of a run swings 0.3-0.9 with where
 you walk, so compare per regime.
@@ -97,12 +98,18 @@ def main():
         floor = NOISE_FLOOR.get(m, 0)
         separated = max(va) < min(vb) or max(vb) < min(va)
         verdict = "real" if p < 0.05 and abs(d) > floor else ("likely" if p < 0.2 and abs(d) > floor else "noise")
+        smallest = min(len(va), len(vb))
         if verdict == "noise" and separated and abs(d) > floor:
-            verdict = "consistent (every B run beyond every A run; add runs to confirm)"
-        if min(len(va), len(vb)) < 2:
+            # With 2 runs a side, a full split happens by chance 1 time in 3: a screen, not evidence.
+            verdict = ("consistent (every B run beyond every A run; add runs to confirm)" if smallest >= 3
+                       else "screen only (the runs split, but with 2 a side noise does that 1 time in 3)")
+        if smallest < 2:
             verdict += " (one run on a side: can't call it)"
         print(f"{m:17s} {st.mean(va):7.2f}±{sd(va):5.2f} {st.mean(vb):7.2f}±{sd(vb):5.2f} {d:+7.2f} {p:6.3f}  {verdict}")
-    print("\nWith 2 runs per side the smallest possible p is 0.33: treat 2+2 as a screen, confirm with 3+3 or more.")
+    na, nb = len(sa), len(sb)
+    from math import comb
+    print(f"\nWith {na} and {nb} runs the smallest possible p is {2 / comb(na + nb, na) if na != nb else 2 / comb(na + nb, na):.3f}; "
+          "'consistent' needs 3 or more runs a side, 'real' needs p < 0.05.")
 
 
 def live(paths):
