@@ -20,7 +20,7 @@ body:
     id: build
     attributes:
       label: Build
-      description: The release you downloaded, or the version line at the top of a crash file.
+      description: The build you are testing, or the version line at the top of a crash file.
       placeholder: "test build of 12 Nov"
     validations:
       required: true
