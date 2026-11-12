@@ -1,0 +1,632 @@
+diff --git a/src/video_core/gbb_flash.h b/src/video_core/gbb_flash.h
+new file mode 100644
+index 0000000..1dfafe3
+--- /dev/null
++++ b/src/video_core/gbb_flash.h
+@@ -0,0 +1,341 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++/// GrowingBlackBeans 0928: an automatic flash counter.
++///
++/// EDEN_GBB_FLASH=1 (or =1,<threshold>,<min cells>; =2... also writes the grids): the present path shrinks every
++///   presented frame on the GPU (a 2x box-filter blit chain, four halvings) to a grid of about 120 x 67 cells, each
++///   about 16 x 16 screen pixels, and reads it back a few frames later. This header looks at the cells' brightness
++///   and counts *transients*: a cell that jumps (darker or brighter) for one or two frames while the frames either
++///   side of it agree with each other to within half the jump. Camera motion, fades and scene cuts change a cell and keep it changed, so they
++///   are not transients; a flicker is. Default threshold 24 of 255 brightness levels, at least 4 cells per frame.
++///
++///   Logs, all as HW_GPU info:
++///   - "EDEN_GBB_FLASH event": one per frame with a flash (at most 10 a second), with its present number, seconds
++///     since the first counted frame, the kind (1f = one frame, 2f = two frames), dark or bright, how many cells, the
++///     mean jump, and the cells' bounding box in percent of the screen (x0,y0-x1,y1; 0,0 is the top left).
++///   Each event also says how many of its cells are "still": outside the brightness range of the 3x3 cells around
++///   them in both neighbouring frames, so no motion of up to a cell (about 16 px) a frame explains them. A frame
++///   with at least <min cells> of those is a still flash, the stricter count.
++///   - "EDEN_GBB_FLASH5": every 5 s, frames looked at, flash frames (all / still / large >= 1% of cells / full >= 40%),
++///     flashing cells, dark and bright frames, and frames skipped (a gap in the readback order).
++///   =2 also writes every grid to /data/eglantineps5/logs/gbb-flash-<pid>.bin from a writer thread (about 8 KiB a
++///   frame, ~15 MB a minute) so tools/GrowingBlackBeans/eglog/flashes.py can re-run the detector with other
++///   settings and draw the frames around a flash.
++///
++/// The detector below is plain C++ with no Vulkan, mirrored line for line by flashes.py.
++
++#include <algorithm>
++#include <condition_variable>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <deque>
++#include <mutex>
++#include <thread>
++#include <vector>
++#include <unistd.h>
++
++#include "common/common_types.h"
++#include "common/logging.h"
++
++namespace VideoCore::GbbFlash {
++
++struct Config {
++    int mode = 0;       // 0 off, 1 count, 2 count and write the grids
++    int threshold = 24; // brightness jump (0-255) a cell needs
++    int min_cells = 4;  // cells a frame needs to count as a flash
++};
++
++inline Config ParseConfig(const char* v) {
++    Config c;
++    if (v == nullptr || v[0] == '\0' || v[0] == '0') return c;
++    int vals[3] = {0, c.threshold, c.min_cells};
++    int n = 0;
++    const char* p = v;
++    while (n < 3 && *p) {
++        vals[n++] = std::atoi(p);
++        while (*p && *p != ',') ++p;
++        if (*p == ',') ++p;
++    }
++    c.mode = std::clamp(vals[0], 0, 2);
++    c.threshold = std::clamp(vals[1], 1, 255);
++    c.min_cells = std::max(vals[2], 1);
++    return c;
++}
++
++inline const Config& Cfg() {
++    static const Config c = ParseConfig(std::getenv("EDEN_GBB_FLASH"));
++    return c;
++}
++
++inline bool On() {
++    return Cfg().mode > 0;
++}
++
++/// Brightness (0-255) of a B8G8R8A8 or R8G8B8A8 texel, Rec. 709 weights; bgra picks the channel order.
++inline u8 Luma(const u8* px, bool bgra) {
++    const u32 r = bgra ? px[2] : px[0], g = px[1], b = bgra ? px[0] : px[2];
++    return static_cast<u8>((54 * r + 183 * g + 19 * b) >> 8);
++}
++
++struct Result {
++    int kind = 0;        // 0 none, 1 one-frame transient, 2 two-frame transient
++    int cells = 0;       // flashing cells
++    int dark = 0;        // of them darker than their neighbours
++    int sum_jump = 0;    // sum of the smaller jump per cell
++    int still = 0;       // of them also outside the range of the 3x3 cells around them in both neighbours (motion-proof)
++    int x0 = 0, y0 = 0, x1 = 0, y1 = 0; // bounding box in cells, inclusive
++};
++
++/// The detector. Push grids in present order; each push judges the frame one (1f) or two (2f) back.
++class Detector {
++public:
++    Detector(int threshold, int min_cells) : t{threshold}, min_cells{min_cells} {}
++
++    /// Returns the verdict on the frame `Lag()` pushes back (kind 0 when there is none or no flash).
++    Result Push(const u8* grid, int w, int h) {
++        if (w != width || h != height) {
++            width = w;
++            height = h;
++            hist.clear();
++        }
++        hist.emplace_back(grid, grid + static_cast<size_t>(w) * h);
++        if (hist.size() > 4) hist.pop_front();
++        Result r;
++        if (hist.size() >= 3) {
++            r = OneFrame(hist[hist.size() - 3], hist[hist.size() - 2], hist[hist.size() - 1]);
++        }
++        if (r.cells < min_cells && hist.size() >= 4) {
++            r = TwoFrame(hist[0], hist[1], hist[2], hist[3]);
++        }
++        if (r.cells < min_cells) r = {};
++        return r;
++    }
++
++    void Reset() {
++        hist.clear();
++    }
++
++    int Cells() const {
++        return width * height;
++    }
++
++private:
++    using Grid = std::vector<u8>;
++
++    void Add(Result& r, int i, bool darker, int jump) const {
++        const int x = i % width, y = i / width;
++        if (r.cells == 0) {
++            r.x0 = r.x1 = x;
++            r.y0 = r.y1 = y;
++        }
++        r.x0 = std::min(r.x0, x);
++        r.x1 = std::max(r.x1, x);
++        r.y0 = std::min(r.y0, y);
++        r.y1 = std::max(r.y1, y);
++        ++r.cells;
++        r.dark += darker ? 1 : 0;
++        r.sum_jump += jump;
++    }
++
++    // True when v is at least t darker (or brighter) than every cell of the 3x3 block around i in g: content that
++    // moved by up to a cell between frames can't explain it.
++    bool Outside(u8 v, const Grid& g, int i, bool darker) const {
++        const int x = i % width, y = i / width;
++        for (int yy = std::max(0, y - 1); yy <= std::min(height - 1, y + 1); ++yy) {
++            for (int xx = std::max(0, x - 1); xx <= std::min(width - 1, x + 1); ++xx) {
++                const int n = g[yy * width + xx];
++                if (darker ? n - int(v) < t : int(v) - n < t) return false;
++            }
++        }
++        return true;
++    }
++
++    // B jumps away from both A and C, the same way, while A and C agree to within half the jump.
++    Result OneFrame(const Grid& a, const Grid& b, const Grid& c) const {
++        Result r;
++        for (int i = 0; i < width * height; ++i) {
++            const int da = int(b[i]) - int(a[i]), dc = int(b[i]) - int(c[i]);
++            if ((da > 0) != (dc > 0)) continue;
++            const int jump = std::min(std::abs(da), std::abs(dc));
++            // The neighbours must agree to within half the jump: a big flash still counts while the camera moves.
++            if (jump < t || std::abs(int(a[i]) - int(c[i])) * 2 > jump) continue;
++            Add(r, i, da < 0, jump);
++            if (Outside(b[i], a, i, da < 0) && Outside(b[i], c, i, da < 0)) ++r.still;
++        }
++        if (r.cells) r.kind = 1;
++        return r;
++    }
++
++    // B and C agree with each other and both jump away from A and D, the same way, while A and D agree
++    // (each pair to within half the jump).
++    Result TwoFrame(const Grid& a, const Grid& b, const Grid& c, const Grid& d) const {
++        Result r;
++        for (int i = 0; i < width * height; ++i) {
++            const int ba = int(b[i]) - int(a[i]), cd = int(c[i]) - int(d[i]);
++            if ((ba > 0) != (cd > 0)) continue;
++            const int jump = std::min(std::abs(ba), std::abs(cd));
++            if (jump < t || std::abs(int(b[i]) - int(c[i])) * 2 > jump || std::abs(int(a[i]) - int(d[i])) * 2 > jump)
++                continue;
++            Add(r, i, ba < 0, jump);
++            if (Outside(b[i], a, i, ba < 0) && Outside(c[i], d, i, ba < 0)) ++r.still;
++        }
++        if (r.cells) r.kind = 2;
++        return r;
++    }
++
++    int t;
++    int min_cells;
++    int width = 0, height = 0;
++    std::deque<Grid> hist;
++};
++
++/// Writes grids to a file from its own thread (EDEN_GBB_FLASH=2). File: "GBBFL1\0\0", then per frame
++/// u32 width, u32 height, u64 present, u64 ns, width*height brightness bytes.
++class Writer {
++public:
++    static Writer* Open() {
++        char path[128];
++        std::snprintf(path, sizeof(path), "/data/eglantineps5/logs/gbb-flash-%u.bin", unsigned(getpid()));
++        std::FILE* f = std::fopen(path, "wb");
++        if (f == nullptr) {
++            LOG_WARNING(HW_GPU, "EDEN_GBB_FLASH: can't write {}; counting only", path);
++            return nullptr;
++        }
++        std::fwrite("GBBFL1\0\0", 1, 8, f);
++        LOG_INFO(HW_GPU, "EDEN_GBB_FLASH: writing every grid to {}", path);
++        return new Writer(f);
++    }
++
++    void Put(const u8* grid, u32 w, u32 h, u64 present, u64 ns) {
++        std::vector<u8> rec(24 + static_cast<size_t>(w) * h);
++        std::memcpy(rec.data(), &w, 4);
++        std::memcpy(rec.data() + 4, &h, 4);
++        std::memcpy(rec.data() + 8, &present, 8);
++        std::memcpy(rec.data() + 16, &ns, 8);
++        std::memcpy(rec.data() + 24, grid, static_cast<size_t>(w) * h);
++        {
++            std::scoped_lock lock{mutex};
++            if (queue.size() >= 512) {
++                ++dropped;
++                return;
++            }
++            queue.push_back(std::move(rec));
++        }
++        cv.notify_one();
++    }
++
++private:
++    explicit Writer(std::FILE* f) : file{f} {
++        std::setvbuf(file, nullptr, _IOFBF, 1 << 20);
++        thread = std::thread([this] { Run(); });
++        thread.detach();
++    }
++
++    void Run() {
++        u64 since_flush = 0;
++        for (;;) {
++            std::vector<u8> rec;
++            {
++                std::unique_lock lock{mutex};
++                cv.wait(lock, [this] { return !queue.empty(); });
++                rec = std::move(queue.front());
++                queue.pop_front();
++            }
++            std::fwrite(rec.data(), 1, rec.size(), file);
++            if (++since_flush >= 150) { // about every 5 s, so a crash loses little
++                std::fflush(file);
++                since_flush = 0;
++            }
++        }
++    }
++
++    std::FILE* file;
++    std::thread thread;
++    std::mutex mutex;
++    std::condition_variable cv;
++    std::deque<std::vector<u8>> queue;
++
++public:
++    u64 dropped = 0;
++};
++
++/// Counts and logs. Called from the present path with each grid read back, in present order.
++class Counter {
++public:
++    void Frame(const u8* grid, int w, int h, u64 present, u64 ns) {
++        const Config& c = Cfg();
++        if (!det) {
++            det = new Detector(c.threshold, c.min_cells);
++            if (c.mode == 2) writer = Writer::Open();
++            LOG_INFO(HW_GPU,
++                     "EDEN_GBB_FLASH: counting flashes on a {}x{} grid of the presented frame (threshold {}, at "
++                     "least {} cells)",
++                     w, h, c.threshold, c.min_cells);
++        }
++        if (writer) writer->Put(grid, u32(w), u32(h), present, ns);
++        if (first_ns == 0) first_ns = ns, window_ns = ns;
++        if (last_present != 0 && present != last_present + 1) {
++            ++skipped;
++            det->Reset();
++            frames_since.clear();
++        }
++        last_present = present;
++        // Remember each frame's present number and time, to name the one judged.
++        frames_since.push_back({present, ns});
++        if (frames_since.size() > 4) frames_since.pop_front();
++        ++frames;
++        const Result r = det->Push(grid, w, h);
++        if (r.kind != 0) {
++            const auto& judged = frames_since[frames_since.size() - 1 - (r.kind == 1 ? 1 : 2)];
++            const int cells = det->Cells();
++            ++flash_frames;
++            if (r.still >= Cfg().min_cells) ++still_frames;
++            flash_cells += r.cells;
++            if (r.cells * 100 >= cells) ++large;
++            if (r.cells * 100 >= cells * 40) ++full;
++            if (r.dark * 2 >= r.cells) ++dark_frames; else ++bright_frames;
++            if (logged_this_second < 10) {
++                ++logged_this_second;
++                LOG_INFO(HW_GPU,
++                         "EDEN_GBB_FLASH event present={} t_s={:.2f} kind={}f {} cells={} of {} still={} jump={} "
++                         "box={},{}-{},{}",
++                         judged.present, double(judged.ns - first_ns) / 1e9, r.kind,
++                         r.dark * 2 >= r.cells ? "dark" : "bright", r.cells, cells, r.still, r.sum_jump / r.cells,
++                         r.x0 * 100 / w, r.y0 * 100 / h, (r.x1 + 1) * 100 / w, (r.y1 + 1) * 100 / h);
++            }
++        }
++        if (ns - second_ns >= 1'000'000'000ULL) second_ns = ns, logged_this_second = 0;
++        if (ns - window_ns >= 5'000'000'000ULL) {
++            LOG_INFO(HW_GPU,
++                     "EDEN_GBB_FLASH5 t_s={:.1f} frames={} flashes={} still={} large={} full={} cells={} dark={} "
++                     "bright={} skipped={} unwritten={}",
++                     double(ns - first_ns) / 1e9, frames, flash_frames, still_frames, large, full, flash_cells, dark_frames,
++                     bright_frames, skipped, writer ? writer->dropped : 0);
++            window_ns = ns;
++            frames = flash_frames = still_frames = large = full = flash_cells = dark_frames = bright_frames = skipped = 0;
++        }
++    }
++
++private:
++    struct Seen {
++        u64 present, ns;
++    };
++    Detector* det = nullptr;
++    Writer* writer = nullptr;
++    std::deque<Seen> frames_since;
++    u64 first_ns = 0, window_ns = 0, second_ns = 0, last_present = 0;
++    u64 frames = 0, flash_frames = 0, still_frames = 0, large = 0, full = 0, flash_cells = 0, dark_frames = 0, bright_frames = 0,
++        skipped = 0;
++    int logged_this_second = 0;
++};
++
++inline Counter& TheCounter() {
++    static Counter* c = new Counter; // never destroyed: the present thread may outlive static destructors
++    return *c;
++}
++
++} // namespace VideoCore::GbbFlash
+diff --git a/src/video_core/renderer_vulkan/gbb_flash_vk.h b/src/video_core/renderer_vulkan/gbb_flash_vk.h
+new file mode 100644
+index 0000000..8a0e8f9
+--- /dev/null
++++ b/src/video_core/renderer_vulkan/gbb_flash_vk.h
+@@ -0,0 +1,246 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++/// GrowingBlackBeans 0928: the GPU side of the flash counter (video_core/gbb_flash.h). Included by the present
++/// manager only. While each presented frame is copied to the swapchain, the same command buffer shrinks it with
++/// four 2x linear blits (a box filter: 1920x1080 -> 120x67) and copies the last level to a host-visible buffer,
++/// one per present frame. The frame's next use waits for its present_done fence first (GetRenderFrame), so the
++/// grid is read back when that frame next reaches the copy, a few presents later and in present order.
++
++#include <mutex>
++#include <span>
++#include <utility>
++#include <unordered_map>
++#include <vector>
++
++#include "video_core/gbb_flash.h"
++#include "video_core/gbb_trace.h"
++#include "video_core/renderer_vulkan/vk_present_manager.h"
++#include "video_core/vulkan_common/vulkan_device.h"
++#include "video_core/vulkan_common/vulkan_memory_allocator.h"
++#include "video_core/vulkan_common/vulkan_wrapper.h"
++
++namespace Vulkan::GbbFlashVk {
++
++constexpr u32 HALVINGS = 4;
++
++struct Slot {
++    u32 width = 0, height = 0;       // the frame size the image was made for
++    u32 levels = 0, grid_w = 0, grid_h = 0;
++    vk::Image image;                 // the blit chain, level 0 = half the frame
++    vk::Buffer buffer;               // the last level, B8G8R8A8 or R8G8B8A8 texels
++    bool pending = false;
++    u64 present = 0, ns = 0;
++};
++
++struct State {
++    std::mutex mutex;
++    std::unordered_map<const Frame*, Slot> slots;
++    u64 presents = 0;
++    int usable = -1; // -1 not checked, 0 no, 1 yes
++    bool bgra = true;
++};
++
++inline State& S() {
++    static State* s = new State; // never destroyed: device objects must not be freed after the device
++    return *s;
++}
++
++inline u32 Half(u32 v) {
++    return v > 1 ? v / 2 : 1;
++}
++
++/// Reads back what this frame's slot captured at its previous use. Call before recording the frame's copy.
++inline void Collect(Frame* frame) {
++    State& s = S();
++    std::scoped_lock lock{s.mutex};
++    const auto it = s.slots.find(frame);
++    if (it == s.slots.end() || !it->second.pending) return;
++    Slot& slot = it->second;
++    slot.pending = false;
++    slot.buffer.Invalidate();
++    const std::span<const u8> texels = std::as_const(slot.buffer).Mapped();
++    const size_t cells = static_cast<size_t>(slot.grid_w) * slot.grid_h;
++    if (texels.size() < cells * 4) return;
++    std::vector<u8> luma(cells);
++    for (size_t i = 0; i < cells; ++i) {
++        luma[i] = VideoCore::GbbFlash::Luma(texels.data() + i * 4, s.bgra);
++    }
++    VideoCore::GbbFlash::TheCounter().Frame(luma.data(), int(slot.grid_w), int(slot.grid_h), slot.present, slot.ns);
++}
++
++inline bool Usable(State& s, const Device& device, VkFormat format) {
++    if (s.usable >= 0) return s.usable == 1;
++    s.usable = 0;
++    switch (format) {
++    case VK_FORMAT_B8G8R8A8_UNORM:
++    case VK_FORMAT_B8G8R8A8_SRGB:
++        s.bgra = true;
++        break;
++    case VK_FORMAT_R8G8B8A8_UNORM:
++    case VK_FORMAT_R8G8B8A8_SRGB:
++        s.bgra = false;
++        break;
++    default:
++        LOG_WARNING(HW_GPU, "EDEN_GBB_FLASH: the present format {} is not 8-bit RGBA; not counting",
++                    static_cast<int>(format));
++        return false;
++    }
++    const VkFormatFeatureFlags need = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT |
++                                      VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
++    const VkFormatProperties props = device.GetPhysical().GetFormatProperties(format);
++    if ((props.optimalTilingFeatures & need) != need) {
++        LOG_WARNING(HW_GPU, "EDEN_GBB_FLASH: format {} can't be blitted with a linear filter; not counting",
++                    static_cast<int>(format));
++        return false;
++    }
++    s.usable = 1;
++    return true;
++}
++
++inline bool Make(Slot& slot, MemoryAllocator& allocator, const Frame* frame, VkFormat format) {
++    slot = {};
++    slot.width = frame->width;
++    slot.height = frame->height;
++    u32 w = Half(frame->width), h = Half(frame->height);
++    slot.levels = 1;
++    while (slot.levels < HALVINGS) {
++        w = Half(w);
++        h = Half(h);
++        ++slot.levels;
++    }
++    slot.grid_w = w;
++    slot.grid_h = h;
++    try {
++        slot.image = allocator.CreateImage({
++            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
++            .pNext = nullptr,
++            .flags = 0,
++            .imageType = VK_IMAGE_TYPE_2D,
++            .format = format,
++            .extent = {Half(frame->width), Half(frame->height), 1},
++            .mipLevels = slot.levels,
++            .arrayLayers = 1,
++            .samples = VK_SAMPLE_COUNT_1_BIT,
++            .tiling = VK_IMAGE_TILING_OPTIMAL,
++            .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
++            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
++            .queueFamilyIndexCount = 0,
++            .pQueueFamilyIndices = nullptr,
++            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
++        });
++        slot.buffer = allocator.CreateBuffer(
++            {
++                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
++                .pNext = nullptr,
++                .flags = 0,
++                .size = static_cast<VkDeviceSize>(w) * h * 4,
++                .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
++                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
++                .queueFamilyIndexCount = 0,
++                .pQueueFamilyIndices = nullptr,
++            },
++            MemoryUsage::Download);
++    } catch (const std::exception& e) {
++        LOG_WARNING(HW_GPU, "EDEN_GBB_FLASH: couldn't make the {}x{} grid: {}", w, h, e.what());
++        slot = {};
++        return false;
++    }
++    return true;
++}
++
++inline VkImageMemoryBarrier Barrier(VkImage image, u32 level, u32 count, VkImageLayout from, VkImageLayout to,
++                                    VkAccessFlags src, VkAccessFlags dst) {
++    return VkImageMemoryBarrier{
++        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
++        .pNext = nullptr,
++        .srcAccessMask = src,
++        .dstAccessMask = dst,
++        .oldLayout = from,
++        .newLayout = to,
++        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++        .image = image,
++        .subresourceRange{
++            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
++            .baseMipLevel = level,
++            .levelCount = count,
++            .baseArrayLayer = 0,
++            .layerCount = 1,
++        },
++    };
++}
++
++inline VkImageBlit Blit(u32 src_level, s32 sw, s32 sh, u32 dst_level, s32 dw, s32 dh) {
++    return VkImageBlit{
++        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, src_level, 0, 1},
++        .srcOffsets = {{0, 0, 0}, {sw, sh, 1}},
++        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, dst_level, 0, 1},
++        .dstOffsets = {{0, 0, 0}, {dw, dh, 1}},
++    };
++}
++
++/// Records the shrink and readback. The frame's image must be in TRANSFER_SRC_OPTIMAL (it is, for the swapchain
++/// copy), and the caller's post barrier must cover transfer reads of it (it does).
++inline void Record(const Device& device, MemoryAllocator& allocator, vk::CommandBuffer cmdbuf, Frame* frame,
++                   VkFormat format) {
++    State& s = S();
++    std::scoped_lock lock{s.mutex};
++    if (!Usable(s, device, format)) return;
++    Slot& slot = s.slots[frame];
++    if (!slot.image || slot.width != frame->width || slot.height != frame->height) {
++        if (!Make(slot, allocator, frame, format)) return;
++    }
++    const VkImage image = *slot.image;
++    cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
++                           Barrier(image, 0, slot.levels, VK_IMAGE_LAYOUT_UNDEFINED,
++                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT));
++    s32 w = s32(Half(frame->width)), h = s32(Half(frame->height));
++    cmdbuf.BlitImage(*frame->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image,
++                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, Blit(0, s32(frame->width), s32(frame->height), 0, w, h),
++                     VK_FILTER_LINEAR);
++    for (u32 level = 1; level < slot.levels; ++level) {
++        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
++                               Barrier(image, level - 1, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
++                                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
++                                       VK_ACCESS_TRANSFER_READ_BIT));
++        const s32 nw = s32(Half(u32(w))), nh = s32(Half(u32(h)));
++        cmdbuf.BlitImage(image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
++                         Blit(level - 1, w, h, level, nw, nh), VK_FILTER_LINEAR);
++        w = nw;
++        h = nh;
++    }
++    const u32 last = slot.levels - 1;
++    cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
++                           Barrier(image, last, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
++                                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
++                                   VK_ACCESS_TRANSFER_READ_BIT));
++    const VkBufferImageCopy copy{
++        .bufferOffset = 0,
++        .bufferRowLength = 0,
++        .bufferImageHeight = 0,
++        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, last, 0, 1},
++        .imageOffset = {0, 0, 0},
++        .imageExtent = {slot.grid_w, slot.grid_h, 1},
++    };
++    cmdbuf.CopyImageToBuffer(image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, *slot.buffer, copy);
++    const VkBufferMemoryBarrier to_host{
++        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
++        .pNext = nullptr,
++        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
++        .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
++        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++        .buffer = *slot.buffer,
++        .offset = 0,
++        .size = VK_WHOLE_SIZE,
++    };
++    cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, to_host);
++    slot.pending = true;
++    slot.present = ++s.presents;
++    slot.ns = VideoCore::GbbTrace::Now();
++}
++
++} // namespace Vulkan::GbbFlashVk
+diff --git a/src/video_core/renderer_vulkan/vk_present_manager.cpp b/src/video_core/renderer_vulkan/vk_present_manager.cpp
+index 35de188..31c3419 100644
+--- a/src/video_core/renderer_vulkan/vk_present_manager.cpp
++++ b/src/video_core/renderer_vulkan/vk_present_manager.cpp
+@@ -12,6 +12,7 @@
+ #endif
+ #include "video_core/renderer_vulkan/vk_present_manager.h"
+ #include "video_core/renderer_vulkan/vk_scheduler.h"
++#include "video_core/renderer_vulkan/gbb_flash_vk.h" // 0928
+ #include "video_core/renderer_vulkan/vk_swapchain.h"
+ #include "video_core/vulkan_common/vulkan_device.h"
+ #include "video_core/vulkan_common/vulkan_surface.h"
+@@ -441,6 +442,10 @@ void PresentManager::CopyToSwapchainImpl(Frame* frame) {
+         RecreateSwapchain(frame);
+     }
+ 
++    if (VideoCore::GbbFlash::On()) [[unlikely]] {
++        GbbFlashVk::Collect(frame); // 0928: the grid this frame captured at its last use
++    }
++
+     Common::HangSite site{"present: acquiring a swapchain image"};
+     while (swapchain.AcquireNextImage(!use_present_thread)) {
+         RecreateSwapchain(frame);
+@@ -547,6 +552,9 @@ void PresentManager::CopyToSwapchainImpl(Frame* frame) {
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          MakeImageCopy(frame->width, frame->height, extent.width, extent.height));
+     }
++    if (VideoCore::GbbFlash::On()) [[unlikely]] {
++        GbbFlashVk::Record(device, memory_allocator, cmdbuf, frame, swapchain.GetImageFormat()); // 0928
++    }
+ 
+     cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, {},
+                            {}, {}, post_barriers);

@@ -1,0 +1,298 @@
+{
+  "format": 0,
+  "author": "GrowingBlackBeans",
+  "run_id": "2026-11-12-FX1",
+  "date": "2026-11-12",
+  "time": "05:47:44",
+  "batch": null,
+  "test": "2026-11-12-FX1",
+  "game": "0400486024DEC000",
+  "build": {
+    "tag": "t120-gbb8",
+    "commit": null,
+    "version": "01.219.915 (Nov 12 2026 10:31:24)",
+    "eboot_sha256_16": null
+  },
+  "firmware": null,
+  "console": "PS5 base 13.60",
+  "route": {
+    "script": "GrowingBlackBeans Kokiri benchmark: Continue, house, out, walk loop to the water",
+    "script_sha": null
+  },
+  "menu_settings": null,
+  "env_lines": 95,
+  "env_hash": "0bb4ddda3e",
+  "control": null,
+  "ending": {
+    "kind": "hand_stopped",
+    "class": null,
+    "seconds": 177.980749,
+    "crash_app_s": null
+  },
+  "valid": true,
+  "gameplay_s": 115.0,
+  "fps": {
+    "mean": 28.25,
+    "source": "nx2:vi2 5 s lines (play windows under 45 fps)",
+    "p99_ms": 45.0,
+    "worst_ms": 634.6
+  },
+  "worst_frame_ms": 634.6,
+  "runtime_pipeline_builds": 1,
+  "flashes_per_min": null,
+  "note": null,
+  "impressions": "EDEN_UP_AHEAD_TWO=1 (two frames ahead, one guard slot); second attempt, first froze in the title sequence (FX1-freeze1); flicker like the X runs of 11 Nov",
+  "flash_times": [],
+  "gbb": {
+    "windows_5s_columns": [
+      "log_s",
+      "frames",
+      "fps",
+      "1pct_low_ms",
+      "worst_ms",
+      "fence_ms"
+    ],
+    "windows_5s": [
+      [
+        37.487918,
+        284,
+        56.7,
+        75.6,
+        165.8,
+        0.1
+      ],
+      [
+        42.514045,
+        268,
+        53.6,
+        68.1,
+        98.3,
+        2.4
+      ],
+      [
+        47.505627,
+        287,
+        57.2,
+        47.5,
+        99.9,
+        0.6
+      ],
+      [
+        52.50895,
+        299,
+        59.8,
+        21.6,
+        52.2,
+        0.0
+      ],
+      [
+        57.517496,
+        297,
+        59.3,
+        42.9,
+        61.7,
+        0.0
+      ],
+      [
+        62.517447,
+        300,
+        60.0,
+        18.3,
+        18.7,
+        0.0
+      ],
+      [
+        67.585579,
+        137,
+        27.0,
+        437.6,
+        634.6,
+        0.6
+      ],
+      [
+        72.602729,
+        127,
+        25.3,
+        115.6,
+        140.5,
+        0.3
+      ],
+      [
+        77.627114,
+        152,
+        30.3,
+        43.0,
+        43.5,
+        0.3
+      ],
+      [
+        82.634153,
+        157,
+        31.4,
+        37.4,
+        38.2,
+        0.3
+      ],
+      [
+        87.66141,
+        158,
+        31.4,
+        40.0,
+        55.4,
+        0.3
+      ],
+      [
+        92.690465,
+        158,
+        31.4,
+        45.0,
+        55.8,
+        0.2
+      ],
+      [
+        97.691976,
+        159,
+        31.8,
+        36.1,
+        39.3,
+        0.3
+      ],
+      [
+        102.701591,
+        154,
+        30.7,
+        38.3,
+        40.5,
+        0.3
+      ],
+      [
+        107.720479,
+        159,
+        31.7,
+        39.4,
+        49.0,
+        0.3
+      ],
+      [
+        112.72338,
+        158,
+        31.6,
+        36.1,
+        37.1,
+        0.3
+      ],
+      [
+        117.740907,
+        159,
+        31.7,
+        37.7,
+        38.9,
+        0.3
+      ],
+      [
+        122.741059,
+        158,
+        31.6,
+        34.4,
+        41.7,
+        0.2
+      ],
+      [
+        127.770665,
+        159,
+        31.6,
+        38.9,
+        39.3,
+        0.3
+      ],
+      [
+        132.84238,
+        137,
+        27.0,
+        81.4,
+        87.4,
+        0.3
+      ],
+      [
+        137.869672,
+        102,
+        20.3,
+        95.3,
+        101.6,
+        0.3
+      ],
+      [
+        142.901732,
+        128,
+        25.4,
+        60.2,
+        62.7,
+        0.3
+      ],
+      [
+        147.917032,
+        149,
+        29.7,
+        40.6,
+        41.5,
+        0.3
+      ],
+      [
+        152.935888,
+        140,
+        27.9,
+        55.9,
+        72.2,
+        0.3
+      ],
+      [
+        157.946824,
+        128,
+        25.5,
+        62.9,
+        82.8,
+        0.3
+      ],
+      [
+        162.955779,
+        119,
+        23.8,
+        69.1,
+        69.2,
+        0.3
+      ],
+      [
+        167.973397,
+        129,
+        25.7,
+        47.6,
+        54.2,
+        0.3
+      ],
+      [
+        172.979908,
+        125,
+        25.0,
+        66.5,
+        72.9,
+        0.3
+      ],
+      [
+        177.980749,
+        110,
+        22.0,
+        77.3,
+        83.3,
+        0.3
+      ]
+    ],
+    "heavy_windows": 0,
+    "heavy_fps": null,
+    "light_windows": 23,
+    "light_fps": 28.25,
+    "regimes": "play windows (<45 fps); heavy = present fence wait >= 5 ms per frame (GPU thread bound), light = < 1 ms (game CPU bound)"
+  },
+  "redacted": {
+    "console_user": 3
+  }
+}

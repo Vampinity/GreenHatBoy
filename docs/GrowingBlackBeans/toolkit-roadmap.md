@@ -1,6 +1,6 @@
 # Log toolkit: what's built, what's designed, what's next
 
-GrowingBlackBeans, 11 Nov 2026. The tools live in `tools/GrowingBlackBeans/eglog/` (see its README for tested/untested). This page tracks the rest of the plan, so anyone can pick a piece up.
+GrowingBlackBeans, 11 Nov 2026, updated 12 Nov. The tools live in `tools/GrowingBlackBeans/eglog/` (see its README for tested/untested). This page tracks the rest of the plan, so anyone can pick a piece up.
 
 ## Built
 
@@ -8,9 +8,10 @@ GrowingBlackBeans, 11 Nov 2026. The tools live in `tools/GrowingBlackBeans/eglog
 |---|---|---|
 | Parser, per-run report, A/B with noise (cross-run and in-run live phases), run checker, ingest, regimes index | `eglog/` | tested |
 | Guide to every log line | `eglog/LOGS.md` | |
-| Back-thread breakdown (`EDEN_GBB_BACK_CALLS`) | patch 0921 | built, never run |
-| Per-second vitals (`EDEN_GBB_VITALS`), per-event timeline (`EDEN_GBB_TIMELINE`) and reader | patch 0922, `eglog/timeline.py` | built, never run; reader tested on synthetic data |
-| Flight recorder (`EDEN_GBB_FLIGHT`), effective env line, touchpad + R3 marker | patch 0923 | built, never run |
+| Back-thread breakdown (`EDEN_GBB_BACK_CALLS`) | patch 0921 | ran on the console (V1) |
+| Per-second vitals (`EDEN_GBB_VITALS`), per-event timeline (`EDEN_GBB_TIMELINE`) and reader | patch 0922, `eglog/timeline.py` | ran on the console; reader tested on a real capture (V1) |
+| Flight recorder (`EDEN_GBB_FLIGHT`), effective env line, touchpad + R3 marker | patch 0923 | ran on the console; the recorder should skip loading screens; the marker is too awkward to press while playing |
+| Flash counter (`EDEN_GBB_FLASH`) and reader | patch 0928, `eglog/flashes.py` | ran on the console (12 Nov); count with `flashes.py grids` at Vampinity's sizes, see `two-slot-guard-2026-11-12.md` |
 
 ## Designed, not built
 
@@ -22,16 +23,6 @@ GrowingBlackBeans, 11 Nov 2026. The tools live in `tools/GrowingBlackBeans/eglog
   - confirm them with a memory scan across a door transition;
   - log `EDEN_GBB_WHERE scene=.. room=.. pos=x,y,z` once a second from the present thread, reading guest memory through the memory manager.
 - **Blocker:** the addresses. This needs a session with a debugger or a guest memory dump on both sides of a door. Patch 0903 can dump guest code; data dumps are similar.
-
-### Automatic flash count
-
-- **Why:** an objective flashes-per-minute instead of impressions. One of the run formats already has a `flashes_per_min` field; check how it's computed first and reuse it.
-- **How:**
-  - after Composite, a tiny compute pass reduces the presented image to its mean luminance (64×64 downsample, then a sum) into a ring of 32-bit values;
-  - read it back a few frames late (no stall);
-  - log a flash when luminance jumps more than k sigma from the running median for one or two frames, then returns;
-  - log `EDEN_GBB_LUMA` per second (min, median, max) and `EDEN_GBB_FLASH frame=.. delta=..`.
-- **Cost:** one small dispatch per present.
 
 ### Scripted Kokiri route
 
