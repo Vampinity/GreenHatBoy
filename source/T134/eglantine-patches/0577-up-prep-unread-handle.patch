@@ -1,0 +1,519 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: prep unread handle, a kept translation that never read a descriptor's texture handle is not refused for it (EDEN_UP_PREP_UNREAD_HANDLE)
+
+DRAFT, not built. Our own work (shader prep refusals on the door route; the skip matches what
+zortos293/Lichii #896 does by never looking at such a descriptor). EDEN_UP_PREP_UNREAD_HANDLE
+(boot, read once; exact 1 or 2, anything else off); off by default. 1: in AnswersHoldFor a
+descriptor neither of whose two handle words was read by the kept translation is skipped and
+counted, everything else is checked as before, so the kept SPIR-V is used (about 1.5 ms instead
+of a 26-96 ms translation on the GPU thread). 2: count only, still refused as "unread handle
+(count only)". Both split the handle refusals ("texture handle shift", "texture handle half
+read"), name every refused or rescued pipeline key (at most 512 lines a session) and add a 10 s
+line "Unread texture handles in the last 10 s". EDEN_UP_PREP_UNREAD_HANDLE_VERIFY=1 (boot, needs
+=1): every rescued pipeline is also translated fresh, drawn with the fresh one and compared
+(SPIR-V, infos, and whether the fresh translation read a skipped word); =2 also flips one byte of
+the first rescued pipeline's kept SPIR-V (expect 1 differ). Line "Unread handles verified so far",
+also with EDEN_UP_SHADER_PREP_VERIFY=1.
+Not in TranslationSwitches (the shader-store stamp): it changes no translation, so every arm
+shares one store; the names are only in vk_pipeline_prep.cpp, which the switch-list check skips.
+Off: AnswersHoldFor gets a null pointer (same reasons, same log); on the kept-record miss path
+only (a few hundred a run, never per draw): a cached switch read and a few locals.
+
+Reviewed draft (two reviews, "ready with small corrections"), corrections applied here: the check
+counts a pipeline only after its comparison finished (compared_same starts false); the one fault
+flip is spent only after a finished comparison; the verified line also prints with
+EDEN_UP_SHADER_PREP_VERIFY=1; the half-read comment is corrected (the integer check of the
+previous descriptor at the same first word can leave the second word unread, so a few "half read"
+refusals are possible and stay refused); the error lines about skipped words read are capped by
+lines, not pipelines; the per-stage bookkeeping runs only with the switch on.
+---
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 79b086c..959702d 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -4616,6 +4616,53 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateKeptGraphicsPipeline(
+     static std::chrono::steady_clock::duration spent{};
+     static std::map<std::string, u32> reasons;
+     static auto window = std::chrono::steady_clock::now();
++    // EDEN_UP_PREP_UNREAD_HANDLE (GPU thread only, like the rest): pipelines the skip let
++    // through in this window (with =2: would have), the descriptors skipped by kind, and, with
++    // its _VERIFY, totals since start of the fresh comparisons of those pipelines.
++    using AnswerHandle = VideoCommon::FileEnvironment::AnswerHandle;
++    using HandleKind = VideoCommon::FileEnvironment::HandleKind;
++    constexpr size_t NumHandleKinds = VideoCommon::FileEnvironment::NumHandleKinds;
++    static u32 unread_pipelines{}, unread_named{}, unread_same{}, unread_differ{}, unread_read{};
++    static u32 unread_read_lines{}; // error lines about skipped words read, at most 32
++    static std::array<u32, NumHandleKinds> unread_kinds{};
++    static bool unread_fault_done{};
++    const u32 unread_mode = ShaderPrep::UnreadHandle();
++    // What this pipeline's check skipped: per kind, and each skipped word with its program.
++    std::array<u32, NumHandleKinds> pipeline_kinds{};
++    u32 pipeline_skipped = 0;
++    std::vector<std::pair<size_t, u64>> skipped_words;
++    int refused_stage = -1;
++    const auto kinds_text = [](const std::array<u32, NumHandleKinds>& kinds) {
++        return fmt::format("depth {}, buffer {}, texture {}, image {}, image buffer {}",
++                           kinds[static_cast<size_t>(HandleKind::DepthTexture)],
++                           kinds[static_cast<size_t>(HandleKind::TextureBuffer)],
++                           kinds[static_cast<size_t>(HandleKind::Texture)],
++                           kinds[static_cast<size_t>(HandleKind::Image)],
++                           kinds[static_cast<size_t>(HandleKind::ImageBuffer)]);
++    };
++    // With EDEN_UP_PREP_UNREAD_HANDLE=1 or 2: one line per refused (and per rescued) pipeline,
++    // naming its key, so a slow build in "Runtime pipelines" can be matched to its reason. At
++    // most 512 a session; a key is refused once a session (prep_rejected).
++    const auto name_pipeline = [&](const char* what, const char* reason) noexcept {
++        try {
++            if (unread_mode == 0 || unread_named > 512) {
++                return;
++            }
++            if (unread_named++ == 512) {
++                LOG_INFO(Render_Vulkan, "Shader prep: no more pipelines named this session");
++                return;
++            }
++            LOG_INFO(Render_Vulkan, "Shader prep {} pipeline {:016x}: {}{}{}", what,
++                     graphics_key.Hash(), reason,
++                     refused_stage >= 0 ? fmt::format(" (stage {})", refused_stage)
++                                        : std::string{},
++                     pipeline_skipped != 0
++                         ? fmt::format(", {} unread handles skipped ({})", pipeline_skipped,
++                                       kinds_text(pipeline_kinds))
++                         : std::string{});
++        } catch (const std::exception&) {
++        }
++    };
+     const auto begin = std::chrono::steady_clock::now();
+     // Neither of these lets an exception out: a pipeline whose build is queued on a worker must
+     // never be dropped because the bookkeeping after it ran out of memory.
+@@ -4639,10 +4686,32 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateKeptGraphicsPipeline(
+                          "Kept translations verified so far: {} the same, {} differ", audit_same,
+                          audit_differ);
+             }
++            if (unread_mode != 0) {
++                u32 descriptors = 0;
++                for (const u32 count : unread_kinds) {
++                    descriptors += count;
++                }
++                LOG_INFO(Render_Vulkan,
++                         "Unread texture handles in the last 10 s: {} pipelines {}, {} "
++                         "descriptors skipped ({})",
++                         unread_pipelines,
++                         unread_mode == 1 ? "reused" : "would be reused (count only, refused)",
++                         descriptors, kinds_text(unread_kinds));
++            }
++            // Also with EDEN_UP_SHADER_PREP_VERIFY=1, which compares the rescued pipelines too.
++            if (unread_mode != 0 &&
++                (ShaderPrep::Verify() || ShaderPrep::UnreadHandleVerify() != 0)) {
++                LOG_INFO(Render_Vulkan,
++                         "Unread handles verified so far: {} the same, {} differ, {} fresh read "
++                         "a skipped word",
++                         unread_same, unread_differ, unread_read);
++            }
+             used = 0;
+             refused = 0;
+             spent = {};
+             reasons.clear();
++            unread_pipelines = 0;
++            unread_kinds = {};
+             window = begin;
+         } catch (const std::exception&) {
+         }
+@@ -4654,6 +4723,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateKeptGraphicsPipeline(
+             ++reasons[why];
+         } catch (const std::exception&) {
+         }
++        name_pipeline("refused", why);
+         report();
+     };
+     const auto refuse = [&](const char* why) noexcept -> std::unique_ptr<GraphicsPipeline> {
+@@ -4679,6 +4749,15 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateKeptGraphicsPipeline(
+     // Outside the try: once made, its build is queued on a worker and it has to be returned.
+     std::unique_ptr<GraphicsPipeline> made;
+     bool verified_same = true;
++    // EDEN_UP_PREP_UNREAD_HANDLE: the check skipped at least one unread handle (rescued), and
++    // the check mode found the fresh translation reading a skipped word (fresh_read).
++    // compared: the comparison with the fresh translation ran to its end (only then is
++    // compared_same an answer).
++    bool rescued = false;
++    bool fresh_read = false;
++    bool compared = false;
++    bool compared_same = false;
++    bool verify_this = ShaderPrep::Verify();
+     try {
+         std::vector<u8> bytes;
+         std::array<Shader::Info, ShaderPrep::NumStages> infos{};
+@@ -4705,7 +4784,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateKeptGraphicsPipeline(
+         // Each environment against the answers its translation got. The words a stage's
+         // descriptors read their texture handles from may hold other handles now.
+         size_t env_index = 0;
+-        std::vector<VideoCommon::FileEnvironment::AnswerHandle> handles;
++        std::vector<AnswerHandle> handles;
++        VideoCommon::FileEnvironment::UnreadHandles unread;
+         for (size_t index = 1; index < Maxwell::MaxShaderProgram; ++index) {
+             if (graphics_key.unique_hashes[index] == 0) {
+                 continue;
+@@ -4717,7 +4797,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateKeptGraphicsPipeline(
+             handles.clear();
+             const auto add = [&handles](const auto& desc, bool has_secondary, u32 shift_left,
+                                         u32 secondary_index, u32 secondary_offset,
+-                                        u32 secondary_shift_left) {
++                                        u32 secondary_shift_left, HandleKind kind) {
+                 if (desc.handle_program != ~0U) {
+                     return; // computed per draw: its words are compared like any other
+                 }
+@@ -4727,28 +4807,47 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateKeptGraphicsPipeline(
+                                    .secondary_index = secondary_index,
+                                    .secondary_offset = secondary_offset,
+                                    .secondary_shift_left = secondary_shift_left,
+-                                   .has_secondary = has_secondary});
++                                   .has_secondary = has_secondary,
++                                   .kind = kind});
+             };
+             for (const auto& desc : info.texture_buffer_descriptors) {
+                 add(desc, desc.has_secondary, desc.shift_left, desc.secondary_cbuf_index,
+-                    desc.secondary_cbuf_offset, desc.secondary_shift_left);
++                    desc.secondary_cbuf_offset, desc.secondary_shift_left,
++                    HandleKind::TextureBuffer);
+             }
+             for (const auto& desc : info.texture_descriptors) {
+                 add(desc, desc.has_secondary, desc.shift_left, desc.secondary_cbuf_index,
+-                    desc.secondary_cbuf_offset, desc.secondary_shift_left);
++                    desc.secondary_cbuf_offset, desc.secondary_shift_left,
++                    desc.is_depth ? HandleKind::DepthTexture : HandleKind::Texture);
+             }
+             for (const auto& desc : info.image_buffer_descriptors) {
+-                add(desc, false, 0, 0, 0, 0);
++                add(desc, false, 0, 0, 0, 0, HandleKind::ImageBuffer);
+             }
+             for (const auto& desc : info.image_descriptors) {
+-                add(desc, false, 0, 0, 0, 0);
++                add(desc, false, 0, 0, 0, 0, HandleKind::Image);
+             }
+             if (!prep_store.Read(record.answers[env_index], bytes)) {
+                 return unreadable();
+             }
+             const char* why = "";
+-            if (!VideoCommon::FileEnvironment::AnswersHoldFor(bytes, *live[env_index], handles,
+-                                                              &why)) {
++            // EDEN_UP_PREP_UNREAD_HANDLE off: no `unread`, the check word for word as before.
++            if (unread_mode != 0) {
++                unread.by_kind = {};
++                unread.words.clear();
++            }
++            const bool holds = VideoCommon::FileEnvironment::AnswersHoldFor(
++                bytes, *live[env_index], handles, &why, unread_mode != 0 ? &unread : nullptr);
++            if (unread_mode != 0) {
++                for (size_t kind = 0; kind < NumHandleKinds; ++kind) {
++                    pipeline_kinds[kind] += unread.by_kind[kind];
++                    pipeline_skipped += unread.by_kind[kind];
++                }
++                for (const u64 word : unread.words) {
++                    skipped_words.emplace_back(index, word);
++                }
++            }
++            if (!holds) {
++                refused_stage = static_cast<int>(index - 1);
+                 return refuse(why);
+             }
+             ++env_index;
+@@ -4756,6 +4855,15 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateKeptGraphicsPipeline(
+         if (env_index != live.size()) {
+             return refuse("other stages");
+         }
++        // Every other answer held: only the unread handles stood in the way.
++        rescued = pipeline_skipped != 0;
++        if (rescued && unread_mode == 2) {
++            ++unread_pipelines;
++            for (size_t kind = 0; kind < NumHandleKinds; ++kind) {
++                unread_kinds[kind] += pipeline_kinds[kind];
++            }
++            return refuse("unread handle (count only)");
++        }
+         std::array<std::vector<u8>, ShaderPrep::NumStages> spirv;
+         for (size_t stage = 0; stage < ShaderPrep::NumStages; ++stage) {
+             if (info_ptrs[stage] != nullptr &&
+@@ -4763,7 +4871,27 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateKeptGraphicsPipeline(
+                 return unreadable();
+             }
+         }
+-        if (ShaderPrep::Verify()) {
++        // EDEN_UP_PREP_UNREAD_HANDLE_VERIFY: only the pipelines the skip let through, so a check
++        // run costs what today's refusals cost, not a translation of every kept pipeline.
++        verify_this = verify_this || (rescued && ShaderPrep::UnreadHandleVerify() != 0);
++        // Set when a byte was flipped; the one flip a session counts as spent only once the
++        // comparison below has run to its end (not when the fresh translation fails).
++        bool injected = false;
++        if (rescued && ShaderPrep::UnreadHandleVerify() == 2 && !unread_fault_done) {
++            // Fault injection: this copy is only compared, never drawn (the fresh one is).
++            for (size_t stage = 0; stage < ShaderPrep::NumStages; ++stage) {
++                if (info_ptrs[stage] != nullptr && !spirv[stage].empty()) {
++                    spirv[stage][spirv[stage].size() / 2] ^= 0x01;
++                    injected = true;
++                    LOG_WARNING(Render_Vulkan,
++                                "EDEN_UP_PREP_UNREAD_HANDLE_VERIFY=2: one byte of pipeline "
++                                "{:016x} stage {} flipped before comparing (expect 1 differ)",
++                                hash, stage);
++                    break;
++                }
++            }
++        }
++        if (verify_this) {
+             // What the translation of the game's state gives now, built like any new pipeline
+             // (with its own pools: the caller releases main_pools after this). It is the one
+             // drawn with either way: its build is queued on a worker already.
+@@ -4787,12 +4915,38 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateKeptGraphicsPipeline(
+                 verified_same =
+                     fresh_info == kept_info && words.size() * sizeof(u32) == spirv[stage].size() &&
+                     std::memcmp(words.data(), spirv[stage].data(), spirv[stage].size()) == 0;
+-                if (!verified_same && audit_differ < 32) {
++                if (!verified_same && (rescued ? unread_differ : audit_differ) < 32) {
+                     LOG_ERROR(Render_Vulkan,
+-                              "Kept translation of pipeline {:016x} differs at stage {} ({})", hash,
+-                              stage, fresh_info == kept_info ? "SPIR-V" : "infos");
++                              "Kept translation of pipeline {:016x} differs at stage {} ({}){}",
++                              hash, stage, fresh_info == kept_info ? "SPIR-V" : "infos",
++                              rescued ? fmt::format(" after skipping unread handles ({})",
++                                                    kinds_text(pipeline_kinds))
++                                      : std::string{});
+                 }
+             }
++            compared_same = verified_same;
++            if (rescued) {
++                // The skipped words were never asked of `live` by the check, so a word found
++                // there now was read by the fresh translation: the skip's premise is wrong.
++                for (const auto& [program, word] : skipped_words) {
++                    if (environments.envs[program].HasCbufAnswer(word)) {
++                        fresh_read = true;
++                        if (unread_read_lines < 32) {
++                            ++unread_read_lines;
++                            LOG_ERROR(Render_Vulkan,
++                                      "Pipeline {:016x} stage {}: the fresh translation read the "
++                                      "skipped handle word cbuf {} offset {:#x}",
++                                      hash, program - 1, static_cast<u32>(word >> 32),
++                                      static_cast<u32>(word));
++                        }
++                    }
++                }
++                verified_same = verified_same && !fresh_read;
++            }
++            compared = true;
++            if (injected) {
++                unread_fault_done = true;
++            }
+         } else {
+             std::array<vk::ShaderModule, Maxwell::MaxShaderStage> modules;
+             for (size_t stage = 0; stage < ShaderPrep::NumStages; ++stage) {
+@@ -4819,10 +4973,27 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateKeptGraphicsPipeline(
+             return refuse("files unreadable");
+         }
+         // The pipeline exists and its build is queued: it is returned whatever failed after it.
++        if (rescued && verify_this && !compared) {
++            // EDEN_UP_PREP_UNREAD_HANDLE: a rescued pipeline whose comparison did not finish is
++            // not named or counted as verified the same (the fresh one is drawn either way).
++            verified_same = false;
++        }
+     }
+     if (ShaderPrep::Verify()) {
+         ++(verified_same ? audit_same : audit_differ);
+     }
++    if (rescued && compared) {
++        ++(compared_same ? unread_same : unread_differ);
++        unread_read += fresh_read ? 1 : 0;
++    }
++    if (verified_same && rescued) {
++        ++unread_pipelines;
++        for (size_t kind = 0; kind < NumHandleKinds; ++kind) {
++            unread_kinds[kind] += pipeline_kinds[kind];
++        }
++        name_pipeline("reused", verify_this ? "unread handles skipped, verified the same"
++                                            : "unread handles skipped");
++    }
+     if (verified_same) {
+         ++used;
+         report();
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp b/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp
+index 8fae788..2f2aeaf 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp
+@@ -39,6 +39,9 @@ constexpr size_t StoresKept = 3;
+ // what a translation gives must change the stamp; the others only cost a store of their own when
+ // they are flipped. Generated from the tree (tools: shader-prep/make_switch_list.py); the check
+ // script fails when a name is missing here.
++// Left out on purpose, as the EDEN_UP_SHADER_PREP_ names are: EDEN_UP_PREP_UNREAD_HANDLE and its
++// _VERIFY (named only in this file, which the check skips). They change no translation, only which
++// kept ones a draw may use, so all their arms share one store.
+ constexpr const char* TranslationSwitches[] = {
+     "EDEN_GBB_FLUSH_PAGE_CHECK", "EDEN_GBB_NAN_GUARD", "EDEN_GBB_PIPELINE_ONCE",
+     "EDEN_GBB_PIPELINE_SAVE_20S", "EDEN_GBB_POSITION_INVARIANT",
+@@ -676,6 +679,23 @@ bool Verify() {
+     return verify;
+ }
+ 
++u32 UnreadHandle() {
++    // Exact "1" or "2"; anything else is off. Not in TranslationSwitches: it changes no
++    // translation, only which kept ones a draw may use.
++    static const u32 mode = SwitchIs("EDEN_UP_PREP_UNREAD_HANDLE", '1')   ? 1U
++                            : SwitchIs("EDEN_UP_PREP_UNREAD_HANDLE", '2') ? 2U
++                                                                          : 0U;
++    return mode;
++}
++
++u32 UnreadHandleVerify() {
++    static const u32 mode = UnreadHandle() != 1                                     ? 0U
++                            : SwitchIs("EDEN_UP_PREP_UNREAD_HANDLE_VERIFY", '1') ? 1U
++                            : SwitchIs("EDEN_UP_PREP_UNREAD_HANDLE_VERIFY", '2') ? 2U
++                                                                                 : 0U;
++    return mode;
++}
++
+ u32 LogEvery() {
+     static const u32 every = static_cast<u32>(
+         std::clamp<size_t>(SwitchNumber("EDEN_UP_SHADER_PREP_LOG", 256), 1, 1U << 30));
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_prep.h b/src/video_core/renderer_vulkan/vk_pipeline_prep.h
+index 063da37..546e8c4 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_prep.h
++++ b/src/video_core/renderer_vulkan/vk_pipeline_prep.h
+@@ -51,6 +51,18 @@ inline constexpr u32 NoBlob = ~0U;
+ /// EDEN_UP_SHADER_PREP_VERIFY=1: a pipeline made from kept SPIR-V is also translated from the
+ /// game's state on the GPU thread and compared (slow; a first test, not play).
+ [[nodiscard]] bool Verify();
++/// EDEN_UP_PREP_UNREAD_HANDLE (0 off, the default): what a draw does with a kept translation
++/// that never read one of its descriptors' texture handle words (refused as "texture handle"
++/// without it). 1: that descriptor is skipped and the rest checked as before, so the kept
++/// translation is used. 2: count only, it is still refused ("unread handle (count only)").
++/// Both name every refused pipeline in the log. Read once; not in the store stamp (it changes
++/// no translation, so all arms share one kept store).
++[[nodiscard]] u32 UnreadHandle();
++/// EDEN_UP_PREP_UNREAD_HANDLE_VERIFY (needs EDEN_UP_PREP_UNREAD_HANDLE=1): every pipeline the
++/// skip let through is also translated from the game's state, drawn with that, and compared
++/// with the kept one; 1 as is, 2 also flips one byte of the first one's kept SPIR-V before
++/// comparing (proves the comparison sees a difference; the picture is the fresh one anyway).
++[[nodiscard]] u32 UnreadHandleVerify();
+ /// EDEN_UP_SHADER_PREP_LOG=<n>: a progress line every n pipelines while preparing (256).
+ [[nodiscard]] u32 LogEvery();
+ /// EDEN_UP_SHADER_PREP_MAX=<n>: at most n pipelines are prepared per boot (5000; the rest at
+diff --git a/src/video_core/shader_environment.cpp b/src/video_core/shader_environment.cpp
+index 35d9f6e..352c6c0 100644
+--- a/src/video_core/shader_environment.cpp
++++ b/src/video_core/shader_environment.cpp
+@@ -1380,7 +1380,8 @@ void FileEnvironment::SerializeAnswers(std::vector<u8>& out) const {
+ }
+ 
+ bool FileEnvironment::AnswersHoldFor(std::span<const u8> in, Shader::Environment& live,
+-                                     std::span<const AnswerHandle> handles, const char** why) {
++                                     std::span<const AnswerHandle> handles, const char** why,
++                                     UnreadHandles* unread) {
+     const auto fail = [why](const char* reason) {
+         if (why) {
+             *why = reason;
+@@ -1440,7 +1441,7 @@ bool FileEnvironment::AnswersHoldFor(std::span<const u8> in, Shader::Environment
+     std::vector<u32> handles_asked;
+     for (const AnswerHandle& handle : handles) {
+         if (handle.shift_left >= 32 || handle.secondary_shift_left >= 32) {
+-            return fail("texture handle");
++            return fail(unread != nullptr ? "texture handle shift" : "texture handle");
+         }
+         const u64 first = MakeCbufKey(handle.index, handle.offset);
+         const u64 second = handle.has_secondary
+@@ -1448,9 +1449,27 @@ bool FileEnvironment::AnswersHoldFor(std::span<const u8> in, Shader::Environment
+                                : first;
+         const u32* const recorded_first = FindAnswer(values, first);
+         const u32* const recorded_second = FindAnswer(values, second);
++        if (unread != nullptr && recorded_first == nullptr && recorded_second == nullptr) {
++            // EDEN_UP_PREP_UNREAD_HANDLE: the translation never read this descriptor's handle,
++            // so it never asked that texture's type or format (a depth compare or a typed
++            // texture buffer does not, ir_opt/texture_pass.cpp), and no word of the kept
++            // translation came from it. Nothing to hold it to, and nothing to refuse for. Not
++            // asked of `live` either: a fresh translation would not ask it (the check mode
++            // proves that by looking for these words in `live` after translating it).
++            const auto kind = static_cast<size_t>(handle.kind);
++            ++unread->by_kind[kind < NumHandleKinds ? kind : 0];
++            unread->words.push_back(first);
++            if (second != first) {
++                unread->words.push_back(second);
++            }
++            continue;
++        }
+         if (recorded_first == nullptr || recorded_second == nullptr) {
+             // The translation did not read this descriptor's handle: nothing to hold it to.
+-            return fail("texture handle");
++            // With EDEN_UP_PREP_UNREAD_HANDLE: only one of its two words was read (the integer
++            // check of the previous descriptor at the same first word answered it,
++            // texture_pass.cpp). Not understood well enough to reuse.
++            return fail(unread != nullptr ? "texture handle half read" : "texture handle");
+         }
+         handle_words.push_back(first);
+         handle_words.push_back(second);
+diff --git a/src/video_core/shader_environment.h b/src/video_core/shader_environment.h
+index fc33774..5ce80d9 100644
+--- a/src/video_core/shader_environment.h
++++ b/src/video_core/shader_environment.h
+@@ -119,6 +119,12 @@ public:
+         return has_hle_engine_state;
+     }
+ 
++    /// EDEN_UP_PREP_UNREAD_HANDLE_VERIFY: whether this environment was asked the constant
++    /// buffer word `key` (MakeCbufKey). Reads nothing and records nothing.
++    [[nodiscard]] bool HasCbufAnswer(u64 key) const {
++        return cbuf_values.find(key) != cbuf_values.end();
++    }
++
+ protected:
+     std::optional<u64> TryFindSize();
+ 
+@@ -323,6 +329,17 @@ public:
+     /// storage pointer classifications), without the program's code.
+     void SerializeAnswers(std::vector<u8>& out) const;
+ 
++    /// EDEN_UP_PREP_UNREAD_HANDLE: which descriptor list an AnswerHandle came from (counting
++    /// only; the check is the same for every kind).
++    enum class HandleKind : u8 {
++        Texture,       ///< sampled texture, not a depth compare
++        DepthTexture,  ///< sampled texture with a depth compare (shadow lookups)
++        TextureBuffer, ///< texture buffer
++        Image,         ///< storage image
++        ImageBuffer,   ///< storage image buffer
++    };
++    static constexpr size_t NumHandleKinds = 5;
++
+     /// EDEN_UP_SHADER_PREP: where one of the program's descriptors reads its texture handle
+     /// (Shader::Info's texture and image descriptors without a handle program).
+     struct AnswerHandle {
+@@ -333,6 +350,18 @@ public:
+         u32 secondary_offset;
+         u32 secondary_shift_left;
+         bool has_secondary;
++        HandleKind kind{HandleKind::Texture};
++    };
++
++    /// EDEN_UP_PREP_UNREAD_HANDLE: what AnswersHoldFor skipped, when it is given one of these.
++    /// A descriptor is skipped only when neither of its handle words is among the recorded
++    /// reads: the kept translation never asked about that texture, so nothing in it came from
++    /// that word. Filled in also when the check fails later.
++    struct UnreadHandles {
++        std::array<u32, NumHandleKinds> by_kind{};
++        /// The skipped words (MakeCbufKey), for the check mode: a fresh translation must not
++        /// read any of them either.
++        std::vector<u64> words;
+     };
+ 
+     /// EDEN_UP_SHADER_PREP: whether translating `live`, the same program as the game draws
+@@ -342,10 +371,17 @@ public:
+     /// the texture the handle names now must have the same type and pixel format traits)
+     /// or a word of a storage buffer pointer (then its classification must be the same).
+     /// Sets `why` to the first answer that differs.
++    /// `unread` (EDEN_UP_PREP_UNREAD_HANDLE, null without it: the check as before, word for
++    /// word): a descriptor neither of whose handle words was read is skipped and counted there
++    /// instead of refused, and the two other handle refusals get their own reasons ("texture
++    /// handle shift", "texture handle half read").
++    /// Every new Shader::Environment question must be recorded by SerializeAnswers and checked
++    /// here: the skip rests on the recorded reads being all the translation asked.
+     [[nodiscard]] static bool AnswersHoldFor(std::span<const u8> answers,
+                                              Shader::Environment& live,
+                                              std::span<const AnswerHandle> handles,
+-                                             const char** why = nullptr);
++                                             const char** why = nullptr,
++                                             UnreadHandles* unread = nullptr);
+ 
+ private:
+     std::vector<u64> code;

@@ -1,0 +1,307 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: guard held write age, writes held for a guard already lifted are applied (EDEN_UP_AHEAD_GUARD_HELD_AGE)
+
+DRAFT, not built. Our own work (guard-door job). With EDEN_UP_AHEAD_GUARD=3 at boot. Gated by
+EDEN_UP_AHEAD_GUARD_HELD_AGE (exact 1, live, Id AheadGuardHeldAge, not armed); off by default.
+On: each held guest write is tagged with the guard it was held for, and a gather while a newer
+guard is up applies the writes (and redirty ranges) whose guard is lifted, unless the current
+guard has a copy of the page. EDEN_UP_AHEAD_GUARD_HELD_AGE_VERIFY (exact 1, live, Id
+AheadGuardHeldAgeVerify) only counts what it would apply early. The live-switch start warns when
+either is used without EDEN_UP_AHEAD_GUARD=3. 10 s line names applied/early counts.
+
+Reviewed draft (verdict "ready with corrections"): guard-held-write-age.v2.patch. live_switch.h
+re-anchored after AheadReadSync; gpu.cpp's `#include "common/live_switch.h"` is now a repeat of
+0567's (kept as the draft has it); all +/- lines byte-identical to the v2.
+---
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+index 772eaf3..3185151 100644
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -193,6 +193,15 @@ enum class Id : u8 {
+     /// at each guest read's area lookup (Peek); off at a present clears the ahead flag, so the
+     /// next lookups take the shortcut again.
+     AheadReadSync,
++    /// EDEN_UP_AHEAD_GUARD_HELD_AGE (with EDEN_UP_AHEAD_GUARD=3 at boot). Each gather while a
++    /// guard is up applies the held writes of guards already lifted, or keeps them all as
++    /// before. Writes held while it was off have no tag of their own: when it comes on they get
++    /// the guard up then, which holds them at least as long as before (video_core/gpu.cpp,
++    /// GatherForApply).
++    AheadGuardHeldAge,
++    /// EDEN_UP_AHEAD_GUARD_HELD_AGE_VERIFY. Log only: counts what the switch above would apply
++    /// early at each gather, and applies as before.
++    AheadGuardHeldAgeVerify,
+     Count,
+ };
+ 
+@@ -319,6 +328,8 @@ inline constexpr std::array<Def, NumSwitches> kDefs{{
+     {"EDEN_UP_UBO_BIND_TRIM", ParseExactOne, false, -1},
+     {"EDEN_UP_WRITEBACK_BANDS", ParseExactOne, true, -1},
+     {"EDEN_UP_AHEAD_READ_SYNC", ParseExactOne, false, -1},
++    {"EDEN_UP_AHEAD_GUARD_HELD_AGE", ParseExactOne, false, -1},
++    {"EDEN_UP_AHEAD_GUARD_HELD_AGE_VERIFY", ParseExactOne, false, -1},
+ }};
+ 
+ static_assert(kDefs[static_cast<size_t>(Id::PollBackoffUs)].needs ==
+@@ -628,6 +639,20 @@ inline void WarnOfDeadSwitches(const Schedule& schedule) {
+                             "this run");
+             });
+         }
++        if (static_cast<Id>(i) == Id::AheadGuardHeldAge ||
++            static_cast<Id>(i) == Id::AheadGuardHeldAgeVerify) {
++            // Not a live switch, so not a `needs` index: the guard's level is read once
++            // (video_core/ahead_guard.h, Mode), and only =3 holds writes.
++            const char* guard = std::getenv("EDEN_UP_AHEAD_GUARD");
++            if (guard == nullptr || std::strcmp(guard, "3") != 0) {
++                Quiet([&] {
++                    LOG_WARNING(Common,
++                                "Live switches: {} needs EDEN_UP_AHEAD_GUARD=3 at boot: its "
++                                "phases change nothing in this run",
++                                kDefs[i].name);
++                });
++            }
++        }
+     }
+ }
+ 
+diff --git a/src/video_core/ahead_guard.h b/src/video_core/ahead_guard.h
+index fd404d9..35745fd 100644
+--- a/src/video_core/ahead_guard.h
++++ b/src/video_core/ahead_guard.h
+@@ -55,6 +55,9 @@
+ ///      uploaded into the host buffer at once (BufferCache's inline page writes), and a texture
+ ///      the write touches is uploaded again from memory. One or two small dark glitches and a
+ ///      fade out of order stayed, and nine moments with EDEN_UP_AHEAD_ALWAYS.
++///      EDEN_UP_AHEAD_GUARD_HELD_AGE=1 (live): a held write is applied at the first gather after
++///      its own guard is lifted, even with a newer guard up, unless the newer guard has a copy
++///      of its page too (see GPU::GatherForApply).
+ ///
+ ///   EDEN_UP_AHEAD_GUARD_SETS=<mask>   which finished frames' pages are guarded, bit d = the frame
+ ///                                     d presents back (default 14: one, two and three back;
+@@ -619,6 +622,22 @@ inline bool HoldWrites() {
+     return Mode() == 3 && Get().active.load(std::memory_order_acquire);
+ }
+ 
++/// EDEN_UP_AHEAD_GUARD_HELD_AGE (GPU::GatherForApply): the guard as it is now. `serial` counts
++/// the guards put up so far and `frame` is the present the newest one was put up at. A guard is
++/// put up only while none is (AtPresent), so with `active` every guard of a lower serial is
++/// lifted, and without it every guard is. Takes the guard's lock: for a gather, not a draw.
++struct Now {
++    bool active{};
++    u64 serial{};
++    u64 frame{};
++};
++
++[[nodiscard]] inline Now GuardNow() {
++    State& s = Get();
++    std::scoped_lock lk{s.mutex};
++    return Now{s.active.load(std::memory_order_relaxed), s.arm_serial, s.armed_frame};
++}
++
+ /// Whether a page of [device_addr, device_addr + size) has a copy now: a guest thread wrote it
+ /// after the present of the frame in flight. Lock-free.
+ inline bool HasCopy(u64 device_addr, u64 size) {
+diff --git a/src/video_core/gpu.cpp b/src/video_core/gpu.cpp
+index 4f8a4a4..a9f180a 100644
+--- a/src/video_core/gpu.cpp
++++ b/src/video_core/gpu.cpp
+@@ -20,6 +20,7 @@
+ 
+ #include "common/assert.h"
+ #include "common/live_switch.h"
++#include "common/live_switch.h"
+ #include "common/pe_switch.h"
+ #include "common/scope_exit.h"
+ #include "common/settings.h"
+@@ -103,7 +104,14 @@ struct GPU::Impl {
+         , use_nvdec{use_nvdec_}
+         , shader_notify()
+         , is_async{is_async_}
+-    {}
++    {
++        // EDEN_UP_AHEAD_GUARD_HELD_AGE: the first use of its live switches, so GatherForApply
++        // can Peek them.
++        static_cast<void>(
++            Common::LiveSwitch::Value<Common::LiveSwitch::Id::AheadGuardHeldAge>());
++        static_cast<void>(
++            Common::LiveSwitch::Value<Common::LiveSwitch::Id::AheadGuardHeldAgeVerify>());
++    }
+ 
+     ~Impl() = default;
+ 
+@@ -210,10 +218,17 @@ struct GPU::Impl {
+         }
+         ahead_gathered_writes.clear();
+         if (!VideoCommon::AheadGuard::HoldWrites()) {
++            if (!ahead_held_writes.empty() &&
++                (Common::LiveSwitch::Peek<Common::LiveSwitch::Id::AheadGuardHeldAge>() != 0 ||
++                 Common::LiveSwitch::Peek<Common::LiveSwitch::Id::AheadGuardHeldAgeVerify>() !=
++                     0)) [[unlikely]] {
++                held_age_stats.unguarded_applied += ahead_held_writes.size();
++            }
+             for (const auto& [address, size] : ahead_held_writes) {
+                 callback_writes(address, size);
+             }
+             ahead_held_writes.clear();
++            ahead_held_tags.clear();
+             system.GatherGPUDirtyMemory(callback_writes);
+             VideoCommon::AheadGuard::TakeRedirty(callback_writes);
+             return;
+@@ -231,6 +246,135 @@ struct GPU::Impl {
+             renderer->ReadRasterizer()->ClaimCpuWrites(kept);
+             ahead_held_writes.insert(ahead_held_writes.end(), kept.begin(), kept.end());
+         }
++        const bool held_age =
++            Common::LiveSwitch::Peek<Common::LiveSwitch::Id::AheadGuardHeldAge>() != 0;
++        if (held_age ||
++            Common::LiveSwitch::Peek<Common::LiveSwitch::Id::AheadGuardHeldAgeVerify>() != 0)
++            [[unlikely]] {
++            ReleaseLiftedHeldLocked(callback_writes, kept.size(), held_age);
++        }
++    }
++
++    /// EDEN_UP_AHEAD_GUARD_HELD_AGE=1 (live), at =3 in a gather while a guard is up, under
++    /// ahead_gather_mutex (GPUBack, GPUFencingThread, or the thread a sync operation runs on).
++    /// Without it a held write waits for a gather with no guard up at all; with
++    /// EDEN_UP_AHEAD_ALWAYS each present puts a new guard up right after the last one is lifted,
++    /// and the per-fence gathers run while one is up, so held writes (and the ranges uploads took
++    /// from copies, TakeRedirty) can wait for several frames: buffers and textures keep older
++    /// bytes than memory has. A held write protected only the frame of the guard it was held
++    /// under; that guard's copies are gone once it is lifted, and later frames must see the
++    /// write. So it is applied at the first gather after its guard is lifted, unless the guard up
++    /// now has a copy of its page too: then the page was written after this guard's present,
++    /// memory holds a later frame's bytes there, and the write is held for this guard as well
++    /// (as the old rule would). `act` false (EDEN_UP_AHEAD_GUARD_HELD_AGE_VERIFY=1): the same
++    /// split is made and counted, nothing is applied.
++    void ReleaseLiftedHeldLocked(std::function<void(PAddr, size_t)>& callback_writes,
++                                 size_t new_kept, bool act) {
++        const VideoCommon::AheadGuard::Now now = VideoCommon::AheadGuard::GuardNow();
++        HeldAgeStats& st = held_age_stats;
++        ++st.gathers;
++        // The writes this gather kept get the guard up now: read after the gather, it is no older
++        // than the guard they were kept for, so they are held at least as long as before. When
++        // the tags are not one per held write (the switches were off at a gather that kept
++        // writes), every held write gets the guard up now, for the same reason.
++        const HeldTag fresh{now.serial, now.frame, false, false};
++        if (ahead_held_tags.size() + new_kept != ahead_held_writes.size()) {
++            ahead_held_tags.assign(ahead_held_writes.size(), fresh);
++            ++st.resyncs;
++        } else {
++            ahead_held_tags.resize(ahead_held_writes.size(), fresh);
++        }
++        size_t keep_at = 0;
++        for (size_t i = 0; i < ahead_held_writes.size(); ++i) {
++            const std::pair<DAddr, u64> write = ahead_held_writes[i];
++            HeldTag tag = ahead_held_tags[i];
++            const u64 age = now.frame >= tag.frame ? now.frame - tag.frame : 0;
++            const bool lifted = !now.active || tag.serial < now.serial;
++            if (lifted && VideoCommon::AheadGuard::HasCopy(write.first, write.second)) {
++                // Written again since the present of the guard up now: held for it too.
++                tag.serial = now.serial;
++                tag.reheld = true;
++                ++st.retagged;
++            } else if (lifted) {
++                if (!tag.late) {
++                    tag.late = true;
++                    ++st.early;
++                    st.early_bytes += write.second;
++                    st.max_age_applied = (std::max)(st.max_age_applied, age);
++                }
++                if (act) {
++                    // Counted at each apply, so writes marked late under _VERIFY before the
++                    // switch came on are counted too.
++                    ++st.applied;
++                    st.applied_bytes += write.second;
++                    callback_writes(write.first, static_cast<size_t>(write.second));
++                    continue;
++                }
++            }
++            ahead_held_writes[keep_at] = write;
++            ahead_held_tags[keep_at] = tag;
++            ++keep_at;
++            // Ages from the guard a write was first held under. A write kept for a newer guard's
++            // copy (its page is written every frame) keeps aging by design: counted apart, so
++            // the age of the writes this switch is meant to free stays readable.
++            if (tag.reheld) {
++                st.max_age_reheld = (std::max)(st.max_age_reheld, age);
++            } else {
++                st.max_age_held = (std::max)(st.max_age_held, age);
++            }
++        }
++        ahead_held_writes.erase(ahead_held_writes.begin() + static_cast<std::ptrdiff_t>(keep_at),
++                                ahead_held_writes.end());
++        ahead_held_tags.erase(ahead_held_tags.begin() + static_cast<std::ptrdiff_t>(keep_at),
++                              ahead_held_tags.end());
++        st.max_held = (std::max)(st.max_held, static_cast<u64>(ahead_held_writes.size()));
++        // What uploads took from the copies of lifted guards: applied now as well, except where
++        // the guard up now has a copy (held for it, with the guard up now as tag). Not claimed:
++        // they are upload ranges, the guest's bytes, as the old rule applies them.
++        if (act) {
++            VideoCommon::AheadGuard::TakeRedirty([&](u64 address, size_t bytes) {
++                if (VideoCommon::AheadGuard::HasCopy(address, bytes)) {
++                    ahead_held_writes.emplace_back(address, static_cast<u64>(bytes));
++                    ahead_held_tags.push_back(fresh);
++                    ++st.redirty_held;
++                } else {
++                    callback_writes(address, bytes);
++                    ++st.redirty_early;
++                }
++            });
++        } else if (VideoCommon::AheadGuard::Get().redirty_ready.load(std::memory_order_acquire)) {
++            ++st.redirty_waiting;
++        }
++        LogHeldAgeLocked(act);
++    }
++
++    /// EDEN_UP_AHEAD_GUARD_HELD_AGE(_VERIFY): one line every 10 s while either is on, under
++    /// ahead_gather_mutex.
++    void LogHeldAgeLocked(bool act) {
++        HeldAgeStats& st = held_age_stats;
++        const auto at = std::chrono::steady_clock::now();
++        if (st.window_start == std::chrono::steady_clock::time_point{}) {
++            st.window_start = at;
++            return;
++        }
++        if (at - st.window_start < std::chrono::seconds{10}) {
++            return;
++        }
++        LOG_INFO(HW_GPU,
++                 "EDEN_UP_AHEAD_GUARD_HELD_AGE{}: last 10 s: {} gathers with a guard up; held "
++                 "writes now {} (most {}), oldest still held {} presents ({} for writes kept for "
++                 "a newer guard's copy); {} {} with their guard lifted and a newer one up ({} "
++                 "KiB, oldest {} presents); {} kept for the newer guard's copy; {} applied at "
++                 "gathers with no guard up; upload ranges from copies: {} applied early, {} held "
++                 "for a copy, {} gathers found them waiting; tags reset {}",
++                 act ? "" : "_VERIFY", st.gathers, ahead_held_writes.size(), st.max_held,
++                 st.max_age_held, st.max_age_reheld, act ? st.applied : st.early,
++                 act ? "applied" : "would be applied",
++                 (act ? st.applied_bytes : st.early_bytes) >> 10, st.max_age_applied,
++                 st.retagged, st.unguarded_applied, st.redirty_early, st.redirty_held,
++                 st.redirty_waiting, st.resyncs);
++        st = HeldAgeStats{};
++        st.window_start = at;
+     }
+ 
+     /// EDEN_UP_AHEAD_GUARD=3, from nx2:vi2 PresentClientBuffer on its own thread, just before a
+@@ -865,6 +1009,22 @@ struct GPU::Impl {
+     std::vector<std::pair<DAddr, u64>> ahead_gathered_writes;
+     std::vector<std::pair<DAddr, u64>> ahead_held_writes;
+     std::mutex ahead_gather_mutex;
++    /// EDEN_UP_AHEAD_GUARD_HELD_AGE(_VERIFY), under ahead_gather_mutex (the gathering thread:
++    /// GPUBack, GPUFencingThread or a sync operation's): one tag per held write, in its order,
++    /// while either switch is on (cleared with the held writes at a gather with no guard up).
++    struct HeldTag {
++        u64 serial; ///< the guard it is held for (AheadGuard::State::arm_serial)
++        u64 frame;  ///< the present that guard was put up at, for its age
++        bool late;  ///< counted once as held past its guard
++        bool reheld; ///< kept for a newer guard's copy at least once
++    };
++    std::vector<HeldTag> ahead_held_tags;
++    struct HeldAgeStats {
++        u64 gathers{}, early{}, early_bytes{}, applied{}, applied_bytes{}, retagged{};
++        u64 unguarded_applied{}, redirty_early{}, redirty_held{}, redirty_waiting{}, resyncs{};
++        u64 max_held{}, max_age_held{}, max_age_reheld{}, max_age_applied{};
++        std::chrono::steady_clock::time_point window_start{};
++    } held_age_stats;
+ 
+     const bool is_async;
+ 

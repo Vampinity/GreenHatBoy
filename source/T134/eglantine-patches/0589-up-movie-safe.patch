@@ -1,0 +1,605 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: movie decoder hardening, a bad frame or a failing decoder does not take the game down (EDEN_UP_MOVIE_SAFE), off by default
+
+What: cheap insurance for the alpha against a rarer family of failures (it did not cause and could
+not have stopped the 12 Nov first-start crash: the movie ended cleanly 27 s before it). With
+EDEN_UP_MOVIE_SAFE=2: a decoded frame with no width or height is skipped; timestamps of frames the
+decoder dropped are pruned once a later frame comes out (0 expected on AV1); a frame with no
+picture data (missing, empty data, still in GPU memory) is not converted, the image keeps its last
+picture; a packet whose decoding throws (std::bad_alloc, other std::exception) is logged and
+skipped, and a conversion that throws leaves the image with its last picture; a decoder that threw
+8 packets in a row or failed 300 packets in a row with no picture is closed and every later packet
+of that movie gets an empty frame through the existing never-opened path, so the movie runs to its
+end; a closed decoder is freed (before the session lock is taken again) at the next flush or
+stop, or replaced at the next packet after an end of stream, so the next movie opens a fresh one; empty frames keep g_nx2_video_last_frame_ns
+fresh (EDEN_UP_MOVIE_INTERVAL). ffmpeg.cpp counts send, receive and copy-back errors.
+
+Switches (read once): EDEN_UP_MOVIE_SAFE: 1 count only, "would ..." lines, the old code runs and a
+caught exception is thrown on; 2 act; unset, 0 or anything else off. Test only:
+EDEN_UP_MOVIE_SAFE_INJECT (only with EDEN_UP_MOVIE_SAFE=2, never a default): 1 packet 300 of each
+movie throws std::bad_alloc before decoding; 8 packets 300-307 throw (the decoder closes); else off.
+Log (grep "nx2 movie safe"): counter line (HW_GPU Info) at most every 10 s while a movie decodes, at
+each end of stream and at the first packet of the first movie: "nx2 movie safe 2 (act): bad frames
+0, stale-timestamp prunes 0, decoder errors 0, exceptions 0, dead decoders 0, empty frames 0";
+action lines (HW_GPU Warning, first 32 of each kind) "nx2 movie safe 2: skipped a decoded frame with
+no size: ...", "... pruned timestamps of dropped frames: ...", "... did not convert a frame with no
+picture data: ...", "... decoding a packet threw, packet skipped: ...", "... converting a frame
+threw, image keeps its last frame: ...", "... closed the decoder mid-movie, empty frames from here:
+8 packets in a row threw|300 packets in a row failed"; injector (Service Warning) "nx2:vdecsvc
+EDEN_UP_MOVIE_SAFE_INJECT: packet 300 throws".
+
+Not in TranslationSwitches. No new waits, no new locks.
+
+Cost when off: one cached switch read per packet and per frame; three error-count increments in
+ffmpeg.cpp on error paths only (also on the older Switch 1 video path). Failed() is always false,
+so the flush reset, the dead-decoder flag and the empty-frame counter never run. Behaviour byte for
+byte as before; machine code not.
+
+Default flip (later, after arms A-C show zeros and no timing change and E shows no hang):
+video_core/host1x/nx2_video_decoder.h "inline constexpr int MovieSafeDefault = 0;" -> 2. INJECT
+never.
+
+Risks: a false close freezes the picture for the rest of that movie while the sound plays; surviving
+bad_alloc at the memory floor may move the failure elsewhere; a real fault inside FFmpeg (a signal)
+or a throw while the decoder is created is not caught; in mode 1 a zero-size frame counts twice.
+
+Origin and credit: adapted from Frizti/Fritchii (author Frizti), branch oot-gather-fix, commits
+30bddb3d7 "nx2 video: a bad frame or a failing decoder never takes the game down" and 9b767005f
+"nx2 video: measure movie A/V drift (EDEN_NX2_VIDEO_TRACE) and shorten the frame round trip"
+(9 Nov 2026), GPL-3.0. Taken: the error counts, the zero-size skip, the timestamp prune, the
+no-picture check, the try/catch around decode, drain and conversion, ever_open/Failed() and the
+empty frame for a dead decoder. Left out: the GPU-decode fallback, the Windows fault guard, the A/V
+trace, the release-wait change and the Prepare/Commit split. Ours: MarkFailed, the 8-throw and
+300-packet triggers, the fresh decoder after a close, the movie-clock refresh, the lines and the
+injector. Draft drafts-2026-11-11/ports-7/first-start/movie-decoder-hardening/draft.v2.diff (the
+reviewed version), placed unchanged.
+---
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index b311527..c790cc1 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -19,7 +19,9 @@
+ #include <limits>
+ #include <atomic>
+ #include <deque>
++#include <exception>
+ #include <map>
++#include <new>
+ #include <optional>
+ #include <memory>
+ #include <mutex>
+@@ -3903,6 +3905,14 @@ private:
+                 if (decoder) {
+                     lk.unlock();
+                     decoder->Reset();
++                    // EDEN_UP_MOVIE_SAFE=2: a decoder closed mid-movie is not kept for the next
++                    // movie of this session; the next packet opens a new one. Freed before the
++                    // lock is taken again (closing FFmpeg joins its worker threads).
++                    if (decoder->Failed()) {
++                        decoder.reset();
++                        m_dead_decoder_ended = false;
++                    }
++                    m_decode_throws_in_a_row = 0;
+                     lk.lock();
+                 }
+                 continue;
+@@ -3922,7 +3932,7 @@ private:
+                 if (fence) {
+                     WaitForRelease(*fence);
+                 }
+-                const auto [width, height] = WriteImage(decoder.get(), image, frame, bytes);
++                const auto [width, height] = WriteImageSafe(decoder.get(), image, frame, bytes);
+                 lk.lock();
+                 // Even an image written during a flush counts: the client waits for its value.
+                 m_outputs.push_back({image, width, height, frame.pts, frame.end, false});
+@@ -3940,6 +3950,9 @@ private:
+                              GetServiceName(), m_frames_out, width, height, frame.pts,
+                              frame.end ? ", end of stream" : "", image, m_frames_dropped);
+                 }
++                if (Tegra::Host1x::Nx2MovieSafeMode() != 0) {
++                    Tegra::Host1x::Nx2MovieSafeReport(frame.end);
++                }
+                 continue;
+             }
+             Input input = std::move(m_inputs.front());
+@@ -3955,13 +3968,17 @@ private:
+                          GetServiceName(), codec);
+             }
+             lk.unlock();
+-            if (!decoder || decoder->Name() != codec) {
++            // EDEN_UP_MOVIE_SAFE=2: a decoder that died in the last movie and reached its end of
++            // stream without a flush or stop is replaced at the next movie's first packet.
++            const bool replace_dead = std::exchange(m_dead_decoder_ended, false);
++            if (replace_dead || !decoder || decoder->Name() != codec) {
+                 decoder = std::make_unique<Tegra::Host1x::Nx2VideoDecoder>(codec);
++                m_decode_throws_in_a_row = 0;
+             }
+             pictures.clear();
+-            decoder->Decode(input.data, input.pts, pictures);
+-            if (input.end) {
+-                decoder->Drain(pictures);
++            DecodeInputSafe(*decoder, input, pictures);
++            if (input.end && decoder->Failed()) {
++                m_dead_decoder_ended = true;
+             }
+             if (!pictures.empty()) {
+                 g_nx2_video_last_frame_ns.store(
+@@ -3985,6 +4002,16 @@ private:
+             // time instead of the client waiting for frames that never come.
+             if (pictures.empty() && !input.end && decoder && !decoder->IsOpen()) {
+                 m_decoded.push_back({std::nullopt, input.pts, false});
++                // EDEN_UP_MOVIE_SAFE=2 (Frizti/Fritchii 9b767005f): the same for a decoder that
++                // stopped mid-movie, so the game's movie runs to its end instead of waiting for
++                // frames forever. Still a movie for EDEN_UP_MOVIE_INTERVAL: keep its clock fresh.
++                if (decoder->Failed()) {
++                    Tegra::Host1x::g_nx2_movie_safe.empty_frames.fetch_add(
++                        1, std::memory_order_relaxed);
++                    g_nx2_video_last_frame_ns.store(
++                        std::chrono::steady_clock::now().time_since_epoch().count(),
++                        std::memory_order_relaxed);
++                }
+             }
+             if (input.end) {
+                 // The client stops at the frame marked end of stream; give it one even when the
+@@ -3998,6 +4025,90 @@ private:
+         }
+     }
+ 
++    // EDEN_UP_MOVIE_SAFE_INJECT (test only, needs EDEN_UP_MOVIE_SAFE=2): "1" makes packet 300 of
++    // each movie throw std::bad_alloc before it is decoded (one skipped packet), "8" packets 300 to
++    // 307 (the decoder closes, empty frames to the end of the movie). Anything else: off.
++    static u32 MovieSafeInject() {
++        static const u32 inject = [] {
++            const char* value = std::getenv("EDEN_UP_MOVIE_SAFE_INJECT");
++            if (value == nullptr || (value[0] != '1' && value[0] != '8') || value[1] != '\0' ||
++                Tegra::Host1x::Nx2MovieSafeMode() != 2) {
++                return 0U;
++            }
++            return static_cast<u32>(value[0] - '0');
++        }();
++        return inject;
++    }
++
++    // EDEN_UP_MOVIE_SAFE (Frizti/Fritchii 9b767005f): a packet whose decode throws (a huge image's
++    // std::bad_alloc) is logged and survived in mode 2; 8 in a row close the decoder (ours). Mode
++    // 1 logs and throws on; mode 0 is the old code. Decode thread, m_mutex not held.
++    void DecodeInputSafe(Tegra::Host1x::Nx2VideoDecoder& decoder, const Input& input,
++                         std::vector<Tegra::Host1x::Nx2Picture>& pictures) {
++        const int safe = Tegra::Host1x::Nx2MovieSafeMode();
++        if (safe == 0) {
++            decoder.Decode(input.data, input.pts, pictures);
++            if (input.end) {
++                decoder.Drain(pictures);
++            }
++            return;
++        }
++        try {
++            if (const u32 inject = MovieSafeInject(); inject != 0 && !input.end) {
++                // A movie starts at pts 0.
++                m_safe_packets = input.pts == 0 ? 1 : m_safe_packets + 1;
++                if (m_safe_packets >= 300 && m_safe_packets < 300 + inject) {
++                    LOG_WARNING(Service, "{} EDEN_UP_MOVIE_SAFE_INJECT: packet {} throws",
++                                GetServiceName(), m_safe_packets);
++                    throw std::bad_alloc{};
++                }
++            }
++            decoder.Decode(input.data, input.pts, pictures);
++            if (input.end) {
++                decoder.Drain(pictures);
++            }
++            if (!pictures.empty()) {
++                m_decode_throws_in_a_row = 0;
++            }
++        } catch (const std::exception& e) {
++            Tegra::Host1x::Nx2MovieSafeAction(
++                Tegra::Host1x::g_nx2_movie_safe.exceptions,
++                safe == 2 ? "decoding a packet threw, packet skipped"
++                          : "decoding a packet threw, thrown on as before",
++                e.what());
++            if (safe != 2) {
++                throw;
++            }
++            if (++m_decode_throws_in_a_row >= 8) {
++                decoder.MarkFailed("8 packets in a row threw");
++            }
++        }
++        Tegra::Host1x::Nx2MovieSafeReport(false);
++    }
++
++    // EDEN_UP_MOVIE_SAFE: WriteImage, with a conversion that throws logged and survived in mode 2
++    // (the image keeps its last frame). Mode 1 logs and throws on; mode 0 is the old call.
++    std::pair<u32, u32> WriteImageSafe(Tegra::Host1x::Nx2VideoDecoder* decoder, u32 image_id,
++                                       const Decoded& frame, std::vector<u8>& bytes) {
++        const int safe = Tegra::Host1x::Nx2MovieSafeMode();
++        if (safe == 0) {
++            return WriteImage(decoder, image_id, frame, bytes);
++        }
++        try {
++            return WriteImage(decoder, image_id, frame, bytes);
++        } catch (const std::exception& e) {
++            Tegra::Host1x::Nx2MovieSafeAction(
++                Tegra::Host1x::g_nx2_movie_safe.exceptions,
++                safe == 2 ? "converting a frame threw, image keeps its last frame"
++                          : "converting a frame threw, thrown on as before",
++                e.what());
++            if (safe != 2) {
++                throw;
++            }
++            return {m_width, m_height};
++        }
++    }
++
+     // Waits (bounded) until the client's reads of an image it gave back have passed.
+     void WaitForRelease(const Fence& fence) {
+         if (fence.syncpoint >= HostSyncpoints) {
+@@ -4108,6 +4219,9 @@ private:
+     u32 m_syncpoint{NoSyncpoint}; ///< Counts finished frames (allocated at the first register)
+     u32 m_sync_base{};            ///< Its value before the first frame
+     std::vector<u8> m_tiled;      ///< Decode thread: block-linear copy of a frame (WriteImage)
++    u32 m_decode_throws_in_a_row{}; ///< Decode thread: EDEN_UP_MOVIE_SAFE=2
++    u64 m_safe_packets{};           ///< Decode thread: EDEN_UP_MOVIE_SAFE_INJECT packet count
++    bool m_dead_decoder_ended{};    ///< Decode thread: EDEN_UP_MOVIE_SAFE=2, replace at next packet
+ 
+     // Shared with the decode thread.
+     std::mutex m_mutex;
+diff --git a/src/video_core/host1x/ffmpeg.cpp b/src/video_core/host1x/ffmpeg.cpp
+index 3ced29f..1547cd4 100644
+--- a/src/video_core/host1x/ffmpeg.cpp
++++ b/src/video_core/host1x/ffmpeg.cpp
+@@ -358,6 +358,7 @@ bool DecoderContext::OpenContext(const Decoder& decoder, std::span<const u8> ext
+ bool DecoderContext::SendPacket(const Packet& packet) {
+     if (const int ret = avcodec_send_packet(m_codec_context, packet.GetPacket()); ret < 0 && ret != AVERROR_EOF && ret != AVERROR(EAGAIN)) {
+         LOG_ERROR(HW_GPU, "avcodec_send_packet error: {}", AVError(ret));
++        ++m_errors;
+         return false;
+     }
+ 
+@@ -369,6 +370,7 @@ std::shared_ptr<Frame> DecoderContext::ReceiveFrame() {
+         const int ret = avcodec_receive_frame(m_codec_context, frame);
+         if (ret < 0 && ret != AVERROR_EOF && ret != AVERROR(EAGAIN)) {
+             LOG_ERROR(HW_GPU, "avcodec_receive_frame error: {}", AVError(ret));
++            ++m_errors;
+         }
+         return ret;
+     };
+@@ -383,6 +385,7 @@ std::shared_ptr<Frame> DecoderContext::ReceiveFrame() {
+         m_final_frame->SetFormat(PreferredGpuFormat);
+         if (const int ret = av_hwframe_transfer_data(m_final_frame->GetFrame(), intermediate_frame->GetFrame(), 0); ret < 0) {
+             LOG_ERROR(HW_GPU, "av_hwframe_transfer_data error: {}", AVError(ret));
++            ++m_errors;
+             return {};
+         }
+     } else {
+diff --git a/src/video_core/host1x/ffmpeg.h b/src/video_core/host1x/ffmpeg.h
+index 00cd3f5..f06c562 100644
+--- a/src/video_core/host1x/ffmpeg.h
++++ b/src/video_core/host1x/ffmpeg.h
+@@ -191,11 +191,18 @@ public:
+         return m_decode_order;
+     }
+ 
++    /// Send, receive and GPU copy-back errors so far (Frizti/Fritchii 30bddb3d7). Only counted on
++    /// the error paths; EDEN_UP_MOVIE_SAFE reads it.
++    u64 ErrorCount() const {
++        return m_errors;
++    }
++
+ private:
+     const Decoder& m_decoder;
+     AVCodecContext* m_codec_context{};
+     std::shared_ptr<Frame> m_final_frame{};
+     bool m_decode_order{};
++    u64 m_errors{};
+ };
+ 
+ struct FrameOffsets {
+diff --git a/src/video_core/host1x/nx2_video_decoder.cpp b/src/video_core/host1x/nx2_video_decoder.cpp
+index 6163ef3..269f835 100644
+--- a/src/video_core/host1x/nx2_video_decoder.cpp
++++ b/src/video_core/host1x/nx2_video_decoder.cpp
+@@ -2,7 +2,9 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ #include <array>
++#include <chrono>
+ #include <cstring>
++#include <iterator>
+ #include <optional>
+ #include <set>
+ 
+@@ -48,6 +50,43 @@ std::optional<NvdecCommon::VideoCodec> CodecFromMime(std::string_view mime) {
+ 
+ } // namespace
+ 
++void Nx2MovieSafeAction(std::atomic<u64>& counter, std::string_view what, std::string_view detail) {
++    const u64 n = counter.fetch_add(1, std::memory_order_relaxed) + 1;
++    if (n <= 32) {
++        LOG_WARNING(HW_GPU, "nx2 movie safe {}: {}{}{} (#{}{})", Nx2MovieSafeMode(), what,
++                    detail.empty() ? "" : ": ", detail, n,
++                    n == 32 ? ", further ones only counted" : "");
++    }
++}
++
++void Nx2MovieSafeReport(bool force) {
++    const int mode = Nx2MovieSafeMode();
++    if (mode == 0) {
++        return;
++    }
++    static std::atomic<s64> last_ns{0};
++    const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
++                        std::chrono::steady_clock::now().time_since_epoch())
++                        .count();
++    s64 last = last_ns.load(std::memory_order_relaxed);
++    if (!force && last != 0 && now - last < 10'000'000'000LL) {
++        return;
++    }
++    if (!last_ns.compare_exchange_strong(last, now, std::memory_order_relaxed) && !force) {
++        return;
++    }
++    if (force) {
++        last_ns.store(now, std::memory_order_relaxed);
++    }
++    const auto& c = g_nx2_movie_safe;
++    LOG_INFO(HW_GPU,
++             "nx2 movie safe {} ({}): bad frames {}, stale-timestamp prunes {}, decoder errors {}, "
++             "exceptions {}, dead decoders {}, empty frames {}",
++             mode, mode == 2 ? "act" : "count only", c.bad_frames.load(), c.stale_pts.load(),
++             c.decoder_errors.load(), c.exceptions.load(), c.dead_decoders.load(),
++             c.empty_frames.load());
++}
++
+ bool IsH264Stream(std::span<const u8> data) {
+     if (data.size() >= 4) {
+         // Annex-B 3-byte start code: 00 00 01 <nal_header>
+@@ -94,6 +133,10 @@ struct Nx2VideoDecoder::Impl {
+     std::optional<FFmpeg::DecoderContext> context;
+     SwsContext* scaler{};
+     bool open{};
++    bool ever_open{};       ///< EDEN_UP_MOVIE_SAFE: opened once (Failed() = opened, then closed)
++    u32 failing_inputs{};   ///< EDEN_UP_MOVIE_SAFE: packets in a row with errors and no picture
++    bool stale_seen{};      ///< EDEN_UP_MOVIE_SAFE=1: stale timestamps up to this one counted
++    u64 stale_seen_pts{};
+     H264PacketConverter h264_packets;
+     /// Timestamps of submitted frames not yet output. Frames copied back from a host GPU decoder
+     /// lose theirs and take the earliest one instead.
+@@ -106,14 +149,51 @@ struct Nx2VideoDecoder::Impl {
+         hardware.reset();
+     }
+ 
+-    void Receive(std::vector<Nx2Picture>& pictures) {
++    /// Returns the frames EDEN_UP_MOVIE_SAFE found bad (skipped in mode 2).
++    u32 Receive(std::vector<Nx2Picture>& pictures) {
++        const int safe = Nx2MovieSafeMode();
++        u32 bad = 0;
+         while (auto frame = context->ReceiveFrame()) {
+             const AVFrame* f = frame->GetFrame();
++            if (safe != 0 && (f->width <= 0 || f->height <= 0)) {
++                // Frizti/Fritchii 30bddb3d7: a frame without a size is no picture.
++                ++bad;
++                Nx2MovieSafeAction(g_nx2_movie_safe.bad_frames,
++                                   safe == 2 ? "skipped a decoded frame with no size"
++                                             : "would skip a decoded frame with no size",
++                                   name);
++                if (safe == 2) {
++                    continue;
++                }
++            }
+             const s64 stamp = f->best_effort_timestamp != AV_NOPTS_VALUE ? f->best_effort_timestamp
+                                                                          : f->pts;
+             u64 pts{};
+             if (stamp != AV_NOPTS_VALUE) {
+                 pts = static_cast<u64>(stamp);
++                if (safe != 0) {
++                    // Frizti/Fritchii 30bddb3d7: frames come out in display order, so earlier
++                    // timestamps belong to frames the decoder dropped (errors, hidden frames).
++                    // Left here, a later frame without a timestamp takes one and shows too early.
++                    // Mode 1 leaves them in the set: count each one once (those after the last
++                    // frame's timestamp).
++                    const auto stale_end = pending_pts.lower_bound(pts);
++                    const auto stale_begin = safe == 1 && stale_seen
++                                                 ? pending_pts.upper_bound(stale_seen_pts)
++                                                 : pending_pts.begin();
++                    stale_seen = true;
++                    stale_seen_pts = pts;
++                    if (std::distance(pending_pts.begin(), stale_begin) <
++                        std::distance(pending_pts.begin(), stale_end)) {
++                        Nx2MovieSafeAction(g_nx2_movie_safe.stale_pts,
++                                           safe == 2 ? "pruned timestamps of dropped frames"
++                                                     : "would prune timestamps of dropped frames",
++                                           name);
++                        if (safe == 2) {
++                            pending_pts.erase(pending_pts.begin(), stale_end);
++                        }
++                    }
++                }
+                 if (const auto it = pending_pts.find(pts); it != pending_pts.end()) {
+                     pending_pts.erase(it);
+                 }
+@@ -124,9 +204,17 @@ struct Nx2VideoDecoder::Impl {
+             pictures.push_back({static_cast<u32>(f->width), static_cast<u32>(f->height), pts,
+                                 std::move(frame)});
+         }
++        return bad;
+     }
+ };
+ 
++namespace {
++/// EDEN_UP_MOVIE_SAFE=2: packets in a row that fail (errors or only bad frames, no picture) before
++/// the decoder counts as dead. Ours, not upstream's: 5 s of a 60 fps movie, so a stream that
++/// recovers at its next key frame is not cut off.
++constexpr u32 DeadAfterFailingInputs = 300;
++} // namespace
++
+ Nx2VideoDecoder::Nx2VideoDecoder(std::string_view mime) : impl{std::make_unique<Impl>()} {
+     impl->name = std::string{mime};
+     const auto codec = CodecFromMime(mime);
+@@ -145,6 +233,7 @@ Nx2VideoDecoder::Nx2VideoDecoder(std::string_view mime) : impl{std::make_unique<
+         impl->hardware->InitializeForDecoder(*impl->context, *impl->decoder);
+     }
+     impl->open = impl->context->OpenContext(*impl->decoder);
++    impl->ever_open = impl->open;
+     LOG_INFO(HW_GPU, "nx2 video: decoder for \"{}\" {}", mime, impl->open ? "open" : "failed to open");
+ }
+ 
+@@ -154,6 +243,20 @@ bool Nx2VideoDecoder::IsOpen() const {
+     return impl->open;
+ }
+ 
++bool Nx2VideoDecoder::Failed() const {
++    return impl->ever_open && !impl->open;
++}
++
++void Nx2VideoDecoder::MarkFailed(std::string_view why) {
++    if (!impl->open) {
++        return;
++    }
++    impl->open = false;
++    impl->pending_pts.clear();
++    Nx2MovieSafeAction(g_nx2_movie_safe.dead_decoders,
++                       "closed the decoder mid-movie, empty frames from here", why);
++}
++
+ const std::string& Nx2VideoDecoder::Name() const {
+     return impl->name;
+ }
+@@ -177,8 +280,32 @@ void Nx2VideoDecoder::Decode(std::span<const u8> data, u64 pts, std::vector<Nx2P
+         impl->pending_pts.erase(impl->pending_pts.begin());
+     }
+     impl->pending_pts.insert(pts);
++    const int safe = Nx2MovieSafeMode();
++    if (safe == 0) {
++        impl->context->SendPacket(packet);
++        impl->Receive(pictures);
++        return;
++    }
++    const u64 errors_before = impl->context->ErrorCount();
++    const size_t first = pictures.size();
+     impl->context->SendPacket(packet);
+-    impl->Receive(pictures);
++    const u32 bad = impl->Receive(pictures);
++    const u64 errors = impl->context->ErrorCount() - errors_before;
++    if (errors != 0) {
++        g_nx2_movie_safe.decoder_errors.fetch_add(errors, std::memory_order_relaxed);
++    }
++    if (pictures.size() > first) {
++        impl->failing_inputs = 0;
++    } else if (errors != 0 || bad != 0) {
++        if (++impl->failing_inputs == DeadAfterFailingInputs) {
++            if (safe == 2) {
++                MarkFailed("300 packets in a row failed with no picture");
++            } else {
++                Nx2MovieSafeAction(g_nx2_movie_safe.dead_decoders,
++                                   "would close the decoder: 300 packets in a row failed", impl->name);
++            }
++        }
++    }
+ }
+ 
+ void Nx2VideoDecoder::Drain(std::vector<Nx2Picture>& pictures) {
+@@ -195,10 +322,29 @@ void Nx2VideoDecoder::Reset() {
+         avcodec_flush_buffers(impl->context->GetCodecContext());
+     }
+     impl->pending_pts.clear();
++    impl->failing_inputs = 0;
++    impl->stale_seen = false;
+ }
+ 
+ void Nx2VideoDecoder::Render(const Nx2Picture& picture, Nx2PictureFormat format, u32 width,
+                              u32 height, u64 pitch, u64 chroma_offset, std::span<u8> out) {
++    if (const int safe = Nx2MovieSafeMode(); safe != 0) {
++        // Frizti/Fritchii 30bddb3d7: never read a missing frame, a GPU surface or an empty frame
++        // as memory.
++        const AVFrame* g = picture.frame ? picture.frame->GetFrame() : nullptr;
++        const AVPixFmtDescriptor* desc =
++            g != nullptr ? av_pix_fmt_desc_get(static_cast<AVPixelFormat>(g->format)) : nullptr;
++        if (g == nullptr || desc == nullptr || (desc->flags & AV_PIX_FMT_FLAG_HWACCEL) ||
++            g->data[0] == nullptr || g->width <= 0 || g->height <= 0) {
++            Nx2MovieSafeAction(g_nx2_movie_safe.bad_frames,
++                               safe == 2 ? "did not convert a frame with no picture data"
++                                         : "would not convert a frame with no picture data",
++                               impl->name);
++            if (safe == 2) {
++                return;
++            }
++        }
++    }
+     const AVFrame* f = picture.frame->GetFrame();
+     const u64 needed = format == Nx2PictureFormat::Nv12
+                            ? chroma_offset + pitch * ((u64{height} + 1) / 2)
+diff --git a/src/video_core/host1x/nx2_video_decoder.h b/src/video_core/host1x/nx2_video_decoder.h
+index 347b0e6..ba62268 100644
+--- a/src/video_core/host1x/nx2_video_decoder.h
++++ b/src/video_core/host1x/nx2_video_decoder.h
+@@ -3,6 +3,8 @@
+ 
+ #pragma once
+ 
++#include <atomic>
++#include <cstdlib>
+ #include <memory>
+ #include <span>
+ #include <string>
+@@ -35,6 +37,49 @@ enum class Nx2PictureFormat : u32 {
+ /// Checks if stream data begins with an H.264 Annex-B start code or avcC/MP4 length-prefixed NALUs.
+ bool IsH264Stream(std::span<const u8> data);
+ 
++// EDEN_UP_MOVIE_SAFE (software-decode part of Frizti/Fritchii 30bddb3d7 + 9b767005f): a bad movie
++// frame, a decoder that throws (std::bad_alloc on a huge image) or a decoder that stops working
++// must never end the game or leave it waiting for frames forever.
++//   0 / unset: off, the old code runs unchanged.
++//   1: count only. Bad frames, stale timestamps and decoder errors are counted and logged, the old
++//      code still runs (a caught exception is thrown on, so a crash stays a crash).
++//   2: act. Bad frames are skipped, stale timestamps pruned, exceptions logged and survived, and a
++//      dead decoder answers each packet with an empty frame so the movie runs to its end.
++// Read once. Default flip for the alpha: MovieSafeDefault below (0 -> 2); an explicit "0" still
++// turns it off.
++inline constexpr int MovieSafeDefault = 0;
++inline int Nx2MovieSafeMode() {
++    static const int mode = [] {
++        const char* value = std::getenv("EDEN_UP_MOVIE_SAFE");
++        if (value == nullptr || value[0] == '\0') {
++            return MovieSafeDefault;
++        }
++        if (value[1] == '\0' && (value[0] == '1' || value[0] == '2')) {
++            return value[0] - '0';
++        }
++        return 0;
++    }();
++    return mode;
++}
++
++/// EDEN_UP_MOVIE_SAFE counters (all movies since boot). "Would have" in mode 1.
++struct Nx2MovieSafeCounters {
++    std::atomic<u64> bad_frames{};      ///< Frames with no size or no picture data
++    std::atomic<u64> stale_pts{};       ///< Prunes of timestamps of frames the decoder dropped
++    std::atomic<u64> decoder_errors{};  ///< FFmpeg send/receive errors
++    std::atomic<u64> exceptions{};      ///< Decode or conversion threw
++    std::atomic<u64> dead_decoders{};   ///< Decoders closed mid-movie
++    std::atomic<u64> empty_frames{};    ///< Empty frames given for a dead decoder
++};
++inline Nx2MovieSafeCounters g_nx2_movie_safe{};
++
++/// Logs one EDEN_UP_MOVIE_SAFE action line (the first 32 of each kind; the rest are counted).
++void Nx2MovieSafeAction(std::atomic<u64>& counter, std::string_view what,
++                        std::string_view detail = {});
++
++/// The EDEN_UP_MOVIE_SAFE counter line; `force` prints it now, else at most every 10 s.
++void Nx2MovieSafeReport(bool force);
++
+ /// The decoder behind the Switch 2 video decoder service (nn::codec::video): FFmpeg decodes the
+ /// elementary stream the game demuxed, in software or on the host GPU (NVDEC emulation setting).
+ /// Used from one thread at a time.
+@@ -46,6 +91,13 @@ public:
+ 
+     bool IsOpen() const;
+ 
++    /// EDEN_UP_MOVIE_SAFE: the decoder opened, then stopped (MarkFailed): it outputs nothing more.
++    bool Failed() const;
++
++    /// EDEN_UP_MOVIE_SAFE=2: closes a decoder that stopped working mid-movie (it threw, or kept
++    /// failing with no picture). IsOpen() turns false.
++    void MarkFailed(std::string_view why);
++
+     const std::string& Name() const;
+ 
+     /// Decodes one compressed frame and appends the pictures it completes.

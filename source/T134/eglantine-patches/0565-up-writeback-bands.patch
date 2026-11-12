@@ -1,0 +1,504 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: writeback bands, the collector's write-back without a fresh allocation (EDEN_UP_WRITEBACK_BANDS)
+
+DRAFT, not built. Our own work (no upstream port), after waveydude's GPUBack std::bad_alloc in
+SwizzleImage (a 32 MiB scratch grow with 4 to 8 MiB free). Gated by EDEN_UP_WRITEBACK_BANDS
+(exact 1), a live switch (Id WritebackBands, armed: the kept buffer is malloc'd in the
+TextureCache constructor only when it is 1 at boot); off by default. On: a block-linear
+subresource whose guest range is not one host span is written back in bands of whole block rows
+through the kept buffer (EDEN_UP_WRITEBACK_BANDS_MIB, 1 to 32, default 8); every case the bands
+do not cover takes the old path. EDEN_UP_WRITEBACK_BANDS_VERIFY=1 (boot) also does each banded
+write-back the old way and compares. EDEN_TEST_WRITEBACK_SPLIT=1 is a test aid. 10 s line while
+on: "EDEN_UP_WRITEBACK_BANDS: wb=". The armed count comment goes from Eleven to Twelve.
+
+Reviewed draft from the gc-scratch job, verdict "ready", no v2: the plain patch is used as
+written; the reviewer corrected only README and test plan notes (keep L1028 off in verify runs,
+warm pipelines for the starvation A/B) and noted that gc-writeback-skip should land with it.
+---
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+index 3a80fc5..563a529 100644
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -65,7 +65,7 @@
+ /// EDEN_UP_OOT_LOAD_WAIT=1 was set at boot (the change is refused and logged). When a schedule
+ /// starts, a warning names every switch its phases turn on that cannot do anything in this run.
+ ///
+-/// Eleven of the switches have to be on at boot to change at all, because the work that makes
++/// Twelve of the switches have to be on at boot to change at all, because the work that makes
+ /// them possible is set up once (marked "armed" below): with them off at boot a phase that
+ /// turns them on does nothing, and the change line says so.
+ namespace Common::LiveSwitch {
+@@ -185,6 +185,10 @@ enum class Id : u8 {
+     /// and skips the bank set's insert only for a bank its memo stamped this frame; the memo is
+     /// written only while it is on and checked against the frame, so any draw may flip it.
+     UboBindTrim,
++    /// EDEN_UP_WRITEBACK_BANDS, armed (the kept write-back buffer is made at boot,
++    /// video_core/texture_cache/util.cpp). Read once per layer of each texture write-back; a
++    /// write-back is whole on either value, banded or not, so each one stands on its own.
++    WritebackBands,
+     Count,
+ };
+ 
+@@ -309,6 +313,7 @@ inline constexpr std::array<Def, NumSwitches> kDefs{{
+     {"EDEN_UP_DMA_MISS_WAIT", ParseExactOne, false, -1},
+     {"EDEN_UP_UBO_SHARE", ParseExactOne, false, -1},
+     {"EDEN_UP_UBO_BIND_TRIM", ParseExactOne, false, -1},
++    {"EDEN_UP_WRITEBACK_BANDS", ParseExactOne, true, -1},
+ }};
+ 
+ static_assert(kDefs[static_cast<size_t>(Id::PollBackoffUs)].needs ==
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 819a768..5326a34 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -361,6 +361,9 @@ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManag
+     constexpr size_t UNSWIZZLE_DATA_BUFFER_INITIAL_CAPACITY = 1_MiB;
+     swizzle_data_buffer.resize_destructive(SWIZZLE_DATA_BUFFER_INITIAL_CAPACITY);
+     unswizzle_data_buffer.resize_destructive(UNSWIZZLE_DATA_BUFFER_INITIAL_CAPACITY);
++    // EDEN_UP_WRITEBACK_BANDS (util.cpp): its kept write-back buffer, made once here when the
++    // switch is on at boot. It is not a ScratchBuffer, so the trims in TickFrame never free it.
++    ArmWritebackBands();
+ 
+     // Make sure the first index is reserved for the null resources
+     // This way the null resource becomes a compile time constant
+@@ -1605,6 +1608,9 @@ void TextureCache<P>::TickFrame() {
+             scratch->release();
+         }
+     }
++    if (Common::LiveSwitch::Peek<Common::LiveSwitch::Id::WritebackBands>() != 0) [[unlikely]] {
++        LogWritebackBands();
++    }
+     if constexpr (HAS_DEVICE_MEMORY_INFO) {
+         // Switch 2 titles (native tiling) stream far more texture data than Eden's thresholds
+         // were tuned for: title 1's attract loop alone keeps ~5.3 GB resident, so the collector
+diff --git a/src/video_core/texture_cache/util.cpp b/src/video_core/texture_cache/util.cpp
+index e7bce4a..20fc5c0 100644
+--- a/src/video_core/texture_cache/util.cpp
++++ b/src/video_core/texture_cache/util.cpp
+@@ -13,6 +13,7 @@
+ #include <array>
+ #include <atomic>
+ #include <chrono>
++#include <cstdlib>
+ #include <cstring>
+ #include <numeric>
+ #include <optional>
+@@ -24,6 +25,7 @@
+ #include "common/bit_util.h"
+ #include "common/common_types.h"
+ #include "common/div_ceil.h"
++#include "common/live_switch.h"
+ #include "common/logging.h"
+ #include "common/pe_switch.h"
+ #include "common/scratch_buffer.h"
+@@ -43,6 +45,11 @@
+ #include "video_core/textures/decoders.h"
+ #include "video_core/ubo_snapshot.h"
+ 
++// The front's heap wait scope (headless/heap_arenas.inc), the same weak hook as
++// vk_pipeline_cache.cpp's HeapWaitScope. Only EDEN_TEST_WRITEBACK_SPLIT=1 calls it here, so that
++// EDEN_TEST_HEAP_STARVE with EDEN_TEST_HEAP_STARVE_GPU=1 refuses inside a texture write-back.
++extern "C" void eden_heap_wait_scope(int enter) __attribute__((weak));
++
+ namespace VideoCommon {
+ 
+ namespace {
+@@ -568,6 +575,269 @@ void SwizzlePitchLinearImage(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr
+     }
+ }
+ 
++// EDEN_UP_WRITEBACK_BANDS=1 (exact "1", off unless set; a live switch, armed): a block-linear
++// subresource whose guest range is not one host span is written back to guest memory in bands
++// of whole block rows through a buffer kept for the purpose (EDEN_UP_WRITEBACK_BANDS_MIB, 1 to
++// 32, default 8, made at boot), instead of being read whole into the swizzle scratch. That read
++// grows the scratch with a fresh allocation the size of the subresource, and it is where the
++// collector died with std::bad_alloc on GPUBack (32 MiB asked, 4 to 8 MiB free). Each band is
++// read from guest memory, swizzled and written back with WriteBlockUnsafe, the calls
++// GuestMemoryScoped<UnsafeReadWrite> makes for the whole range, so padding keeps its guest bytes
++// and the same write notes happen. A range that is one host span takes the old path untouched
++// (it needs no scratch), and so does every case the bands do not cover (3D layouts, a block row
++// larger than the buffer, the buffer missing or in use): that is the old allocation, as without
++// the switch.
++// EDEN_UP_WRITEBACK_BANDS_VERIFY=1 (read at boot): each banded write-back is also done the old
++// way into a buffer of its own and compared; a difference is counted, logged and the old result
++// written over it.
++// EDEN_TEST_WRITEBACK_SPLIT=1 (read at boot; a test aid, never in a play env): every block-linear
++// write-back is treated as split (no whole span: the bands run, or with the switch off the old
++// copy form), and SwizzleImage runs inside the front's heap wait scope, so that
++// EDEN_TEST_HEAP_STARVE with EDEN_TEST_HEAP_STARVE_GPU=1 refuses its large allocations.
++// Threads: the buffer, the busy flag and the counters belong to whichever thread holds
++// texture_cache.mutex while it writes back (GPUBack: the collector, RefusalDownloadEvict, async
++// flushes and TickFrame's log; guest CPU threads: FlushRegion's DownloadMemory). The busy flag
++// sends any caller that does not hold that mutex to the old path. Plain globals set once by the
++// TextureCache constructor before any of those threads use the cache; none has a destructor.
++u8* g_band_buf = nullptr;
++size_t g_band_cap = 0;
++std::atomic_flag g_band_busy; // Clear (C++20)
++bool g_band_verify = false;
++bool g_band_test_split = false;
++
++enum WritebackCount : size_t {
++    WbWritebacks,    ///< Layers that asked for the bands (switch on)
++    WbWholeSpan,     ///< ... whose range was one host span: the old path, no scratch
++    WbBanded,        ///< ... written in bands
++    WbBands,         ///< Bands written
++    WbBandBytes,     ///< Their bytes
++    WbTailBytes,     ///< Bytes past the last block row, read and written back unchanged
++    WbNoBuf,         ///< Old path: no kept buffer (off at boot, or its allocation failed)
++    WbRowWide,       ///< Old path: one block row is larger than the kept buffer
++    WbLayout,        ///< Old path: 3D layout, or sizes the band arithmetic does not cover
++    WbBusy,          ///< Old path: the kept buffer was in use
++    WbVerified,      ///< Banded write-backs compared with the old result
++    WbMismatchBytes, ///< Bytes that differed from it (each one repaired)
++    WbVerifySkipped, ///< Verify could not get its own buffer: banded without the check
++    WbAidOldCopy,    ///< EDEN_TEST_WRITEBACK_SPLIT, switch off: layers through the old copy form
++    WbCountEnd,
++};
++std::array<std::atomic<u64>, WbCountEnd> g_wb_counts{};
++std::atomic<u32> g_wb_mismatch_logs{};
++
++void CountWriteback(WritebackCount which, u64 amount = 1) {
++    g_wb_counts[which].fetch_add(amount, std::memory_order_relaxed);
++}
++
++/// Holds the kept buffer for one write-back, or finds it in use.
++class WritebackBandHold {
++public:
++    WritebackBandHold() : held{!g_band_busy.test_and_set(std::memory_order_acquire)} {}
++    ~WritebackBandHold() {
++        if (held) {
++            g_band_busy.clear(std::memory_order_release);
++        }
++    }
++    WritebackBandHold(const WritebackBandHold&) = delete;
++    WritebackBandHold& operator=(const WritebackBandHold&) = delete;
++
++    [[nodiscard]] bool Held() const noexcept {
++        return held;
++    }
++
++private:
++    bool held;
++};
++
++/// EDEN_TEST_WRITEBACK_SPLIT=1: the front's heap wait scope around one SwizzleImage.
++class WritebackStarveScope {
++public:
++    explicit WritebackStarveScope(bool on_) : on{false} {
++        if (on_ && eden_heap_wait_scope) [[unlikely]] {
++            eden_heap_wait_scope(1);
++            on = true;
++        }
++    }
++    ~WritebackStarveScope() {
++        if (on) {
++            eden_heap_wait_scope(0);
++        }
++    }
++    WritebackStarveScope(const WritebackStarveScope&) = delete;
++    WritebackStarveScope& operator=(const WritebackStarveScope&) = delete;
++
++private:
++    bool on;
++};
++
++[[nodiscard]] bool NoteUboWrites() {
++    // EDEN_UP_UBO_AHEAD's copies take them too (through UboSnapshot::OnGpuWrite).
++    return VideoCommon::UboSnapshot::Enabled() || VideoCommon::UboAhead::Capturing();
++}
++
++/// EDEN_UP_WRITEBACK_BANDS: one layer of SwizzleBlockLinearImage in bands of whole block rows
++/// through the kept buffer. False: nothing was written, and the caller runs the old path.
++/// Why a band gives the old bytes: with depth 1, SwizzleImpl puts line y at
++/// (y >> (3 + bh)) * block_size plus bits of (y & ((8 << bh) - 1)) and of x, and
++/// NativeGobOffset only swaps bits 5 and 6 inside a 512-byte GOB. A band starts at a whole block
++/// row, so its lines land at the old offsets less first_row * block_size (a multiple of 512, so
++/// the swap is the same), and its input lines start first_line * pitch into the old input.
++bool TrySwizzleLayerInBands(Tegra::MemoryManager& gpu_memory, GPUVAddr addr,
++                            size_t subresource_size, std::span<const u8> src,
++                            u32 bytes_per_block, const Extent3D& num_tiles,
++                            const Extent3D& block, VideoCore::Surface::PixelFormat format) {
++    CountWriteback(WbWritebacks);
++    if (!g_band_test_split && gpu_memory.GetSpan(addr, subresource_size) != nullptr) {
++        CountWriteback(WbWholeSpan);
++        return false;
++    }
++    if (num_tiles.depth != 1 || block.depth != 0 || subresource_size == 0) {
++        CountWriteback(WbLayout);
++        return false;
++    }
++    if (g_band_cap == 0) {
++        CountWriteback(WbNoBuf);
++        return false;
++    }
++    // SwizzleTexture's own arithmetic for stride_alignment 1 (SwizzleImpl's block_size).
++    const u32 stride = Common::AlignUpLog2(num_tiles.width, 1) * bytes_per_block;
++    const u32 gobs_in_x = Common::DivCeilLog2(stride, GOB_SIZE_X_SHIFT);
++    const u64 row_bytes = u64{gobs_in_x} << (GOB_SIZE_SHIFT + block.height);
++    const u32 lines_per_row = GOB_SIZE_Y << block.height;
++    const u32 rows = Common::DivCeilLog2(num_tiles.height, block.height + GOB_SIZE_Y_SHIFT);
++    const u64 footprint = u64{rows} * row_bytes;
++    const u64 pitch = u64{num_tiles.width} * bytes_per_block;
++    if (row_bytes == 0 || rows == 0 || footprint > subresource_size ||
++        u64{num_tiles.height} * pitch > src.size()) {
++        CountWriteback(WbLayout);
++        return false;
++    }
++    if (row_bytes > g_band_cap) {
++        CountWriteback(WbRowWide);
++        return false;
++    }
++    const WritebackBandHold hold;
++    if (!hold.Held()) {
++        CountWriteback(WbBusy);
++        return false;
++    }
++    const bool native = gpu_memory.UsesNativeTiling();
++
++    u8* expected = nullptr;
++    if (g_band_verify) [[unlikely]] {
++        // std::malloc: on the console that is __wrap_malloc, which says no with NULL instead of
++        // running the new_handler's heap snapshot.
++        expected = static_cast<u8*>(std::malloc(subresource_size));
++        if (expected == nullptr) {
++            CountWriteback(WbVerifySkipped);
++        } else {
++            gpu_memory.ReadBlockUnsafe(addr, expected, subresource_size);
++            SwizzleTexture(std::span<u8>(expected, subresource_size), src, bytes_per_block,
++                           num_tiles.width, num_tiles.height, num_tiles.depth, block.height,
++                           block.depth, 1, native);
++        }
++    }
++
++    const bool note_ubo = NoteUboWrites();
++    const u32 rows_per_band = static_cast<u32>(g_band_cap / row_bytes);
++    for (u32 first_row = 0; first_row < rows; first_row += rows_per_band) {
++        const u32 band_rows = (std::min)(rows_per_band, rows - first_row);
++        const u32 first_line = first_row * lines_per_row;
++        const u32 band_lines =
++            (std::min)(band_rows * lines_per_row, num_tiles.height - first_line);
++        const GPUVAddr band_addr = addr + u64{first_row} * row_bytes;
++        const size_t band_bytes = static_cast<size_t>(u64{band_rows} * row_bytes);
++        gpu_memory.ReadBlockUnsafe(band_addr, g_band_buf, band_bytes);
++        SwizzleTexture(std::span<u8>(g_band_buf, band_bytes),
++                       src.subspan(static_cast<size_t>(u64{first_line} * pitch)),
++                       bytes_per_block, num_tiles.width, band_lines, 1, block.height, 0, 1,
++                       native);
++        if (note_ubo) [[unlikely]] {
++            NoteInPlaceWriteForUboSnapshot(gpu_memory, band_addr,
++                                           std::span<const u8>(g_band_buf, band_bytes));
++        }
++        gpu_memory.WriteBlockUnsafe(band_addr, g_band_buf, band_bytes);
++        CountWriteback(WbBands);
++        CountWriteback(WbBandBytes, band_bytes);
++    }
++    // Past the last block row (level and layer alignment): the old path read these bytes and
++    // wrote them back unchanged, with the same write notes; so does this, in buffer-sized pieces.
++    for (u64 done = footprint; done < subresource_size;) {
++        const size_t part =
++            static_cast<size_t>((std::min<u64>)(g_band_cap, subresource_size - done));
++        gpu_memory.ReadBlockUnsafe(addr + done, g_band_buf, part);
++        if (note_ubo) [[unlikely]] {
++            NoteInPlaceWriteForUboSnapshot(gpu_memory, addr + done,
++                                           std::span<const u8>(g_band_buf, part));
++        }
++        gpu_memory.WriteBlockUnsafe(addr + done, g_band_buf, part);
++        CountWriteback(WbTailBytes, part);
++        done += part;
++    }
++
++    if (expected != nullptr) [[unlikely]] {
++        CountWriteback(WbVerified);
++        u64 differing = 0;
++        u64 first_bad = 0;
++        for (u64 done = 0; done < subresource_size;) {
++            const size_t part =
++                static_cast<size_t>((std::min<u64>)(g_band_cap, subresource_size - done));
++            gpu_memory.ReadBlockUnsafe(addr + done, g_band_buf, part);
++            const u8* const want = expected + done;
++            if (std::memcmp(g_band_buf, want, part) != 0) {
++                for (size_t i = 0; i < part; ++i) {
++                    if (g_band_buf[i] != want[i]) {
++                        first_bad = differing == 0 ? done + i : first_bad;
++                        ++differing;
++                    }
++                }
++            }
++            done += part;
++        }
++        if (differing != 0) {
++            CountWriteback(WbMismatchBytes, differing);
++            if (g_wb_mismatch_logs.fetch_add(1, std::memory_order_relaxed) < 8) {
++                LOG_WARNING(HW_GPU,
++                            "EDEN_UP_WRITEBACK_BANDS_VERIFY: image 0x{:x} size {} format {} "
++                            "{}x{} bpb {} bh {}: {} bytes differ, first at {} (band {}, {} rows "
++                            "of {} bytes each); the old result is written",
++                            addr, subresource_size, static_cast<u32>(format), num_tiles.width,
++                            num_tiles.height, bytes_per_block, block.height, differing,
++                            first_bad, first_bad / (u64{rows_per_band} * row_bytes),
++                            rows_per_band, row_bytes);
++            }
++            gpu_memory.WriteBlockUnsafe(addr, expected, subresource_size);
++        }
++        std::free(expected);
++    }
++    CountWriteback(WbBanded);
++    return true;
++}
++
++/// EDEN_TEST_WRITEBACK_SPLIT=1 with the switch off: one layer the way GuestMemoryScoped writes
++/// back a range that is not one host span (the whole subresource through the swizzle scratch),
++/// for every range, so the starvation test meets the old allocation at each write-back.
++void SwizzleLayerCopyForm(Tegra::MemoryManager& gpu_memory, GPUVAddr addr,
++                          size_t subresource_size, std::span<const u8> src, u32 bytes_per_block,
++                          const Extent3D& num_tiles, const Extent3D& block,
++                          Common::ScratchBuffer<u8>& tmp_buffer) {
++    CountWriteback(WbAidOldCopy);
++    if (subresource_size == 0) {
++        return;
++    }
++    tmp_buffer.resize_destructive(subresource_size);
++    u8* const data = tmp_buffer.data();
++    gpu_memory.ReadBlockUnsafe(addr, data, subresource_size);
++    SwizzleTexture(std::span<u8>(data, subresource_size), src, bytes_per_block, num_tiles.width,
++                   num_tiles.height, num_tiles.depth, block.height, block.depth, 1,
++                   gpu_memory.UsesNativeTiling());
++    if (NoteUboWrites()) [[unlikely]] {
++        NoteInPlaceWriteForUboSnapshot(gpu_memory, addr,
++                                       std::span<const u8>(data, subresource_size));
++    }
++    gpu_memory.WriteBlockUnsafe(addr, data, subresource_size);
++}
++
+ void SwizzleBlockLinearImage(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr,
+                              const ImageInfo& info, const BufferImageCopy& copy,
+                              std::span<const u8> input, Common::ScratchBuffer<u8>& tmp_buffer) {
+@@ -602,6 +872,21 @@ void SwizzleBlockLinearImage(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr
+ 
+     for (s32 layer = 0; layer < info.resources.layers; ++layer) {
+         const std::span<const u8> src = input.subspan(host_offset);
++        if (Common::LiveSwitch::Peek<Common::LiveSwitch::Id::WritebackBands>() != 0)
++            [[unlikely]] {
++            if (TrySwizzleLayerInBands(gpu_memory, gpu_addr + guest_offset, subresource_size, src,
++                                       bytes_per_block, num_tiles, block, info.format)) {
++                host_offset += host_bytes_per_layer;
++                guest_offset += layer_stride;
++                continue;
++            }
++        } else if (g_band_test_split) [[unlikely]] {
++            SwizzleLayerCopyForm(gpu_memory, gpu_addr + guest_offset, subresource_size, src,
++                                 bytes_per_block, num_tiles, block, tmp_buffer);
++            host_offset += host_bytes_per_layer;
++            guest_offset += layer_stride;
++            continue;
++        }
+         {
+             Tegra::Memory::GpuGuestMemoryScoped<u8,
+                                                 Tegra::Memory::GuestMemoryFlags::UnsafeReadWrite>
+@@ -1661,9 +1946,88 @@ boost::container::small_vector<SwizzleParameters, 16> FullUploadSwizzles(const I
+     return params;
+ }
+ 
++void ArmWritebackBands() {
++    // Once, from the TextureCache constructor, before any thread writes back through the cache.
++    static bool armed = false;
++    if (armed) {
++        return;
++    }
++    armed = true;
++    // The switch's first use, so that Peek reads its value from here on.
++    static_cast<void>(Common::LiveSwitch::Value<Common::LiveSwitch::Id::WritebackBands>());
++    g_band_verify = Common::PeSwitch("EDEN_UP_WRITEBACK_BANDS_VERIFY");
++    g_band_test_split = Common::PeSwitch("EDEN_TEST_WRITEBACK_SPLIT");
++    if (g_band_test_split) {
++        LOG_WARNING(HW_GPU, "EDEN_TEST_WRITEBACK_SPLIT=1: every block-linear write-back is "
++                            "treated as split and runs in the heap wait scope (a test aid)");
++    }
++    if (!Common::PeSwitch("EDEN_UP_WRITEBACK_BANDS")) {
++        return; // Off at boot: no buffer, and turning it on later counts fb_no_buf
++    }
++    size_t mib = 8;
++    if (const char* const value = std::getenv("EDEN_UP_WRITEBACK_BANDS_MIB")) {
++        char* end = nullptr;
++        const unsigned long asked = std::strtoul(value, &end, 10);
++        if (end != value && *end == '\0' && asked >= 1 && asked <= 32) {
++            mib = asked;
++        } else {
++            LOG_WARNING(HW_GPU, "EDEN_UP_WRITEBACK_BANDS_MIB={} is not 1 to 32: 8 MiB", value);
++        }
++    }
++    // std::malloc, not new: on the console a refusal is a quiet NULL, not the new_handler's
++    // snapshot. Never freed; HEAP_HOLDERS and SCRATCH_KEEP do not see it.
++    g_band_buf = static_cast<u8*>(std::malloc(mib << 20));
++    if (g_band_buf == nullptr) {
++        LOG_WARNING(HW_GPU,
++                    "EDEN_UP_WRITEBACK_BANDS: no {} MiB for the kept buffer, write-backs take "
++                    "the old path",
++                    mib);
++        return;
++    }
++    g_band_cap = mib << 20;
++    LOG_INFO(HW_GPU,
++             "EDEN_UP_WRITEBACK_BANDS: split write-backs go in block-row bands through a kept "
++             "{} MiB buffer{}",
++             mib, g_band_verify ? " (verify: each one compared with the old result)" : "");
++}
++
++void LogWritebackBands() {
++    // TickFrame on GPUBack, under texture_cache.mutex, with the switch on.
++    using Clock = std::chrono::steady_clock;
++    static Clock::time_point last{};
++    static std::array<u64, WbCountEnd> seen{};
++    const Clock::time_point now = Clock::now();
++    if (last == Clock::time_point{}) {
++        last = now;
++        return;
++    }
++    if (now - last < std::chrono::seconds{10}) {
++        return;
++    }
++    last = now;
++    std::array<u64, WbCountEnd> delta{};
++    for (size_t i = 0; i < WbCountEnd; ++i) {
++        const u64 value = g_wb_counts[i].load(std::memory_order_relaxed);
++        delta[i] = value - seen[i];
++        seen[i] = value;
++    }
++    g_wb_mismatch_logs.store(0, std::memory_order_relaxed);
++    LOG_INFO(HW_GPU,
++             "EDEN_UP_WRITEBACK_BANDS: wb={} whole={} banded={} bands={} MiB={} tail_KiB={} "
++             "fb_no_buf={} fb_row_wide={} fb_layout={} fb_busy={} verify={} mismatch_bytes={} "
++             "verify_skipped={} aid_old_copy={} buf_mib={}",
++             delta[WbWritebacks], delta[WbWholeSpan], delta[WbBanded], delta[WbBands],
++             delta[WbBandBytes] >> 20, delta[WbTailBytes] >> 10, delta[WbNoBuf],
++             delta[WbRowWide], delta[WbLayout], delta[WbBusy], delta[WbVerified],
++             delta[WbMismatchBytes], delta[WbVerifySkipped], delta[WbAidOldCopy],
++             g_band_cap >> 20);
++}
++
+ void SwizzleImage(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr, const ImageInfo& info,
+                   std::span<const BufferImageCopy> copies, std::span<const u8> memory,
+                   Common::ScratchBuffer<u8>& tmp_buffer) {
++    // EDEN_TEST_WRITEBACK_SPLIT=1 only; otherwise one load of a bool set at boot.
++    const WritebackStarveScope starve_scope{g_band_test_split};
+     const bool is_pitch_linear = info.type == ImageType::Linear;
+     for (const BufferImageCopy& copy : copies) {
+         if (is_pitch_linear) {
+diff --git a/src/video_core/texture_cache/util.h b/src/video_core/texture_cache/util.h
+index 9fd878f..0251255 100644
+--- a/src/video_core/texture_cache/util.h
++++ b/src/video_core/texture_cache/util.h
+@@ -156,6 +156,13 @@ void SwizzleImage(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr, const Ima
+                   std::span<const BufferImageCopy> copies, std::span<const u8> memory,
+                   Common::ScratchBuffer<u8>& tmp_buffer);
+ 
++/// EDEN_UP_WRITEBACK_BANDS (util.cpp): reads the switch and its boot settings once and, with it
++/// on at boot, makes the kept write-back buffer. The TextureCache constructor calls it.
++void ArmWritebackBands();
++
++/// EDEN_UP_WRITEBACK_BANDS: one log line every 10 s with its counters. TickFrame, switch on.
++void LogWritebackBands();
++
+ [[nodiscard]] bool IsBlockLinearSizeCompatible(const ImageInfo& new_info,
+                                                const ImageInfo& overlap_info, u32 new_level,
+                                                u32 overlap_level, bool strict_size) noexcept;

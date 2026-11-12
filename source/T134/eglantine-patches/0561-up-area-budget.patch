@@ -1,0 +1,429 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: area budget, AreaEvict spares returns and deletes about what a burst brought in (EDEN_UP_AREA_BUDGET)
+
+DRAFT, not built. Our own work (no upstream port): a pause menu's image burst made AreaEvict
+(EDEN_NX2_AREA_EVICT) delete the whole field, rebuilt on close. Gated by EDEN_UP_AREA_BUDGET
+(exact 1), a live switch (common/live_switch.h, Id AreaBudget, not armed); off by default. Does
+nothing without EDEN_NX2_AREA_EVICT (boot). On: a burst made mostly of images AreaEvict deleted
+within 600 frames opens no window; an opened window deletes about the fresh bytes of its burst
+(oldest first, same candidates), never more than the old pass. A refusal or over-budget image
+in the window gives the old unbudgeted window. EDEN_UP_AREA_BUDGET_VERIFY=1 (boot) keeps the old
+deletions and counts what the new rule would have spared. 10 s line: "EDEN_AREA_BUDGET 10s:".
+
+Reviewed draft from the memory job, v2: reviewer gave a refusal-opened window no budget (the old
+window) and dropped the budget on a refusal or MemoryPressureEvents in an open window (new
+"refusal fallbacks" counter), counted budget-capped passes even with nothing deleted, moved the
+JoinImages byte count inside the switch, cast the ring position to u32, and made the verify
+shadow follow the refusal rule.
+---
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+index 7bedad4..19bca03 100644
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -172,6 +172,9 @@ enum class Id : u8 {
+     /// EDEN_UP_L1161_DRAW. Each candidate is judged with the value read at its TakeReusableDraw;
+     /// a capture taken while it was off is never used by its new rules.
+     L1161Draw,
++    /// EDEN_UP_AREA_BUDGET. Read once per frame end in AreaEvict; a window already open keeps the
++    /// budget it opened with.
++    AreaBudget,
+     Count,
+ };
+ 
+@@ -292,6 +295,7 @@ inline constexpr std::array<Def, NumSwitches> kDefs{{
+     {"EDEN_UP_L974_CHAIN", ParseExactOne, false, -1},
+     {"EDEN_UP_L1216_CHAIN", ParseExactOne, false, -1},
+     {"EDEN_UP_L1161_DRAW", ParseExactOne, false, -1},
++    {"EDEN_UP_AREA_BUDGET", ParseExactOne, false, -1},
+ }};
+ 
+ static_assert(kDefs[static_cast<size_t>(Id::PollBackoffUs)].needs ==
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 30bbaf1..819a768 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -7,6 +7,7 @@
+ #pragma once
+ 
+ #include "common/pe_switch.h"
++#include "common/live_switch.h"
+ #include "video_core/image_pages.h"
+ #include "video_core/astc_policy.h"
+ #include <algorithm>
+@@ -367,6 +368,9 @@ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManag
+     void(slot_image_views.insert(runtime, NullImageViewParams{}));
+     void(slot_samplers.insert(runtime, sampler_descriptor));
+ 
++    // EDEN_UP_AREA_BUDGET: its first use, so AreaEvict and JoinImages can Peek it.
++    static_cast<void>(Common::LiveSwitch::Value<Common::LiveSwitch::Id::AreaBudget>());
++
+     if constexpr (HAS_DEVICE_MEMORY_INFO) {
+         const s64 device_local_memory = static_cast<s64>(runtime.GetDeviceLocalMemory());
+         const s64 min_spacing_expected = device_local_memory - 1_GiB;
+@@ -959,6 +963,17 @@ void TextureCache<P>::AreaEvict() {
+     if (age == 0) {
+         return;
+     }
++    // EDEN_UP_AREA_BUDGET=1 (live): a burst made mostly of images deleted here a moment ago opens
++    // no window, and an open window deletes about what the burst brought in, oldest first.
++    // EDEN_UP_AREA_BUDGET_VERIFY=1 (boot): the old deletions, with what the new rule would have
++    // spared counted in the 10 s line.
++    const bool budget_on = Common::LiveSwitch::Peek<Common::LiveSwitch::Id::AreaBudget>() != 0;
++    static const bool budget_verify = [] {
++        const char* const value = std::getenv("EDEN_UP_AREA_BUDGET_VERIFY");
++        return value != nullptr && value[0] == '1' && value[1] == '\0';
++    }();
++    const bool budget_rule = budget_on && !budget_verify;  // the new rule decides
++    const bool budget_shadow = budget_on && budget_verify; // the old one, the new one counted
+     static const u64 burst = [] {
+         const char* const value = std::getenv("EDEN_NX2_AREA_EVICT_BURST");
+         const u64 images = value != nullptr ? std::strtoull(value, nullptr, 10) : 0ULL;
+@@ -991,11 +1006,120 @@ void TextureCache<P>::AreaEvict() {
+                      static_cast<unsigned long long>(area_dropped_images), kept,
+                      static_cast<unsigned long long>(age), slot_images.size(),
+                      static_cast<unsigned long long>(total_used_memory >> 20));
++        if (budget_on) {
++            std::fprintf(stderr, "EDEN_AREA_BUDGET done at frame %llu: %s, budget left %llu MiB\n",
++                         static_cast<unsigned long long>(frame_tick),
++                         area_window_budgeted ? "budgeted"
++                                              : (budget_verify ? "verify" : "opened unbudgeted"),
++                         static_cast<unsigned long long>(
++                             (area_window_budgeted ? area_budget_left : area_shadow_left) >> 20));
++        }
+     };
+     if (by_time && area_window_open && !window_open()) {
+         area_window_open = false;
+         log_done(area_kept_last);
+     }
++    // EDEN_UP_AREA_BUDGET: the bytes and the returns of the images made since the last frame,
++    // summed over the same window. new_opens: what the new rule decides this frame.
++    bool new_opens = false;
++    u64 fresh_bytes = 0;
++    if (budget_on) {
++        if (area_budget_frame + 1 != frame_tick) {
++            // First frame with the switch on (at boot or flipped on): start counting from here. A
++            // window the old rule opened stays as it was opened, without a budget.
++            area_bytes_seen = area_bytes_created;
++            area_returns_seen = area_returns_created;
++            area_return_bytes_seen = area_return_bytes;
++            area_window_bytes = area_window_returns = area_window_return_bytes = 0;
++            area_window_refused = false;
++            area_budget_left = area_shadow_left = 0;
++            area_window_budgeted = area_shadow_open = area_shadow_budgeted = false;
++            if constexpr (requires { runtime.MemoryRefusalEvents(); }) {
++                area_seen_refusals = runtime.MemoryRefusalEvents();
++            }
++            if constexpr (requires { runtime.MemoryPressureEvents(); }) {
++                area_seen_pressure = runtime.MemoryPressureEvents();
++            }
++            budget_logged_returns = area_returns_created;
++            budget_logged_return_bytes = area_return_bytes;
++            budget_last_log = now;
++            if (area_recent_ring.capacity() < AREA_RECENT_DELETES) {
++                area_recent_ring.reserve(AREA_RECENT_DELETES);
++                area_recent_deletes.reserve(AREA_RECENT_DELETES);
++            }
++        }
++        area_budget_frame = frame_tick;
++        const u64 bytes_new = area_bytes_created - area_bytes_seen;
++        const u64 returns_new = area_returns_created - area_returns_seen;
++        const u64 return_bytes_new = area_return_bytes - area_return_bytes_seen;
++        area_bytes_seen = area_bytes_created;
++        area_returns_seen = area_returns_created;
++        area_return_bytes_seen = area_return_bytes;
++        if (frame_tick - area_window_frame >= WindowFrames) {
++            area_window_bytes = area_window_returns = area_window_return_bytes = 0;
++            area_window_refused = false;
++        }
++        area_window_bytes += bytes_new;
++        area_window_returns += returns_new;
++        area_window_return_bytes += return_bytes_new;
++        // One out for one in: while a window is open, what the frame made that was not a return.
++        const u64 frame_fresh_bytes = bytes_new - (std::min)(return_bytes_new, bytes_new);
++        if (window_open()) {
++            if (area_window_budgeted) {
++                area_budget_left += frame_fresh_bytes;
++            }
++            if (area_shadow_open && area_shadow_budgeted) {
++                area_shadow_left += frame_fresh_bytes;
++            }
++        }
++        // An allocator refusal, or an image that went over the memory budget, since the last
++        // frame: the window counts it until it resets, and an open window loses its budget (the
++        // old pass for the rest of it), since bytes made as stand-ins or in host memory say
++        // nothing of what the load needs.
++        bool refused_now = false;
++        if constexpr (requires { runtime.MemoryRefusalEvents(); }) {
++            const u32 events = runtime.MemoryRefusalEvents();
++            refused_now |= events != area_seen_refusals;
++            area_seen_refusals = events;
++        }
++        if constexpr (requires { runtime.MemoryPressureEvents(); }) {
++            const u32 events = runtime.MemoryPressureEvents();
++            refused_now |= events != area_seen_pressure;
++            area_seen_pressure = events;
++        }
++        area_window_refused |= refused_now;
++        if (refused_now && window_open()) {
++            if (area_window_budgeted) {
++                area_window_budgeted = false;
++                ++budget_refusal_fallbacks;
++            }
++            area_shadow_budgeted = false;
++        }
++        if (now - budget_last_log >= std::chrono::seconds(10)) {
++            std::fprintf(
++                stderr,
++                "EDEN_AREA_BUDGET 10s: bursts opened %llu, returns vetoed %llu, deleted %llu MiB "
++                "(budget-capped %llu passes), re-made within %llu frames %llu images / %llu MiB, "
++                "verify: old extra %llu MiB, %llu bursts, refusal fallbacks %llu\n",
++                static_cast<unsigned long long>(budget_bursts_opened),
++                static_cast<unsigned long long>(budget_bursts_returns),
++                static_cast<unsigned long long>(budget_deleted_bytes >> 20),
++                static_cast<unsigned long long>(budget_capped_frames),
++                static_cast<unsigned long long>(AREA_RETURN_FRAMES),
++                static_cast<unsigned long long>(area_returns_created - budget_logged_returns),
++                static_cast<unsigned long long>((area_return_bytes - budget_logged_return_bytes) >>
++                                                20),
++                static_cast<unsigned long long>(verify_old_extra_bytes >> 20),
++                static_cast<unsigned long long>(verify_old_extra_bursts),
++                static_cast<unsigned long long>(budget_refusal_fallbacks));
++            budget_bursts_opened = budget_bursts_returns = budget_deleted_bytes = 0;
++            budget_capped_frames = verify_old_extra_bytes = verify_old_extra_bursts = 0;
++            budget_refusal_fallbacks = 0;
++            budget_logged_returns = area_returns_created;
++            budget_logged_return_bytes = area_return_bytes;
++            budget_last_log = now;
++        }
++    }
+     // Images created since the last frame, summed over a window of WindowFrames.
+     const u64 created = area_images_created - area_created_seen;
+     area_created_seen = area_images_created;
+@@ -1004,8 +1128,58 @@ void TextureCache<P>::AreaEvict() {
+         area_window_created = 0;
+     }
+     area_window_created += created;
+-    if (area_window_created >= burst) {
+-        if (!window_open()) {
++    if (budget_on) {
++        const u64 fresh =
++            area_window_created - (std::min)(area_window_returns, area_window_created);
++        fresh_bytes = area_window_bytes - (std::min)(area_window_return_bytes, area_window_bytes);
++        // A refusal in the window lets any burst through: a real load the return test took for a
++        // return.
++        new_opens = fresh >= burst || (area_window_refused && area_window_created >= burst);
++    }
++    const bool open_now = budget_rule ? new_opens : area_window_created >= burst;
++    if (budget_rule && !open_now && area_window_created >= burst) {
++        // Mostly images this pass deleted being made again (a menu closing over the area it hid):
++        // no window, and the count starts again as after a burst.
++        ++budget_bursts_returns;
++        std::fprintf(stderr,
++                     "EDEN_AREA_BUDGET return: %llu of %llu new images were deleted here within "
++                     "%llu frames; no window\n",
++                     static_cast<unsigned long long>(
++                         (std::min)(area_window_returns, area_window_created)),
++                     static_cast<unsigned long long>(area_window_created),
++                     static_cast<unsigned long long>(AREA_RETURN_FRAMES));
++        area_window_frame = frame_tick;
++        area_window_created = 0;
++        area_window_bytes = area_window_returns = area_window_return_bytes = 0;
++        area_window_refused = false;
++    }
++    if (open_now) {
++        const bool opening = !window_open();
++        if (budget_on) {
++            if (opening) {
++                // A window this rule opens may delete what the burst brought in (more each frame
++                // it stays open, and at least the shortfall over the expected mark, below). One
++                // opened with a refusal in its count is the old window, without a budget.
++                area_window_budgeted = budget_rule && !area_window_refused;
++                area_budget_left = area_window_budgeted ? fresh_bytes : 0;
++                budget_refusal_fallbacks += budget_rule && area_window_refused ? 1 : 0;
++                ++budget_bursts_opened;
++                if (budget_shadow) {
++                    area_shadow_open = new_opens;
++                    area_shadow_budgeted = !area_window_refused;
++                    area_shadow_left = new_opens ? fresh_bytes : 0;
++                    verify_old_extra_bursts += new_opens ? 0 : 1;
++                }
++            } else if (budget_shadow && new_opens && !area_shadow_open) {
++                // The new rule would have opened its window at this extension.
++                area_shadow_open = true;
++                area_shadow_budgeted = !area_window_refused;
++                area_shadow_left = fresh_bytes;
++            }
++            area_window_bytes = area_window_returns = area_window_return_bytes = 0;
++            area_window_refused = false;
++        }
++        if (opening) {
+             ++area_bursts;
+             area_evicted_images = area_evicted_bytes = area_dropped_images = 0;
+             std::fprintf(stderr,
+@@ -1042,10 +1216,24 @@ void TextureCache<P>::AreaEvict() {
+     if (!below) {
+         return;
+     }
++    // EDEN_UP_AREA_BUDGET: the console's images over EDEN_NX2_TC_EXPECTED_MIB are always in the
++    // budget, so a load the burst underrates still frees what the mark asks for.
++    const bool budget_stop = budget_rule && area_window_budgeted;
++    if (budget_on) {
++        const u64 shortfall =
++            total_used_memory > expected_memory ? total_used_memory - expected_memory : 0;
++        if (budget_stop) {
++            area_budget_left = (std::max)(area_budget_left, shortfall);
++        }
++        if (budget_shadow && area_shadow_open && area_shadow_budgeted) {
++            area_shadow_left = (std::max)(area_shadow_left, shortfall);
++        }
++    }
+     boost::container::small_vector<ImageId, MaxPerFrame> doomed;
+     u64 bytes = 0;
+     size_t dropped = 0;
+     size_t kept = 0;
++    bool budget_capped = false;
+     lru_cache.ForEachItemBelow(*below, [&](ImageId image_id) {
+         const Image& image = slot_images[image_id];
+         if (True(image.flags & ImageFlagBits::IsDecoding) ||
+@@ -1060,6 +1248,11 @@ void TextureCache<P>::AreaEvict() {
+             ++kept;
+             return false;
+         }
++        if (budget_stop && bytes >= area_budget_left) {
++            // EDEN_UP_AREA_BUDGET: the window has deleted what the burst brought in.
++            budget_capped = true;
++            return true;
++        }
+         dropped += dirty ? 1 : 0;
+         bytes += ImageMemoryBytes(image) + (image.HasScaled() ? GetScaledImageSizeBytes(image) : 0);
+         doomed.push_back(image_id);
+@@ -1077,6 +1270,24 @@ void TextureCache<P>::AreaEvict() {
+                          image.info.resources.levels, static_cast<u32>(image.flags),
+                          static_cast<unsigned long long>(image.gpu_addr));
+         }
++        if (budget_on) {
++            // EDEN_UP_AREA_BUDGET: remembered, so making it again soon counts as a return.
++            const AreaRecentDelete note{frame_tick, image.guest_size_bytes,
++                                        static_cast<u32>(image.info.format)};
++            if (area_recent_ring.size() < AREA_RECENT_DELETES) {
++                area_recent_ring.push_back({image.gpu_addr, frame_tick});
++            } else {
++                AreaRecentSlot& slot = area_recent_ring[area_recent_pos];
++                // The ring's oldest note goes, unless a later delete at its address replaced it.
++                if (const auto old = area_recent_deletes.find(slot.gpu_addr);
++                    old != area_recent_deletes.end() && old->second.frame == slot.frame) {
++                    area_recent_deletes.erase(old);
++                }
++                slot = {image.gpu_addr, frame_tick};
++                area_recent_pos = static_cast<u32>((area_recent_pos + 1) % AREA_RECENT_DELETES);
++            }
++            area_recent_deletes.insert_or_assign(image.gpu_addr, note);
++        }
+         if (True(image.flags & ImageFlagBits::Tracked)) {
+             UntrackImage(image, image_id);
+         }
+@@ -1088,6 +1299,21 @@ void TextureCache<P>::AreaEvict() {
+     area_evicted_bytes += bytes;
+     area_dropped_images += dropped;
+     area_kept_last = kept;
++    if (budget_stop) {
++        area_budget_left -= (std::min)(bytes, area_budget_left);
++        budget_deleted_bytes += bytes;
++        budget_capped_frames += budget_capped ? 1 : 0;
++    } else if (budget_shadow) {
++        // The old pass deleted these; past the shadow budget, the new rule would have kept them.
++        const u64 allowed = !area_shadow_open       ? 0
++                            : area_shadow_budgeted ? (std::min)(bytes, area_shadow_left)
++                                                   : bytes;
++        verify_old_extra_bytes += bytes - allowed;
++        area_shadow_left -= (std::min)(allowed, area_shadow_left);
++        budget_deleted_bytes += bytes;
++    } else if (budget_on) {
++        budget_deleted_bytes += bytes;
++    }
+     if (log_passes && !doomed.empty()) {
+         std::fprintf(stderr,
+                      "EDEN_AREA_EVICT frame %llu: %zu images, %llu MiB deleted (%zu GPU-written, "
+@@ -5591,6 +5817,21 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
+         ++images_created;
+         ++area_images_created;
+         Churn::Add(Churn::ImagesCreated);
++        // EDEN_UP_AREA_BUDGET: what it holds, and whether AreaEvict deleted it a moment ago.
++        if (Common::LiveSwitch::Peek<Common::LiveSwitch::Id::AreaBudget>() != 0) {
++            const u64 new_bytes = ImageMemoryBytes(new_image);
++            area_bytes_created += new_bytes;
++            if (const auto recent = area_recent_deletes.find(new_image.gpu_addr);
++                recent != area_recent_deletes.end()) {
++                if (recent->second.frame + AREA_RETURN_FRAMES >= frame_tick &&
++                    recent->second.guest_size == new_image.guest_size_bytes &&
++                    recent->second.format == static_cast<u32>(new_image.info.format)) {
++                    ++area_returns_created;
++                    area_return_bytes += new_bytes;
++                }
++                area_recent_deletes.erase(recent);
++            }
++        }
+     }
+ 
+     if (!gpu_memory->IsContinuousRange(new_image.gpu_addr, new_image.guest_size_bytes) &&
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index bcc80db..d68840b 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -213,6 +213,56 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
+     u64 area_evict_min_until{}; ///< ...but not before this frame (very low frame rates)
+     bool area_window_open{};    ///< The window was open last frame (the done line, time mode)
+     size_t area_kept_last{};    ///< GPU-written images kept in the last pass (the done line)
++    /// EDEN_UP_AREA_BUDGET (AreaEvict): all of it GPUBack's (the GPU thread with the split off),
++    /// written in JoinImages on the draw path and in TickFrame, both under texture_cache.mutex.
++    /// A gc-area delete made again at the same address, size and format within this many frames
++    /// is a return, not a new image.
++    static constexpr u64 AREA_RETURN_FRAMES = 600;
++    static constexpr size_t AREA_RECENT_DELETES = 4096; ///< The return detector's ring
++    struct AreaRecentDelete {
++        u64 frame;      ///< frame_tick of the delete
++        u64 guest_size; ///< guest_size_bytes of the deleted image
++        u32 format;     ///< Its PixelFormat
++    };
++    struct AreaRecentSlot {
++        GPUVAddr gpu_addr;
++        u64 frame;
++    };
++    u64 area_bytes_created{};    ///< ImageMemoryBytes of the images made while on (never reset)
++    u64 area_returns_created{};  ///< Of the images made while the switch was on, returns
++    u64 area_return_bytes{};     ///< Their bytes
++    u64 area_bytes_seen{};       ///< Mirrors of area_created_seen
++    u64 area_returns_seen{};
++    u64 area_return_bytes_seen{};
++    u64 area_window_bytes{};     ///< Summed over AreaEvict's 30-frame window, as area_window_created
++    u64 area_window_returns{};
++    u64 area_window_return_bytes{};
++    u64 area_budget_left{};      ///< Bytes the open window may still delete
++    u64 area_budget_frame{};     ///< The last frame AreaEvict ran with the switch on
++    u32 area_seen_refusals{};    ///< Allocator refusals already seen (apart from RefusalEvict's)
++    u32 area_seen_pressure{};    ///< Over-budget images already seen (apart from the thresholds')
++    bool area_window_refused{};  ///< A refusal or over-budget image came in the 30-frame window
++    bool area_window_budgeted{}; ///< The open window has a budget (none after a refusal)
++    /// EDEN_UP_AREA_BUDGET_VERIFY=1: what the new rule would have allowed the old window.
++    bool area_shadow_open{};
++    bool area_shadow_budgeted{};
++    u64 area_shadow_left{};
++    /// gpu_addr -> the last gc-area delete there, bounded by a FIFO ring; both empty until the
++    /// switch is first on.
++    std::unordered_map<GPUVAddr, AreaRecentDelete> area_recent_deletes;
++    std::vector<AreaRecentSlot> area_recent_ring;
++    u32 area_recent_pos{};
++    /// The 10 s line's counters.
++    u64 budget_bursts_opened{};
++    u64 budget_bursts_returns{};
++    u64 budget_deleted_bytes{};
++    u64 budget_capped_frames{};
++    u64 verify_old_extra_bytes{};
++    u64 verify_old_extra_bursts{};
++    u64 budget_refusal_fallbacks{}; ///< Windows that lost or never had a budget (a refusal)
++    u64 budget_logged_returns{};      ///< area_returns_created at the last 10 s line
++    u64 budget_logged_return_bytes{}; ///< area_return_bytes at the last 10 s line
++    std::chrono::steady_clock::time_point budget_last_log{};
+     /// EDEN_UP_MEM_CENSUS (CensusTick): its own count of AreaEvict's burst, so the census needs no
+     /// EDEN_NX2_AREA_EVICT.
+     u64 census_created_seen{};

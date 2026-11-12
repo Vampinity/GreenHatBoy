@@ -1,0 +1,533 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: a present wait past its deadline goes on while the GPU side still moves (EDEN_UP_FRAME_WAIT_PROGRESS), and where a 3 s tick wait stuck (EDEN_UP_STALL_WHERE), off by default
+
+What: on a first start the first 3D scene needs ~25 s on the graphics side; the present gave up at
+4 s three times and the game ran ahead (the trigger of the 12 Nov first-start crash). With
+EDEN_UP_FRAME_WAIT_PROGRESS on, WaitForFrame (nx2_gsv.h) also looks every 50 ms at the waited
+fence, the split's back (GpuSplit::ConsumedNow) and a beat counter (new common/frame_wait_progress.h,
+a relaxed +1 when a graphics or compute pipeline finishes building or fails, when the Vulkan worker
+reaches a submit, when a texture decode finishes). At the deadline, if the fence is not reached and
+something moved within the idle window, the wait goes on in 2 ms guest sleeps (as PaceToVblank;
+a 2 ms host sleep if the guest sleep fails or returns at once) until the fence, no movement for the
+idle window, the cap from the wait's start, or the emulation stopping. A wait that saw no movement
+ends at the deadline as before. Every wait that ends at the deadline is covered (full wait,
+frames-ahead previous-frame and fallback waits), not the unless_gpu_waits probe. The extra wait
+runs after the wake lock is released.
+EDEN_UP_STALL_WHERE=1 (vk_scheduler.cpp, log only, needs EDEN_NX2_HANG_WATCH=1): on a 3 s wait for a
+tick that was flushed but not submitted, one line saying where the Vulkan worker is.
+
+Switches (read once): EDEN_UP_FRAME_WAIT_PROGRESS: unset or 0 off; 1 count only (waits still end,
+each says whether it would have gone on); 2 on with a 30 s cap; 5-300 on with that cap in seconds
+(3 and 4 also mean 30). EDEN_UP_FRAME_WAIT_PROGRESS_IDLE_MS: no-movement window, default 8000,
+500-60000. EDEN_UP_STALL_WHERE: 1 on, else off.
+Log (Service): start "EDEN_UP_FRAME_WAIT_PROGRESS=30: a present wait past 4 s goes on while the GPU
+side moves (no move for 8000 ms ends it), at most 30 s in all"; every 10 s (written by the next
+wait) "EDEN_UP_FRAME_WAIT_PROGRESS: last 10 s: N present waits passed 4 s; A with no progress ended
+as before, B would have gone on, C went on (D reached the fence, E ended by no progress, F by the 30
+s cap, G by the emulation stopping); longest X ms"; per act (first 256) "... present #N fence (1,
+V) not reached in 4 s (now V'); the GPU side moved X ms ago (fence +f, back +b words, j finished
+jobs): waiting on, up to 30 s in all" then "... wait ended after T ms: the fence was reached|no
+progress for the idle window|the cap|the emulation is stopping (now ...; ...; a GPU channel
+waited|never waited on a semaphore during it)"; =1 "EDEN_UP_FRAME_WAIT_PROGRESS=1: present #N ...
+it would keep waiting: ...". The old "not reached in 4 s" warning still comes only when the wait
+really ends without the fence (text kept for the batch postprocess). STALL_WHERE (Render_Vulkan,
+right after the "Hang watch: waited 3 s for GPU tick" line): "EDEN_UP_STALL_WHERE: tick T was
+flushed (next to record T+1) but the Vulkan worker has not submitted it; worker at: <site>; N
+chunks queued behind it (queue lock free|held)".
+
+Merge with 0586 (both edit WaitForFrame): 0586 first. Its deadline line
+"const auto deadline = start + std::chrono::milliseconds{TestFrameWaitMs()};" (and its comment line)
+replaces the "{4000}" context line of draft.v2's third nx2_gsv.h hunk; no added or removed line of
+either draft changed. So with EDEN_TEST_FRAME_WAIT_MS set too, the progress extension starts at the
+aid's deadline (its lines still say "4 s"); 0586's give-up count and line come after the extended
+wait. Do not combine the two switches in a test.
+
+Not in TranslationSwitches (no shader change). The port scripts do not anchor on any changed line.
+
+Cost when off: progress_wait is false (one cached value), the 4 s loop and the warning unchanged;
+Beat() is one test of a value read once per pipeline build, submit and decode; STALL_WHERE one
+cached static on the rare 3 s wait path. Behaviour byte for byte as before; machine code not.
+
+Default flip (later, after the cold batch passes): common/frame_wait_progress.h
+"inline constexpr long UnsetValue = 0;" -> 30 (=0 still off). That turns it on for every game; the
+review suggests an Ocarina-only default for the alpha (one more check at the call site).
+EDEN_UP_STALL_WHERE stays an off-by-default diagnostic.
+
+Risks: a freeze can grow from 4 s to the cap when something keeps beating but the fence needs the
+game; the present's service thread is held longer (other calls to that service wait behind it);
+black screen with a frozen overlay for 15-25 s on a first start; the big texture lands only at a
+frame tick, which a held present delays.
+
+Origin and credit: our own work. Drafts drafts-2026-11-11/ports-7/first-start/frame-wait-progress/
+draft.v2.diff (the reviewed version: idle 8000 ms, no single-core spin, semaphore note on the end
+line, a failed pipeline build beats) then stall-where.diff, placed unchanged apart from the one
+context line above.
+---
+diff --git a/src/common/frame_wait_progress.h b/src/common/frame_wait_progress.h
+new file mode 100644
+index 0000000..3e5fde9
+--- /dev/null
++++ b/src/common/frame_wait_progress.h
+@@ -0,0 +1,88 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <algorithm>
++#include <atomic>
++#include <cstdlib>
++
++#include "common/common_types.h"
++
++/// EDEN_UP_FRAME_WAIT_PROGRESS (read once): what a present does when the GPU threads have not
++/// reached its fence after the old 4 s (core/hle/service/nx2_gsv.h, WaitForFrame).
++///
++/// Why: on a first start (empty caches) the first 3D scene after the opening needs ~25 s on the
++/// GPU threads (173 pipelines, 95 shaders, a 6144x6144 texture). The present gave up after 4 s
++/// three times, the game ran ~25 fence steps ahead and rewrote command memory the GPU threads had
++/// not read yet; the re-read lists were junk and one junk draw crashed (12 Nov, run1233). The
++/// warm start of the same route waited once and went on.
++///
++/// Values: unset or 0 = off (the 4 s give-up as before, nothing sampled). 1 = count only: the
++/// waits still end at 4 s, and each says whether it would have gone on. 2 = act with a 30 s cap.
++/// 5 to 300 = act with that cap in seconds (3 and 4 also mean 30: a cap at or under 4 s would
++/// change nothing). Acting: past 4 s the wait goes on while the GPU side shows progress (below)
++/// within the last EDEN_UP_FRAME_WAIT_PROGRESS_IDLE_MS (default 8000, 500 to 60000; run1233's
++/// quiet stretches in the log reach ~4.4 s, so 5 s left too thin a margin), and ends at
++/// the fence, at the cap counted from the wait's start, at no progress for that long, or when the
++/// emulation stops. A wait that saw no progress at all still ends at 4 s.
++///
++/// Progress is any of: the waited syncpoint moved, the split's back consumed more of its ring
++/// (GpuSplit::ConsumedNow), or a beat below. Beats come from work that finishes on other threads
++/// while the back may be blocked: a pipeline build (builders and the GPU thread), a submission
++/// reached by the Vulkan worker, a texture decode finished on the decode thread.
++namespace Common::FrameWaitProgress {
++
++/// The value used when the switch is unset. Making it default on is this one line (30).
++inline constexpr long UnsetValue = 0;
++
++struct Config {
++    int mode{};        ///< 0 off, 1 count only, 2 act
++    long cap_s{};      ///< total wait limit, from the wait's start
++    long idle_ms{};    ///< no progress for this long ends a wait past 4 s
++    long raw{};        ///< the value as given, for the start line
++};
++
++[[nodiscard]] inline long ReadLong(const char* name, long fallback) {
++    const char* const value = std::getenv(name);
++    if (value == nullptr || value[0] == '\0') {
++        return fallback;
++    }
++    return std::strtol(value, nullptr, 10);
++}
++
++/// A function-local static: env.txt is read in main, after the globals.
++[[nodiscard]] inline const Config& Get() {
++    static const Config config = [] {
++        Config c{};
++        c.raw = ReadLong("EDEN_UP_FRAME_WAIT_PROGRESS", UnsetValue);
++        if (c.raw <= 0) {
++            c.mode = 0;
++        } else if (c.raw == 1) {
++            c.mode = 1;
++            c.cap_s = 30;
++        } else {
++            c.mode = 2;
++            c.cap_s = c.raw < 5 ? 30 : (std::min)(c.raw, 300L);
++        }
++        c.idle_ms =
++            (std::clamp)(ReadLong("EDEN_UP_FRAME_WAIT_PROGRESS_IDLE_MS", 8000L), 500L, 60000L);
++        return c;
++    }();
++    return config;
++}
++
++[[nodiscard]] inline bool On() {
++    return Get().mode != 0;
++}
++
++/// Work finished on the GPU side, counted only with the switch on. Any thread.
++inline std::atomic<u64> g_beats{};
++
++inline void Beat() {
++    if (On()) {
++        g_beats.fetch_add(1, std::memory_order_relaxed);
++    }
++}
++
++} // namespace Common::FrameWaitProgress
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index 0eb766e..b311527 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -28,6 +28,7 @@
+ 
+ #include "common/alignment.h"
+ #include "common/div_ceil.h"
++#include "common/frame_wait_progress.h"
+ #include "common/game_presets.h"
+ #include "common/live_switch.h"
+ #include "common/nx2_load_wait.h"
+@@ -2314,6 +2315,25 @@ private:
+     // Eden's GPU thread has processed the frame. Otherwise the game laps the GPU thread and
+     // rewrites command memory it hasn't read yet.
+     u32 m_wait_timeouts{};
++    // EDEN_UP_FRAME_WAIT_PROGRESS (common/frame_wait_progress.h): what the waited fence, the
++    // split's back and the GPU-side beats were at the last look, and when one last moved.
++    struct WaitProgress {
++        u32 fence{};
++        u64 consumed{};
++        u64 beats{};
++        u32 fence_start{};
++        u64 consumed_start{};
++        u64 beats_start{};
++        bool moved{};
++        std::chrono::steady_clock::time_point last_move{};
++    };
++    // Its counts per 10 s line, and the act lines written so far (at most 256).
++    struct WaitProgressStats {
++        u32 past_4s{}, still_idle{}, would_wait{}, kept{}, reached{}, idled{}, capped{}, stopped{};
++        long long longest_ms{};
++        std::chrono::steady_clock::time_point window_start{};
++    } m_wait_progress{};
++    u32 m_wait_progress_lines{};
+     struct PresentStats {
+         long long frame_us{}, fence_us{}, composite_us{}, pace_us{}, max_fence_us{};
+         long long max_frame_us{}, hitches{};
+@@ -2700,6 +2720,12 @@ private:
+         // command buffers ahead misses the equal-value gates its other channels acquire.
+         // EDEN_TEST_FRAME_WAIT_MS: shorter, for tests (TestFrameWaitMs).
+         const auto deadline = start + std::chrono::milliseconds{TestFrameWaitMs()};
++        // EDEN_UP_FRAME_WAIT_PROGRESS (common/frame_wait_progress.h): every wait that ends at
++        // 4 s, not the probe that gives up once a channel waits on the CPU (unless_gpu_waits).
++        const bool progress_wait = !unless_gpu_waits && Common::FrameWaitProgress::On();
++        if (progress_wait) [[unlikely]] {
++            ReportWaitProgress(start);
++        }
+         if (!syncpoints.IsReadyGuest(fence_id, fence_value)) {
+             // Woken by the GPU thread as it reaches the fence. Polling with 200 us sleeps slept
+             // about 1 ms per check on Windows, added to every frame. An action left registered
+@@ -2721,6 +2747,10 @@ private:
+             // Title 1's channels resume and suspend again while they wait on this thread, so any
+             // suspension counts, not only an unbroken one.
+             bool gpu_waited = false;
++            WaitProgress progress{};
++            if (progress_wait) [[unlikely]] {
++                StartWaitProgress(progress, fence_id, start);
++            }
+             while (!wake->done && system.IsPoweredOn() &&
+                    std::chrono::steady_clock::now() < deadline) {
+                 if (unless_gpu_waits) {
+@@ -2731,6 +2761,14 @@ private:
+                     }
+                 }
+                 wake->cv.wait_for(lk, std::chrono::milliseconds{unless_gpu_waits ? 1 : 50});
++                if (progress_wait) [[unlikely]] {
++                    SampleWaitProgress(progress, fence_id, std::chrono::steady_clock::now());
++                }
++            }
++            if (progress_wait && !wake->done && system.IsPoweredOn()) [[unlikely]] {
++                // Not under the wake lock: the GPU thread takes it to mark the fence reached.
++                lk.unlock();
++                WaitPastDeadline(fence_id, fence_value, start, progress);
+             }
+         }
+         if (unless_gpu_waits && !syncpoints.IsReadyGuest(fence_id, fence_value)) {
+@@ -2761,6 +2799,167 @@ private:
+         return syncpoints.IsReadyGuest(fence_id, fence_value);
+     }
+ 
++    /// EDEN_UP_FRAME_WAIT_PROGRESS: the values a wait starts from.
++    void StartWaitProgress(WaitProgress& progress, u32 fence_id,
++                           std::chrono::steady_clock::time_point now) {
++        progress.fence = system.Host1x().GetSyncpointManager().GetGuestSyncpointValue(fence_id);
++        progress.consumed = VideoCommon::GpuSplit::Get().ConsumedNow();
++        progress.beats = Common::FrameWaitProgress::g_beats.load(std::memory_order_relaxed);
++        progress.fence_start = progress.fence;
++        progress.consumed_start = progress.consumed;
++        progress.beats_start = progress.beats;
++        progress.moved = false;
++        progress.last_move = now;
++    }
++
++    /// EDEN_UP_FRAME_WAIT_PROGRESS: notes whether anything on the GPU side moved since the last look.
++    void SampleWaitProgress(WaitProgress& progress, u32 fence_id,
++                            std::chrono::steady_clock::time_point now) {
++        const u32 fence =
++            system.Host1x().GetSyncpointManager().GetGuestSyncpointValue(fence_id);
++        const u64 consumed = VideoCommon::GpuSplit::Get().ConsumedNow();
++        const u64 beats = Common::FrameWaitProgress::g_beats.load(std::memory_order_relaxed);
++        if (fence != progress.fence || consumed != progress.consumed || beats != progress.beats) {
++            progress.fence = fence;
++            progress.consumed = consumed;
++            progress.beats = beats;
++            progress.moved = true;
++            progress.last_move = now;
++        }
++    }
++
++    /// EDEN_UP_FRAME_WAIT_PROGRESS: the 4 s are over and the fence is not reached. With no
++    /// progress in the last idle window (or none at all) the wait ends as before. =1 only says it
++    /// would go on. =2 goes on in 2 ms guest sleeps, which leave this guest core to the game's
++    /// other threads (a host wait held it, see PaceToVblank), until the fence, no progress for
++    /// the idle window, the cap from the wait's start, or the emulation stopping.
++    void WaitPastDeadline(u32 fence_id, u32 fence_value,
++                          std::chrono::steady_clock::time_point start, WaitProgress& progress) {
++        using Clock = std::chrono::steady_clock;
++        const auto& config = Common::FrameWaitProgress::Get();
++        const auto idle = std::chrono::milliseconds{config.idle_ms};
++        auto& syncpoints = system.Host1x().GetSyncpointManager();
++        auto now = Clock::now();
++        SampleWaitProgress(progress, fence_id, now);
++        auto& stats = m_wait_progress;
++        ++stats.past_4s;
++        const auto since_move = [&] {
++            return std::chrono::duration_cast<std::chrono::milliseconds>(now - progress.last_move)
++                .count();
++        };
++        const auto moves = [&] {
++            return fmt::format(
++                "fence +{}, back +{} words, {} finished jobs",
++                progress.fence - progress.fence_start, progress.consumed - progress.consumed_start,
++                progress.beats - progress.beats_start);
++        };
++        if (!progress.moved || now - progress.last_move >= idle) {
++            ++stats.still_idle;
++            return;
++        }
++        if (config.mode == 1) {
++            ++stats.would_wait;
++            if (m_wait_progress_lines++ < 256) {
++                LOG_INFO(Service,
++                         "EDEN_UP_FRAME_WAIT_PROGRESS=1: present #{} fence ({}, {}) not reached in "
++                         "4 s (now {}); it would keep waiting: the GPU side moved {} ms ago ({})",
++                         m_presents, fence_id, fence_value, progress.fence, since_move(), moves());
++            }
++            return;
++        }
++        ++stats.kept;
++        const bool log_this = m_wait_progress_lines++ < 256;
++        if (log_this) {
++            LOG_INFO(Service,
++                     "EDEN_UP_FRAME_WAIT_PROGRESS: present #{} fence ({}, {}) not reached in 4 s "
++                     "(now {}); the GPU side moved {} ms ago ({}): waiting on, up to {} s in all",
++                     m_presents, fence_id, fence_value, progress.fence, since_move(), moves(),
++                     config.cap_s);
++        }
++        const auto cap = start + std::chrono::seconds{config.cap_s};
++        const char* end = "the fence was reached";
++        // Whether a GPU channel sat on a semaphore during the extra wait: one only the game
++        // releases after this present returns cannot be helped by waiting (the doubt the cold
++        // test must answer), so the end line says so.
++        bool channel_waited = system.GPU().HasSuspendedChannels();
++        for (;;) {
++            channel_waited |= system.GPU().HasSuspendedChannels();
++            if (syncpoints.IsReadyGuest(fence_id, fence_value)) {
++                ++stats.reached;
++                break;
++            }
++            if (!system.IsPoweredOn()) {
++                end = "the emulation is stopping";
++                ++stats.stopped;
++                break;
++            }
++            now = Clock::now();
++            SampleWaitProgress(progress, fence_id, now);
++            if (now >= cap) {
++                end = "the cap";
++                ++stats.capped;
++                break;
++            }
++            if (now - progress.last_move >= idle) {
++                end = "no progress for the idle window";
++                ++stats.idled;
++                break;
++            }
++            // A guest sleep, as PaceToVblank's: a host wait would hold this guest core.
++            constexpr s64 SliceNs = 2'000'000;
++            const auto slept_from = Clock::now();
++            if (Kernel::GetCurrentThread(kernel)
++                    .Sleep(kernel, kernel.HardwareTimer().GetTick() + SliceNs)
++                    .IsError() ||
++                Clock::now() - slept_from < std::chrono::microseconds{500}) {
++                // Termination asked, or the guest sleep returned at once (a host thread in
++                // single-core mode does not block in it): a short host sleep keeps this a wait,
++                // not a 30 s spin.
++                std::this_thread::sleep_for(std::chrono::milliseconds{2});
++            }
++        }
++        now = Clock::now();
++        const long long waited_ms =
++            std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count();
++        stats.longest_ms = (std::max)(stats.longest_ms, waited_ms);
++        if (log_this) {
++            LOG_INFO(Service,
++                     "EDEN_UP_FRAME_WAIT_PROGRESS: present #{} fence ({}, {}) wait ended after {} "
++                     "ms: {} (now {}; {}; a GPU channel {} on a semaphore during it)",
++                     m_presents, fence_id, fence_value, waited_ms, end,
++                     syncpoints.GetGuestSyncpointValue(fence_id), moves(),
++                     channel_waited ? "waited" : "never waited");
++        }
++    }
++
++    /// EDEN_UP_FRAME_WAIT_PROGRESS: a start line, then a line per 10 s (written by the next wait
++    /// after the 10 s, so a long wait's line comes after it).
++    void ReportWaitProgress(std::chrono::steady_clock::time_point now) {
++        auto& stats = m_wait_progress;
++        const auto& config = Common::FrameWaitProgress::Get();
++        if (stats.window_start == std::chrono::steady_clock::time_point{}) {
++            stats.window_start = now;
++            LOG_INFO(Service,
++                     "EDEN_UP_FRAME_WAIT_PROGRESS={}: a present wait past 4 s {} while the GPU "
++                     "side moves (no move for {} ms ends it), at most {} s in all",
++                     config.raw, config.mode == 1 ? "is only counted as going on" : "goes on",
++                     config.idle_ms, config.cap_s);
++            return;
++        }
++        if (now - stats.window_start < std::chrono::seconds{10}) {
++            return;
++        }
++        LOG_INFO(Service,
++                 "EDEN_UP_FRAME_WAIT_PROGRESS: last {} s: {} present waits passed 4 s; {} with no "
++                 "progress ended as before, {} would have gone on, {} went on ({} reached the "
++                 "fence, {} ended by no progress, {} by the {} s cap, {} by the emulation "
++                 "stopping); longest {} ms",
++                 std::chrono::duration_cast<std::chrono::seconds>(now - stats.window_start).count(),
++                 stats.past_4s, stats.still_idle, stats.would_wait, stats.kept, stats.reached,
++                 stats.idled, stats.capped, config.cap_s, stats.stopped, stats.longest_ms);
++        stats = {.window_start = now};
++    }
++
+     // Shows a presented native image: word 5 is the image id, ~word 22 / word 24 the GPU fence
+     // (syncpoint, value) to wait for (layout from changes.patch). The image is a block-linear
+     // RGBA8 surface in the console's native GOB layout at GPU address == CPU address.
+diff --git a/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp b/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
+index 3eedd7b..45ebe29 100644
+--- a/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
+@@ -25,6 +25,7 @@
+ #include "video_core/vulkan_common/vulkan_device.h"
+ #include "video_core/vulkan_common/vulkan_wrapper.h"
+ #include "video_core/gpu_logging/gpu_logging.h"
++#include "common/frame_wait_progress.h"
+ #include "common/logging.h"
+ #include "common/pe_switch.h"
+ #include "common/settings.h"
+@@ -158,6 +159,8 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
+         // Nothing reads the module once the pipeline exists; the driver keeps its SPIR-V while it
+         // lives.
+         spv_module.reset();
++        // EDEN_UP_FRAME_WAIT_PROGRESS: a pipeline is ready; a long present wait goes on.
++        Common::FrameWaitProgress::Beat();
+         std::scoped_lock lock{build_mutex};
+         is_built = true;
+         build_condvar.notify_one();
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+index 6e69c9e..33da1f1 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -43,6 +43,7 @@
+ #include "video_core/texture_cache/texture_cache.h"
+ #include "video_core/vulkan_common/vulkan_device.h"
+ #include "video_core/gpu_logging/gpu_logging.h"
++#include "common/frame_wait_progress.h"
+ #include "common/live_switch.h"
+ #include "common/settings.h"
+ #include "video_core/nx2_fast_draw.h"
+@@ -526,6 +527,8 @@ GraphicsPipeline::GraphicsPipeline(
+                          exception.what(), spv_modules[1] ? 1 : 0, spv_modules[2] ? 1 : 0,
+                          spv_modules[3] ? 1 : 0, key.state.patch_control_points_minus_one.Value() + 1,
+                          device.GetMaxTessellationPatchSize());
++            // EDEN_UP_FRAME_WAIT_PROGRESS: a failed build also ends a worker's wait for it.
++            Common::FrameWaitProgress::Beat();
+             std::scoped_lock lock{build_mutex};
+             is_built = true;
+             build_condvar.notify_one();
+@@ -548,6 +551,8 @@ GraphicsPipeline::GraphicsPipeline(
+             mesh_compute->scan.reset();
+             mesh_compute->readback.reset();
+         }
++        // EDEN_UP_FRAME_WAIT_PROGRESS: a pipeline is ready; a long present wait goes on.
++        Common::FrameWaitProgress::Beat();
+ 
+         std::scoped_lock lock{build_mutex};
+         is_built = true;
+diff --git a/src/video_core/renderer_vulkan/vk_scheduler.cpp b/src/video_core/renderer_vulkan/vk_scheduler.cpp
+index 8f4d2c8..9855efb 100644
+--- a/src/video_core/renderer_vulkan/vk_scheduler.cpp
++++ b/src/video_core/renderer_vulkan/vk_scheduler.cpp
+@@ -18,6 +18,7 @@
+ 
+ #include "video_core/renderer_vulkan/vk_query_cache.h"
+ 
++#include "common/frame_wait_progress.h"
+ #include "common/logging.h"
+ #include "common/pe_switch.h"
+ #include "common/scope_exit.h"
+@@ -125,7 +126,9 @@ void Scheduler::ReportStall(u64 tick, u64 gpu_tick, u64 next_tick) {
+     }
+     std::vector<HangSubmission> unfinished;
+     u64 last_submitted{};
++    bool submissions_read{}; // EDEN_UP_STALL_WHERE: last_submitted is known
+     if (std::unique_lock lock{hang_mutex, std::try_to_lock}; lock.owns_lock()) {
++        submissions_read = true;
+         if (!hang_submissions.empty()) {
+             last_submitted = hang_submissions.back().tick;
+         }
+@@ -139,6 +142,24 @@ void Scheduler::ReportStall(u64 tick, u64 gpu_tick, u64 next_tick) {
+                 "Hang watch: waited 3 s for GPU tick {}; the GPU is at tick {}, the last "
+                 "submitted tick is {}, the next to record is {}",
+                 tick, gpu_tick, last_submitted, next_tick);
++    // EDEN_UP_STALL_WHERE=1 (log only): a waited tick below the next to record was flushed by the
++    // recording thread; above the last submitted, the Vulkan worker has not reached its submit
++    // yet. No flush is missing then: the worker is held. Name where it is and what queues behind.
++    static const bool stall_where = Common::PeSwitch("EDEN_UP_STALL_WHERE");
++    if (stall_where && submissions_read && tick > last_submitted && tick < next_tick) {
++        size_t queued{};
++        bool queue_free{};
++        if (std::unique_lock lock{queue_mutex, std::try_to_lock}; lock.owns_lock()) {
++            queue_free = true;
++            queued = work_queue.size();
++        }
++        LOG_WARNING(Render_Vulkan,
++                    "EDEN_UP_STALL_WHERE: tick {} was flushed (next to record {}) but the Vulkan "
++                    "worker has not submitted it; worker at: {}; {} chunks queued behind it "
++                    "(queue lock {})",
++                    tick, next_tick, Common::HangSiteOf(Common::HangThread::Worker), queued,
++                    queue_free ? "free" : "held");
++    }
+     // What the GPU is stuck on, in stderr.log. RADV's own check only runs while a thread polls a
+     // submission's marker, and with the submitting thread blocked in the kernel none does. Asked on
+     // every report, not only the first few: four slow waits early on must not use up the ask before
+@@ -745,6 +766,9 @@ u64 Scheduler::SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_se
+         if (hang_watching) [[unlikely]] {
+             HangSubmit(signal_value, wait_semaphore != VK_NULL_HANDLE);
+         }
++        // EDEN_UP_FRAME_WAIT_PROGRESS: the worker reached a submission; a long present wait
++        // goes on. Nothing without the switch.
++        Common::FrameWaitProgress::Beat();
+ 
+         Common::HangSite site{"worker: waiting for the submit lock"};
+         std::scoped_lock lock{submit_mutex};
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 409389d..52cce6d 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -7,6 +7,7 @@
+ #pragma once
+ 
+ #include "common/pe_switch.h"
++#include "common/frame_wait_progress.h"
+ #include "common/live_switch.h"
+ #include "video_core/image_pages.h"
+ #include "video_core/astc_policy.h"
+@@ -5116,6 +5117,8 @@ void TextureCache<P>::QueueAsyncDecode(Image& image, ImageId image_id) {
+         }
+         async_decode->decoded = std::chrono::steady_clock::now();
+         async_decode->copies = std::move(copies);
++        // EDEN_UP_FRAME_WAIT_PROGRESS: a decode finished; a long present wait goes on.
++        Common::FrameWaitProgress::Beat();
+         // Last access by the worker; GPU thread may destroy the context after this store.
+         async_decode->complete.store(true, std::memory_order_release);
+     };

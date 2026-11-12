@@ -1,0 +1,543 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: [PATCH] Eleven more live switches: list fetch, DMA clear, semaphore reads, caches
+
+DRAFT, not built. With EDEN_UP_LIVE_SWITCHES=1 these can change while the game runs
+(common/live_switch.h). Without it each is what env.txt gave at its first use, for ever, with its
+own parsing rules, and the cost where it is off stays one read where there was one.
+
+Armed (they only change anything when on in env.txt at boot, because something they rely on is
+set up or kept only then; off at boot, a phase that turns them on does nothing and the app says so):
+- EDEN_UP_L1056_LIST_FETCH: the front's wait before a command list entry. #1056's target
+  (synced_writer_position) is only noted when a rule was on at boot. Read once per entry
+  (dma_pusher.cpp ListFetchRuleNow) for its wait, its second look and its check together; off,
+  the entry takes the rule it has without the switch (#1055 if set, else LISTSYNC's or the wait
+  for every writer), which waits for the same work or more. No per-list state is kept or shared
+  with the back.
+- EDEN_NX2_SEM_FAST (0/1/2): the front's write notes (FrontMemoryNotesEnabled) are boot-only.
+  Read at each acquire, poll and SEM_EXECUTE; 0 takes the drained path. The delayed-fence and
+  split checks in SemaphoreReadableNow are unchanged.
+- EDEN_PE_IMAGE_PAGES: the texture cache's page marks (RegisterImage) stay boot-only; each guest
+  read (GetFlushArea) reads the switch once.
+- EDEN_PE_NO_EMPTY_SUBMITS: FlushWork's tick note stays boot-only; each fence flush reads it.
+- EDEN_NX2_PIPELINE_CLEAN: a plain lookup forgets the clean lookup's answer (clean.pipeline) in a
+  run with the switch on at boot, so the first clean lookup after an off phase takes a new
+  snapshot. Peek per lookup, first use in the PipelineCache constructor.
+- EDEN_NX2_INVALIDATION_FILTER: the filters are made and marked only when on at boot.
+  PageFilter::Any reads it (Peek, first use in the PageFilter constructor) after its own
+  "no filter" check, so a run with it off at boot reads nothing new.
+
+Live:
+- EDEN_UP_L1094_DMACLEAR: per DMA clear. A clear the quarter check missed in an off phase leaves
+  that buffer's old words until it is written again, as in a run without the switch.
+- EDEN_UP_DRAIN_SKIP_SAME: per semaphore word read. Off reads note nothing; the noted words only
+  claim "nothing was sent since", which write_position checks. EDEN_NX2_READBACK_WAIT still turns
+  it off for good.
+- EDEN_UP_OOT_POLL_BACKOFF_US (a number, us): per SVC. Needs EDEN_UP_OOT_POLL_BACKOFF=1 at boot.
+  ParsePollBackoffUs keeps the old rules: above 1, at most 16000, else 4000.
+- EDEN_NX2_TABLES_SPEED: per upload scan; the upload epoch counts for every value.
+- EDEN_NX2_RANGE_PREFIX: per range lookup; every entry is a full walk of its own range.
+
+All but L1056_LIST_FETCH, L1094_DMACLEAR and OOT_POLL_BACKOFF_US are in TranslationSwitches
+(vk_pipeline_prep.cpp, left alone): set in env.txt they pick another prepared-shader store. A
+live plan leaves the plain live ones out of env.txt and sets them in the schedule; the armed ones
+must be in env.txt, so such a plan boots with their store.
+
+Not made live here: EDEN_GBB_PIPELINE_ONCE (the PS5 build's prepare-vulkan-port.py already hands
+UpdateDynamicStates the prepared pipeline, so the switch changes nothing there), EDEN_NX2_CB_BATCH
+and EDEN_NX2_INDEX_REBIND (first look only).
+
+Anchors of prepare-vulkan-port.py (adapt blocks, the _cost.cpp generators, shader_costs) and the
+maxwell_3d.cpp line macro_native.cmake rewrites counted on T121 before and after: unchanged.
+
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+index fe5a5ec..9817441 100644
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -65,7 +65,7 @@
+ /// EDEN_UP_OOT_LOAD_WAIT=1 was set at boot (the change is refused and logged). When a schedule
+ /// starts, a warning names every switch its phases turn on that cannot do anything in this run.
+ ///
+-/// Five of the switches have to be on at boot to change at all, because the work that makes
++/// Eleven of the switches have to be on at boot to change at all, because the work that makes
+ /// them possible is set up once (marked "armed" below): with them off at boot a phase that
+ /// turns them on does nothing, and the change line says so.
+ namespace Common::LiveSwitch {
+@@ -129,6 +129,40 @@ enum class Id : u8 {
+     /// EDEN_NX2_GRAPHICS_PIPELINE_OOM_RETRY. Each worker creation chooses one bounded retry;
+     /// a retry already started finishes even if the switch changes in the meantime.
+     PipelineOomRetry,
++    /// EDEN_UP_L1056_LIST_FETCH, armed (the host-level wait notes, GpuSplit::ListSyncNotes). Read
++    /// once per command list entry before its wait; off, the entry waits as without the switch
++    /// (for every queued writer, or LISTSYNC's or #1055's rule), which waits for at least as much.
++    L1056ListFetch,
++    /// EDEN_UP_L1094_DMACLEAR. Each DMA clear checks the whole range or the first quarter, as
++    /// without the switch; nothing is kept between clears.
++    L1094DmaClear,
++    /// EDEN_NX2_SEM_FAST (unset or starting with '0' is off, '2' is 2), armed (the front's write
++    /// notes, Maxwell3D's FrontMemoryNotesEnabled). Each acquire or poll reads the word or drains.
++    SemFast,
++    /// EDEN_UP_DRAIN_SKIP_SAME. Each semaphore word read checks that nothing was sent since the
++    /// drained read it repeats; off, no read is noted, so a later on read can only find fewer.
++    DrainSkipSame,
++    /// EDEN_PE_IMAGE_PAGES, armed (the texture cache marks the pages at every registration). Off:
++    /// every guest read asks the texture cache, as without the switch.
++    PeImagePages,
++    /// EDEN_PE_NO_EMPTY_SUBMITS, armed (FlushWork notes the tick of every draw). Off: every fence
++    /// flush submits, as without the switch.
++    PeNoEmptySubmits,
++    /// EDEN_NX2_PIPELINE_CLEAN (starting with '1' is on), armed (a lookup without it forgets the
++    /// clean lookup's answer, so the next clean lookup takes a new snapshot).
++    PipelineClean,
++    /// EDEN_NX2_INVALIDATION_FILTER (unset or starting with '0' is off), armed (the filters are
++    /// made and marked at boot). Off: every cache is told of every write, as without the switch.
++    InvalidationFilter,
++    /// EDEN_UP_OOT_POLL_BACKOFF_US=<us>, with EDEN_UP_OOT_POLL_BACKOFF=1 at boot. Each walk's
++    /// sleep is clamped to the value read at its own SVC.
++    PollBackoffUs,
++    /// EDEN_NX2_TABLES_SPEED. Each upload scan takes the clean shortcut or not; the upload epoch
++    /// counts for every value, so the shortcut only skips a manager nothing marked since.
++    TablesSpeed,
++    /// EDEN_NX2_RANGE_PREFIX (starting with '1' is on). Each lookup answers from the entry as it
++    /// is; entries are a full walk of their own range whatever made them.
++    RangePrefix,
+     Count,
+ };
+ 
+@@ -189,6 +223,25 @@ inline constexpr size_t NumSwitches = static_cast<size_t>(Id::Count);
+     return static_cast<u32>(std::clamp(parsed, 32UL, 1'048'576UL));
+ }
+ 
++/// EDEN_NX2_PIPELINE_CLEAN, EDEN_NX2_RANGE_PREFIX: starting with '1' is 1, anything else 0.
++[[nodiscard]] inline s64 ParseLeadingOne(const char* text) noexcept {
++    return text != nullptr && text[0] == '1' ? 1 : 0;
++}
++
++/// EDEN_UP_OOT_POLL_BACKOFF_US: the longest sleep in us. A number above 1 (strtoll: leading
++/// blanks and a sign are read, trailing text ignored), at most 16000; unset, empty or anything
++/// else is the default 4000.
++[[nodiscard]] inline s64 ParsePollBackoffUs(const char* text) noexcept {
++    s64 us = 4000;
++    if (text != nullptr && text[0] != 0) {
++        const long long parsed = std::strtoll(text, nullptr, 10);
++        if (parsed > 1) {
++            us = parsed < 16000 ? parsed : 16000;
++        }
++    }
++    return us;
++}
++
+ struct Def {
+     const char* name;
+     s64 (*parse)(const char* text);
+@@ -216,8 +269,22 @@ inline constexpr std::array<Def, NumSwitches> kDefs{{
+     {"EDEN_UP_UPLOAD_RUNS", ParseExactOne, false, -1},
+     {"EDEN_UP_ASYNC_DRAW_WAITS", ParseExactOne, false, -1},
+     {"EDEN_NX2_GRAPHICS_PIPELINE_OOM_RETRY", ParseExactOne, false, -1},
++    {"EDEN_UP_L1056_LIST_FETCH", ParseExactOne, true, -1},
++    {"EDEN_UP_L1094_DMACLEAR", ParseExactOne, false, -1},
++    {"EDEN_NX2_SEM_FAST", ParseSnapshotMode, true, -1},
++    {"EDEN_UP_DRAIN_SKIP_SAME", ParseExactOne, false, -1},
++    {"EDEN_PE_IMAGE_PAGES", ParseExactOne, true, -1},
++    {"EDEN_PE_NO_EMPTY_SUBMITS", ParseExactOne, true, -1},
++    {"EDEN_NX2_PIPELINE_CLEAN", ParseLeadingOne, true, -1},
++    {"EDEN_NX2_INVALIDATION_FILTER", ParseNotZero, true, -1},
++    {"EDEN_UP_OOT_POLL_BACKOFF_US", ParsePollBackoffUs, false, 3},
++    {"EDEN_NX2_TABLES_SPEED", ParseExactOne, false, -1},
++    {"EDEN_NX2_RANGE_PREFIX", ParseLeadingOne, false, -1},
+ }};
+ 
++static_assert(kDefs[static_cast<size_t>(Id::PollBackoffUs)].needs ==
++              static_cast<int>(Id::PollBackoff));
++
+ /// EDEN_UP_LIVE_SWITCHES=1 (exact "1"), read once.
+ [[nodiscard]] inline bool Mechanism() {
+     static const bool on = PeSwitch("EDEN_UP_LIVE_SWITCHES");
+diff --git a/src/core/hle/kernel/svc/svc_nx2_oot_poll.cpp b/src/core/hle/kernel/svc/svc_nx2_oot_poll.cpp
+index 83690d4..a354f90 100644
+--- a/src/core/hle/kernel/svc/svc_nx2_oot_poll.cpp
++++ b/src/core/hle/kernel/svc/svc_nx2_oot_poll.cpp
+@@ -84,19 +84,13 @@ constexpr s64 kLogIntervalNs = 10'000'000'000;
+ // EDEN_UP_OOT_POLL_BACKOFF_US=<us>: the longest sleep in us (above 1, at most 16000; "500" is the
+ // PR's first, fixed sleep). Unset or anything else: 4000 us. Without EDEN_UP_OOT_POLL_BACKOFF=1
+ // main is not patched (patch_manager.cpp) and this SVC never runs.
++// Live with EDEN_UP_LIVE_SWITCHES=1 (common/live_switch.h, ParsePollBackoffUs: the same rules):
++// read once per SVC; each walk's sleep is clamped to the value of its own call, and the slots
++// keep only when the last walk ended, which every value uses alike.
++static_assert(kDefaultMaxSleepNs == 4'000'000 && kLimitMaxSleepNs == 16'000'000,
++              "ParsePollBackoffUs in common/live_switch.h has these limits too");
+ s64 MaxSleepNs() {
+-    static const s64 ns = [] {
+-        const char* value = std::getenv("EDEN_UP_OOT_POLL_BACKOFF_US");
+-        s64 us = kDefaultMaxSleepNs / 1000;
+-        if (value != nullptr && value[0] != 0) {
+-            const long long parsed = std::strtoll(value, nullptr, 10);
+-            if (parsed > 1) {
+-                us = parsed < kLimitMaxSleepNs / 1000 ? parsed : kLimitMaxSleepNs / 1000;
+-            }
+-        }
+-        return us * 1000;
+-    }();
+-    return ns;
++    return Common::LiveSwitch::Value<Common::LiveSwitch::Id::PollBackoffUs>() * 1000;
+ }
+ 
+ s64 NowNs() {
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index d78d457..47a3732 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -7,6 +7,7 @@
+ #pragma once
+ 
+ #include "common/cityhash.h"
++#include "common/live_switch.h"
+ #include "common/pe_switch.h"
+ #include "video_core/readback_wait.h"
+ #include <algorithm>
+@@ -1412,8 +1413,13 @@ bool BufferCache<P>::DMAClear(GPUVAddr dst_address, u64 amount, u32 value) {
+     // only past it was never cleared, and the caller's unsafe guest write never reaches it.
+     // EDEN_UP_L1094_DMACLEAR=1 (zortos293/Lichii #1094 by jpkto): the same range fix alone,
+     // without DMALIST's notes. EDEN_UP_L1094_STATS counts the clears the quarter check misses.
++    // EDEN_UP_L1094_DMACLEAR is live (common/live_switch.h): read at each clear, which keeps
++    // nothing for the next one. A clear the quarter check missed in an off phase leaves that
++    // buffer's old words until something writes it again, as it would in a run without the switch.
+     static const bool fritchii_dma_list = Common::PeSwitch("EDEN_UP_FRITCHII_DMALIST");
+-    static const bool whole_range = fritchii_dma_list || VideoCommon::GpuSplit::L1094DmaClear();
++    const bool whole_range =
++        fritchii_dma_list ||
++        Common::LiveSwitch::Value<Common::LiveSwitch::Id::L1094DmaClear>() != 0;
+     const size_t size = amount * sizeof(u32);
+     if (VideoCommon::g_l1094_counting) [[unlikely]] {
+         VideoCommon::L1094Count(VideoCommon::g_l1094_stats.clears);
+diff --git a/src/video_core/buffer_cache/memory_tracker_base.h b/src/video_core/buffer_cache/memory_tracker_base.h
+index 6790e2c..b8ac318 100644
+--- a/src/video_core/buffer_cache/memory_tracker_base.h
++++ b/src/video_core/buffer_cache/memory_tracker_base.h
+@@ -17,6 +17,7 @@
+ 
+ #include "common/alignment.h"
+ #include "common/common_types.h"
++#include "common/live_switch.h"
+ #include "video_core/buffer_cache/word_manager.h"
+ 
+ namespace VideoCommon {
+@@ -172,10 +173,12 @@ public:
+     /// Call 'func' for each CPU modified range and unmark those pages as CPU modified
+     template <typename Func>
+     void ForEachUploadRange(VAddr query_cpu_range, u64 query_size, Func&& func) {
+-        static const bool cache_clean = [] {
+-            const char* const value = std::getenv("EDEN_NX2_TABLES_SPEED");
+-            return value != nullptr && value[0] == '1' && value[1] == '\0';
+-        }();
++        // EDEN_NX2_TABLES_SPEED, live with EDEN_UP_LIVE_SWITCHES=1 (common/live_switch.h): read at
++        // each scan. The shortcut skips a manager only while clean_upload_epoch equals its upload
++        // epoch, which every CPU mark and cached-write flush moves whatever the switch says; an
++        // off scan only clears bits and never sets clean_upload_epoch, so the shortcut stays right.
++        const bool cache_clean =
++            Common::LiveSwitch::Value<Common::LiveSwitch::Id::TablesSpeed>() != 0;
+         if (cache_clean) {
+             IteratePages<true>(query_cpu_range, query_size, [&func](Manager* manager, u64 offset, size_t size) {
+                 manager->template ForEachModifiedRange<true>(Type::CPU, true,
+diff --git a/src/video_core/buffer_cache/virtual_range_cache.h b/src/video_core/buffer_cache/virtual_range_cache.h
+index ed7ce9e..aeefb1c 100644
+--- a/src/video_core/buffer_cache/virtual_range_cache.h
++++ b/src/video_core/buffer_cache/virtual_range_cache.h
+@@ -14,6 +14,7 @@
+ 
+ #include "common/common_types.h"
+ #include "common/container/unordered_map.h"
++#include "common/live_switch.h"
+ #include "video_core/memory_manager.h"
+ 
+ namespace VideoCommon {
+@@ -52,10 +53,11 @@ public:
+         // is kept. The returned segment may then cover more than was asked: the only caller
+         // (BufferCache::ResolveMultiRangeStorage) ignores lists with fewer than two segments.
+         // Lists of split ranges still match exactly.
+-        static const bool range_prefix = [] {
+-            const char* const value = std::getenv("EDEN_NX2_RANGE_PREFIX");
+-            return value != nullptr && value[0] == '1';
+-        }();
++        // Live with EDEN_UP_LIVE_SWITCHES=1 (common/live_switch.h): read at each lookup. Every entry
++        // is a full walk of its own (address, size), made the same way with the switch on or off,
++        // and Unmap drops entries alike, so an entry a lookup finds is right for any shorter size.
++        const bool range_prefix =
++            Common::LiveSwitch::Value<Common::LiveSwitch::Id::RangePrefix>() != 0;
+         if (range_prefix && it != entries.end() && it->second.as_id == as_id &&
+             it->second.gpu_addr == gpu_addr && it->second.segments.size() == 1 &&
+             size < it->second.size) {
+diff --git a/src/video_core/dma_pusher.cpp b/src/video_core/dma_pusher.cpp
+index 112c923..32d041f 100644
+--- a/src/video_core/dma_pusher.cpp
++++ b/src/video_core/dma_pusher.cpp
+@@ -17,6 +17,7 @@
+ #include <string>
+ #include <utility>
+ 
++#include "common/live_switch.h"
+ #include "common/pe_switch.h"
+ #include "common/scope_exit.h"
+ #include "common/settings.h"
+@@ -538,6 +539,24 @@ static u64 NoteFetchRecheck(GPUVAddr address, u64 words, int mode) {
+     return hit;
+ }
+ 
++// EDEN_UP_L1056_LIST_FETCH with EDEN_UP_LIVE_SWITCHES=1 (common/live_switch.h, armed): the list
++// fetch rule for one command list entry. #1056 waits for less than any other rule: only up to the
++// last writer before the last host-level wait (synced_writer_position), which NoteListSync keeps
++// only when a rule was on at boot (GpuSplit::ListSyncNotes, read once). So the rule can only be #1056
++// when it was #1056 at boot; switched off, the entry takes the rule it would have without
++// EDEN_UP_L1056_LIST_FETCH (#1055 if set, else LISTSYNC's or the wait for every writer), which
++// waits for the same work or more and needs no note #1056 lacks. Nothing is kept per entry or
++// shared with the back: the wait only reads positions, so each entry's rule stands alone.
++// Without EDEN_UP_LIVE_SWITCHES: ListFetchRule() as before, plus one load when #1056 is on.
++static int ListFetchRuleNow() {
++    const int rule = VideoCommon::GpuSplit::ListFetchRule();
++    if (rule != 2 || Common::LiveSwitch::Value<Common::LiveSwitch::Id::L1056ListFetch>() != 0) {
++        return rule;
++    }
++    static const int without = Common::PeSwitch("EDEN_UP_L1055_LIST_FETCH") ? 1 : 0;
++    return without;
++}
++
+ // EDEN_UP_FRITCHII_LISTSYNC / _LISTSKIP (GpuSplit::ListSyncMode; Frizti/Fritchii 6baafdd7d9, from
+ // zortos293/Lichii#805 6229487c8c + d4e8d85d4d): the wait before an entry on pages no GPU work has
+ // written yet. Unset: for every queued dispatch and copy, as before. LISTSYNC: for those sent
+@@ -546,10 +565,11 @@ static u64 NoteFetchRecheck(GPUVAddr address, u64 words, int mode) {
+ // of the work it waited for was still queued.
+ // EDEN_UP_L1056_LIST_FETCH / EDEN_UP_L1055_LIST_FETCH (GpuSplit::ListFetchRule, zortos293/Lichii
+ // #1056 and #1055): the target instead of LISTSYNC's (or T84's): the last writer sent before the
+-// last host-level wait (#1056), or everything sent before that wait (#1055).
+-static bool WaitForListWriters(VideoCommon::GpuSplit& split, bool command_entry, bool& skipped) {
++// last host-level wait (#1056), or everything sent before that wait (#1055). `rule`: the entry's
++// ListFetchRuleNow, read once for its wait, its second look and its check.
++static bool WaitForListWriters(VideoCommon::GpuSplit& split, bool command_entry, bool& skipped,
++                               int rule) {
+     const int mode = VideoCommon::GpuSplit::ListSyncMode();
+-    const int rule = VideoCommon::GpuSplit::ListFetchRule();
+     if (mode == 0 && rule == 0) {
+         return split.WaitForWriters();
+     }
+@@ -572,8 +592,8 @@ static bool WaitForListWriters(VideoCommon::GpuSplit& split, bool command_entry,
+ // would have taken the entry from GPU memory, and logs each one (the count should stay 0). It only
+ // reads the page bits. Nothing unless set.
+ static void CheckListWriters(VideoCommon::GpuSplit& split, MemoryManager& memory, GPUVAddr address,
+-                             size_t size, bool skipped) {
+-    const int rule = VideoCommon::GpuSplit::ListFetchRule(); // EDEN_UP_L1056/L1055_LIST_FETCH too
++                             size_t size, bool skipped, int rule) {
++    // `rule`: EDEN_UP_L1056/L1055_LIST_FETCH too (the entry's ListFetchRuleNow)
+     if ((VideoCommon::GpuSplit::ListSyncMode() == 0 && rule == 0) || size == 0 ||
+         split.Ran(split.LastWriterPosition())) {
+         return;
+@@ -870,16 +890,18 @@ bool DmaPusher::Step() {
+             if (!(settled && list_fast == 1)) {
+                 // EDEN_UP_FRITCHII_LISTSYNC / _LISTSKIP: which writers (WaitForListWriters).
+                 bool list_wait_skipped = false;
++                // EDEN_UP_L1056_LIST_FETCH: one rule for the wait, the second look and the check.
++                const int list_rule = ListFetchRuleNow();
+                 VideoCommon::GpuSplit::Get().CountListRules(); // EDEN_UP_L1056_STATS; else nothing
+                 if (WaitForListWriters(VideoCommon::GpuSplit::Get(), dma_state.method_count == 0,
+-                                       list_wait_skipped)) {
++                                       list_wait_skipped, list_rule)) {
+                     VideoCommon::L1056Count(VideoCommon::g_l1056_stats.list_waited);
+                     gpu_written =
+                         IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
+                     if (settled) {
+                         NoteListFastCheck(dma_state.dma_get, gpu_written);
+                     }
+-                } else if (VideoCommon::GpuSplit::ListFetchRule() != 0 &&
++                } else if (list_rule != 0 &&
+                            IsGpuWrittenCommands(dma_state.dma_get,
+                                                 size_t{header.size} * sizeof(u32))) {
+                     // EDEN_UP_L1056_LIST_FETCH / _L1055_ (zortos293/Lichii 8d42747683, fe3405894c):
+@@ -905,7 +927,8 @@ bool DmaPusher::Step() {
+                 }
+                 if (!gpu_written) {
+                     CheckListWriters(VideoCommon::GpuSplit::Get(), memory_manager, dma_state.dma_get,
+-                                     size_t{header.size} * sizeof(u32), list_wait_skipped);
++                                     size_t{header.size} * sizeof(u32), list_wait_skipped,
++                                     list_rule);
+                 }
+             }
+         }
+diff --git a/src/video_core/engines/puller.cpp b/src/video_core/engines/puller.cpp
+index cb50dae..21459eb 100644
+--- a/src/video_core/engines/puller.cpp
++++ b/src/video_core/engines/puller.cpp
+@@ -8,6 +8,7 @@
+ #include <cstdlib>
+ 
+ #include "common/assert.h"
++#include "common/live_switch.h"
+ #include "common/logging.h"
+ #include "common/settings.h"
+ #include "core/core.h"
+@@ -63,15 +64,23 @@ void DrainBack(VideoCommon::DrainSite site = VideoCommon::DrainSite::Acquire) {
+ // Ocarina polls each waiting acquire about 12 times before it is met, and every poll drained the
+ // back. 2 = SEM_EXECUTE acquires also skip the drain (their result only fed a warning). Off
+ // unless set; read once at boot.
++// With EDEN_UP_LIVE_SWITCHES=1 (common/live_switch.h) it is armed: a read without a drain is only
++// right because the front notes every write it sends (Maxwell3D's FrontMemoryNotesEnabled, read
++// once at boot from this same variable), so the mode can change only when it was on at boot.
++// Then each acquire, poll and SEM_EXECUTE reads the mode again; a read that says 0 takes the
++// drained path, which is always right, and 1 and 2 differ only in SEM_EXECUTE's own choice.
+ int SemFastMode() {
+-    static const int mode = [] {
++    static const int boot = [] {
+         const char* const value = std::getenv("EDEN_NX2_SEM_FAST");
+         if (value == nullptr || value[0] == '0') {
+             return 0;
+         }
+         return value[0] == '2' ? 2 : 1;
+     }();
+-    return mode;
++    if (boot == 0) {
++        return 0;
++    }
++    return static_cast<int>(Common::LiveSwitch::Value<Common::LiveSwitch::Id::SemFast>());
+ }
+ 
+ // Whether the word at `address` can be read without draining the back. Only without delayed
+@@ -142,12 +151,17 @@ u64 ReleaseKey(const DmaPusher& dma_pusher, GPUVAddr address) {
+ // polls while the front sends nothing else (each drained poll woke the back for a flush and its
+ // idle hook). Never the second read of an acquire (ReleaseFences is sent in between) nor the
+ // delayed-fence poll (likewise). Off with EDEN_NX2_READBACK_WAIT, whose held syncpoint increments
+-// the back makes on its turns, which drained polls gave it. Off unless exactly "1"; read once.
++// the back makes on its turns, which drained polls gave it. Off unless exactly "1".
++// Live with EDEN_UP_LIVE_SWITCHES=1 (common/live_switch.h): read at each word read. The noted
++// words only claim "nothing was sent since this word's drained read" (SameReadsHold compares
++// write_position), which stays true or false whatever this switch did meanwhile: an off read
++// notes nothing and anything it sends moves write_position, so an on read finds fewer words,
++// never a wrong one. EDEN_NX2_READBACK_WAIT is read once and still turns it off for good.
+ bool SkipSameReads() {
+-    static const bool enabled = [] {
+-        if (!Common::PeSwitch("EDEN_UP_DRAIN_SKIP_SAME")) {
+-            return false;
+-        }
++    if (Common::LiveSwitch::Value<Common::LiveSwitch::Id::DrainSkipSame>() == 0) {
++        return false;
++    }
++    static const bool allowed = [] {
+         if (VideoCore::Readback::Mode() != 0) {
+             LOG_WARNING(HW_GPU, "EDEN_UP_DRAIN_SKIP_SAME=1 ignored with EDEN_NX2_READBACK_WAIT");
+             return false;
+@@ -156,7 +170,7 @@ bool SkipSameReads() {
+                          "sent to the back since skip the drain");
+         return true;
+     }();
+-    return enabled;
++    return allowed;
+ }
+ 
+ u32 ReadSemaphoreWord(DmaPusher& dma_pusher, GPUVAddr address, VideoCommon::DrainSite site) {
+diff --git a/src/video_core/page_filter.h b/src/video_core/page_filter.h
+index b698489..84d8028 100644
+--- a/src/video_core/page_filter.h
++++ b/src/video_core/page_filter.h
+@@ -9,6 +9,7 @@
+ #include <memory>
+ 
+ #include "common/common_types.h"
++#include "common/live_switch.h"
+ 
+ namespace VideoCommon {
+ 
+@@ -19,6 +20,10 @@ namespace VideoCommon {
+ /// about 88k times a second in Ocarina of Time, +3.4% on a 4090). With the switch each cache keeps
+ /// a PageFilter and InnerInvalidation skips the caches whose pages were never registered.
+ /// Unset: no filter is allocated, every cache is told as before.
++/// With EDEN_UP_LIVE_SWITCHES=1 (common/live_switch.h) it is armed: the filters are made and
++/// marked only when it was set at boot, and the marks are never cleared, so a clear bit is right
++/// whenever it is read. Any reads the live value at each question (Peek; its first use is in the
++/// constructor): off, it answers true and every cache is told, as without the switch.
+ inline bool InvalidationFilterEnabled() {
+     static const bool enabled = [] {
+         const char* const value = std::getenv("EDEN_NX2_INVALIDATION_FILTER");
+@@ -35,6 +40,8 @@ public:
+     PageFilter() {
+         if (InvalidationFilterEnabled()) {
+             words = std::make_unique<std::atomic<u64>[]>(NumWords);
++            static_cast<void>(
++                Common::LiveSwitch::Value<Common::LiveSwitch::Id::InvalidationFilter>());
+         }
+     }
+ 
+@@ -62,7 +69,8 @@ public:
+ 
+     /// Whether the cache may hold objects on [address, address + size).
+     [[nodiscard]] bool Any(u64 address, u64 size) const {
+-        if (!words) {
++        if (!words ||
++            Common::LiveSwitch::Peek<Common::LiveSwitch::Id::InvalidationFilter>() == 0) {
+             return true;
+         }
+         if (size == 0) {
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index f4820b9..db13af0 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -748,6 +748,9 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
+               "VkPipelineBuilder", {}, Common::ThreadPlacement::Background),
+       serialization_thread(1, "VkPipelineSerialization", {},
+                            Common::ThreadPlacement::Background) {
++    // EDEN_NX2_PIPELINE_CLEAN's first use (common/live_switch.h): CurrentGraphicsPipeline reads it
++    // with Peek, which needs this.
++    static_cast<void>(Common::LiveSwitch::Value<Common::LiveSwitch::Id::PipelineClean>());
+     // EDEN_UP_ASYNC_TRANSLATION=1 (exactly "1"): new native graphics pipelines are translated on
+     // worker threads (TranslateOnWorker). Unset: translation_workers stays null and none of it
+     // runs. The threads are "VkPipeline..." by name, so the heap lets them wait for memory
+@@ -1787,8 +1790,17 @@ void PipelineCache::ApplyAttributelessVertexInput() {
+ }
+ 
+ GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
++    // EDEN_NX2_PIPELINE_CLEAN, armed with EDEN_UP_LIVE_SWITCHES=1 (common/live_switch.h). A clean
++    // hit trusts that current_pipeline is still the one its last Refresh found (clean.pipeline),
++    // which the clean path keeps true by forgetting it on every miss. A plain lookup can leave
++    // current_pipeline in place with another key (the slow path without a pipeline yet), so in a
++    // run with the switch on at boot a plain lookup forgets it as well: the first clean lookup
++    // after an off phase takes a new snapshot. Off at boot: one read, as before.
+     if (PipelineCleanEnabled()) {
+-        return CurrentGraphicsPipelineClean();
++        if (Common::LiveSwitch::Peek<Common::LiveSwitch::Id::PipelineClean>() != 0) {
++            return CurrentGraphicsPipelineClean();
++        }
++        clean.pipeline = nullptr;
+     }
+ 
+     if (!RefreshStages(graphics_key.unique_hashes)) {
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 570fa1b..722a144 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -2397,7 +2397,15 @@ void CountGuestRead(std::atomic<u64>& counter) {
+ } // Anonymous namespace
+ 
+ VideoCore::RasterizerDownloadArea RasterizerVulkan::GetFlushArea(DAddr addr, u64 size) {
+-    static const bool pages = Common::PeSwitch("EDEN_PE_IMAGE_PAGES");
++    // EDEN_PE_IMAGE_PAGES, armed with EDEN_UP_LIVE_SWITCHES=1 (common/live_switch.h): the texture
++    // cache marks the pages of every image it registers only when the switch was on at boot
++    // (TextureCache::RegisterImage), and the marks are never taken away, so with it on at boot
++    // NeverHeld is right whenever it is asked. Read once per call: off, the read asks the texture
++    // cache, as without the switch; ask_texture below is captured by value.
++    static const bool pages_marked = Common::PeSwitch("EDEN_PE_IMAGE_PAGES");
++    const bool pages =
++        pages_marked &&
++        Common::LiveSwitch::Value<Common::LiveSwitch::Id::PeImagePages>() != 0;
+     // EDEN_UP_FRITCHII_GRHAND=1 (Frizti/Fritchii e423d1bd17, there EDEN_NX2_EXP60=1; live there,
+     // off by default, no fps figure): the split's back holds both cache mutexes through bursts of
+     // draws and takes them again right after each release, so a guest read waiting for them can
+@@ -2829,7 +2837,13 @@ void RasterizerVulkan::FlushCommands() {
+         return;
+     }
+     draw_counter = 0;
+-    static const bool no_empty = Common::PeSwitch("EDEN_PE_NO_EMPTY_SUBMITS");
++    // EDEN_PE_NO_EMPTY_SUBMITS, armed with EDEN_UP_LIVE_SWITCHES=1 (common/live_switch.h):
++    // FlushWork notes the tick of every draw when the switch was on at boot, whatever its live
++    // value, so pe_recorded_tick is right whenever this reads it. Off: every flush submits.
++    static const bool no_empty_noted = Common::PeSwitch("EDEN_PE_NO_EMPTY_SUBMITS");
++    const bool no_empty =
++        no_empty_noted &&
++        Common::LiveSwitch::Value<Common::LiveSwitch::Id::PeNoEmptySubmits>() != 0;
+     if (no_empty && scheduler.CurrentTick() != pe_recorded_tick) {
+         return;
+     }

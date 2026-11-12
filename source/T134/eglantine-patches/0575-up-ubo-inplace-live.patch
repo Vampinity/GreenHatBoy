@@ -1,0 +1,76 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: EDEN_NX2_UBO_INPLACE is a live switch
+
+DRAFT, not built. Job K4 (AI draft). EDEN_NX2_UBO_INPLACE (starts with '1' is on, the same
+parse as before) becomes a live switch (Id UboInplace, not armed): read once per eligible small
+uniform bind instead of once at boot. Both branches leave the slot complete, so a flip needs no
+reset. Off by default, as before. It is in vk_pipeline_prep's shader-store stamp list: leave it
+unset at boot and set it in the schedule, like EDEN_NX2_RANGE_PREFIX.
+
+Reviewed draft (job K review, verdict "ready", no v2): draft-k4-live-ubo-inplace.patch as written.
+live_switch.h re-anchored after EmptyDrawStats; uniform_stream_reuse.h re-anchored around 0563's
+UBO share lines (its live_switch include is now a repeat, kept); all +/- lines byte-identical.
+---
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+index d4f1431..ba5f2cd 100644
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -214,6 +214,8 @@ enum class Id : u8 {
+     DmaMissStats,
+     /// Log-only draw outcomes; each request carries its sampling decision to the worker.
+     EmptyDrawStats,
++    /// Per-bind choice; both branches maintain the same complete uniform Slot.
++    UboInplace,
+     Count,
+ };
+ 
+@@ -353,6 +355,7 @@ inline constexpr std::array<Def, NumSwitches> kDefs{{
+     {"EDEN_UP_RADV_OOM_LEND", ParseLendBlocks, false, -1},
+     {"EDEN_UP_DMA_MISS_STATS", ParseExactOne, false, -1},
+     {"EDEN_UP_EMPTY_DRAW_STATS", ParseExactOne, false, -1},
++    {"EDEN_NX2_UBO_INPLACE", ParseLeadingOne, false, -1},
+ }};
+ 
+ static_assert(kDefs[static_cast<size_t>(Id::PollBackoffUs)].needs ==
+diff --git a/src/video_core/buffer_cache/uniform_stream_reuse.h b/src/video_core/buffer_cache/uniform_stream_reuse.h
+index f9a6836..4752187 100644
+--- a/src/video_core/buffer_cache/uniform_stream_reuse.h
++++ b/src/video_core/buffer_cache/uniform_stream_reuse.h
+@@ -14,6 +14,7 @@
+ 
+ #include "common/common_types.h"
+ #include "common/live_switch.h"
++#include "common/live_switch.h"
+ #include "common/logging.h"
+ 
+ namespace VideoCommon {
+@@ -60,11 +61,7 @@ struct StreamUniformRefOf<R> {
+ /// are copied once to the slot and the stream copy is made from the slot, so the two never differ,
+ /// as the scratch snapshot made sure. From Frizti/Lichii b44f87ad3d (Dr. Sergio, Lichii PR 166).
+ [[nodiscard]] inline bool UniformInPlaceCompareEnabled() noexcept {
+-    static const bool enabled = [] {
+-        const char* const value = std::getenv("EDEN_NX2_UBO_INPLACE");
+-        return value != nullptr && value[0] == '1';
+-    }();
+-    return enabled;
++    return Common::LiveSwitch::Peek<Common::LiveSwitch::Id::UboInplace>() != 0;
+ }
+ 
+ /// EDEN_UP_UBO_SHARE_VERIFY=1 (exact "1"), with EDEN_UP_UBO_SHARE on: every bind that would take
+@@ -130,6 +127,7 @@ template <class Ref>
+ /// buffer) is created: ticks restart with a new scheduler and the old references are dead.
+ template <class Runtime>
+ inline void ResetUniformStreamReuse() noexcept {
++    static_cast<void>(Common::LiveSwitch::Value<Common::LiveSwitch::Id::UboInplace>());
+     if constexpr (StreamUniformReusable<Runtime>) {
+         UniformStreamReuseState<typename Runtime::StreamUniformRef>().Reset();
+         // EDEN_UP_UBO_SHARE: its first use, so that BindSmallUniformReusing's Peek reads it.
+@@ -266,6 +264,8 @@ template <class Runtime, class DeviceMemory>
+         ShareSmallUniform(runtime, device_memory, reuse, slot, stage, index, device_addr, size)) {
+         return true;
+     }
++    // One live choice per bind. Both branches leave bytes/size/ref/tick complete,
++    // and both stream from their own captured bytes; a flip needs no slot reset.
+     // Test memories have no GetSpan.
+     if constexpr (requires { device_memory.GetSpan(device_addr, size); }) {
+         const u8* const guest =

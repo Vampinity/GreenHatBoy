@@ -1,0 +1,440 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: ahead read sync, a guest read of a fence-downloaded range waits for the frame that ran ahead (EDEN_UP_AHEAD_READ_SYNC)
+
+DRAFT, not built. Our own work (guard-door job). Gated by EDEN_UP_AHEAD_READ_SYNC (exact 1), a
+live switch (Id AheadReadSync, not armed); off by default. On: while the latest present returned
+before its own frame's fence (EDEN_NX2_FRAMES_AHEAD=1), every core forgets its kept read area at
+that present, and a guest read of a Preflushable buffer range waits (up to 50 ms, 2 ms when a
+channel is suspended) for that frame's bytes instead of taking guest memory as it is.
+EDEN_UP_AHEAD_READ_SYNC_VERIFY=1 (boot) copies the bytes before the wait and counts what changed.
+New file video_core/ahead_read_sync.h; RasterizerDownloadArea gains a defaulted `preflushed`.
+10 s line while on: "EDEN_UP_AHEAD_READ_SYNC".
+
+Reviewed draft (guard-door review, verdict "ready with corrections"): ahead-read-sync.v2.patch.
+live_switch.h re-anchored after WritebackBands; all other +/- lines byte-identical to the v2.
+---
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+index 563a529..772eaf3 100644
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -189,6 +189,10 @@ enum class Id : u8 {
+     /// video_core/texture_cache/util.cpp). Read once per layer of each texture write-back; a
+     /// write-back is whole on either value, banded or not, so each one stands on its own.
+     WritebackBands,
++    /// EDEN_UP_AHEAD_READ_SYNC (video_core/ahead_read_sync.h). Read at each present (Value) and
++    /// at each guest read's area lookup (Peek); off at a present clears the ahead flag, so the
++    /// next lookups take the shortcut again.
++    AheadReadSync,
+     Count,
+ };
+ 
+@@ -314,6 +318,7 @@ inline constexpr std::array<Def, NumSwitches> kDefs{{
+     {"EDEN_UP_UBO_SHARE", ParseExactOne, false, -1},
+     {"EDEN_UP_UBO_BIND_TRIM", ParseExactOne, false, -1},
+     {"EDEN_UP_WRITEBACK_BANDS", ParseExactOne, true, -1},
++    {"EDEN_UP_AHEAD_READ_SYNC", ParseExactOne, false, -1},
+ }};
+ 
+ static_assert(kDefs[static_cast<size_t>(Id::PollBackoffUs)].needs ==
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index dccda9e..18227e2 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -41,6 +41,7 @@
+ #include "core/frontend/framebuffer_layout.h"
+ #include "core/perf_stats.h"
+ #include "video_core/ahead_guard.h"
++#include "video_core/ahead_read_sync.h"
+ #include "video_core/landing_trace.h"
+ #include "video_core/gpu.h"
+ #include "video_core/gpu_split.h"
+@@ -2055,6 +2056,30 @@ private:
+             if (VideoCommon::LandingTrace::Enabled()) [[unlikely]] {
+                 VideoCommon::LandingTrace::AtPresent(m_presents, ran_ahead_now);
+             }
++            // EDEN_UP_AHEAD_READ_SYNC (video_core/ahead_read_sync.h), live: while this present
++            // returns before its own frame's fence (judged at the reply, as ran_ahead), guest
++            // reads of fence-downloaded buffer ranges wait for this frame's bytes
++            // (GPU::OnCPURead). Every core forgets its kept read area (one atomic: a size-0 arm
++            // only moves the read trap generation), so its next read of such a range is looked
++            // up again. Off at a present clears the flag. Before LiveSwitch::AtPresent: a
++            // change made there counts from the next present.
++            if (Common::LiveSwitch::Value<Common::LiveSwitch::Id::AheadReadSync>() != 0)
++                [[unlikely]] {
++                namespace ReadSync = VideoCommon::AheadReadSync;
++                ReadSync::g_present.store(m_presents, std::memory_order_relaxed);
++                // One word, so a reader never pairs one present's id with another's value.
++                ReadSync::g_fence.store((u64{~w[22]} << 32) | u64{w[24]},
++                                        std::memory_order_relaxed);
++                ReadSync::g_ahead.store(ran_ahead_now ? 1 : 0, std::memory_order_release);
++                if (ran_ahead_now) {
++                    ReadSync::g_counters.presents_ahead.fetch_add(1, std::memory_order_relaxed);
++                    system.ApplicationMemory().RasterizerArmReadTraps(0, 0);
++                }
++                // The 10 s line also comes when no read was caught (0 lookups says so).
++                ReadSync::MaybeReport();
++            } else if (VideoCommon::AheadReadSync::g_ahead.load(std::memory_order_relaxed) != 0) {
++                VideoCommon::AheadReadSync::g_ahead.store(0, std::memory_order_release);
++            }
+             // EDEN_UP_LIVE_SWITCHES=1 (common/live_switch.h): a live schedule changes its
+             // switches here, between two presents, and counts this present for the phase.
+             Common::LiveSwitch::AtPresent(entered);
+diff --git a/src/video_core/ahead_read_sync.h b/src/video_core/ahead_read_sync.h
+new file mode 100644
+index 0000000..6165ebd
+--- /dev/null
++++ b/src/video_core/ahead_read_sync.h
+@@ -0,0 +1,138 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <atomic>
++#include <chrono>
++
++#include "common/common_types.h"
++#include "common/logging.h"
++#include "common/pe_switch.h"
++
++/// EDEN_UP_AHEAD_READ_SYNC=1 (exact "1"; a live switch, common/live_switch.h; off by default):
++/// while the game's latest present returned before its own frame's fence (a frame ahead,
++/// EDEN_NX2_FRAMES_AHEAD=1), a guest read of a buffer range the GPU writes and fences download
++/// (Preflushable) waits for that frame's own bytes instead of taking guest memory as it is.
++///
++/// Why: below High GPU accuracy the guest fence goes up when the GPU back thread records the
++/// frame, and the frame's download of such a range lands later, on GPUFencingThread. Once the
++/// guest has read a range, BufferCache::GetFlushArea answers "preemtive" for it and the core
++/// keeps the area, so later reads take guest memory as it is. A frame ahead, CPU frame C+1 starts
++/// while frame C is not recorded or not landed, and a per-frame read-back gets frame C-1's value;
++/// at a cut from black that is the black frame (the over-bright second, 0 of 45 with the full
++/// wait). With the switch on, GPU::OnCPURead sends such a read through its synchronous flush:
++/// it first waits (at most WaitCapMs) for the presented frame's fence, so the back has recorded
++/// frame C, then flushes the range on the GPU thread, which downloads what the GPU holds there
++/// now: frame C's bytes, or newer ones only where the game already submitted later work that
++/// writes the range before reading it (what a synchronous read of a non-Preflushable range
++/// gets today, and what the hardware would show after the game's own fence wait).
++///
++/// Not covered: images the texture cache downloads at fences (forced_flushed), query reports,
++/// GPU-only chains. EDEN_UP_AHEAD_READ_SYNC_VERIFY=1 (boot) reads the range's bytes before and
++/// after the sync and logs the reads where they differ (address, present, old and new as floats).
++///
++/// Every 10 s while on:
++///   Ahead read sync: ahead lookups <n> syncs <n> avg <us> us max <us> us fence waits <n>
++///       (timeouts <n>, escapes <n>) service reads <n> changed <n> (in read <n>, <bytes> B,
++///       last <addr> at p<n>) presents ahead <n>
++namespace VideoCommon::AheadReadSync {
++
++/// The longest a read waits for the presented frame's fence before it flushes anyway.
++inline constexpr s64 WaitCapMs = 50;
++/// After this long a wait also ends when a GPU channel is suspended on a semaphore acquire.
++inline constexpr s64 EscapeAfterNs = 2'000'000;
++
++/// 1 while the game's latest present returned with its own fence not reached. Written only by
++/// the nx2:vi2 present thread (release), read by guest core threads (acquire).
++inline std::atomic<u32> g_ahead{0};
++/// That present's number, and its frame's fence as (syncpoint id << 32) | value in one word.
++/// Present thread writes (before g_ahead), guest core threads read (after g_ahead).
++inline std::atomic<u64> g_present{0};
++inline std::atomic<u64> g_fence{~u64{0}};
++
++/// Counters: relaxed atomics, written by guest core threads (presents_ahead by the present
++/// thread), read by whichever thread logs.
++struct Counters {
++    std::atomic<u64> presents_ahead{};
++    std::atomic<u64> lookups_ahead{};
++    std::atomic<u64> syncs{};
++    std::atomic<u64> sync_ns{};
++    std::atomic<u64> max_sync_ns{};
++    std::atomic<u64> fence_waits{};
++    std::atomic<u64> fence_timeouts{};
++    /// Fence waits left early because a channel waits on a semaphore the CPU releases.
++    std::atomic<u64> fence_escapes{};
++    /// Caught reads on threads that are not guest cores: they keep the shortcut (old path).
++    std::atomic<u64> service_reads{};
++    std::atomic<u64> verify_changed{};
++    std::atomic<u64> verify_bytes{};
++    /// VERIFY: reads whose own bytes [addr, addr + size) changed (verify_changed counts the
++    /// read's 4 KiB window, which also holds bytes the read did not ask for).
++    std::atomic<u64> verify_read_changed{};
++    std::atomic<u64> last_changed_addr{};
++    std::atomic<u64> last_changed_present{};
++    /// Full lines logged in the current 10 s window (VERIFY).
++    std::atomic<u32> verify_lines{};
++};
++inline Counters g_counters;
++
++/// EDEN_UP_AHEAD_READ_SYNC_VERIFY=1 (exact "1"), read once. Asked only after the live switch is
++/// seen on, so the function-static check stays off the switch-off path.
++[[nodiscard]] inline bool VerifyEnabled() {
++    static const bool enabled = Common::PeSwitch("EDEN_UP_AHEAD_READ_SYNC_VERIFY");
++    return enabled;
++}
++
++[[nodiscard]] inline s64 NowNs() {
++    return std::chrono::duration_cast<std::chrono::nanoseconds>(
++               std::chrono::steady_clock::now().time_since_epoch())
++        .count();
++}
++
++inline void Max(std::atomic<u64>& value, u64 candidate) {
++    u64 current = value.load(std::memory_order_relaxed);
++    while (candidate > current &&
++           !value.compare_exchange_weak(current, candidate, std::memory_order_relaxed)) {
++    }
++}
++
++/// The 10 s line, from the present thread (while on) and from any thread that synced; only the
++/// thread that wins the window logs.
++inline void MaybeReport() {
++    static std::atomic<s64> last_report{0};
++    const s64 now = NowNs();
++    s64 last = last_report.load(std::memory_order_relaxed);
++    if (last == 0) {
++        last_report.compare_exchange_strong(last, now, std::memory_order_relaxed);
++        return;
++    }
++    if (now - last < 10'000'000'000LL ||
++        !last_report.compare_exchange_strong(last, now, std::memory_order_relaxed)) {
++        return;
++    }
++    auto& c = g_counters;
++    const u64 lookups = c.lookups_ahead.exchange(0, std::memory_order_relaxed);
++    const u64 syncs = c.syncs.exchange(0, std::memory_order_relaxed);
++    const u64 sync_ns = c.sync_ns.exchange(0, std::memory_order_relaxed);
++    const u64 max_ns = c.max_sync_ns.exchange(0, std::memory_order_relaxed);
++    const u64 waits = c.fence_waits.exchange(0, std::memory_order_relaxed);
++    const u64 timeouts = c.fence_timeouts.exchange(0, std::memory_order_relaxed);
++    const u64 escapes = c.fence_escapes.exchange(0, std::memory_order_relaxed);
++    const u64 service = c.service_reads.exchange(0, std::memory_order_relaxed);
++    const u64 read_changed = c.verify_read_changed.exchange(0, std::memory_order_relaxed);
++    const u64 changed = c.verify_changed.exchange(0, std::memory_order_relaxed);
++    const u64 changed_bytes = c.verify_bytes.exchange(0, std::memory_order_relaxed);
++    const u64 presents = c.presents_ahead.exchange(0, std::memory_order_relaxed);
++    c.verify_lines.store(0, std::memory_order_relaxed);
++    LOG_INFO(HW_GPU,
++             "Ahead read sync: ahead lookups {} syncs {} avg {} us max {} us fence waits {} "
++             "(timeouts {}, escapes {}) service reads {} changed {} (in read {}, {} B, last "
++             "{:#x} at p{}) presents ahead {}",
++             lookups, syncs, syncs != 0 ? sync_ns / syncs / 1000 : 0, max_ns / 1000, waits,
++             timeouts, escapes, service, changed, read_changed, changed_bytes,
++             c.last_changed_addr.load(std::memory_order_relaxed),
++             c.last_changed_present.load(std::memory_order_relaxed), presents);
++}
++
++} // namespace VideoCommon::AheadReadSync
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index 7e34b80..19e5d8f 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -456,6 +456,8 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
+         !HasGpuWritesNotDownloadedAtFence(device_addr_start_aligned,
+                                           device_addr_end_aligned - device_addr_start_aligned)) {
+         area->preemtive = true;
++        // EDEN_UP_AHEAD_READ_SYNC (video_core/ahead_read_sync.h): read only with the switch.
++        area->preflushed = true;
+         // EDEN_UP_L1028_ASYNC_READBACK (Lichii #1028): fence downloads keep it once the first
+         // read's download is in guest memory; until then a read waits for that download
+         // (EDEN_UP_L1028_VERIFY: flushes, which checks it).
+diff --git a/src/video_core/gpu.cpp b/src/video_core/gpu.cpp
+index b5781fc..f232e16 100644
+--- a/src/video_core/gpu.cpp
++++ b/src/video_core/gpu.cpp
+@@ -10,13 +10,16 @@
+ #include <chrono>
+ #include <condition_variable>
+ #include <cstdlib>
++#include <cstring>
+ #include <list>
+ #include <memory>
+ #include <mutex>
++#include <thread>
+ #include <utility>
+ #include <vector>
+ 
+ #include "common/assert.h"
++#include "common/live_switch.h"
+ #include "common/pe_switch.h"
+ #include "common/scope_exit.h"
+ #include "common/settings.h"
+@@ -26,6 +29,7 @@
+ #include "core/frontend/emu_window.h"
+ #include "core/frontend/graphics_context.h"
+ #include "core/gpu_dirty_memory_manager.h"
++#include "core/hardware_properties.h"
+ #include "core/hle/service/nvdrv/nvdata.h"
+ #include "core/perf_stats.h"
+ #include "video_core/cdma_pusher.h"
+@@ -38,6 +42,7 @@
+ #include "video_core/engines/maxwell_3d.h"
+ #include "video_core/engines/maxwell_dma.h"
+ #include "video_core/ahead_guard.h"
++#include "video_core/ahead_read_sync.h"
+ #include "video_core/gpu.h"
+ #include "video_core/gpu_split.h"
+ #include "video_core/gpu_thread.h"
+@@ -485,6 +490,15 @@ struct GPU::Impl {
+     VideoCore::RasterizerDownloadArea OnCPURead(DAddr addr, u64 size) {
+         auto raster_area = renderer->ReadRasterizer()->GetFlushArea(addr, size);
+         if (raster_area.preemtive) {
++            // EDEN_UP_AHEAD_READ_SYNC (video_core/ahead_read_sync.h), live: a fence-downloaded
++            // range while the latest present ran ahead waits for that frame's bytes. Off: one
++            // byte test, and one plain load for Preflushable answers.
++            if (raster_area.preflushed &&
++                Common::LiveSwitch::Peek<Common::LiveSwitch::Id::AheadReadSync>() != 0 &&
++                VideoCommon::AheadReadSync::g_ahead.load(std::memory_order_acquire) != 0)
++                [[unlikely]] {
++                return ReadAheadSync(raster_area, addr, size);
++            }
+             return raster_area;
+         }
+         raster_area.preemtive = true;
+@@ -557,6 +571,134 @@ struct GPU::Impl {
+         return raster_area;
+     }
+ 
++    /// EDEN_UP_AHEAD_READ_SYNC (video_core/ahead_read_sync.h): OnCPURead of a range fences
++    /// download (Preflushable) while the game's latest present returned before its own fence.
++    /// Waits for that frame's fence (at most WaitCapMs, and not while a channel waits on a
++    /// semaphore the CPU releases), so the back has recorded the frame and its writes to the
++    /// range are GPU-modified, then runs OnCPURead's synchronous flush, which downloads them into
++    /// guest memory now. On guest core threads only: other threads keep no area and take the
++    /// shortcut as before. No cache mutex is held here (GetFlushArea released both).
++    VideoCore::RasterizerDownloadArea ReadAheadSync(VideoCore::RasterizerDownloadArea raster_area,
++                                                    DAddr addr, u64 size) {
++        namespace ReadSync = VideoCommon::AheadReadSync;
++        auto& counters = ReadSync::g_counters;
++        if (system.GetCurrentHostThreadID() >= Core::Hardware::NUM_CPU_CORES) {
++            counters.service_reads.fetch_add(1, std::memory_order_relaxed);
++            return raster_area;
++        }
++        counters.lookups_ahead.fetch_add(1, std::memory_order_relaxed);
++        const s64 start = ReadSync::NowNs();
++        // EDEN_UP_AHEAD_READ_SYNC_VERIFY=1: the bytes the shortcut gives (guest memory as it is
++        // at the read, before any wait), up to 4 KiB from the read's page, against those after
++        // the flush. Observes only: the game reads the bytes after the flush either way.
++        const bool verify = ReadSync::VerifyEnabled();
++        std::array<u8, 4096> before{};
++        DAddr verify_begin = 0;
++        u64 verify_size = 0;
++        if (verify) [[unlikely]] {
++            verify_begin = (std::max)(static_cast<DAddr>(raster_area.start_address),
++                                      addr & ~DAddr{4095});
++            verify_size = (std::min)(static_cast<u64>(before.size()),
++                                     static_cast<u64>(raster_area.end_address) - verify_begin);
++            system.Host1x().MemoryManager().ReadBlockUnsafe(verify_begin, before.data(),
++                                                            verify_size);
++        }
++        const u64 fence_word = ReadSync::g_fence.load(std::memory_order_relaxed);
++        const u32 fence_id = static_cast<u32>(fence_word >> 32);
++        const u32 fence_value = static_cast<u32>(fence_word);
++        if (fence_id < 192) {
++            const auto& syncpoints = system.Host1x().GetSyncpointManager();
++            if (!syncpoints.IsReadyGuest(fence_id, fence_value)) {
++                counters.fence_waits.fetch_add(1, std::memory_order_relaxed);
++                // Bounded: a frame whose GPU work waits on a release this thread makes later
++                // would never reach its fence. Then the flush below runs as it would today.
++                const s64 deadline = start + ReadSync::WaitCapMs * 1'000'000;
++                while (!syncpoints.IsReadyGuest(fence_id, fence_value)) {
++                    const s64 now = ReadSync::NowNs();
++                    if (now >= deadline) {
++                        counters.fence_timeouts.fetch_add(1, std::memory_order_relaxed);
++                        break;
++                    }
++                    // Past EscapeAfterNs with a channel suspended on a semaphore acquire: the
++                    // frame may wait on a release this thread makes later (as AheadGuard's
++                    // HoldWriter, which lets such writers go).
++                    if (now - start >= ReadSync::EscapeAfterNs &&
++                        scheduler.HasPendingChannelsAnyThread()) {
++                        counters.fence_escapes.fetch_add(1, std::memory_order_relaxed);
++                        break;
++                    }
++                    if (now - start < 500'000) {
++                        std::this_thread::yield();
++                    } else {
++                        std::this_thread::sleep_for(std::chrono::microseconds{250});
++                    }
++                }
++            }
++        }
++        const u64 fence = RequestSyncOperation([this, raster_area]() {
++            // Apply collected guest writes before downloading GPU data over guest memory.
++            InvalidateGPUCache();
++            renderer->ReadRasterizer()->FlushRegion(raster_area.start_address,
++                                                    raster_area.end_address -
++                                                        raster_area.start_address);
++        });
++        gpu_thread.TickGPU(is_async);
++        WaitForSyncOperation(fence);
++        const u64 took = static_cast<u64>(ReadSync::NowNs() - start);
++        counters.syncs.fetch_add(1, std::memory_order_relaxed);
++        counters.sync_ns.fetch_add(took, std::memory_order_relaxed);
++        ReadSync::Max(counters.max_sync_ns, took);
++        if (verify) [[unlikely]] {
++            std::array<u8, 4096> after{};
++            system.Host1x().MemoryManager().ReadBlockUnsafe(verify_begin, after.data(),
++                                                            verify_size);
++            const u64 read_begin = addr > verify_begin ? addr - verify_begin : 0;
++            const u64 read_end = (std::min)(verify_size, read_begin + size);
++            u64 changed = 0;
++            u64 first = verify_size;
++            u64 first_in_read = verify_size;
++            for (u64 i = 0; i < verify_size; ++i) {
++                if (before[i] != after[i]) {
++                    first = changed == 0 ? i : first;
++                    ++changed;
++                    if (first_in_read == verify_size && i >= read_begin && i < read_end) {
++                        first_in_read = i;
++                    }
++                }
++            }
++            if (changed != 0) {
++                // The line the read asked for when its own bytes changed, else the first one.
++                const bool in_read = first_in_read != verify_size;
++                const u64 line = (in_read ? first_in_read : first) & ~u64{15};
++                const DAddr line_addr = verify_begin + line;
++                const u64 present = ReadSync::g_present.load(std::memory_order_relaxed);
++                counters.verify_changed.fetch_add(1, std::memory_order_relaxed);
++                counters.verify_bytes.fetch_add(changed, std::memory_order_relaxed);
++                if (in_read) {
++                    counters.verify_read_changed.fetch_add(1, std::memory_order_relaxed);
++                }
++                counters.last_changed_addr.store(line_addr, std::memory_order_relaxed);
++                counters.last_changed_present.store(present, std::memory_order_relaxed);
++                if (counters.verify_lines.fetch_add(1, std::memory_order_relaxed) < 8) {
++                    std::array<f32, 4> old_values{};
++                    std::array<f32, 4> new_values{};
++                    const u64 bytes = (std::min)(u64{16}, verify_size - line);
++                    std::memcpy(old_values.data(), before.data() + line, bytes);
++                    std::memcpy(new_values.data(), after.data() + line, bytes);
++                    LOG_INFO(HW_GPU,
++                             "Ahead read sync: read [{:#x}, +{}) at p{} changed {} B ({}), "
++                             "line {:#x}: {} {} {} {} -> {} {} {} {}",
++                             addr, size, present, changed, in_read ? "in read" : "window only",
++                             line_addr, old_values[0], old_values[1], old_values[2],
++                             old_values[3], new_values[0], new_values[1], new_values[2],
++                             new_values[3]);
++                }
++            }
++        }
++        ReadSync::MaybeReport();
++        return raster_area;
++    }
++
+     /// Notify rasterizer that any caches of the specified region should be invalidated
+     void InvalidateRegion(DAddr addr, u64 size, bool preserve_gpu_writes) {
+         if (preserve_gpu_writes) {
+diff --git a/src/video_core/rasterizer_download_area.h b/src/video_core/rasterizer_download_area.h
+index ac85a04..ee040fd 100644
+--- a/src/video_core/rasterizer_download_area.h
++++ b/src/video_core/rasterizer_download_area.h
+@@ -19,6 +19,9 @@ struct RasterizerDownloadArea {
+     /// EDEN_UP_L1028_ASYNC_READBACK: what guest memory lacks there is on its way for an earlier
+     /// read: nothing to flush, only to wait for (RasterizerInterface::FinishRead).
+     bool in_flight{};
++    /// BufferCache::GetFlushArea: the answer came from the Preflushable shortcut (fence
++    /// downloads keep the range). Read only with EDEN_UP_AHEAD_READ_SYNC (GPU::OnCPURead).
++    bool preflushed{};
+ };
+ 
+ /// EDEN_UP_L1028_ASYNC_READBACK (zortos293/Lichii #1028): downloads for guest CPU reads that are

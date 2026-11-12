@@ -1,0 +1,195 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: [PATCH] The GPU address lookup without the page cache is a plain walk again
+
+MemoryManager::GpuToCpuAddress is the hottest lookup of the GPU threads. Since 0541 the page
+cache (EDEN_UP_GPU_PAGE_CACHE) lived in the same function, and its cold paths (the table's first
+allocation, the per-thread pointer) made the compiler set up a stack frame of six saved registers
+on every lookup, with the switch off as well; before 0541 the function had no frame at all. No
+fps loss was measured from it (T120 against T116, same hour), so this is tidying: under 1% at best.
+
+- The page-table walk is a function of its own, WalkGpuToCpuAddress, always inlined.
+- The cached path is GpuToCpuAddressCached, never inlined, reached by one jump when the switch
+  is on (a forced tail call: as a plain call it kept the frame too). It does what the branch did: look in the per-thread table, walk on a miss, fill the slot.
+- GpuToCpuAddress is the range check, the switch read and the walk. With the switch off nothing
+  else runs.
+- The switch is read with the new Common::LiveSwitch::Peek: one plain load. Value() carries a
+  first-use check (a guard, and a call the hot path would have to keep registers for), which alone
+  kept the frame in the first build of this patch. The first use is made once in the memory
+  manager's constructor instead.
+
+Behaviour is the same in both settings; the switch stays live. Check after a build: the function
+must be a leaf again in the eboot (llvm-objdump: no push at its start, as in T116).
+
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -753,6 +753,15 @@
+     return g_values[static_cast<size_t>(id)].load(std::memory_order_relaxed);
+ }
+ 
++/// Value() without its first-use step: one plain load and nothing else, for a reader so hot that
++/// the first-use check (a guard and a call the compiler must keep a stack frame for) would show.
++/// The owner of the switch must have called Value<id>() once before (a constructor does), or
++/// this reads 0 for ever.
++template <Id id>
++[[nodiscard]] inline s64 Peek() noexcept {
++    return g_values[static_cast<size_t>(id)].load(std::memory_order_relaxed);
++}
++
+ /// The presenting thread, once per present of the game. Off: one cached check.
+ inline void AtPresent(std::chrono::steady_clock::time_point now) {
+     if (!Mechanism()) {
+diff --git a/src/video_core/memory_manager.cpp b/src/video_core/memory_manager.cpp
+--- a/src/video_core/memory_manager.cpp
++++ b/src/video_core/memory_manager.cpp
+@@ -74,6 +74,9 @@
+     } else {
+         entries.resize(page_table_size / 32, 0);
+     }
++    // EDEN_UP_GPU_PAGE_CACHE's first use is here and not in GpuToCpuAddress, which reads the
++    // switch with Peek (one plain load, no first-use step of its own).
++    static_cast<void>(Common::LiveSwitch::Value<Common::LiveSwitch::Id::GpuPageCache>());
+ }
+ 
+ MemoryManager::MemoryManager(Core::System& system_, u64 address_space_bits_, GPUVAddr split_address_, u64 big_page_bits_, u64 page_bits_)
+@@ -265,12 +268,55 @@
+ 
+     BigPageTableOp(gpu_addr, 0, size, PTEKind::INVALID, EntryType::Free);
+     PageTableOp(gpu_addr, 0, size, PTEKind::INVALID, EntryType::Free);
++}
++
++// The page-table walk of GpuToCpuAddress, a function of its own since T121 so that the lookup
++// without EDEN_UP_GPU_PAGE_CACHE is again what it was before 0541: nothing but the walk, no stack
++// frame for the cache's cold paths (its first-use allocation and per-thread pointer).
++[[gnu::always_inline]] inline std::optional<DAddr> MemoryManager::WalkGpuToCpuAddress(
++    GPUVAddr gpu_addr) const {
++    DAddr dev_addr;
++    if (GetEntry(gpu_addr, true) != EntryType::Mapped) [[unlikely]] {
++        if (GetEntry(gpu_addr, false) != EntryType::Mapped)
++            return std::nullopt;
++        dev_addr = (DAddr(page_table[PageEntryIndex(gpu_addr, false)]) << cpu_page_bits) +
++                   (gpu_addr & page_mask);
++    } else {
++        dev_addr = (DAddr(big_page_table_dev[PageEntryIndex(gpu_addr, true)]) << cpu_page_bits) +
++                   (gpu_addr & big_page_mask);
++    }
++    // Djihads80/Eglantine c6d2acd37: an entry past the device address space would index past the
++    // device memory manager's tables (every caller treats nullopt as unmapped).
++    if ((dev_addr >> MaxwellDeviceMemoryManager::AS_BITS) != 0) [[unlikely]] {
++        static std::atomic<u32> reported{};
++        if (reported.fetch_add(1, std::memory_order_relaxed) < 16) {
++            LOG_ERROR(HW_GPU, "GPU address {:#x} maps outside the device space, to {:#x}",
++                      gpu_addr, dev_addr);
++        }
++        return std::nullopt;
++    }
++    return dev_addr;
+ }
+ 
+ std::optional<DAddr> MemoryManager::GpuToCpuAddress(GPUVAddr gpu_addr) const {
+     if (!IsWithinGPUAddressRange(gpu_addr)) [[unlikely]] {
+         return std::nullopt;
+     }
++    // A live switch since T119 (common/live_switch.h): read at each lookup, one plain load. Peek,
++    // not Value: Value's first-use check would bring a guard and a call into this function, and
++    // with them the stack frame this split removes. The constructor made the first use.
++    if (Common::LiveSwitch::Peek<Common::LiveSwitch::Id::GpuPageCache>() != 0) [[unlikely]] {
++        // A jump, not a call: with a call here the compiler kept a frame for the whole function.
++#if defined(__clang__)
++        [[clang::musttail]]
++#endif
++        return GpuToCpuAddressCached(gpu_addr);
++    }
++    return WalkGpuToCpuAddress(gpu_addr);
++}
++
++[[gnu::noinline]] std::optional<DAddr> MemoryManager::GpuToCpuAddressCached(
++    GPUVAddr gpu_addr) const {
+     // EDEN_UP_GPU_PAGE_CACHE=1 (exact "1", off without it; Eglantine b1e650849e by kraibse, as
+     // Frizti/Fritchii 85a33019b7 has it, with its fix 289ffeb16b: the switch is read once, not on
+     // every lookup). The same few pages are looked up over and over, every draw rebinds its
+@@ -287,55 +333,28 @@
+     };
+     static constexpr size_t CacheSize = 2048;
+     using PageCache = std::array<CachedPage, CacheSize>;
+-    // A live switch since T119 (common/live_switch.h): read at each lookup, one atomic load.
+-    const bool use_cache =
+-        Common::LiveSwitch::Value<Common::LiveSwitch::Id::GpuPageCache>() != 0;
+     constexpr u64 SubpageBits = 12;
+     constexpr u64 SubpageMask = (u64{1} << SubpageBits) - 1;
+     const u64 owner_id = (u64{unique_identifier} << 1) | 1; // never 0, the empty slot
+     const u64 page = gpu_addr >> SubpageBits;
+     u64 serial = 0;
+     CachedPage* slot = nullptr;
+-    if (use_cache) {
+-        // The per-thread table lives inside this branch and is a plain pointer: T117 to T119 had a
+-        // thread_local unique_ptr declared above it, and on the PS5 touching a thread_local with a
+-        // destructor is a call, made at every lookup with the switch OFF as well (no fps loss
+-        // was measured from it, it is simply not needed). Never freed: 64 KiB for each long-lived
+-        // thread that used it.
+-        static thread_local PageCache* cache = nullptr;
+-        if (cache == nullptr) [[unlikely]] {
+-            cache = new (std::nothrow) PageCache{};
+-        }
+-        if (cache != nullptr) [[likely]] {
+-            serial = map_serial.load(std::memory_order_acquire);
+-            slot = &(*cache)[(page ^ (page >> 11)) % CacheSize];
+-            if (slot->owner == owner_id && slot->page == page && slot->serial == serial) [[likely]] {
+-                return slot->device_page + (gpu_addr & SubpageMask);
+-            }
++    // The per-thread table is a plain pointer (a thread_local with a destructor is reached through
++    // a call on the PS5). Never freed: 64 KiB for each long-lived thread that used it.
++    static thread_local PageCache* cache = nullptr;
++    if (cache == nullptr) [[unlikely]] {
++        cache = new (std::nothrow) PageCache{};
++    }
++    if (cache != nullptr) [[likely]] {
++        serial = map_serial.load(std::memory_order_acquire);
++        slot = &(*cache)[(page ^ (page >> 11)) % CacheSize];
++        if (slot->owner == owner_id && slot->page == page && slot->serial == serial) [[likely]] {
++            return slot->device_page + (gpu_addr & SubpageMask);
+         }
+     }
+-    DAddr dev_addr;
+-    if (GetEntry(gpu_addr, true) != EntryType::Mapped) [[unlikely]] {
+-        if (GetEntry(gpu_addr, false) != EntryType::Mapped)
+-            return std::nullopt;
+-        dev_addr = (DAddr(page_table[PageEntryIndex(gpu_addr, false)]) << cpu_page_bits) +
+-                   (gpu_addr & page_mask);
+-    } else {
+-        dev_addr = (DAddr(big_page_table_dev[PageEntryIndex(gpu_addr, true)]) << cpu_page_bits) +
+-                   (gpu_addr & big_page_mask);
+-    }
+-    // Djihads80/Eglantine c6d2acd37: an entry past the device address space would index past the
+-    // device memory manager's tables (every caller treats nullopt as unmapped).
+-    if ((dev_addr >> MaxwellDeviceMemoryManager::AS_BITS) != 0) [[unlikely]] {
+-        static std::atomic<u32> reported{};
+-        if (reported.fetch_add(1, std::memory_order_relaxed) < 16) {
+-            LOG_ERROR(HW_GPU, "GPU address {:#x} maps outside the device space, to {:#x}",
+-                      gpu_addr, dev_addr);
+-        }
+-        return std::nullopt;
+-    }
+-    if (slot != nullptr) {
+-        *slot = CachedPage{owner_id, serial, page, dev_addr - (gpu_addr & SubpageMask)};
++    const std::optional<DAddr> dev_addr = WalkGpuToCpuAddress(gpu_addr);
++    if (dev_addr && slot != nullptr) {
++        *slot = CachedPage{owner_id, serial, page, *dev_addr - (gpu_addr & SubpageMask)};
+     }
+     return dev_addr;
+ }
+diff --git a/src/video_core/memory_manager.h b/src/video_core/memory_manager.h
+--- a/src/video_core/memory_manager.h
++++ b/src/video_core/memory_manager.h
+@@ -259,6 +259,11 @@
+     inline EntryType GetEntry(size_t position, bool is_big_page) const;
+     inline void SetEntry(size_t position, EntryType entry, bool is_big_page);
+ 
++    /// GpuToCpuAddress's page-table walk, and its path with EDEN_UP_GPU_PAGE_CACHE on (kept out
++    /// of line so the lookup without the cache stays a function without a frame).
++    inline std::optional<DAddr> WalkGpuToCpuAddress(GPUVAddr gpu_addr) const;
++    std::optional<DAddr> GpuToCpuAddressCached(GPUVAddr gpu_addr) const;
++
+     Common::MultiLevelPageTable<u32> page_table;
+     mutable Common::RangeMap<GPUVAddr, PTEKind> kind_map;
+     Common::SparseLargeVector<u32> big_page_table_dev;

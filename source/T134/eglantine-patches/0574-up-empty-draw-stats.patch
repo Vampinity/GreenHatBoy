@@ -1,0 +1,479 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: empty draw stats, draw requests that record nothing (EDEN_UP_EMPTY_DRAW_STATS, log only)
+
+DRAFT, not built. Measurement (job K3, AI draft). EDEN_UP_EMPTY_DRAW_STATS (exact 1, live, Id
+EmptyDrawStats, not armed); off by default. On: GPUBack counts each draw request and each early
+exit by reason (render disabled, zero vertices/instances, no pipeline, pipeline building, timed
+A/B, empty indirect/count args, ...); the Vulkan worker counts what was recorded; a FIFO marker a
+frame merges them. 10 s line "EDEN_UP_EMPTY_DRAW_STATS" (per frame), with other/double_counted.
+New file video_core/empty_draw_stats.h.
+
+Reviewed draft (job K review, verdict "ready with corrections"): draft-k3-empty-draw-stats.v2.patch.
+live_switch.h re-anchored after DmaMissStats; vk_rasterizer.cpp's constructor hunk re-anchored
+(0559 added a store after SetQueryCache); all +/- lines byte-identical.
+---
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+index d8356c4..d4f1431 100644
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -212,6 +212,8 @@ enum class Id : u8 {
+     RadvOomLend,
+     /// Log-only front-owned DMA snapshot attribution; no validity decisions.
+     DmaMissStats,
++    /// Log-only draw outcomes; each request carries its sampling decision to the worker.
++    EmptyDrawStats,
+     Count,
+ };
+ 
+@@ -350,6 +352,7 @@ inline constexpr std::array<Def, NumSwitches> kDefs{{
+     {"EDEN_UP_GC_WRITEBACK_SKIP", ParseExactOne, false, -1},
+     {"EDEN_UP_RADV_OOM_LEND", ParseLendBlocks, false, -1},
+     {"EDEN_UP_DMA_MISS_STATS", ParseExactOne, false, -1},
++    {"EDEN_UP_EMPTY_DRAW_STATS", ParseExactOne, false, -1},
+ }};
+ 
+ static_assert(kDefs[static_cast<size_t>(Id::PollBackoffUs)].needs ==
+diff --git a/src/video_core/empty_draw_stats.h b/src/video_core/empty_draw_stats.h
+new file mode 100644
+index 0000000..bf508f1
+--- /dev/null
++++ b/src/video_core/empty_draw_stats.h
+@@ -0,0 +1,111 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#pragma once
++
++#include <array>
++#include <chrono>
++#include <cstdio>
++#include "common/common_types.h"
++#include "common/live_switch.h"
++
++namespace VideoCommon::EmptyDrawStats {
++enum class Outcome : u8 {
++    Recorded, RecordedZeroVertices, RecordedZeroInstances,
++    RenderDisabled, InvalidVertexRange, DebugShader, ZeroVertices, ZeroInstances,
++    MeshSkipped, NoPipeline, PipelineBuilding, ConfigureFailed, IndirectReset,
++    TimedAb, MeshNotRecorded, MeshGroupLimit, EmptyIndirectArgs, EmptyCountArgs,
++    WorkerPipelineMissing, Other, Count,
++};
++using Counts = std::array<u64, static_cast<size_t>(Outcome::Count)>;
++// The emulator has one rasterizer/GPUBack. No field here is read by VulkanWorker.
++struct BackState {
++    Counts counts{};
++    u64 requests{}; ///< Sampled draw requests (Begin) and render-disabled ones: what outcomes add up to
++    bool measuring{};
++    bool pending{};
++    bool lookup_building{};
++};
++inline BackState back;
++inline bool Enabled() noexcept {
++    return Common::LiveSwitch::Peek<Common::LiveSwitch::Id::EmptyDrawStats>() != 0;
++}
++inline void Begin() noexcept {
++    back.measuring = Enabled(); // exactly one live load per Rasterizer draw request
++    if (back.measuring) {
++        ++back.requests;
++        back.pending = true;
++        back.lookup_building = false;
++    }
++}
++inline void Add(Outcome outcome) noexcept {
++    if (back.measuring) ++back.counts[static_cast<size_t>(outcome)];
++}
++inline void Building() noexcept {
++    if (back.measuring) back.lookup_building = true;
++}
++inline void RenderDisabled() noexcept {
++    if (Enabled()) {
++        back.pending = true;
++        ++back.requests;
++        ++back.counts[static_cast<size_t>(Outcome::RenderDisabled)];
++    }
++}
++// Worker-owned, including the clock and frame count. Existing scheduler FIFO ordering
++// places every sampled draw outcome before the marker for its TickFrame.
++struct WorkerState {
++    Counts counts{};
++    u64 requests{};
++    u64 frames{};
++    std::chrono::steady_clock::time_point start{};
++};
++inline WorkerState worker;
++inline void Recorded(bool sample, bool missing, Outcome outcome = Outcome::Recorded) noexcept {
++    if (sample) ++worker.counts[static_cast<size_t>(missing ? Outcome::WorkerPipelineMissing : outcome)];
++}
++inline void EndFrame(const Counts& early, u64 early_requests, bool enabled) {
++    const auto now = std::chrono::steady_clock::now();
++    if (worker.start == std::chrono::steady_clock::time_point{}) worker.start = now;
++    for (size_t i = 0; i < early.size(); ++i) worker.counts[i] += early[i];
++    worker.requests += early_requests;
++    ++worker.frames;
++    const double seconds = std::chrono::duration<double>(now - worker.start).count();
++    if (seconds >= 10.0) {
++        static constexpr std::array<const char*, static_cast<size_t>(Outcome::Count)> names{
++            "recorded", "recorded_zero_vertices", "recorded_zero_instances",
++            "render_disabled", "invalid_vertex_range", "debug_shader", "zero_vertices", "zero_instances",
++            "mesh_skipped", "no_pipeline", "pipeline_building", "configure_failed", "indirect_reset",
++            "timed_ab", "mesh_not_recorded", "mesh_group_limit", "empty_indirect_args", "empty_count_args",
++            "worker_pipeline_missing", "other"};
++        // "other" is what no hook saw: requests that ended without any outcome (a return
++        // nobody hooked). double_counted is the reverse (a request with two outcomes). Both
++        // should read 0; anything else means a count below lies.
++        const u64 requests = worker.requests;
++        u64 accounted = 0;
++        for (size_t i = 0; i < worker.counts.size(); ++i) {
++            if (i != static_cast<size_t>(Outcome::Other)) accounted += worker.counts[i];
++        }
++        worker.counts[static_cast<size_t>(Outcome::Other)] =
++            requests > accounted ? requests - accounted : 0;
++        const u64 double_counted = accounted > requests ? accounted - requests : 0;
++        const double frames = static_cast<double>(worker.frames);
++        const u64 recorded = worker.counts[0] + worker.counts[1] + worker.counts[2];
++        char line[2048];
++        int used = std::snprintf(line, sizeof(line),
++            "EDEN_UP_EMPTY_DRAW_STATS seconds=%.3f frames=%llu requests/frame=%.3f recorded_total/frame=%.3f",
++            seconds, static_cast<unsigned long long>(worker.frames), requests / frames, recorded / frames);
++        for (size_t i = 0; i < names.size() && used > 0 && size_t(used) < sizeof(line); ++i) {
++            used += std::snprintf(line + used, sizeof(line) - size_t(used), " %s/frame=%.3f",
++                names[i], worker.counts[i] / frames);
++        }
++        if (used > 0 && size_t(used) < sizeof(line)) {
++            std::snprintf(line + used, sizeof(line) - size_t(used), " double_counted/frame=%.3f",
++                double_counted / frames);
++        }
++        std::fprintf(stderr, "%s\n", line);
++        worker = {};
++        worker.start = now;
++    }
++    // A sampled partial frame may finish after off. Do not carry its window into
++    // a later on phase. In-flight outcomes before this marker are already included.
++    if (!enabled) worker = {};
++}
++} // namespace VideoCommon::EmptyDrawStats
+diff --git a/src/video_core/engines/draw_manager.cpp b/src/video_core/engines/draw_manager.cpp
+index f7fa672..fdaf611 100644
+--- a/src/video_core/engines/draw_manager.cpp
++++ b/src/video_core/engines/draw_manager.cpp
+@@ -5,6 +5,7 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include <cstring>
++#include "video_core/empty_draw_stats.h"
+ 
+ #include "common/nx2_load_wait.h"
+ #include "common/settings.h"
+@@ -366,6 +367,9 @@ void Maxwell3D::DrawManager::ProcessDraw(Maxwell3D& maxwell3d, bool draw_indexed
+             maxwell3d.GetNativeMacroEngine().RecordBananzaTerrainDepthDraw(maxwell3d, instance_count);
+         }
+         maxwell3d.rasterizer->Draw(draw_indexed, instance_count);
++    } else if (VideoCommon::EmptyDrawStats::Enabled() &&
++               Settings::values.renderer_backend.GetValue() == Settings::RendererBackend::Vulkan) {
++        VideoCommon::EmptyDrawStats::RenderDisabled();
+     }
+ }
+ 
+@@ -379,6 +383,9 @@ void Maxwell3D::DrawManager::ProcessDrawIndirect(Maxwell3D& maxwell3d) {
+     if (maxwell3d.ShouldExecute()) {
+         Common::Nx2LoadWait::NoteDraw(); // EDEN_UP_OOT_LOAD_WAIT
+         maxwell3d.rasterizer->DrawIndirect();
++    } else if (VideoCommon::EmptyDrawStats::Enabled() &&
++               Settings::values.renderer_backend.GetValue() == Settings::RendererBackend::Vulkan) {
++        VideoCommon::EmptyDrawStats::RenderDisabled();
+     }
+ }
+ } // namespace Tegra::Engines
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index db13af0..d174402 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -7,6 +7,7 @@
+ #include "common/live_switch.h"
+ #include "common/pe_switch.h"
+ #include <algorithm>
++#include "video_core/empty_draw_stats.h"
+ #include <chrono>
+ #include <condition_variable>
+ #include <map>
+@@ -2396,6 +2397,7 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
+     // EDEN_UP_ASYNC_TRANSLATION=1 (translation_workers is null otherwise): what the translators
+     // finished joins graphics_cache, and a draw whose pipeline still translates is skipped.
+     if (translation_workers && !TranslatedInTime()) {
++        VideoCommon::EmptyDrawStats::Building();
+         return nullptr;
+     }
+     // EDEN_UP_ASYNC_TRANSLATION: true only for a key TranslatedInTime let through that was
+@@ -2411,6 +2413,7 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
+         if (translation_left) {
+             // EDEN_UP_ASYNC_TRANSLATION: left translating on a worker (a later draw adopts it),
+             // or not queued over the cap (a later draw makes it).
++            VideoCommon::EmptyDrawStats::Building();
+             translation_left = false;
+             graphics_cache.erase(graphics_key);
+             return nullptr;
+@@ -2523,6 +2526,7 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
+     // If something is using depth, we can assume that games are not rendering anything which
+     // will be used one time.
+     if (maxwell3d->regs.zeta_enable) {
++        VideoCommon::EmptyDrawStats::Building();
+         return nullptr;
+     }
+     // If games are using a small index count, we can assume these are full screen quads.
+@@ -2540,6 +2544,7 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
+     if (wait && Settings::CurrentProgramIsSwitch2()) {
+         return pipeline;
+     }
++    VideoCommon::EmptyDrawStats::Building();
+     return nullptr;
+ }
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 907c0e5..b9419cb 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -10,6 +10,7 @@
+ #include "video_core/image_pages.h"
+ #include "video_core/astc_policy.h"
+ #include <algorithm>
++#include "video_core/empty_draw_stats.h"
+ #include <array>
+ #include <atomic>
+ #include <chrono>
+@@ -264,6 +265,9 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
+       accelerate_dma(buffer_cache, texture_cache, scheduler),
+       fence_manager(*this, gpu, texture_cache, buffer_cache, query_cache, device, scheduler),
+       wfi_event(device.GetLogical().CreateEvent()) {
++    static_cast<void>(Common::LiveSwitch::Value<Common::LiveSwitch::Id::EmptyDrawStats>());
++    VideoCommon::EmptyDrawStats::back = {};
++    VideoCommon::EmptyDrawStats::worker = {}; // before this rasterizer queues work
+     scheduler.SetQueryCache(query_cache);
+     VideoCommon::Nx2FastDraw::g_vertex_formats_dynamic.store(pipeline_cache.VertexFormatsDynamic(),
+                                                             std::memory_order_relaxed);
+@@ -1042,6 +1046,13 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
+     const bool drop_mesh_draw{DropMeshDrawsBeforeBuild() && maxwell3d->regs.IsMeshEnabled() &&
+                               maxwell3d->GetNativeMacroEngine().native_turing};
+     const auto report_failure = [&](std::string_view reason) {
++        namespace Empty = VideoCommon::EmptyDrawStats;
++        if (Empty::back.measuring) {
++            const auto outcome = reason == "no pipeline"
++                ? (Empty::back.lookup_building ? Empty::Outcome::PipelineBuilding : Empty::Outcome::NoPipeline)
++                : reason == "configure failed" ? Empty::Outcome::ConfigureFailed : Empty::Outcome::MeshSkipped;
++            Empty::Add(outcome);
++        }
+         static std::set<std::tuple<u64, u64, std::string_view>> seen;
+         const auto& regs = maxwell3d->regs;
+         const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
+@@ -1077,6 +1088,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
+         return;
+     }
+     if (!is_indexed && TryNx2IndirectReset()) {
++        VideoCommon::EmptyDrawStats::Add(VideoCommon::EmptyDrawStats::Outcome::IndirectReset);
+         submitted = true;
+         return;
+     }
+@@ -1121,6 +1133,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
+     }
+     if (TimedAb::Get().Active() &&
+         TimedAb::Get().SkipDraw(pipeline->Key().unique_hashes, maxwell3d->regs)) {
++        VideoCommon::EmptyDrawStats::Add(VideoCommon::EmptyDrawStats::Outcome::TimedAb);
+         return;
+     }
+     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+@@ -1337,6 +1350,9 @@ void TraceWindowTarget(const Tegra::Engines::Maxwell3D& maxwell3d, Tegra::Memory
+ } // Anonymous namespace
+ 
+ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
++    namespace Empty = VideoCommon::EmptyDrawStats;
++    Empty::Begin();
++    const bool empty_sample = Empty::back.measuring;
+     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Draw};
+     {
+         // A draw's first and count can come from memory a skipped (rejected) compute program
+@@ -1348,6 +1364,7 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
+         const u64 count = is_indexed ? state.index_buffer.count : state.vertex_buffer.count;
+         constexpr u64 MaxVertices = u64{1} << 24;
+         if (first + count > MaxVertices) {
++            Empty::Add(Empty::Outcome::InvalidVertexRange);
+             static std::atomic<u32> skipped{};
+             if (skipped.fetch_add(1, std::memory_order_relaxed) < 16) {
+                 LOG_WARNING(HW_GPU, "Draw skipped: {} {} from {} (vertex/index count past {})",
+@@ -1475,7 +1492,10 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
+     if (!skip_list.empty()) {
+         const auto& regs = maxwell3d->regs;
+         const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
+-        if (std::find(skip_list.begin(), skip_list.end(), vs) != skip_list.end()) return;
++        if (std::find(skip_list.begin(), skip_list.end(), vs) != skip_list.end()) {
++            Empty::Add(Empty::Outcome::DebugShader);
++            return;
++        }
+     }
+     // EDEN_NX2_RT_TRACE: log the first draw to every distinct colour target (debug aid).
+     if (static const bool trace = std::getenv("EDEN_NX2_RT_TRACE") != nullptr; trace) {
+@@ -1504,10 +1524,14 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
+              const GraphicsPipeline* const pipeline = pipeline_cache.CurrentGraphicsPipeline();
+              return pipeline != nullptr && !pipeline->IsMeshPipeline();
+          }()))) {
++        if (empty_sample) {
++            Empty::Add(MakeDrawParams(maxwell3d->draw_manager.draw_state, instance_count, is_indexed)
++                .num_vertices == 0 ? Empty::Outcome::ZeroVertices : Empty::Outcome::ZeroInstances);
++        }
+         gpu.TickWork();
+         return;
+     }
+-    PrepareDraw(is_indexed, [this, is_indexed, instance_count] {
++    PrepareDraw(is_indexed, [this, is_indexed, instance_count, empty_sample] {
+         const auto& draw_state = maxwell3d->draw_manager.draw_state;
+         const u32 num_instances{instance_count};
+         const DrawParams draw_params{MakeDrawParams(draw_state, num_instances, is_indexed)};
+@@ -1517,6 +1541,7 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
+             // VkDrawIndirectCommand (mesh_compute_layout.h). Nothing when the draw did not fit.
+             // Instances are not run: the programs take their index from WorkgroupId.x alone.
+             if (!mesh_compute_draw.recorded) {
++                Empty::Add(Empty::Outcome::MeshNotRecorded);
+                 return;
+             }
+             if (num_instances > 1) {
+@@ -1526,8 +1551,10 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
+                                 num_instances);
+                 }
+             }
+-            scheduler.Record([this, draw = mesh_compute_draw](vk::CommandBuffer cmdbuf) {
+-                if (scheduler.GraphicsPipelineMissing()) {
++            scheduler.Record([this, draw = mesh_compute_draw, empty_sample](vk::CommandBuffer cmdbuf) {
++                const bool empty_missing = scheduler.GraphicsPipelineMissing();
++                if (empty_sample) Empty::Recorded(true, empty_missing);
++                if (empty_missing) {
+                     return;
+                 }
+                 cmdbuf.DrawIndirect(draw.buffer, draw.offset, 1, sizeof(VkDrawIndirectCommand));
+@@ -1546,6 +1573,7 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
+             }();
+             const u32 groups = draw_params.num_vertices;
+             if (group_limit != 0 && groups > group_limit) {
++                Empty::Add(Empty::Outcome::MeshGroupLimit);
+                 static std::atomic<u32> largest{};
+                 static std::atomic<u32> reported{};
+                 u32 seen = largest.load(std::memory_order_relaxed);
+@@ -1568,16 +1596,24 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
+                                 num_instances);
+                 }
+             }
+-            scheduler.Record([this, groups](vk::CommandBuffer cmdbuf) {
+-                if (scheduler.GraphicsPipelineMissing()) {
++            scheduler.Record([this, groups, empty_sample](vk::CommandBuffer cmdbuf) {
++                const bool empty_missing = scheduler.GraphicsPipelineMissing();
++                if (empty_sample) Empty::Recorded(true, empty_missing,
++                    groups == 0 ? Empty::Outcome::RecordedZeroVertices : Empty::Outcome::Recorded);
++                if (empty_missing) {
+                     return;
+                 }
+                 cmdbuf.DrawMeshTasksEXT(groups, 1, 1);
+             });
+             return;
+         }
+-        scheduler.Record([this, draw_params](vk::CommandBuffer cmdbuf) {
+-            if (scheduler.GraphicsPipelineMissing()) {
++        scheduler.Record([this, draw_params, empty_sample](vk::CommandBuffer cmdbuf) {
++            const bool empty_missing = scheduler.GraphicsPipelineMissing();
++            if (empty_sample) Empty::Recorded(true, empty_missing,
++                draw_params.num_vertices == 0 ? Empty::Outcome::RecordedZeroVertices
++                : draw_params.num_instances == 0 ? Empty::Outcome::RecordedZeroInstances
++                                                : Empty::Outcome::Recorded);
++            if (empty_missing) {
+                 return;
+             }
+             if (draw_params.is_indexed) {
+@@ -1631,6 +1667,9 @@ void RasterizerVulkan::TrackOotTonemappedImage(const GraphicsPipeline& pipeline)
+ }
+ 
+ void RasterizerVulkan::DrawIndirect() {
++    namespace Empty = VideoCommon::EmptyDrawStats;
++    Empty::Begin();
++    const bool empty_sample = Empty::back.measuring;
+     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Draw};
+     const auto& params = maxwell3d->draw_manager.indirect_state;
+     buffer_cache.SetDrawIndirect(&params);
+@@ -1638,26 +1677,30 @@ void RasterizerVulkan::DrawIndirect() {
+     SCOPE_EXIT {
+         fast_draw_indirect = false;
+     };
+-    PrepareDraw(params.is_indexed, [this, &params] {
++    PrepareDraw(params.is_indexed, [this, &params, empty_sample] {
+         if (mesh_draw) {
+             // Indirect task/mesh draws would need vkCmdDrawMeshTasksIndirectEXT's layout.
+             static bool logged{};
+             if (!std::exchange(logged, true)) {
+                 LOG_WARNING(Render_Vulkan, "Indirect task/mesh draw skipped");
+             }
++            Empty::Add(Empty::Outcome::MeshSkipped);
+             return;
+         }
+         const auto indirect_buffer = buffer_cache.GetDrawIndirectBuffer();
+         const auto& buffer = indirect_buffer.first;
+         const auto& offset = indirect_buffer.second;
+         if (buffer->SizeBytes() == 0) {
++            Empty::Add(Empty::Outcome::EmptyIndirectArgs);
+             // Memory refused the arguments' buffer: with no arguments there is no draw.
+             return;
+         }
+         if (params.is_byte_count) {
+             scheduler.Record([this, buffer_obj = buffer->Handle(), offset,
+-                              stride = params.stride](vk::CommandBuffer cmdbuf) {
+-                if (scheduler.GraphicsPipelineMissing()) {
++                              stride = params.stride, empty_sample](vk::CommandBuffer cmdbuf) {
++                const bool empty_missing = scheduler.GraphicsPipelineMissing();
++                if (empty_sample) Empty::Recorded(true, empty_missing);
++                if (empty_missing) {
+                     return;
+                 }
+                 cmdbuf.DrawIndirectByteCountEXT(1, 0, buffer_obj, offset, 0,
+@@ -1670,12 +1713,15 @@ void RasterizerVulkan::DrawIndirect() {
+             const auto& draw_buffer = count.first;
+             const auto& offset_base = count.second;
+             if (draw_buffer->SizeBytes() == 0) {
++                Empty::Add(Empty::Outcome::EmptyCountArgs);
+                 return;
+             }
+             scheduler.Record([this, draw_buffer_obj = draw_buffer->Handle(),
+                               buffer_obj = buffer->Handle(), offset_base, offset,
+-                              params](vk::CommandBuffer cmdbuf) {
+-                if (scheduler.GraphicsPipelineMissing()) {
++                              params, empty_sample](vk::CommandBuffer cmdbuf) {
++                const bool empty_missing = scheduler.GraphicsPipelineMissing();
++                if (empty_sample) Empty::Recorded(true, empty_missing);
++                if (empty_missing) {
+                     return;
+                 }
+                 if (params.is_indexed) {
+@@ -1690,8 +1736,10 @@ void RasterizerVulkan::DrawIndirect() {
+             });
+             return;
+         }
+-        scheduler.Record([this, buffer_obj = buffer->Handle(), offset, params](vk::CommandBuffer cmdbuf) {
+-            if (scheduler.GraphicsPipelineMissing()) {
++        scheduler.Record([this, buffer_obj = buffer->Handle(), offset, params, empty_sample](vk::CommandBuffer cmdbuf) {
++            const bool empty_missing = scheduler.GraphicsPipelineMissing();
++            if (empty_sample) Empty::Recorded(true, empty_missing);
++            if (empty_missing) {
+                 return;
+             }
+             if (params.is_indexed) {
+@@ -2943,6 +2991,19 @@ void RasterizerVulkan::TickWithoutPresent() {
+ }
+ 
+ void RasterizerVulkan::TickFrame() {
++    namespace Empty = VideoCommon::EmptyDrawStats;
++    const bool empty_enabled = Empty::Enabled();
++    if (empty_enabled || Empty::back.pending) {
++        const auto early = Empty::back.counts;
++        const u64 early_requests = Empty::back.requests;
++        Empty::back.counts = {};
++        Empty::back.requests = 0;
++        Empty::back.pending = false;
++        // One frame marker, never a new per-draw callback. No flush or worker wait.
++        scheduler.Record([early, early_requests, empty_enabled](vk::CommandBuffer) {
++            Empty::EndFrame(early, early_requests, empty_enabled);
++        });
++    }
+     VideoCommon::Nx2Profile::FrameMark();
+     last_cache_tick = std::chrono::steady_clock::now();
+     draw_counter = 0;

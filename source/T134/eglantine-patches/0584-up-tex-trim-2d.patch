@@ -1,0 +1,348 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: single 2D ASTC textures leave out their top mip levels (EDEN_UP_TEX_TRIM_2D), off by default
+
+What: the TrimmedLevels path (host mip 0 = guest mip N), so far used only by the opt-in array rule
+EDEN_NX2_TEX_TRIM_MIB, now also takes single 2D ASTC textures. A texture with one layer, one
+sample, depth 1 and at least 2 levels, that the older rules left whole, loses its top level, then
+the next, while its largest kept side is over DIM texels and its kept levels, as RGBA8, are over
+MIB, up to N levels; at least one level is always kept, and a texture with only one level is never
+trimmed (that protects most UI and text). TranscodeAstcToBcn works on the trimmed shape: decode
+image, encode and copies use the host size, AssembleInto(info, skip, ...) (the decoder already
+supports a skip). A trimmed image skips the EDEN_UP_ASTC_BATCH_MIB batching (planned on the
+guest's levels). Each image keeps its own saved bytes (Image::trim_2d_held, vk_texture_cache.h) on
+a "held" total, handed over on a move and taken off once when the image goes; unbacked images
+count 0.
+
+Switches (read once): EDEN_UP_TEX_TRIM_2D=<N> (unset or 0 off; 1 at most one top level; 9 no level
+limit, as upstream); EDEN_UP_TEX_TRIM_2D_DIM (texels, unset 1024); EDEN_UP_TEX_TRIM_2D_MIB (MiB,
+unset 8); EDEN_UP_TEX_TRIM_2D_CHECK=1 (count only, trim nothing).
+Log (Render_Vulkan): at first use "EDEN_UP_TEX_TRIM_2D=N: single 2D ASTC over D texels and M MiB
+decoded lose up to N top levels[ (check: counted only)]"; every 10 s while on "EDEN_UP_TEX_TRIM_2D
+10s: mode apply|check, images N, host saved X MiB, held H MiB (peak P), decode image saved Z MiB,
+largest side S". Judge by held and peak (what exists now), not by images or host saved (the same
+textures are made again and again).
+
+Store stamp: the four names are in TranslationSwitches (vk_pipeline_prep.cpp); unset they do not
+enter the stamp, set they give each arm its own kept-shader store (first run of an arm is cold).
+
+Cost when off: one test of a static in TrimmedHostInfo, the image constructor and TickFrame; each
+image is 8 bytes larger and its move or destroy does one "is it 0" test. No line, nothing
+allocated, nothing trimmed; skip is 0 in TranscodeAstcToBcn, so that path is as before.
+
+Risks: blurrier large textures up close (the trade); a shader asking for a level by number or for
+the texture's size gets the smaller copy (look for shifted, half-size or wrongly tiled textures in
+clips); minimap or HUD textures over 1024 with mips could change what STEER and the video checks
+see (one STEER route in the apply arm first). With EDEN_NX2_TEX_TRIM_LAYERS=1 the apply-mode
+counter also credits single-layer trims the NX2 rule made. held can run a few frames ahead of the
+census at area changes (images waiting to be freed).
+
+Origin and credit: idea and thresholds (1024 texels / 8 MiB decoded, top mip levels left out of
+large single ASTC textures) from pablotz, NotRexed/Hookshot e460da1dd5 "perf(vk): reduce ASTC
+memory pressure on small VRAM budgets" (#1009), GPL-3.0. Adapted to Eden's TrimmedLevels path and
+the GPU BC transcode; upstream acts only on its lowest preset with a small driver budget, ours is
+the switch alone; the check mode and the held counter are ours. Draft
+drafts-2026-11-11/ports-7/astc-small-vram/draft.v2.diff, placed unchanged (review fix: the counter
+shows what is held, not a total of what was made).
+---
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp b/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp
+index d26caf8..d7450cf 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp
+@@ -156,7 +156,9 @@ constexpr const char* TranslationSwitches[] = {
+     "EDEN_UP_SHADOW_REGISTERS", "EDEN_UP_SHADOW_ROWS", "EDEN_UP_SPLIT_FIRST_DRAIN",
+     "EDEN_UP_STAGE_CACHE",
+     "EDEN_UP_STAGE_CACHE_MIB", "EDEN_UP_STAGE_CACHE_VERIFY", "EDEN_UP_STAGING_REUSE",
+-    "EDEN_UP_SWAPCHAIN_RECREATE", "EDEN_UP_TC_BUDGET_CAP", "EDEN_UP_UBO_SNAPSHOT",
++    "EDEN_UP_SWAPCHAIN_RECREATE", "EDEN_UP_TC_BUDGET_CAP", "EDEN_UP_TEX_TRIM_2D",
++    "EDEN_UP_TEX_TRIM_2D_CHECK", "EDEN_UP_TEX_TRIM_2D_DIM", "EDEN_UP_TEX_TRIM_2D_MIB",
++    "EDEN_UP_UBO_SNAPSHOT",
+     "EDEN_UP_UPLOAD_ALL_STAGES", "EDEN_UP_WIDE_COMPUTE_SSBOS", "EDEN_UP_ZPASS_QUERY_BANKS",
+     "EDEN_VMA_BLOCK_MIB",
+ };
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index 9306a38..a17273b 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -602,6 +602,79 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
+     }();
+     return layers;
+ }
++
++// EDEN_UP_TEX_TRIM_2D=<N> (pablotz, NotRexed/Hookshot e460da1dd5 "perf(vk): reduce ASTC memory
++// pressure on small VRAM budgets", #1009, GPL-3.0): a single 2D ASTC texture (one layer, one
++// sample) wider or taller than EDEN_UP_TEX_TRIM_2D_DIM texels (unset: 1024) whose decoded RGBA8
++// copy, every level, is over EDEN_UP_TEX_TRIM_2D_MIB (unset: 8) leaves out its top mip level, and
++// the next while both still hold, at most N levels. Their numbers: a 3072x3072 texture with all
++// its levels is about 48 MiB decoded, under the 64 MiB the old rule waited for. Here such a
++// texture is 12 MiB as BC3 and 6 as BC1 on the host, plus a 48 MiB decode image while the GPU
++// transcodes it; with one level left out 3 / 1.5 and 12. The same TrimmedLevels path as the
++// arrays above (views, uploads, the GPU transcode below); a shader that asks for a level by
++// number, or for the texture's size, gets the smaller one. Their rule only acted on a small
++// driver budget and their lowest preset; ours has no such signal, so it is the switch alone.
++// Unset or 0: off, nothing below runs past one test of a static. EDEN_UP_TEX_TRIM_2D_CHECK=1:
++// nothing is trimmed, the counter line says what would have been.
++struct Trim2dConfig {
++    u32 levels;  ///< 0: off.
++    u32 dim;     ///< Only while the kept top level is wider or taller than this.
++    u64 bytes;   ///< Only while the kept levels are over this as RGBA8.
++    bool check;  ///< Count only.
++};
++[[nodiscard]] const Trim2dConfig& Trim2d() {
++    static const Trim2dConfig config = [] {
++        Trim2dConfig c{0, 1024, u64{8} << 20, false};
++        const char* const value = std::getenv("EDEN_UP_TEX_TRIM_2D");
++        if (value == nullptr) {
++            return c;
++        }
++        c.levels = static_cast<u32>(std::strtoul(value, nullptr, 10));
++        if (c.levels == 0) {
++            return c;
++        }
++        if (const char* const dim = std::getenv("EDEN_UP_TEX_TRIM_2D_DIM")) {
++            c.dim = static_cast<u32>(std::strtoul(dim, nullptr, 10));
++        }
++        if (const char* const mib = std::getenv("EDEN_UP_TEX_TRIM_2D_MIB")) {
++            c.bytes = std::strtoull(mib, nullptr, 10) << 20;
++        }
++        const char* const check = std::getenv("EDEN_UP_TEX_TRIM_2D_CHECK");
++        c.check = check != nullptr && check[0] == '1';
++        LOG_INFO(Render_Vulkan,
++                 "EDEN_UP_TEX_TRIM_2D={}: single 2D ASTC over {} texels and {} MiB decoded lose up "
++                 "to {} top levels{}",
++                 c.levels, c.dim, c.bytes >> 20, c.levels, c.check ? " (check: counted only)" : "");
++        return c;
++    }();
++    return config;
++}
++// How many top levels EDEN_UP_TEX_TRIM_2D leaves out of `info`, given `from` already left out by
++// the rules above (it acts only on an image they left whole).
++[[nodiscard]] u32 Trim2dLevels(const ImageInfo& info, u32 from) {
++    const Trim2dConfig& c = Trim2d();
++    if (c.levels == 0 || from != 0 || !IsPixelFormatASTC(info.format) ||
++        info.type != ImageType::e2D || info.size.depth != 1 || info.num_samples != 1 ||
++        info.resources.layers != 1 || info.resources.levels < 2) {
++        return 0;
++    }
++    const auto decoded = [&](u32 skip) {
++        u64 bytes = 0;
++        for (s32 level = static_cast<s32>(skip); level < info.resources.levels; ++level) {
++            bytes += u64{(std::max)(info.size.width >> level, 1U)} *
++                     (std::max)(info.size.height >> level, 1U) * 4;
++        }
++        return bytes;
++    };
++    u32 skip = 0;
++    while (skip < c.levels && skip + 1 < static_cast<u32>(info.resources.levels) &&
++           decoded(skip) > c.bytes &&
++           ((std::max)(info.size.width, info.size.height) >> skip) > c.dim) {
++        ++skip;
++    }
++    return skip;
++}
++
+ // The host bytes of `info`'s levels from `skip` on, as the host keeps them: ASTC as BC1 or BC3
+ // (RGBA8 when not re-compressed), another format at its own size.
+ [[nodiscard]] u64 HostBytesFromLevel(const ImageInfo& info, u32 skip) {
+@@ -625,6 +698,78 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
+     return texels * static_cast<u64>(info.resources.layers) * numerator / denominator;
+ }
+ 
++// EDEN_UP_TEX_TRIM_2D's counter. Per line: images made since the last line that it left levels
++// out of, or would have (check), the host bytes that saved at their creation, the decode-image
++// bytes that saved, and the largest such texture. Held: the host bytes saved by the images that
++// still exist (each image keeps its own number in Image::trim_2d_held and takes it off again when
++// it is destroyed), and the highest that has been since boot. Held, not made, is what a test can
++// set against the census: the collector deletes and remakes the same textures all the time.
++struct Trim2dStats {
++    std::atomic<u64> images{0}, host_saved{0}, decode_saved{0}, largest{0};
++    std::atomic<u64> held{0}, peak{0};
++};
++Trim2dStats trim_2d_stats;
++// The host bytes `info` keeps out (or would, check) for the caller to store in the image; 0 with
++// the switch off, for an unbacked image (it holds no memory yet) and for an image left whole.
++[[nodiscard]] u64 NoteTrim2d(const ImageInfo& info, u32 host_level_offset, bool unbacked) {
++    const Trim2dConfig& c = Trim2d();
++    if (c.levels == 0 || unbacked) {
++        return 0;
++    }
++    // Applied: the image's own offset (on one layer only this rule trims, unless
++    // EDEN_NX2_TEX_TRIM_LAYERS=1 is also set). Check: what the rule would have left out.
++    const u32 skip = c.check ? Trim2dLevels(info, host_level_offset)
++                             : (info.resources.layers == 1 && IsPixelFormatASTC(info.format)
++                                    ? host_level_offset
++                                    : 0U);
++    if (skip == 0) {
++        return 0;
++    }
++    u64 decoded_before = 0, decoded_after = 0;
++    for (s32 level = 0; level < info.resources.levels; ++level) {
++        const u64 bytes = u64{(std::max)(info.size.width >> level, 1U)} *
++                          (std::max)(info.size.height >> level, 1U) * 4;
++        decoded_before += bytes;
++        decoded_after += level >= static_cast<s32>(skip) ? bytes : 0;
++    }
++    const u64 host_saved = HostBytesFromLevel(info, 0) - HostBytesFromLevel(info, skip);
++    trim_2d_stats.images.fetch_add(1, std::memory_order_relaxed);
++    trim_2d_stats.host_saved.fetch_add(host_saved, std::memory_order_relaxed);
++    trim_2d_stats.decode_saved.fetch_add(decoded_before - decoded_after, std::memory_order_relaxed);
++    const u64 held =
++        trim_2d_stats.held.fetch_add(host_saved, std::memory_order_relaxed) + host_saved;
++    u64 peak = trim_2d_stats.peak.load(std::memory_order_relaxed);
++    while (held > peak &&
++           !trim_2d_stats.peak.compare_exchange_weak(peak, held, std::memory_order_relaxed)) {
++    }
++    const u64 side = (std::max)(info.size.width, info.size.height);
++    u64 largest = trim_2d_stats.largest.load(std::memory_order_relaxed);
++    while (side > largest &&
++           !trim_2d_stats.largest.compare_exchange_weak(largest, side, std::memory_order_relaxed)) {
++    }
++    return host_saved;
++}
++// Once every 10 s from TickFrame while the switch is on.
++void LogTrim2d() {
++    const Trim2dConfig& c = Trim2d();
++    if (c.levels == 0) {
++        return;
++    }
++    static auto last = std::chrono::steady_clock::now();
++    const auto now = std::chrono::steady_clock::now();
++    if (now - last < std::chrono::seconds(10)) {
++        return;
++    }
++    last = now;
++    LOG_INFO(Render_Vulkan,
++             "EDEN_UP_TEX_TRIM_2D 10s: mode {}, images {}, host saved {} MiB, held {} MiB (peak "
++             "{}), decode image saved {} MiB, largest side {}",
++             c.check ? "check" : "apply", trim_2d_stats.images.exchange(0),
++             trim_2d_stats.host_saved.exchange(0) >> 20, trim_2d_stats.held.load() >> 20,
++             trim_2d_stats.peak.load() >> 20, trim_2d_stats.decode_saved.exchange(0) >> 20,
++             trim_2d_stats.largest.exchange(0));
++}
++
+ [[nodiscard]] ImageInfo TrimmedHostInfo(const Device& device, const ImageInfo& info, u32& level_offset) {
+     level_offset = 0;
+     const bool decoded_on_gpu = WillUseAcceleratedAstcDecode(device, info) && info.type == ImageType::e2D;
+@@ -668,6 +813,10 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
+                         level_offset, HostBytesFromLevel(info, level_offset) >> 20);
+         }
+     }
++    // EDEN_UP_TEX_TRIM_2D: single 2D ASTC textures the rules above left whole.
++    if (!Trim2d().check) {
++        level_offset += Trim2dLevels(info, level_offset);
++    }
+     if (level_offset == 0) {
+         return info;
+     }
+@@ -3210,6 +3359,7 @@ void TextureCacheRuntime::ReleaseMsaaScratchImage(VkImage image) {
+ 
+ void TextureCacheRuntime::TickFrame() {
+     static constexpr u32 MAX_UNUSED_SCRATCH_FRAMES = 60;
++    LogTrim2d();
+     // EDEN_NX2_CLEAN_BY_TIME=1: the unused-frame counters below (decode images, copy buffers, MSAA
+     // scratch images) advance by the 60 fps frames this frame took, up to 8, instead of by 1: at
+     // 10 fps a copy buffer unused for EDEN_NX2_TC_TEMP_BUFFER_FRAMES=600 went after 60 s, now 10 s.
+@@ -3382,6 +3532,8 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
+     if (host_level_offset != 0) {
+         flags |= VideoCommon::ImageFlagBits::TrimmedLevels;
+     }
++    trim_2d_held.bytes =
++        NoteTrim2d(info, host_level_offset, True(flags & VideoCommon::ImageFlagBits::Unbacked));
+     if (IsHugeAstcArray(runtime->device, info)) {
+         flags |= VideoCommon::ImageFlagBits::AcceleratedUpload;
+         flags |= VideoCommon::ImageFlagBits::Converted;
+@@ -3442,6 +3594,10 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
+ 
+ Image::Image(const VideoCommon::NullImageParams& params) : VideoCommon::ImageBase{params} {}
+ 
++void ReleaseTrim2dBytes(u64 bytes) noexcept {
++    trim_2d_stats.held.fetch_sub(bytes, std::memory_order_relaxed);
++}
++
+ Image::~Image() {
+     if (ENABLE_MSAA_RESOLVE_CONSUME && runtime != nullptr) {
+         if (original_image) {
+@@ -5394,9 +5550,13 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
+     Image& image, const StagingBufferRef& map,
+     std::span<const VideoCommon::SwizzleParameters> swizzles) {
+     const ImageInfo& info = image.info;
+-    const u32 width = info.size.width;
+-    const u32 height = info.size.height;
+-    const u32 levels = static_cast<u32>(info.resources.levels);
++    // EDEN_UP_TEX_TRIM_2D: a host image without its top `skip` levels (TrimmedLevels). The upload
++    // (UploadImageContents) then hands only those levels' swizzles, from a compact input; the
++    // decode image, the encode and the copies are the host's shape. 0 for every other image.
++    const u32 skip = image.host_level_offset;
++    const u32 width = (std::max)(info.size.width >> skip, 1U);
++    const u32 height = (std::max)(info.size.height >> skip, 1U);
++    const u32 levels = static_cast<u32>(info.resources.levels) - skip;
+     const u32 layers = static_cast<u32>(info.resources.layers);
+     constexpr VkFormat DecodeFormat = VK_FORMAT_A8B8G8R8_UNORM_PACK32;
+     // EDEN_NX2_TRANSCODE_WAIT=1: with memory refused the upload waits for the image's next use
+@@ -5414,7 +5574,8 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
+     // EDEN_UP_ASTC_BATCH_MIB: a texture whose decode image and output pass the budget goes through
+     // TranscodeAstcBatched below. Off: nothing is planned.
+     std::optional<AstcBatchPlan> batch_plan;
+-    if (VideoCommon::AstcBatchBudgetBytes() != 0) {
++    // (Not for a trimmed image: the batches are planned on the guest's levels.)
++    if (VideoCommon::AstcBatchBudgetBytes() != 0 && skip == 0) {
+         batch_plan = PlanAstcBatches(
+             info, swizzles,
+             !IsOpaqueBc1Astc(device, info) &&
+@@ -5528,7 +5689,7 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
+         }
+     }
+     astc_decoder_pass->AssembleInto(
+-        info, 0, image.guest_size_bytes,
++        info, skip, image.guest_size_bytes,
+         ASTCDecoderPass::Target{
+             .image = *pending.image,
+             .aspect_mask = VK_IMAGE_ASPECT_COLOR_BIT,
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.h b/src/video_core/renderer_vulkan/vk_texture_cache.h
+index a6d34ea..66c6928 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.h
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.h
+@@ -504,6 +504,36 @@ private:
+     mutable u32 num_memoized_variants{};
+ };
+ 
++/// EDEN_UP_TEX_TRIM_2D: takes an image's saved host bytes off the counter's "held" total.
++void ReleaseTrim2dBytes(u64 bytes) noexcept;
++
++/// EDEN_UP_TEX_TRIM_2D: the host bytes the switch left out of one image (or would have, check),
++/// taken off the "held" total when the image goes. A move hands them over (SlotVector moves
++/// images when it grows), so each image's bytes leave the total once. Always 0 with the switch
++/// off, and then nothing is called.
++struct Trim2dHeld {
++    Trim2dHeld() = default;
++    Trim2dHeld(const Trim2dHeld&) = delete;
++    Trim2dHeld& operator=(const Trim2dHeld&) = delete;
++    Trim2dHeld(Trim2dHeld&& other) noexcept : bytes{std::exchange(other.bytes, 0)} {}
++    Trim2dHeld& operator=(Trim2dHeld&& other) noexcept {
++        if (this != &other) {
++            Release();
++            bytes = std::exchange(other.bytes, 0);
++        }
++        return *this;
++    }
++    ~Trim2dHeld() {
++        Release();
++    }
++    void Release() noexcept {
++        if (bytes != 0) {
++            ReleaseTrim2dBytes(std::exchange(bytes, u64{0}));
++        }
++    }
++    u64 bytes{};
++};
++
+ class Image : public VideoCommon::ImageBase {
+ public:
+     explicit Image(TextureCacheRuntime&, const VideoCommon::ImageInfo& info, GPUVAddr gpu_addr,
+@@ -730,6 +760,7 @@ private:
+     std::vector<vk::ImageView> storage_layer_views; ///< By host level * layers + layer
+     VkImageAspectFlags aspect_mask = 0;
+     bool initialized = false;
++    Trim2dHeld trim_2d_held; ///< EDEN_UP_TEX_TRIM_2D's saved host bytes for this image
+ 
+     std::optional<Framebuffer> scale_framebuffer;
+     std::optional<Framebuffer> normal_framebuffer;

@@ -1,0 +1,664 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: ahead read sync only around a cut through black (EDEN_UP_AHEAD_READ_SYNC_AUTO)
+
+Our own work (read sync around cuts, 11 Nov; drafts-2026-11-11/ports-5/read-sync-around-cuts).
+Patch 0583 in T131, after 0581 (lean SSBO) and 0582 (page range walk-ahead); no file in common with
+either. The draft already carried 0583 (it had kept 0581/0582 for other drafts); the number stays.
+EDEN_UP_AHEAD_READ_SYNC_AUTO=<ms> (boot; 1 = 1500; 100-10000; off by default; needs
+EDEN_UP_AHEAD_GUARD): with EDEN_UP_AHEAD_READ_SYNC off, 0567's read sync is armed from a black
+frame until <ms> after the last black frame seen. EDEN_UP_AHEAD_READ_SYNC=1 still means always and
+wins. Black test: a 64-point probe of the frame the renderer is about to show, copied with the
+present's own commands and read at a later composite once the GPU is past it (never waits); black
+= 56 of 64 points with every colour channel <= 16 of 255. New file
+video_core/renderer_vulkan/present/black_probe.h; RendererVulkan gains a last member black_probe.
+Off: one test of a boot value on the present thread and at each composite; OnCPURead's off path
+keeps one load for Preflushable answers (the g_ahead load now comes first, the switch Peek after).
+Ceiling: armed for more than 4 s with no lit (not black) probe read since arming (a long black or
+dark stretch) disarms it, and it does not arm again until a lit probe is read. With the live
+EDEN_UP_AHEAD_READ_SYNC on as well, the auto state is closed and reset at each present (one
+"handed over" line if it was armed), so its lines never count the always-on time.
+Lines: one per arm, disarm, cap and hand-over (at most 200 a run) and a 10 s
+"EDEN_UP_AHEAD_READ_SYNC_AUTO 10 s" line (times armed and capped, presents armed, synced reads
+while armed, longest armed stretch, probes). Probe cost while on: 64 one-pixel copies, two
+barriers, a 256-byte read and, while a probe is pending, one GPU counter read per composite.
+Without EDEN_NX2_FRAMES_AHEAD=1 nothing is ever ahead, so the probe runs for nothing (small).
+The port script's anchors in renderer_vulkan.cpp and renderer_vulkan.h still match once each.
+Review fixes (review of the draft): (1) the probe refreshes the scheduler's known GPU tick
+before its IsFree test, so a finished probe is read even when nothing else refreshed it (else all
+four slots could stay pending and it would never arm); (2) the 4 s ceiling above, with a
+"capped" line and a capped count in the 10 s line; (3) the third barrier (after the copy) is gone,
+it guarded nothing; the comments say two barriers; (5) the live switch together with auto resets
+the auto state; (6) the arm line's "black frame read M ms ago" is clamped at 0. Not taken: the
+optional scheduler.WaitWorker() at shutdown (existing members have the same order).
+---
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index 5d7f8f1..3b050f2 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -2197,14 +2197,31 @@ private:
+             // only moves the read trap generation), so its next read of such a range is looked
+             // up again. Off at a present clears the flag. Before LiveSwitch::AtPresent: a
+             // change made there counts from the next present.
+-            if (Common::LiveSwitch::Value<Common::LiveSwitch::Id::AheadReadSync>() != 0)
+-                [[unlikely]] {
++            // EDEN_UP_AHEAD_READ_SYNC_AUTO=<ms> (same header): with the switch off, the same
++            // read sync only from a black frame until <ms> after the last one (2 in g_ahead).
++            // With the live switch on (always), the auto state is closed and reset, so its lines
++            // do not count the always-on time. Off: one test of a value read once.
++            u32 read_sync_kind =
++                Common::LiveSwitch::Value<Common::LiveSwitch::Id::AheadReadSync>() != 0 ? 1U : 0U;
++            if (VideoCommon::AheadReadSync::AutoHoldMs() != 0) [[unlikely]] {
++                const s64 now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                       composited.time_since_epoch())
++                                       .count();
++                if (read_sync_kind == 0) {
++                    read_sync_kind =
++                        VideoCommon::AheadReadSync::AutoAtPresent(m_presents, now_ns) ? 2U : 0U;
++                } else {
++                    VideoCommon::AheadReadSync::AutoAtLiveOn(m_presents, now_ns);
++                }
++            }
++            if (read_sync_kind != 0) [[unlikely]] {
+                 namespace ReadSync = VideoCommon::AheadReadSync;
+                 ReadSync::g_present.store(m_presents, std::memory_order_relaxed);
+                 // One word, so a reader never pairs one present's id with another's value.
+                 ReadSync::g_fence.store((u64{~w[22]} << 32) | u64{w[24]},
+                                         std::memory_order_relaxed);
+-                ReadSync::g_ahead.store(ran_ahead_now ? 1 : 0, std::memory_order_release);
++                ReadSync::g_ahead.store(ran_ahead_now ? read_sync_kind : 0U,
++                                        std::memory_order_release);
+                 if (ran_ahead_now) {
+                     ReadSync::g_counters.presents_ahead.fetch_add(1, std::memory_order_relaxed);
+                     system.ApplicationMemory().RasterizerArmReadTraps(0, 0);
+diff --git a/src/video_core/ahead_read_sync.h b/src/video_core/ahead_read_sync.h
+index 6165ebd..6fd192d 100644
+--- a/src/video_core/ahead_read_sync.h
++++ b/src/video_core/ahead_read_sync.h
+@@ -3,12 +3,16 @@
+ 
+ #pragma once
+ 
++#include <algorithm>
+ #include <atomic>
+ #include <chrono>
++#include <cstdlib>
++#include <limits>
+ 
+ #include "common/common_types.h"
+ #include "common/logging.h"
+ #include "common/pe_switch.h"
++#include "video_core/ahead_guard.h"
+ 
+ /// EDEN_UP_AHEAD_READ_SYNC=1 (exact "1"; a live switch, common/live_switch.h; off by default):
+ /// while the game's latest present returned before its own frame's fence (a frame ahead,
+@@ -36,6 +40,26 @@
+ ///   Ahead read sync: ahead lookups <n> syncs <n> avg <us> us max <us> us fence waits <n>
+ ///       (timeouts <n>, escapes <n>) service reads <n> changed <n> (in read <n>, <bytes> B,
+ ///       last <addr> at p<n>) presents ahead <n>
++///
++/// EDEN_UP_AHEAD_READ_SYNC_AUTO=<ms> (boot; off by default; needs EDEN_UP_AHEAD_GUARD): read sync
++/// only around a cut through black. With EDEN_UP_AHEAD_READ_SYNC off, the present thread turns
++/// the same read sync on from the first present after a black frame was seen until <ms> after
++/// the last black frame seen, then off again. 1 means 1500; other numbers are clamped to 100 to
++/// 10000. EDEN_UP_AHEAD_READ_SYNC=1 (always) wins over it. The black test is a 64-pixel probe of
++/// the frame the renderer is about to show (renderer_vulkan/present/black_probe.h): copied into
++/// a small host buffer with the present's own commands and read one or more composites later,
++/// when the GPU is done with it, so nothing ever waits for it. A frame is black when at least
++/// BlackSamples of the 64 points have every colour channel at or below DarkMax (of 255). Off:
++/// one test of a value read once, on the present thread and at each composite.
++/// Ceiling: armed for more than AutoMaxArmedMs with no lit (not black) probe read since arming
++/// (a long black or dark stretch) disarms it, and it does not arm again until a lit probe is
++/// read; then the normal hold counts from the last black probe. With EDEN_UP_AHEAD_READ_SYNC
++/// live on, the auto state is closed and reset at each present (it starts afresh when the
++/// switch goes off again).
++/// Lines: one per arm, disarm, cap and hand-over (at most AutoLineCap), and every 10 s
++///   EDEN_UP_AHEAD_READ_SYNC_AUTO 10 s: armed <n> times (<n> capped), <n> of <n> presents armed,
++///       synced reads while armed <n>, longest armed stretch <ms> ms (<n> presents)[, armed now];
++///       black probes made <n>, read <n>, black <n>, skipped <n> (slot still on the GPU)
+ namespace VideoCommon::AheadReadSync {
+ 
+ /// The longest a read waits for the presented frame's fence before it flushes anyway.
+@@ -43,8 +67,9 @@ inline constexpr s64 WaitCapMs = 50;
+ /// After this long a wait also ends when a GPU channel is suspended on a semaphore acquire.
+ inline constexpr s64 EscapeAfterNs = 2'000'000;
+ 
+-/// 1 while the game's latest present returned with its own fence not reached. Written only by
+-/// the nx2:vi2 present thread (release), read by guest core threads (acquire).
++/// 1 while the game's latest present returned with its own fence not reached, 2 for the same
++/// while EDEN_UP_AHEAD_READ_SYNC_AUTO has read sync armed. Written only by the nx2:vi2 present
++/// thread (release), read by guest core threads (acquire).
+ inline std::atomic<u32> g_ahead{0};
+ /// That present's number, and its frame's fence as (syncpoint id << 32) | value in one word.
+ /// Present thread writes (before g_ahead), guest core threads read (after g_ahead).
+@@ -135,4 +160,215 @@ inline void MaybeReport() {
+              c.last_changed_present.load(std::memory_order_relaxed), presents);
+ }
+ 
++// ---- EDEN_UP_AHEAD_READ_SYNC_AUTO: read sync only around a cut through black ----
++
++/// Hold after the last black frame seen, in ms; 0 = off. Read once (present thread or renderer,
++/// whichever asks first). Off when the value is missing, 0 or not a number, or without the guard.
++[[nodiscard]] inline s64 AutoHoldMs() {
++    static const s64 hold = [] {
++        const char* value = std::getenv("EDEN_UP_AHEAD_READ_SYNC_AUTO");
++        if (value == nullptr || value[0] == '\0' || (value[0] == '0' && value[1] == '\0')) {
++            return s64{0};
++        }
++        char* end = nullptr;
++        const long long parsed = std::strtoll(value, &end, 10);
++        if (end == value || *end != '\0' || parsed <= 0) {
++            LOG_WARNING(HW_GPU, "EDEN_UP_AHEAD_READ_SYNC_AUTO={}: not a number of ms, off", value);
++            return s64{0};
++        }
++        if (!AheadGuard::Enabled()) {
++            LOG_WARNING(HW_GPU, "EDEN_UP_AHEAD_READ_SYNC_AUTO={}: needs EDEN_UP_AHEAD_GUARD, off",
++                        value);
++            return s64{0};
++        }
++        const s64 ms = parsed == 1 ? s64{1500} : static_cast<s64>((std::clamp)(parsed, 100LL, 10000LL));
++        LOG_INFO(HW_GPU,
++                 "EDEN_UP_AHEAD_READ_SYNC_AUTO={}: read sync from a black frame until {} ms after "
++                 "the last one (EDEN_UP_AHEAD_READ_SYNC=1 still means always)",
++                 value, ms);
++        return ms;
++    }();
++    return hold;
++}
++
++/// Black probe (renderer_vulkan/present/black_probe.h): 64 points, black when at least
++/// BlackSamples of them have every colour channel at or below DarkMax.
++inline constexpr u32 ProbeSamples = 64;
++inline constexpr u32 BlackSamples = 56;
++inline constexpr u32 DarkMax = 16;
++/// Arm, disarm, cap and hand-over lines logged at most this many times in a run.
++inline constexpr u32 AutoLineCap = 200;
++/// Ceiling: the longest the auto mode stays armed while no lit probe has been read since it
++/// armed (the picture still black or dark).
++inline constexpr s64 AutoMaxArmedMs = 4000;
++
++/// steady_clock ns when the renderer last read a black probe (the GPU thread writes, the present
++/// thread reads). Far in the past until then.
++inline std::atomic<s64> g_last_black_ns{(std::numeric_limits<s64>::min)() / 2};
++/// Dark points in the last probe read (for the arm line).
++inline std::atomic<u32> g_last_dark{0};
++/// steady_clock ns when the renderer last read a probe that was not black (GPU thread writes,
++/// present thread reads), for the ceiling.
++inline std::atomic<s64> g_last_lit_ns{(std::numeric_limits<s64>::min)() / 2};
++
++/// Probe counters: GPU thread adds, present thread takes them in the 10 s line.
++struct ProbeCounters {
++    std::atomic<u64> made{};
++    std::atomic<u64> read{};
++    std::atomic<u64> black{};
++    /// The slot to write still on the GPU: no probe for that frame (never waits).
++    std::atomic<u64> skipped{};
++};
++inline ProbeCounters g_probe;
++
++/// Reads synced while armed by the auto mode, never reset (stretch and window differences).
++inline std::atomic<u64> g_auto_syncs{0};
++
++/// The present thread's arm state: touched by AutoAtPresent only.
++struct AutoState {
++    bool armed{};
++    /// The ceiling disarmed it; no arming again until a lit probe newer than capped_at_ns.
++    bool capped{};
++    s64 capped_at_ns{};
++    s64 armed_since_ns{};
++    u64 armed_since_present{};
++    u64 syncs_at_arm{};
++    u32 lines{};
++    s64 window_start_ns{};
++    u64 window_syncs_start{};
++    u64 window_arms{};
++    u64 window_capped{};
++    u64 window_presents{};
++    u64 window_armed_presents{};
++    s64 window_longest_ns{};
++    u64 window_longest_presents{};
++};
++inline AutoState g_auto;
++
++/// After a logged arm, disarm, cap or hand-over line (or one not logged for the cap).
++inline void AutoLineSpent(AutoState& s) {
++    if (++s.lines == AutoLineCap) {
++        LOG_INFO(HW_GPU, "EDEN_UP_AHEAD_READ_SYNC_AUTO: {} arm and disarm lines; no more of "
++                         "them in this run (the 10 s line goes on counting)",
++                 AutoLineCap);
++    }
++}
++
++/// The nx2:vi2 present thread, once per present while EDEN_UP_AHEAD_READ_SYNC is off and
++/// AutoHoldMs() != 0. Says whether read sync is armed for this present.
++inline bool AutoAtPresent(u64 present, s64 now_ns) {
++    AutoState& s = g_auto;
++    const s64 hold_ns = AutoHoldMs() * 1'000'000;
++    const s64 last_black = g_last_black_ns.load(std::memory_order_acquire);
++    const s64 last_lit = g_last_lit_ns.load(std::memory_order_acquire);
++    if (s.capped && last_lit > s.capped_at_ns) {
++        s.capped = false; // the black or dark stretch ended: the normal hold applies again
++    }
++    if (s.armed && !s.capped && last_lit < s.armed_since_ns &&
++        now_ns - s.armed_since_ns > AutoMaxArmedMs * 1'000'000) {
++        s.capped = true;
++        s.capped_at_ns = now_ns;
++        ++s.window_capped;
++        if (s.lines < AutoLineCap) {
++            LOG_INFO(HW_GPU,
++                     "EDEN_UP_AHEAD_READ_SYNC_AUTO: capped at present #{}: armed {} ms with no "
++                     "lit frame read since; off until a lit frame is read",
++                     present, (now_ns - s.armed_since_ns) / 1'000'000);
++        }
++        AutoLineSpent(s);
++    }
++    const bool want = !s.capped && now_ns - last_black <= hold_ns;
++    if (want != s.armed) {
++        const u64 syncs_now = g_auto_syncs.load(std::memory_order_relaxed);
++        if (want) {
++            s.armed = true;
++            s.armed_since_ns = now_ns;
++            s.armed_since_present = present;
++            s.syncs_at_arm = syncs_now;
++            ++s.window_arms;
++            if (s.lines < AutoLineCap) {
++                LOG_INFO(HW_GPU,
++                         "EDEN_UP_AHEAD_READ_SYNC_AUTO: armed at present #{} (black frame read "
++                         "{} ms ago, {} of {} points dark)",
++                         present, (std::max)(s64{0}, now_ns - last_black) / 1'000'000,
++                         g_last_dark.load(std::memory_order_relaxed), ProbeSamples);
++            }
++        } else {
++            const s64 stretch = now_ns - s.armed_since_ns;
++            const u64 presents = present - s.armed_since_present;
++            if (stretch > s.window_longest_ns) {
++                s.window_longest_ns = stretch;
++                s.window_longest_presents = presents;
++            }
++            s.armed = false;
++            if (s.lines < AutoLineCap) {
++                LOG_INFO(HW_GPU,
++                         "EDEN_UP_AHEAD_READ_SYNC_AUTO: disarmed at present #{} after {} ms, {} "
++                         "presents, {} synced reads",
++                         present, stretch / 1'000'000, presents, syncs_now - s.syncs_at_arm);
++            }
++        }
++        AutoLineSpent(s);
++    }
++    ++s.window_presents;
++    s.window_armed_presents += s.armed ? 1 : 0;
++    if (s.window_start_ns == 0) {
++        s.window_start_ns = now_ns;
++        s.window_syncs_start = g_auto_syncs.load(std::memory_order_relaxed);
++    } else if (now_ns - s.window_start_ns >= 10'000'000'000LL) {
++        const u64 syncs_now = g_auto_syncs.load(std::memory_order_relaxed);
++        s64 longest = s.window_longest_ns;
++        u64 longest_presents = s.window_longest_presents;
++        if (s.armed && now_ns - s.armed_since_ns > longest) {
++            longest = now_ns - s.armed_since_ns;
++            longest_presents = present - s.armed_since_present;
++        }
++        LOG_INFO(HW_GPU,
++                 "EDEN_UP_AHEAD_READ_SYNC_AUTO 10 s: armed {} times ({} capped), {} of {} "
++                 "presents armed, synced reads while armed {}, longest armed stretch {} ms ({} "
++                 "presents){}; black probes made {}, read {}, black {}, skipped {} (slot still "
++                 "on the GPU)",
++                 s.window_arms, s.window_capped, s.window_armed_presents, s.window_presents,
++                 syncs_now - s.window_syncs_start, longest / 1'000'000, longest_presents,
++                 s.armed ? ", armed now" : "",
++                 g_probe.made.exchange(0, std::memory_order_relaxed),
++                 g_probe.read.exchange(0, std::memory_order_relaxed),
++                 g_probe.black.exchange(0, std::memory_order_relaxed),
++                 g_probe.skipped.exchange(0, std::memory_order_relaxed));
++        s.window_start_ns = now_ns;
++        s.window_syncs_start = syncs_now;
++        s.window_arms = 0;
++        s.window_capped = 0;
++        s.window_presents = 0;
++        s.window_armed_presents = 0;
++        s.window_longest_ns = 0;
++        s.window_longest_presents = 0;
++    }
++    return s.armed;
++}
++
++/// The nx2:vi2 present thread, at a present while EDEN_UP_AHEAD_READ_SYNC is live on and
++/// AutoHoldMs() != 0: the switch means always, so the auto state is closed (one hand-over line
++/// when it was armed) and reset; it starts afresh at the first present with the switch off.
++inline void AutoAtLiveOn(u64 present, s64 now_ns) {
++    AutoState& s = g_auto;
++    if (!s.armed && !s.capped && s.window_start_ns == 0) {
++        return; // already reset
++    }
++    if (s.armed) {
++        if (s.lines < AutoLineCap) {
++            LOG_INFO(HW_GPU,
++                     "EDEN_UP_AHEAD_READ_SYNC_AUTO: handed over at present #{} after {} ms, {} "
++                     "presents, {} synced reads (EDEN_UP_AHEAD_READ_SYNC=1 is on: always)",
++                     present, (now_ns - s.armed_since_ns) / 1'000'000,
++                     present - s.armed_since_present,
++                     g_auto_syncs.load(std::memory_order_relaxed) - s.syncs_at_arm);
++        }
++        AutoLineSpent(s);
++    }
++    const u32 lines = s.lines;
++    s = AutoState{};
++    s.lines = lines;
++}
++
+ } // namespace VideoCommon::AheadReadSync
+diff --git a/src/video_core/gpu.cpp b/src/video_core/gpu.cpp
+index a9f180a..f1c192b 100644
+--- a/src/video_core/gpu.cpp
++++ b/src/video_core/gpu.cpp
+@@ -642,11 +642,17 @@ struct GPU::Impl {
+             // EDEN_UP_AHEAD_READ_SYNC (video_core/ahead_read_sync.h), live: a fence-downloaded
+             // range while the latest present ran ahead waits for that frame's bytes. Off: one
+             // byte test, and one plain load for Preflushable answers.
+-            if (raster_area.preflushed &&
+-                Common::LiveSwitch::Peek<Common::LiveSwitch::Id::AheadReadSync>() != 0 &&
+-                VideoCommon::AheadReadSync::g_ahead.load(std::memory_order_acquire) != 0)
+-                [[unlikely]] {
+-                return ReadAheadSync(raster_area, addr, size);
++            // EDEN_UP_AHEAD_READ_SYNC_AUTO: g_ahead 2 = armed by the auto mode, which does not
++            // need the switch; 1 still needs it (a live change between two presents).
++            if (raster_area.preflushed) {
++                const u32 ahead =
++                    VideoCommon::AheadReadSync::g_ahead.load(std::memory_order_acquire);
++                if (ahead != 0 &&
++                    (ahead == 2 ||
++                     Common::LiveSwitch::Peek<Common::LiveSwitch::Id::AheadReadSync>() != 0))
++                    [[unlikely]] {
++                    return ReadAheadSync(raster_area, addr, size, ahead == 2);
++                }
+             }
+             // The game reads guest memory as it is: note what it holds, for the landing that may
+             // follow.
+@@ -748,7 +754,7 @@ struct GPU::Impl {
+     /// guest memory now. On guest core threads only: other threads keep no area and take the
+     /// shortcut as before. No cache mutex is held here (GetFlushArea released both).
+     VideoCore::RasterizerDownloadArea ReadAheadSync(VideoCore::RasterizerDownloadArea raster_area,
+-                                                    DAddr addr, u64 size) {
++                                                    DAddr addr, u64 size, bool from_auto) {
+         namespace ReadSync = VideoCommon::AheadReadSync;
+         auto& counters = ReadSync::g_counters;
+         if (system.GetCurrentHostThreadID() >= Core::Hardware::NUM_CPU_CORES) {
+@@ -815,6 +821,9 @@ struct GPU::Impl {
+         WaitForSyncOperation(fence);
+         const u64 took = static_cast<u64>(ReadSync::NowNs() - start);
+         counters.syncs.fetch_add(1, std::memory_order_relaxed);
++        if (from_auto) {
++            ReadSync::g_auto_syncs.fetch_add(1, std::memory_order_relaxed);
++        }
+         counters.sync_ns.fetch_add(took, std::memory_order_relaxed);
+         ReadSync::Max(counters.max_sync_ns, took);
+         if (verify) [[unlikely]] {
+diff --git a/src/video_core/renderer_vulkan/present/black_probe.h b/src/video_core/renderer_vulkan/present/black_probe.h
+new file mode 100644
+index 0000000..f34251b
+--- /dev/null
++++ b/src/video_core/renderer_vulkan/present/black_probe.h
+@@ -0,0 +1,217 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <algorithm>
++#include <array>
++#include <chrono>
++#include <cstring>
++#include <exception>
++
++#include "common/common_types.h"
++#include "common/logging.h"
++#include "core/frontend/framebuffer_layout.h"
++#include "video_core/ahead_read_sync.h"
++#include "video_core/renderer_vulkan/present/util.h"
++#include "video_core/renderer_vulkan/vk_present_manager.h"
++#include "video_core/renderer_vulkan/vk_scheduler.h"
++#include "video_core/vulkan_common/vulkan_memory_allocator.h"
++#include "video_core/vulkan_common/vulkan_wrapper.h"
++
++namespace Vulkan {
++
++/// EDEN_UP_AHEAD_READ_SYNC_AUTO (video_core/ahead_read_sync.h): is the frame about to be shown
++/// black? At each composite, 64 single pixels on an 8x8 grid inside the drawn area of the frame
++/// image are copied into one of Slots small host buffers, with the present's own commands (no
++/// extra submit). A slot is read at a later composite, only once the GPU is past it
++/// (Scheduler::IsFree): nothing ever waits for a probe. When the slot to write is still on the
++/// GPU, that frame gets no probe. A black probe sets g_last_black_ns to the time it was read, so
++/// the present thread knows a black frame was shown one or a few presents ago.
++/// Cost while on: 64 one-pixel copies (256 bytes) and two barriers per present on the GPU, and a
++/// 256-byte read on the GPU thread. Formats with 4 bytes a pixel only (8-bit RGBA/BGRA and
++/// 10-bit packed); another format turns the probe off with one line.
++class BlackProbe {
++public:
++    static constexpr u32 Grid = 8;
++    static constexpr u32 Samples = Grid * Grid;
++    static constexpr u32 Slots = 4;
++    static_assert(Samples == VideoCommon::AheadReadSync::ProbeSamples);
++
++    /// The GPU thread, in RendererVulkan::Composite after the frame is drawn, before its submit.
++    void AtComposite(MemoryAllocator& allocator, Scheduler& scheduler, Frame* frame,
++                     VkFormat format, const Layout::FramebufferLayout& layout) {
++        namespace ReadSync = VideoCommon::AheadReadSync;
++        if (disabled || frame == nullptr || !frame->image) {
++            return;
++        }
++        // IsFree compares with the scheduler's known GPU tick, which only moves when some code
++        // refreshes it; nothing else in Composite does. One counter read (no wait), only while
++        // a probe is pending, so a finished probe is read at once and slots do not stay full.
++        if (std::any_of(slots.begin(), slots.end(), [](const Slot& s) { return s.pending; })) {
++            scheduler.GetMasterSemaphore().Refresh();
++        }
++        // Read every probe the GPU has finished, oldest first.
++        for (u32 i = 0; i < Slots; ++i) {
++            Slot& slot = slots[(next + i) % Slots];
++            if (slot.pending && scheduler.IsFree(slot.tick)) {
++                Read(slot);
++            }
++        }
++        if (Kind(format) == PixelKind::Unsupported) {
++            disabled = true;
++            LOG_WARNING(Render_Vulkan,
++                        "EDEN_UP_AHEAD_READ_SYNC_AUTO: frame format {} has no black probe; the "
++                        "auto mode never arms in this run",
++                        static_cast<int>(format));
++            return;
++        }
++        if (!made) {
++            try {
++                for (Slot& slot : slots) {
++                    slot.buffer = CreateWrappedBuffer(allocator, Samples * 4, MemoryUsage::Download);
++                }
++            } catch (const std::exception&) {
++                disabled = true;
++                LOG_WARNING(Render_Vulkan, "EDEN_UP_AHEAD_READ_SYNC_AUTO: no memory for the black "
++                                           "probe; the auto mode never arms in this run");
++                return;
++            }
++            made = true;
++        }
++        Slot& slot = slots[next];
++        if (slot.pending) {
++            ReadSync::g_probe.skipped.fetch_add(1, std::memory_order_relaxed);
++            return;
++        }
++        // The drawn area (black bars of a wider window are not the game's picture).
++        const u32 left = (std::min)(layout.screen.left, frame->width - 1);
++        const u32 top = (std::min)(layout.screen.top, frame->height - 1);
++        const u32 right = (std::clamp)(layout.screen.right, left + 1, frame->width);
++        const u32 bottom = (std::clamp)(layout.screen.bottom, top + 1, frame->height);
++        for (u32 y = 0; y < Grid; ++y) {
++            for (u32 x = 0; x < Grid; ++x) {
++                const u32 px = left + ((2 * x + 1) * (right - left)) / (2 * Grid);
++                const u32 py = top + ((2 * y + 1) * (bottom - top)) / (2 * Grid);
++                slot.regions[y * Grid + x] = VkBufferImageCopy{
++                    .bufferOffset = VkDeviceSize{(y * Grid + x) * 4U},
++                    .bufferRowLength = 0,
++                    .bufferImageHeight = 0,
++                    .imageSubresource{
++                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
++                        .mipLevel = 0,
++                        .baseArrayLayer = 0,
++                        .layerCount = 1,
++                    },
++                    .imageOffset{.x = static_cast<s32>(px), .y = static_cast<s32>(py), .z = 0},
++                    .imageExtent{.width = 1, .height = 1, .depth = 1},
++                };
++            }
++        }
++        slot.format = format;
++        slot.pending = true;
++        // The tick of the commands recorded now: the composite's submit (Flush) signals it.
++        slot.tick = scheduler.CurrentTick();
++        next = (next + 1) % Slots;
++        ReadSync::g_probe.made.fetch_add(1, std::memory_order_relaxed);
++        scheduler.RequestOutsideRenderPassOperationContext();
++        // The regions live in the slot, which is not written again before IsFree(tick).
++        scheduler.Record([image = *frame->image, buffer = *slot.buffer,
++                          regions = slot.regions.data()](vk::CommandBuffer cmdbuf) {
++            static constexpr VkMemoryBarrier before{
++                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
++                .pNext = nullptr,
++                .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
++                .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
++            };
++            static constexpr VkMemoryBarrier to_host{
++                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
++                .pNext = nullptr,
++                .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
++                .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
++            };
++            cmdbuf.PipelineBarrier(vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER,
++                                   VK_PIPELINE_STAGE_TRANSFER_BIT, 0, before);
++            // The frame image stays in GENERAL (the present pass's final layout): a copy may
++            // read it there, so its layout is not touched.
++            cmdbuf.CopyImageToBuffer(image, VK_IMAGE_LAYOUT_GENERAL, buffer,
++                                     vk::Span<VkBufferImageCopy>(regions, Samples));
++            // Makes the copy's result readable by the CPU (the submit's fence alone does not).
++            // No barrier after it: nothing later in this submit writes the frame image, and the
++            // next composite that draws into it gets it back only after the present's fence.
++            cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0,
++                                   to_host);
++        });
++    }
++
++private:
++    enum class PixelKind { Unsupported, Bytes8, Packed10 };
++
++    struct Slot {
++        vk::Buffer buffer;
++        std::array<VkBufferImageCopy, Samples> regions{};
++        u64 tick{};
++        VkFormat format{};
++        bool pending{};
++    };
++
++    static PixelKind Kind(VkFormat format) {
++        switch (format) {
++        case VK_FORMAT_B8G8R8A8_UNORM:
++        case VK_FORMAT_B8G8R8A8_SRGB:
++        case VK_FORMAT_R8G8B8A8_UNORM:
++        case VK_FORMAT_R8G8B8A8_SRGB:
++        case VK_FORMAT_A8B8G8R8_UNORM_PACK32:
++        case VK_FORMAT_A8B8G8R8_SRGB_PACK32:
++            return PixelKind::Bytes8;
++        case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
++        case VK_FORMAT_A2R10G10B10_UNORM_PACK32:
++            return PixelKind::Packed10;
++        default:
++            return PixelKind::Unsupported;
++        }
++    }
++
++    /// The brightest colour channel of one pixel, 0-255.
++    static u32 Brightest(const u8* pixel, PixelKind kind) {
++        if (kind == PixelKind::Bytes8) {
++            // R, G, B (or B, G, R) in the first three bytes, alpha last, in every 8-bit format.
++            return (std::max)({u32{pixel[0]}, u32{pixel[1]}, u32{pixel[2]}});
++        }
++        u32 word{};
++        std::memcpy(&word, pixel, sizeof(word));
++        return (std::max)({word & 0x3ffU, (word >> 10) & 0x3ffU, (word >> 20) & 0x3ffU}) >> 2;
++    }
++
++    void Read(Slot& slot) {
++        namespace ReadSync = VideoCommon::AheadReadSync;
++        slot.pending = false;
++        slot.buffer.Invalidate();
++        const auto bytes = slot.buffer.Mapped();
++        if (bytes.size() < Samples * 4) {
++            return;
++        }
++        const PixelKind kind = Kind(slot.format);
++        u32 dark = 0;
++        for (u32 i = 0; i < Samples; ++i) {
++            dark += Brightest(bytes.data() + i * 4, kind) <= ReadSync::DarkMax ? 1 : 0;
++        }
++        ReadSync::g_probe.read.fetch_add(1, std::memory_order_relaxed);
++        ReadSync::g_last_dark.store(dark, std::memory_order_relaxed);
++        if (dark >= ReadSync::BlackSamples) {
++            ReadSync::g_probe.black.fetch_add(1, std::memory_order_relaxed);
++            ReadSync::g_last_black_ns.store(ReadSync::NowNs(), std::memory_order_release);
++        } else {
++            // Not black: the ceiling (AutoMaxArmedMs) waits for one of these before it lets
++            // the auto mode arm again.
++            ReadSync::g_last_lit_ns.store(ReadSync::NowNs(), std::memory_order_release);
++        }
++    }
++
++    std::array<Slot, Slots> slots{};
++    u32 next{};
++    bool made{};
++    bool disabled{};
++};
++
++} // namespace Vulkan
+diff --git a/src/video_core/renderer_vulkan/renderer_vulkan.cpp b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
+index 2f9cf02..a65806f 100644
+--- a/src/video_core/renderer_vulkan/renderer_vulkan.cpp
++++ b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
+@@ -23,6 +23,7 @@
+ #include "video_core/capture.h"
+ #include "video_core/gpu.h"
+ #include "video_core/present.h"
++#include "video_core/ahead_read_sync.h"
+ #include "video_core/renderer_vulkan/present/util.h"
+ #ifdef HAS_RESHADE
+ #include "video_core/post_processing/fx_chain.h"
+@@ -227,6 +228,12 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
+                                render_window.GetFramebufferLayout(),
+                                present_manager.SwapchainImageCount(),
+                                swapchain.GetImageViewFormat());
++    // EDEN_UP_AHEAD_READ_SYNC_AUTO (video_core/ahead_read_sync.h): a 64-point black probe of
++    // this frame, read at a later composite once the GPU is past it. Off: one test.
++    if (VideoCommon::AheadReadSync::AutoHoldMs() != 0) [[unlikely]] {
++        black_probe.AtComposite(memory_allocator, scheduler, frame, swapchain.GetImageFormat(),
++                                render_window.GetFramebufferLayout());
++    }
+ 
+ #ifdef HAS_LSFG
+     void(frame_gen.WantedGenerations(present_manager.MaxExtraFrames()));
+diff --git a/src/video_core/renderer_vulkan/renderer_vulkan.h b/src/video_core/renderer_vulkan/renderer_vulkan.h
+index 67587cd..77395b5 100644
+--- a/src/video_core/renderer_vulkan/renderer_vulkan.h
++++ b/src/video_core/renderer_vulkan/renderer_vulkan.h
+@@ -16,6 +16,7 @@
+ #ifdef HAS_LSFG
+ #include "video_core/renderer_vulkan/present/frame_gen.h"
+ #endif
++#include "video_core/renderer_vulkan/present/black_probe.h"
+ #include "video_core/renderer_vulkan/vk_blit_screen.h"
+ #include "video_core/renderer_vulkan/vk_present_manager.h"
+ #include "video_core/renderer_vulkan/vk_rasterizer.h"
+@@ -110,6 +111,9 @@ private:
+     std::optional<TurboMode> turbo_mode;
+ 
+     Frame applet_frame;
++    /// EDEN_UP_AHEAD_READ_SYNC_AUTO: is the frame about to be shown black (last member: its
++    /// buffers go before the allocator).
++    BlackProbe black_probe;
+ };
+ 
+ } // namespace Vulkan

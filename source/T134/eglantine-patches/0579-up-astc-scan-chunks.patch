@@ -1,0 +1,156 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: ASTC scan chunks, the ASTC opacity scan reads 16 KiB at a time (EDEN_UP_ASTC_SCAN_CHUNKS)
+
+Port of waveydude/Eglantine-PS5- e86889c515f5ecac1fde6519c62c6335e39ef8c4 (his core patch 0917,
+"Scan ASTC opacity with fixed-size scratch"), credit waveydude; the chunked loop is his, line for
+line (only the buffer name differs: astc_scan_chunk, a new member, because the old vector stays for
+the off path and for verify).
+
+What: JoinImages decides whether a new ASTC image is opaque (then it is re-packed as BC1, half the
+size of BC3) by reading the whole image into the growing astc_scan_buffer. His crash 20261111-095523
+was that resize: operator new refused 32,435,200 bytes on the GPU back thread with 4 MiB free.
+EDEN_UP_HEAP_HOLDERS (0535) frees the buffer only after a scan over 8 MiB; it does not stop the growth.
+
+Switch EDEN_UP_ASTC_SCAN_CHUNKS (boot, read once; exact 1 or 2, anything else off; off by default):
+  1  read and check the image 16 KiB at a time through a fixed array in the cache object, stopping
+     at the first block with alpha. IsOpaque judges each 16-byte block on its own and 16 KiB is a
+     whole number of blocks, so the answer is the same and no heap is asked for at scan time.
+  2  verify: the chunked scan, then the old whole-image scan, whose answer is used; differences are
+     counted (expect 0). Keeps the old resize (the old risk): a check arm, not a crash arm. Do not
+     pair it with EDEN_UP_NEW_WAIT_MS (a refused resize would then wait under the texture-cache lock).
+  Both print "EDEN_UP_ASTC_SCAN_CHUNKS 10s:" (scans, MiB read, MiB skipped by the early stop, scans
+  over 8 MiB, largest KiB, verified, differ), on the GPU back thread, at most every 10 s, only after
+  a scan.
+
+Cost when off: a few tests of one static int per ASTC join, then the old lines unchanged
+(re-indented into an else). The cache object grows by 16 KiB plus 64 bytes of counters, once, at
+boot. No waits, no locks, no picture change.
+
+Review corrections applied (review of the draft): the switch text is read with value[0] tested
+before value[1] (an empty value read one byte past the end); the comment and this header say "a few
+tests of one static int".
+---
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index ed8ef94..409389d 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -5683,14 +5683,83 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
+         if (IsPixelFormatASTC(new_info.format) && runtime.UseOpaqueAstcFormat()) {
+             const size_t scan_bytes = CalculateGuestSizeInBytes(new_info);
+             if (scan_bytes <= MaxScanBytes) {
+-                astc_scan_buffer.resize(scan_bytes);
+-                gpu_memory->ReadBlockUnsafe(gpu_addr, astc_scan_buffer.data(), scan_bytes);
+-                new_info.astc_opaque = AstcDataLooksOpaque(astc_scan_buffer);
+-                static const bool trim = Common::PeSwitch("EDEN_UP_HEAP_HOLDERS");
+-                if (trim && astc_scan_buffer.capacity() > (size_t{8} << 20)) {
+-                    std::vector<u8>{}.swap(astc_scan_buffer);
++                // EDEN_UP_ASTC_SCAN_CHUNKS (waveydude e86889c, his 0917): 1 reads and checks the
++                // image 16 KiB at a time through the fixed astc_scan_chunk and stops at the first
++                // block with alpha, so the scan never grows a heap scratch to the texture's size
++                // (his GPUBack crash: a refused 32,435,200-byte resize with 4 MiB free). ASTC
++                // blocks are 16 bytes and IsOpaque judges each on its own, and 16 KiB is a whole
++                // number of blocks, so the answer is the same. 2 = verify: the chunked scan runs,
++                // then the old whole-image scan, whose answer is used; differences are counted.
++                // Unset: a few tests of one static int, then the old path below, unchanged.
++                static const int scan_chunks = [] {
++                    const char* const value = std::getenv("EDEN_UP_ASTC_SCAN_CHUNKS");
++                    if (value == nullptr || value[0] == '\0' || value[1] != '\0') {
++                        return 0;
++                    }
++                    return value[0] == '1' ? 1 : value[0] == '2' ? 2 : 0;
++                }();
++                bool chunked_opaque = true;
++                if (scan_chunks != 0) {
++                    size_t scanned = 0;
++                    for (size_t offset = 0; offset < scan_bytes; offset += astc_scan_chunk.size()) {
++                        const size_t bytes = (std::min)(scan_bytes - offset, astc_scan_chunk.size());
++                        const auto chunk = std::span{astc_scan_chunk}.first(bytes);
++                        gpu_memory->ReadBlockUnsafe(gpu_addr + offset, chunk.data(), chunk.size());
++                        scanned += bytes;
++                        if (!AstcDataLooksOpaque(chunk)) {
++                            chunked_opaque = false;
++                            break;
++                        }
++                    }
++                    ++astc_chunk_scans;
++                    astc_chunk_read_bytes += scanned;
++                    astc_chunk_skipped_bytes += scan_bytes - scanned;
++                    astc_chunk_largest = (std::max)(astc_chunk_largest, static_cast<u64>(scan_bytes));
++                    if (scan_bytes > (size_t{8} << 20)) {
++                        ++astc_chunk_big_scans;
++                    }
++                }
++                if (scan_chunks == 1) {
++                    new_info.astc_opaque = chunked_opaque;
++                } else {
++                    astc_scan_buffer.resize(scan_bytes);
++                    gpu_memory->ReadBlockUnsafe(gpu_addr, astc_scan_buffer.data(), scan_bytes);
++                    new_info.astc_opaque = AstcDataLooksOpaque(astc_scan_buffer);
++                    static const bool trim = Common::PeSwitch("EDEN_UP_HEAP_HOLDERS");
++                    if (trim && astc_scan_buffer.capacity() > (size_t{8} << 20)) {
++                        std::vector<u8>{}.swap(astc_scan_buffer);
++                    }
++                    if (scan_chunks == 2) {
++                        ++astc_chunk_verified;
++                        if (chunked_opaque != new_info.astc_opaque) {
++                            ++astc_chunk_differ;
++                        }
++                    }
+                 }
+                 ++(new_info.astc_opaque ? astc_opaque_images : astc_alpha_images);
++                if (scan_chunks != 0) {
++                    const auto now = std::chrono::steady_clock::now();
++                    if (astc_chunk_last_log == std::chrono::steady_clock::time_point{}) {
++                        astc_chunk_last_log = now;
++                    } else if (now - astc_chunk_last_log >= std::chrono::seconds(10)) {
++                        std::fprintf(
++                            stderr,
++                            "EDEN_UP_ASTC_SCAN_CHUNKS 10s: mode %d, scans %llu, read %llu MiB, "
++                            "skipped by early stop %llu MiB, scans over 8 MiB %llu, largest %llu "
++                            "KiB, verified %llu, differ %llu\n",
++                            scan_chunks, static_cast<unsigned long long>(astc_chunk_scans),
++                            static_cast<unsigned long long>(astc_chunk_read_bytes >> 20),
++                            static_cast<unsigned long long>(astc_chunk_skipped_bytes >> 20),
++                            static_cast<unsigned long long>(astc_chunk_big_scans),
++                            static_cast<unsigned long long>(astc_chunk_largest >> 10),
++                            static_cast<unsigned long long>(astc_chunk_verified),
++                            static_cast<unsigned long long>(astc_chunk_differ));
++                        astc_chunk_last_log = now;
++                        astc_chunk_scans = astc_chunk_read_bytes = astc_chunk_skipped_bytes = 0;
++                        astc_chunk_big_scans = astc_chunk_largest = 0;
++                        astc_chunk_verified = astc_chunk_differ = 0;
++                    }
++                }
+             }
+         }
+     }
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index 3de1a4d..fab3ace 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -7,6 +7,7 @@
+ #pragma once
+ 
+ #include <algorithm>
++#include <array>
+ #include <atomic>
+ #include <cstdlib>
+ #include <chrono>
+@@ -315,6 +316,17 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
+     u64 astc_opaque_images{};
+     u64 astc_alpha_images{};
+     std::vector<u8> astc_scan_buffer;
++    /// EDEN_UP_ASTC_SCAN_CHUNKS (waveydude 0917): fixed scan piece, part of the cache object (no
++    /// heap request at scan time), and the 10 s line's counters. Unused while the switch is unset.
++    std::array<u8, 16 * 1024> astc_scan_chunk;
++    u64 astc_chunk_scans{};
++    u64 astc_chunk_read_bytes{};
++    u64 astc_chunk_skipped_bytes{};
++    u64 astc_chunk_big_scans{};
++    u64 astc_chunk_largest{};
++    u64 astc_chunk_verified{};
++    u64 astc_chunk_differ{};
++    std::chrono::steady_clock::time_point astc_chunk_last_log{};
+     u64 images_deleted{};
+     /// EDEN_UP_TC_TRACE (Lichii #1130): why the next DeleteImage happens, set by its caller;
+     /// DeleteImage reads it and puts back "other". Reasons that start with "gc" are collectors'.

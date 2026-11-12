@@ -1,0 +1,479 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: draws with an out-of-range shape type or index format are skipped, table reads clamped (EDEN_UP_DRAW_ENUM_GUARD), off by default
+
+What: a safety net under the first-start crash of 12 Nov (junk command words stored shape type
+3734, a texture draw followed, UpdateDepthBiasEnable read POLYGON_OFFSET_ENABLE_LUT[3734]: SIGSEGV
+on GPUBack). New header video_core/draw_enum_guard.h (mode, counters, lines, Bad(), TableIndex(),
+Tick()). With EDEN_UP_DRAW_ENUM_GUARD=2: ProcessDraw and ProcessDrawIndirect (right after
+UpdateTopology) skip a draw whose shape type is above 14 or (indexed) whose index format is above
+2, and set the stored shape type to Triangles; DrawTexture resets a bad stored shape type to
+Triangles and goes ahead; the topology_override default branch ignores values above 14 and keeps
+the draw begin's shape type; IndexBuffer::FormatSizeInBytes returns 1 for a bad format instead of
+UNREACHABLE (abort); the four table reads (vk_rasterizer.cpp UpdateDepthBiasEnable,
+fixed_pipeline_state.cpp TOPOLOGY_CLASS_REPRESENTATIVE_LUT, Refresh2 POLYGON_OFFSET_ENABLE_LUT,
+UnpackCullFace) use the Triangles (or Back) entry for an index past their end.
+
+Switch: EDEN_UP_DRAW_ENUM_GUARD, read once at first use: unset or 0 the old code; 1 count and log
+every out-of-range value, change nothing (the table reads still read outside: count on healthy
+streams only); 2 act; anything else DefaultMode (0 now) with one warning line (an empty value
+also warns).
+Log (LOG_INFO, HW_GPU): first use "EDEN_UP_DRAW_ENUM_GUARD=2: a draw with an out-of-range shape
+type or index format is skipped, table reads use the Triangles entry" (=1 "... are counted,
+nothing changed"); each value seen (first 200, then one "further lines left out" line)
+"EDEN_UP_DRAW_ENUM_GUARD #1: draw shape type = 3734 (0xe96, valid 0-14): draw skipped, stored shape
+type set to Triangles" (sites: draw shape type, indirect draw shape type, texture draw stored shape
+type, shape type override, draw index format, index format size, depth bias table (dynamic), depth
+bias table (pipeline), pipeline shape class table, packed cull face; =1 "count only, nothing
+changed"); every 10 s (clock read every 1024 draws, totals since boot, zeros included)
+"EDEN_UP_DRAW_ENUM_GUARD 10s: mode 2, N draws seen; out of range since boot: draw shape 0, ...;
+draws skipped 0, values replaced 0". A hung run stops printing the 10 s line (it comes from draws).
+
+Not in TranslationSwitches: pipeline keys of valid streams are unchanged.
+
+Cost when off: one cached-static test per draw and per texture draw, one always-true compare at
+each of the four table reads; nothing on the index size path. Behaviour the same (the old path at
+those reads is undefined behaviour anyway), machine code not. maxwell_3d.h now includes the new
+header (wide recompile; one inline counter object of about 120 bytes).
+
+Default flip (later): video_core/draw_enum_guard.h "inline constexpr int DefaultMode = 0;" -> 2;
+=0 stays the escape hatch. Only after the cold runs that had junk show no crash at the table and
+hangs no more often than reaching the house (a crash restarts the app by itself, a hang does not).
+
+Risks: a game that really sends a shape type above 14 would lose those draws (none known; =1
+checks Ocarina); with the crash gone the junk stream goes on and may hang; a junk override with a
+valid begin shape type draws with the begin's shape type instead of being skipped.
+
+Origin and credit: our own work, no upstream source. Draft
+drafts-2026-11-11/ports-7/first-start/topology-guard/draft.diff, placed unchanged (review: ready to
+place, default stays off).
+---
+diff --git a/src/video_core/draw_enum_guard.h b/src/video_core/draw_enum_guard.h
+new file mode 100644
+index 0000000..813a454
+--- /dev/null
++++ b/src/video_core/draw_enum_guard.h
+@@ -0,0 +1,211 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <array>
++#include <atomic>
++#include <chrono>
++#include <cstdlib>
++
++#include "common/common_types.h"
++#include "common/logging.h"
++
++/// EDEN_UP_DRAW_ENUM_GUARD: range checks on draw values the game's command stream sets and the
++/// renderer uses as a table index, or that reach an abort, with no check of their own.
++///
++/// Why: on a first start (empty caches) Ocarina's first 3D scene after the opening stalled the
++/// GPU thread about 25 s, the game ran ahead, and the command lists read again at resume held a
++/// later frame's words (first-start crash, 12 Nov 2026). One junk draw begin carried the shape
++/// type (primitive topology) 3734 where only 0-14 exist, and a texture draw after it read
++/// RasterizerVulkan::UpdateDepthBiasEnable's 15-entry table at index 3734: SIGSEGV. This is a
++/// safety net for that last step only; it does not stop the junk.
++///
++///   unset / =0  off: the old code runs (same behaviour, not the same bytes: the table reads gain
++///               one compare that is always true on a valid stream).
++///   =1          count only: every out-of-range value is counted and logged, nothing changes
++///               (so a table read still reads outside the table, as before).
++///   =2          act:
++///               - a draw (direct or indirect) whose shape type is above 14, or whose index
++///                 format is above 2, is skipped; a bad stored shape type is set to Triangles so
++///                 later readers see a valid one;
++///               - a texture draw (which does not use the shape type, but whose state update reads
++///                 the one left by the last draw begin) sets a bad stored shape type to Triangles
++///                 and goes ahead;
++///               - a separate-state override (topology_override) above 14 (the Legacy 0x1001-0x101B
++///                 names and junk; upstream casts them unchanged and maps none) is ignored: the
++///                 draw begin's shape type is kept;
++///               - Regs::IndexBuffer::FormatSizeInBytes on a bad format returns 1 instead of
++///                 UNREACHABLE (abort); the draw itself is skipped as above;
++///               - the renderer's tables indexed by the shape type (depth bias enable, pipeline
++///                 topology class) and the packed cull face read the Triangles / Back entry.
++///
++/// Lines (LOG_INFO, HW_GPU, in eden_log.txt):
++///   at the first use:  "EDEN_UP_DRAW_ENUM_GUARD=<m>: ..."
++///   each time:         "EDEN_UP_DRAW_ENUM_GUARD #<n>: <site> = <value> (valid <range>): <what>"
++///                      (the first 200, then one "further lines left out" line)
++///   every 10 s:        "EDEN_UP_DRAW_ENUM_GUARD 10s: mode <m>, <d> draws seen; out of range since
++///                      boot: ...; draws skipped <s>, values replaced <r>"
++///
++/// Default flip for the alpha: DefaultMode below (one line, 0 -> 2). "=0" still turns it off.
++namespace VideoCommon::DrawEnumGuard {
++
++/// The mode when EDEN_UP_DRAW_ENUM_GUARD is unset. 0 now (new switch, off until tested).
++inline constexpr int DefaultMode = 0;
++
++inline constexpr u32 TopologyCount = 15;   ///< Maxwell PrimitiveTopology Points (0) .. Patches (14)
++inline constexpr u32 IndexFormatCount = 3; ///< UnsignedByte, UnsignedShort, UnsignedInt
++inline constexpr u32 TrianglesIndex = 4;   ///< PrimitiveTopology::Triangles
++inline constexpr u32 CullBackIndex = 1;    ///< FixedPipelineState's packed CullFace::Back
++inline constexpr u64 ActionLineCap = 200;
++
++enum class Site : u32 {
++    DrawTopology,
++    IndirectTopology,
++    TextureDrawTopology,
++    TopologyOverride,
++    IndexFormatDraw,
++    IndexFormatSize,
++    DepthBiasTable,
++    PipelineDepthBiasTable,
++    PipelineClassTable,
++    CullFaceUnpack,
++    Count,
++};
++
++inline constexpr size_t SiteCount = static_cast<size_t>(Site::Count);
++
++inline constexpr std::array<const char*, SiteCount> SiteNames{
++    "draw shape type",
++    "indirect draw shape type",
++    "texture draw stored shape type",
++    "shape type override",
++    "draw index format",
++    "index format size",
++    "depth bias table (dynamic)",
++    "depth bias table (pipeline)",
++    "pipeline shape class table",
++    "packed cull face",
++};
++
++inline constexpr std::array<const char*, SiteCount> SiteRanges{
++    "0-14", "0-14", "0-14", "0-14, Legacy 0x1001-0x101B not mapped", "0-2", "0-2",
++    "0-14", "0-14", "0-14", "0-2",
++};
++
++/// Read once, at the first use. Exact "0", "1" or "2"; anything else keeps DefaultMode.
++[[nodiscard]] inline int Mode() {
++    static const int mode = [] {
++        const char* value = std::getenv("EDEN_UP_DRAW_ENUM_GUARD");
++        int parsed = DefaultMode;
++        if (value != nullptr && value[0] >= '0' && value[0] <= '2' && value[1] == '\0') {
++            parsed = value[0] - '0';
++        } else if (value != nullptr) {
++            LOG_WARNING(HW_GPU, "EDEN_UP_DRAW_ENUM_GUARD={}: not 0, 1 or 2, using {}", value,
++                        DefaultMode);
++        }
++        if (parsed == 1) {
++            LOG_INFO(HW_GPU, "EDEN_UP_DRAW_ENUM_GUARD=1: out-of-range draw shape types and "
++                             "index formats are counted, nothing changed");
++        } else if (parsed == 2) {
++            LOG_INFO(HW_GPU,
++                     "EDEN_UP_DRAW_ENUM_GUARD=2: a draw with an out-of-range shape type or index "
++                     "format is skipped, table reads use the Triangles entry");
++        }
++        return parsed;
++    }();
++    return mode;
++}
++
++/// Relaxed atomics: the GPU thread adds; FormatSizeInBytes can also run on the split's front.
++struct Counters {
++    std::array<std::atomic<u64>, SiteCount> bad{};
++    std::atomic<u64> draws{};
++    std::atomic<u64> draws_skipped{};
++    std::atomic<u64> values_replaced{};
++    std::atomic<u64> lines{};
++    std::atomic<s64> last_line_ns{};
++};
++
++inline Counters g_counters;
++
++inline void Skipped() {
++    g_counters.draws_skipped.fetch_add(1, std::memory_order_relaxed);
++}
++
++inline void Replaced() {
++    g_counters.values_replaced.fetch_add(1, std::memory_order_relaxed);
++}
++
++/// An out-of-range `value` at `site`. Mode 0: does nothing, returns false (the caller keeps the
++/// old code). Mode 1: counts and logs, returns false. Mode 2: counts and logs `action`, returns
++/// true (the caller acts and calls Skipped() or Replaced()).
++inline bool Bad(Site site, u64 value, const char* action) {
++    const int mode = Mode();
++    if (mode == 0) {
++        return false;
++    }
++    const size_t index = static_cast<size_t>(site);
++    g_counters.bad[index].fetch_add(1, std::memory_order_relaxed);
++    const u64 line = g_counters.lines.fetch_add(1, std::memory_order_relaxed) + 1;
++    if (line <= ActionLineCap) {
++        LOG_INFO(HW_GPU, "EDEN_UP_DRAW_ENUM_GUARD #{}: {} = {} (0x{:x}, valid {}): {}", line,
++                 SiteNames[index], value, value, SiteRanges[index],
++                 mode == 2 ? action : "count only, nothing changed");
++    } else if (line == ActionLineCap + 1) {
++        LOG_INFO(HW_GPU, "EDEN_UP_DRAW_ENUM_GUARD: further lines left out, the 10 s line keeps "
++                         "counting");
++    }
++    return mode == 2;
++}
++
++/// The index to read a table of `size` entries with. In range: `index` (one compare, every
++/// mode). Out of range: `fallback` in mode 2, `index` unchanged in modes 0 and 1.
++[[nodiscard]] inline u32 TableIndex(Site site, u32 index, size_t size, u32 fallback) {
++    if (index < size) [[likely]] {
++        return index;
++    }
++    if (Bad(site, index, "table read with the fallback entry")) {
++        Replaced();
++        return fallback;
++    }
++    return index;
++}
++
++/// One call per draw while the mode is not 0: the 10 s line. The clock is read every 1024 draws.
++inline void Tick() {
++    const u64 draws = g_counters.draws.fetch_add(1, std::memory_order_relaxed) + 1;
++    if ((draws & 1023) != 0) {
++        return;
++    }
++    const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
++                        std::chrono::steady_clock::now().time_since_epoch())
++                        .count();
++    s64 last = g_counters.last_line_ns.load(std::memory_order_relaxed);
++    if (last != 0 && now - last < 10'000'000'000LL) {
++        return;
++    }
++    if (!g_counters.last_line_ns.compare_exchange_strong(last, now, std::memory_order_relaxed)) {
++        return;
++    }
++    if (last == 0) {
++        return; // The first check only starts the clock.
++    }
++    const auto& bad = g_counters.bad;
++    const auto n = [&](Site site) {
++        return bad[static_cast<size_t>(site)].load(std::memory_order_relaxed);
++    };
++    LOG_INFO(HW_GPU,
++             "EDEN_UP_DRAW_ENUM_GUARD 10s: mode {}, {} draws seen; out of range since boot: draw "
++             "shape {}, indirect shape {}, texture draw shape {}, override {}, index format "
++             "(draw) {}, index format (size) {}, depth bias table {}, pipeline depth bias table "
++             "{}, pipeline class table {}, cull face {}; draws skipped {}, values replaced {}",
++             Mode(), draws, n(Site::DrawTopology), n(Site::IndirectTopology),
++             n(Site::TextureDrawTopology), n(Site::TopologyOverride), n(Site::IndexFormatDraw),
++             n(Site::IndexFormatSize), n(Site::DepthBiasTable), n(Site::PipelineDepthBiasTable),
++             n(Site::PipelineClassTable), n(Site::CullFaceUnpack),
++             g_counters.draws_skipped.load(std::memory_order_relaxed),
++             g_counters.values_replaced.load(std::memory_order_relaxed));
++}
++
++} // namespace VideoCommon::DrawEnumGuard
+diff --git a/src/video_core/engines/draw_manager.cpp b/src/video_core/engines/draw_manager.cpp
+index fdaf611..8706b5b 100644
+--- a/src/video_core/engines/draw_manager.cpp
++++ b/src/video_core/engines/draw_manager.cpp
+@@ -10,6 +10,7 @@
+ #include "common/nx2_load_wait.h"
+ #include "common/settings.h"
+ #include "video_core/dirty_flags.h"
++#include "video_core/draw_enum_guard.h"
+ #include "video_core/engines/maxwell_3d.h"
+ #include "video_core/nx2_query_light.h"
+ #include "video_core/query_dma.h"
+@@ -18,6 +19,39 @@
+ 
+ namespace Tegra::Engines {
+ 
++namespace {
++namespace EnumGuard = VideoCommon::DrawEnumGuard;
++
++/// EDEN_UP_DRAW_ENUM_GUARD (draw_enum_guard.h): false when a draw must be skipped (mode 2 only).
++/// A shape type above 14 or an index format above 2 is not a value the GPU knows: the command
++/// stream is out of step and the draw's other registers are junk too, so it is not drawn as
++/// anything. The stored shape type is set to Triangles so the next reader sees a valid one.
++[[nodiscard]] bool GuardDrawEnums(Maxwell3D::Regs::PrimitiveTopology& topology, bool indexed,
++                                  Maxwell3D::Regs::IndexFormat format, EnumGuard::Site site) {
++    if (EnumGuard::Mode() == 0) {
++        return true;
++    }
++    EnumGuard::Tick();
++    bool run = true;
++    const u32 raw_topology = static_cast<u32>(topology);
++    if (raw_topology >= EnumGuard::TopologyCount &&
++        EnumGuard::Bad(site, raw_topology,
++                       "draw skipped, stored shape type set to Triangles")) {
++        topology = Maxwell3D::Regs::PrimitiveTopology::Triangles;
++        run = false;
++    }
++    const u32 raw_format = static_cast<u32>(format);
++    if (indexed && raw_format >= EnumGuard::IndexFormatCount &&
++        EnumGuard::Bad(EnumGuard::Site::IndexFormatDraw, raw_format, "draw skipped")) {
++        run = false;
++    }
++    if (!run) {
++        EnumGuard::Skipped();
++    }
++    return run;
++}
++} // Anonymous namespace
++
+ void Maxwell3D::DrawManager::ProcessMethodCall(Maxwell3D& maxwell3d, u32 method, u32 argument) {
+     switch (method) {
+     case MAXWELL3D_REG_INDEX(clear_surface):
+@@ -289,6 +323,18 @@ void Maxwell3D::DrawManager::DrawTexture(Maxwell3D& maxwell3d) {
+     draw_texture_state.src_y1 = (f32(maxwell3d.regs.draw_texture.dy_dv) / 4294967296.f) * dst_height + draw_texture_state.src_y0;
+     draw_texture_state.src_sampler = maxwell3d.regs.draw_texture.src_sampler;
+     draw_texture_state.src_texture = maxwell3d.regs.draw_texture.src_texture;
++    // EDEN_UP_DRAW_ENUM_GUARD: a texture draw does not use the shape type, but the renderer's
++    // state update (UpdateDepthBiasEnable) reads the one the last draw begin left.
++    if (EnumGuard::Mode() != 0) [[unlikely]] {
++        EnumGuard::Tick();
++        const u32 raw_topology = static_cast<u32>(draw_state.topology);
++        if (raw_topology >= EnumGuard::TopologyCount &&
++            EnumGuard::Bad(EnumGuard::Site::TextureDrawTopology, raw_topology,
++                           "stored shape type set to Triangles, the texture draw goes ahead")) {
++            draw_state.topology = Maxwell3D::Regs::PrimitiveTopology::Triangles;
++            EnumGuard::Replaced();
++        }
++    }
+     maxwell3d.rasterizer->DrawTexture();
+ }
+ 
+@@ -310,6 +356,16 @@ void Maxwell3D::DrawManager::UpdateTopology(Maxwell3D& maxwell3d) {
+             draw_state.topology = Maxwell3D::Regs::PrimitiveTopology::LineStrip;
+             break;
+         default:
++            // EDEN_UP_DRAW_ENUM_GUARD: above 14 (the Legacy* names 0x1001-0x101B, or junk) is not
++            // a shape type. Upstream (Eden, yuzu) casts them unchanged and maps none; mode 2
++            // keeps the draw begin's shape type instead.
++            if (static_cast<u32>(maxwell3d.regs.topology_override) >= EnumGuard::TopologyCount &&
++                EnumGuard::Bad(EnumGuard::Site::TopologyOverride,
++                               static_cast<u32>(maxwell3d.regs.topology_override),
++                               "override ignored, the draw begin's shape type kept")) {
++                EnumGuard::Replaced();
++                break;
++            }
+             draw_state.topology = Maxwell3D::Regs::PrimitiveTopology(maxwell3d.regs.topology_override);
+             break;
+         }
+@@ -354,6 +410,10 @@ void Maxwell3D::DrawManager::ProcessDraw(Maxwell3D& maxwell3d, bool draw_indexed
+         draw_indexed ? draw_state.index_buffer.count : draw_state.vertex_buffer.count;
+     LOG_TRACE(HW_GPU, "called, topology={}, count={}", draw_state.topology, draw_indexed ? draw_state.index_buffer.count : draw_state.vertex_buffer.count);
+     UpdateTopology(maxwell3d);
++    if (!GuardDrawEnums(draw_state.topology, draw_indexed, draw_state.index_buffer.format,
++                        EnumGuard::Site::DrawTopology)) [[unlikely]] {
++        return;
++    }
+     if (VideoCommon::QueryDma::FlipTraceEnabled()) [[unlikely]] {
+         VideoCommon::QueryDma::NoteDraw(maxwell3d.ShouldExecute(),
+                                         static_cast<u32>(maxwell3d.regs.render_enable_override));
+@@ -377,6 +437,11 @@ void Maxwell3D::DrawManager::ProcessDrawIndirect(Maxwell3D& maxwell3d) {
+     draw_state.draw_element_count = 0;
+     LOG_TRACE(HW_GPU, "called, topology={}, is_indexed={}, includes_count={}, buffer_size={}, max_draw_count={}", draw_state.topology, indirect_state.is_indexed, indirect_state.include_count, indirect_state.buffer_size, indirect_state.max_draw_counts);
+     UpdateTopology(maxwell3d);
++    if (!GuardDrawEnums(draw_state.topology, indirect_state.is_indexed,
++                        draw_state.index_buffer.format, EnumGuard::Site::IndirectTopology))
++        [[unlikely]] {
++        return;
++    }
+     if (VideoCommon::QueryLight::StatsEnabled()) [[unlikely]] {
+         NoteQueryStatsDraw(maxwell3d.regs, maxwell3d.ShouldExecute());
+     }
+diff --git a/src/video_core/engines/maxwell_3d.h b/src/video_core/engines/maxwell_3d.h
+index 45a0a4e..64d996a 100644
+--- a/src/video_core/engines/maxwell_3d.h
++++ b/src/video_core/engines/maxwell_3d.h
+@@ -24,6 +24,7 @@
+ #include "video_core/engines/const_buffer_info.h"
+ #include "video_core/engines/engine_interface.h"
+ #include "video_core/engines/engine_upload.h"
++#include "video_core/draw_enum_guard.h"
+ #include "video_core/gpu.h"
+ #include "video_core/macro.h"
+ #include "video_core/nx2_fast_draw.h"
+@@ -2231,6 +2232,14 @@ public:
+                 case IndexFormat::UnsignedInt:
+                     return 4;
+                 }
++                // EDEN_UP_DRAW_ENUM_GUARD=2: a junk format (a command stream out of step) is
++                // read as bytes instead of aborting; DrawManager skips the draw itself.
++                namespace EnumGuard = ::VideoCommon::DrawEnumGuard;
++                if (EnumGuard::Bad(EnumGuard::Site::IndexFormatSize, static_cast<u32>(format),
++                                   "size taken as 1 byte, no abort")) {
++                    EnumGuard::Replaced();
++                    return 1;
++                }
+                 UNREACHABLE();
+                 return 1;
+             }
+diff --git a/src/video_core/renderer_vulkan/fixed_pipeline_state.cpp b/src/video_core/renderer_vulkan/fixed_pipeline_state.cpp
+index b52cc39..9a33e9e 100644
+--- a/src/video_core/renderer_vulkan/fixed_pipeline_state.cpp
++++ b/src/video_core/renderer_vulkan/fixed_pipeline_state.cpp
+@@ -15,6 +15,7 @@
+ #include "common/common_types.h"
+ #include "common/pe_switch.h"
+ #include "common/settings.h"
++#include "video_core/draw_enum_guard.h"
+ #include "video_core/engines/maxwell_3d.h"
+ #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
+ #include "video_core/renderer_vulkan/vertex_repack.h"
+@@ -163,7 +164,10 @@ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFe
+     const bool can_collapse_topology_class =
+         features.has_extended_dynamic_state && features.has_extended_dynamic_state_2;
+     topology.Assign(can_collapse_topology_class
+-                        ? TOPOLOGY_CLASS_REPRESENTATIVE_LUT[static_cast<size_t>(topology_)]
++                        ? TOPOLOGY_CLASS_REPRESENTATIVE_LUT[VideoCommon::DrawEnumGuard::TableIndex(
++                              VideoCommon::DrawEnumGuard::Site::PipelineClassTable,
++                              static_cast<u32>(topology_), TOPOLOGY_CLASS_REPRESENTATIVE_LUT.size(),
++                              VideoCommon::DrawEnumGuard::TrianglesIndex)]
+                         : topology_);
+     msaa_mode.Assign(regs.anti_alias_samples_mode);
+     attachment0_dual_source_blend.Assign(ComputeAttachment0DualSourceBlend(regs) ? 1 : 0);
+@@ -406,7 +410,10 @@ void FixedPipelineState::DynamicState::Refresh2(const Maxwell& regs,
+         regs.polygon_offset_line_enable,
+         regs.polygon_offset_fill_enable,
+     };
+-    const u32 topology_index = static_cast<u32>(topology_);
++    // EDEN_UP_DRAW_ENUM_GUARD=2: a shape type above 14 reads the Triangles entry.
++    const u32 topology_index = VideoCommon::DrawEnumGuard::TableIndex(
++        VideoCommon::DrawEnumGuard::Site::PipelineDepthBiasTable, static_cast<u32>(topology_),
++        POLYGON_OFFSET_ENABLE_LUT.size(), VideoCommon::DrawEnumGuard::TrianglesIndex);
+ 
+     rasterize_enable.Assign(regs.rasterize_enable != 0 ? 1 : 0);
+     primitive_restart_enable.Assign(regs.primitive_restart.enabled != 0 ? 1 : 0);
+@@ -542,7 +549,11 @@ u32 FixedPipelineState::PackCullFace(Maxwell::CullFace cull) noexcept {
+ Maxwell::CullFace FixedPipelineState::UnpackCullFace(u32 packed) noexcept {
+     static constexpr std::array LUT = {Maxwell::CullFace::Front, Maxwell::CullFace::Back,
+                                        Maxwell::CullFace::FrontAndBack};
+-    return LUT[packed];
++    // EDEN_UP_DRAW_ENUM_GUARD=2: the 2-bit field can hold 3 (a junk cull face register packs to
++    // any value); that reads the Back entry.
++    return LUT[VideoCommon::DrawEnumGuard::TableIndex(VideoCommon::DrawEnumGuard::Site::CullFaceUnpack,
++                                                      packed, LUT.size(),
++                                                      VideoCommon::DrawEnumGuard::CullBackIndex)];
+ }
+ 
+ u32 FixedPipelineState::PackFrontFace(Maxwell::FrontFace face) noexcept {
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index b9419cb..85b401e 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -11,6 +11,7 @@
+ #include "video_core/astc_policy.h"
+ #include <algorithm>
+ #include "video_core/empty_draw_stats.h"
++#include "video_core/draw_enum_guard.h"
+ #include <array>
+ #include <atomic>
+ #include <chrono>
+@@ -3875,7 +3876,12 @@ void RasterizerVulkan::UpdateDepthBiasEnable(Tegra::Engines::Maxwell3D::Regs& re
+         regs.polygon_offset_line_enable,
+         regs.polygon_offset_fill_enable,
+     };
+-    const u32 topology_index = u32(maxwell3d->draw_manager.draw_state.topology);
++    // EDEN_UP_DRAW_ENUM_GUARD=2: a shape type above 14 reads the Triangles entry (first-start
++    // crash 12 Nov: 3734 read far outside this table).
++    const u32 topology_index = VideoCommon::DrawEnumGuard::TableIndex(
++        VideoCommon::DrawEnumGuard::Site::DepthBiasTable,
++        u32(maxwell3d->draw_manager.draw_state.topology), POLYGON_OFFSET_ENABLE_LUT.size(),
++        VideoCommon::DrawEnumGuard::TrianglesIndex);
+     const u32 enable = enabled_lut[POLYGON_OFFSET_ENABLE_LUT[topology_index]];
+     scheduler.Record([enable](vk::CommandBuffer cmdbuf) { cmdbuf.SetDepthBiasEnableEXT(enable != 0); });
+ }

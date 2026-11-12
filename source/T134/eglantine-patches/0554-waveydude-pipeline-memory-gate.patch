@@ -1,0 +1,377 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: [PATCH] waveydude: pipeline builds take turns while memory is short (EDEN_PIPELINE_MEMORY_GATE_MIB)
+
+DRAFT, not built, not run on a console.
+
+With EDEN_PIPELINE_MEMORY_GATE_MIB=<n>, a graphics or compute pipeline build that starts while the
+pool's largest free block is under n MiB waits until no other build is inside the gate, the pool is
+over the mark again, or EDEN_PIPELINE_MEMORY_GATE_MS (default 2000) has passed; then it goes ahead,
+never refused. Over the mark nothing changes. Off unless set: with it unset no build waits, nothing
+is counted and nothing is logged. The free block comes from the front end (eden_pool_largest_free,
+headless/performance.cpp, cached 20 ms; draft-0554-front.diff); without it the gate never waits.
+
+From waveydude/Eglantine-PS5- (his tree = our T85 plus his commits), commit b9f52d98e8 by
+waveydude, his inner patch 0915-ocarina-pipeline-memory-gate.patch and his edit of
+headless/performance.cpp. pipeline_memory_gate.h is his file unchanged up to his namespace's end;
+the switch names, the default limit and the waiting rule are his.
+
+Changed for our tree, and why:
+- The gate's settings, counters and the pool query are functions in
+  Vulkan::PipelineMemoryGate (declared at the end of his header, defined in vk_pipeline_cache.cpp)
+  instead of his file-local ones, so the pipeline constructors can share them (below).
+- His report line came every 32 more waits; here also at most one per 10 s, and a log line that
+  finds no memory is skipped (inside these functions a std::bad_alloc from the logger would drop
+  the pipeline being built).
+- Ours, not his: on the GPU thread (a build with build_in_parallel that is not a translator) the
+  gate's free memory reads 0 ("unknown": go ahead) while a builder's heap request waits for memory
+  (eden_heap_wanted(), EDEN_UP_HEAP_WAIT_MS). That wait counts on the texture collector, which runs
+  on the GPU thread; parked at the gate behind the same builder, the two would wait on each other
+  until the gate's limit. Without EDEN_UP_HEAP_WAIT_MS nothing changes.
+- Ours, not his, own switch: EDEN_PIPELINE_MEMORY_GATE_WORKERS=1 (exact 1, only with the mark).
+  In this tree a pipeline made during play is translated inside the gate on the GPU thread, but its
+  driver compile (the large shader compiler allocations, and 0552's one retry) runs later as a job
+  on a VkPipelineBuilder thread, outside it: the gate alone sees only the threads that translate
+  (the GPU thread, EDEN_UP_ASYNC_TRANSLATION's translators, and the builders of the disk cache,
+  the shader preparation and the shader set, which build whole). With _WORKERS that job takes its
+  turn too, 0552's retry inside the same turn. A build that runs on the calling thread (no worker)
+  is inside that thread's gate already and is not gated twice.
+
+Left out: his host test tools/test-pipeline-memory-gate.cpp (frontend repo, not needed to build).
+His placement between SurviveDriverOutOfMemory's comment and its function was not kept.
+
+Anchors of tools/prepare-vulkan-port.py counted per file before and after (vk_pipeline_cache.cpp
+18, vk_graphics_pipeline.cpp 11, vk_compute_pipeline.cpp 2, including the _cost.cpp generator's
+expressions): unchanged.
+
+---
+
+From the review, on top of the draft: with _WORKERS the GPU thread's own builds never wait at
+the gate (it draws the frame and runs the texture collector the builders may be waiting on: a
+burst of new pipelines could otherwise hold it up to EDEN_PIPELINE_MEMORY_GATE_MS each, with no
+limit per frame); the worker gates write the report line too, and it shows the builds inside and
+the free memory; the wait limit is capped at 10 s.
+
+diff --git a/src/video_core/renderer_vulkan/pipeline_memory_gate.h b/src/video_core/renderer_vulkan/pipeline_memory_gate.h
+new file mode 100644
+index 0000000..adf2bd1
+--- /dev/null
++++ b/src/video_core/renderer_vulkan/pipeline_memory_gate.h
+@@ -0,0 +1,100 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// EglantinePS5: pipeline builds take turns while memory is short (EDEN_PIPELINE_MEMORY_GATE_MIB).
++//
++// Building a pipeline translates its shaders and runs the driver's compiler, and both take their
++// working memory from the pool the CPU and the GPU share. On the way to a later area of Ocarina of
++// Time, eight builder threads and the GPU thread built at once, the heap's blocks of their own went
++// from 351 to 1168 MiB in seconds, and the GPU thread's next allocation failed with the pool empty
++// (crash-20261110-185626). With the gate, a build that starts while the largest free block of the
++// pool is under the mark waits until no other build is running, or the pool is over the mark
++// again, or its wait reaches the limit (then it goes ahead: a build is never refused here). Over
++// the mark nothing changes. Every build leaves the gate when it ends, by any path.
++//
++// Header only and free of Vulkan, so tools/test-pipeline-memory-gate.cpp tests it on any host.
++#pragma once
++
++#include <atomic>
++#include <chrono>
++#include <cstdint>
++#include <thread>
++
++namespace Vulkan::PipelineMemoryGate {
++
++struct Counters {
++    std::atomic<std::uint64_t> builds{0};   // builds that passed the gate
++    std::atomic<std::uint64_t> waited{0};   // of them, builds that had to wait
++    std::atomic<std::uint64_t> wait_us{0};  // total time they waited
++    std::atomic<std::uint64_t> timeouts{0}; // waits that reached the limit
++    std::atomic<std::uint32_t> running{0};  // builds inside the gate now
++};
++
++// free_bytes(): the pool's largest free block in bytes, 0 when unknown (the gate then never waits).
++// mark: under this, builds take turns. limit: the longest a build waits. poll: between looks.
++template <typename FreeBytes>
++class Gate {
++public:
++    Gate(Counters& counters, FreeBytes free_bytes, std::uint64_t mark, std::chrono::microseconds limit,
++         std::chrono::microseconds poll = std::chrono::microseconds{2000})
++        : counters_{counters} {
++        if (mark == 0) {
++            entered_ = false;
++            return;
++        }
++        const auto start = std::chrono::steady_clock::now();
++        bool waited = false;
++        for (;;) {
++            std::uint32_t running = counters_.running.load(std::memory_order_acquire);
++            const std::uint64_t free = free_bytes();
++            if (free == 0 || free >= mark || running == 0) {
++                if (counters_.running.compare_exchange_weak(running, running + 1, std::memory_order_acq_rel)) {
++                    break;
++                }
++                continue;
++            }
++            waited = true;
++            if (std::chrono::steady_clock::now() - start >= limit) {
++                counters_.running.fetch_add(1, std::memory_order_acq_rel);
++                counters_.timeouts.fetch_add(1, std::memory_order_relaxed);
++                break;
++            }
++            std::this_thread::sleep_for(poll);
++        }
++        counters_.builds.fetch_add(1, std::memory_order_relaxed);
++        if (waited) {
++            counters_.waited.fetch_add(1, std::memory_order_relaxed);
++            counters_.wait_us.fetch_add(static_cast<std::uint64_t>(
++                                            std::chrono::duration_cast<std::chrono::microseconds>(
++                                                std::chrono::steady_clock::now() - start)
++                                                .count()),
++                                        std::memory_order_relaxed);
++        }
++    }
++    ~Gate() {
++        if (entered_) counters_.running.fetch_sub(1, std::memory_order_acq_rel);
++    }
++    Gate(const Gate&) = delete;
++    Gate& operator=(const Gate&) = delete;
++
++private:
++    Counters& counters_;
++    bool entered_ = true;
++};
++
++// EglantinePS5 0554 (not in waveydude's 0915): one set of counters and settings for every file
++// that builds pipelines, defined in vk_pipeline_cache.cpp. The pipeline constructors use them for
++// the driver compile a builder runs for a pipeline made during play
++// (EDEN_PIPELINE_MEMORY_GATE_WORKERS=1, see there). Declarations only: the host test above does
++// not need them.
++struct GateConfig {
++    std::uint64_t mark{};               // EDEN_PIPELINE_MEMORY_GATE_MIB in bytes; 0: off
++    std::chrono::microseconds limit{};  // EDEN_PIPELINE_MEMORY_GATE_MS
++    bool workers{};                     // EDEN_PIPELINE_MEMORY_GATE_WORKERS=1 (and a mark)
++};
++const GateConfig& GateSettings();
++Counters& GateCounters();
++// The pool's largest free block (headless/performance.cpp, eden_pool_largest_free), 0 if unknown.
++std::uint64_t GateFree();
++// A line now and then while builds wait (at most one per 10 s).
++void GateReport();
++
++} // namespace Vulkan::PipelineMemoryGate
+diff --git a/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp b/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
+index c6db8d1..3eedd7b 100644
+--- a/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
+@@ -11,6 +11,7 @@
+ #include <fmt/format.h>
+ 
+ #include "video_core/renderer_vulkan/pipeline_helper.h"
++#include "video_core/renderer_vulkan/pipeline_memory_gate.h"
+ #include "video_core/renderer_vulkan/pipeline_statistics.h"
+ #include "video_core/renderer_vulkan/vk_buffer_cache.h"
+ #include "video_core/renderer_vulkan/vk_driver_build_report.h"
+@@ -82,7 +83,15 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
+         }
+     }
+ 
+-    auto func{[this, shader_notify, pipeline_statistics] {
++    auto func{[this, shader_notify, pipeline_statistics, on_worker = thread_worker != nullptr] {
++        // EDEN_PIPELINE_MEMORY_GATE_WORKERS=1, as for a graphics pipeline (vk_graphics_pipeline.cpp).
++        const auto& gate_settings{PipelineMemoryGate::GateSettings()};
++        const PipelineMemoryGate::Gate memory_gate{
++            PipelineMemoryGate::GateCounters(), &PipelineMemoryGate::GateFree,
++            on_worker && gate_settings.workers ? gate_settings.mark : 0, gate_settings.limit};
++        if (on_worker && gate_settings.workers) {
++            PipelineMemoryGate::GateReport();
++        }
+         const VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT subgroup_size_ci{
+             .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO_EXT,
+             .pNext = nullptr,
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+index d6a3505..c844cb2 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -27,6 +27,7 @@
+ 
+ #include "common/bit_field.h"
+ #include "video_core/renderer_vulkan/maxwell_to_vk.h"
++#include "video_core/renderer_vulkan/pipeline_memory_gate.h"
+ #include "video_core/renderer_vulkan/pipeline_statistics.h"
+ #include "video_core/renderer_vulkan/vk_buffer_cache.h"
+ #include "video_core/renderer_vulkan/vk_driver_build_report.h"
+@@ -499,6 +500,18 @@ GraphicsPipeline::GraphicsPipeline(
+ 
+     auto func{[this, shader_notify, &render_pass_cache, pipeline_statistics,
+                on_worker = worker_thread != nullptr] {
++        // EDEN_PIPELINE_MEMORY_GATE_WORKERS=1 (with EDEN_PIPELINE_MEMORY_GATE_MIB; patch 0554): the
++        // driver compile on a builder takes its turn while memory is short, its one retry
++        // (EDEN_NX2_GRAPHICS_PIPELINE_OOM_RETRY) inside the same turn. A build on the calling
++        // thread is inside that thread's gate already (vk_pipeline_cache.cpp): not again. Off: mark 0,
++        // nothing waits or counts.
++        const auto& gate_settings{PipelineMemoryGate::GateSettings()};
++        const PipelineMemoryGate::Gate memory_gate{
++            PipelineMemoryGate::GateCounters(), &PipelineMemoryGate::GateFree,
++            on_worker && gate_settings.workers ? gate_settings.mark : 0, gate_settings.limit};
++        if (on_worker && gate_settings.workers) {
++            PipelineMemoryGate::GateReport();
++        }
+         const VkRenderPass render_pass{render_pass_cache.Get(MakeRenderPassKey(key.state, device))};
+         Validate();
+         try {
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index fda9fd4..f4820b9 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -47,6 +47,7 @@
+ #include "shader_recompiler/ir_opt/compose_guard.h"
+ #include "shader_recompiler/ir_opt/oot_visual_workaround.h"
+ #include "shader_recompiler/program_header.h"
++#include "video_core/renderer_vulkan/pipeline_memory_gate.h"
+ #include "video_core/engines/kepler_compute.h"
+ #include "video_core/engines/maxwell_3d.h"
+ #include <unordered_set>
+@@ -576,6 +577,110 @@ size_t TranslationPendingBytes() {
+ 
+ } // Anonymous namespace
+ 
++// headless/performance.cpp: the largest free block of the pool the CPU shares with the GPU, in
++// bytes, 0 when unknown. Weak: without it the gate below never waits.
++extern "C" unsigned long long eden_pool_largest_free(void) __attribute__((weak));
++// headless/heap_arenas.inc (EDEN_UP_HEAP_WAIT_MS): the heap requests waiting for memory now.
++extern "C" unsigned eden_heap_wanted(void) __attribute__((weak));
++
++namespace PipelineMemoryGate {
++namespace {
++Counters gate_counters; // constant-initialized: atomics only
++} // Anonymous namespace
++
++// EDEN_PIPELINE_MEMORY_GATE_MIB=<n> (off unless set): while the pool's largest free block is under
++// n MiB, pipeline builds take turns (pipeline_memory_gate.h). EDEN_PIPELINE_MEMORY_GATE_MS=<ms>
++// (default 2000): the longest one waits before it goes ahead anyway.
++// EDEN_PIPELINE_MEMORY_GATE_WORKERS=1 (exact "1", only with a mark; 0554, not in 0915): the driver
++// compile a builder runs for a pipeline made during play takes its turn too (vk_graphics_pipeline.cpp,
++// vk_compute_pipeline.cpp). Without it, during play the gate only sees the threads that translate.
++const GateConfig& GateSettings() {
++    static const GateConfig settings = [] {
++        GateConfig result{};
++        if (const char* const mib = std::getenv("EDEN_PIPELINE_MEMORY_GATE_MIB")) {
++            result.mark = std::strtoull(mib, nullptr, 10) << 20;
++        }
++        const char* const ms = std::getenv("EDEN_PIPELINE_MEMORY_GATE_MS");
++        // At most 10 s: a wait here must never hide a real shortage for long.
++        result.limit = std::chrono::milliseconds{
++            std::min<unsigned long long>(ms != nullptr ? std::strtoull(ms, nullptr, 10) : 2000ULL, 10000ULL)};
++        const char* const workers = std::getenv("EDEN_PIPELINE_MEMORY_GATE_WORKERS");
++        result.workers = result.mark != 0 && workers != nullptr && std::string_view{workers} == "1";
++        if (result.mark != 0) {
++            try {
++                LOG_INFO(Render_Vulkan, "EDEN_PIPELINE_MEMORY_GATE: builds take turns under {} MiB free, "
++                                        "waiting at most {} ms{}",
++                         result.mark >> 20, result.limit.count() / 1000,
++                         result.workers ? ", builders' driver compiles too" : "");
++            } catch (const std::bad_alloc&) {
++            }
++        }
++        return result;
++    }();
++    return settings;
++}
++
++Counters& GateCounters() {
++    return gate_counters;
++}
++
++std::uint64_t GateFree() {
++    return eden_pool_largest_free ? eden_pool_largest_free() : 0;
++}
++
++// A line when the waits grew by 32 since the last one (and at the first), at most one per 10 s:
++// how many builds waited, for how long in all, and how many went ahead at the limit. A line that
++// finds no memory is left out (a std::bad_alloc here would drop the pipeline being built).
++void GateReport() {
++    static std::atomic<std::uint64_t> reported{0};
++    static std::atomic<s64> reported_ns{0};
++    const std::uint64_t waited = gate_counters.waited.load(std::memory_order_relaxed);
++    const std::uint64_t last = reported.load(std::memory_order_relaxed);
++    if (waited == 0 || (last != 0 && waited < last + 32)) {
++        return;
++    }
++    const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
++                        std::chrono::steady_clock::now().time_since_epoch())
++                        .count();
++    s64 last_ns = reported_ns.load(std::memory_order_relaxed);
++    if ((last_ns != 0 && now - last_ns < 10'000'000'000LL) ||
++        !reported_ns.compare_exchange_strong(last_ns, now, std::memory_order_relaxed)) {
++        return;
++    }
++    reported.store(waited, std::memory_order_relaxed);
++    try {
++        LOG_INFO(Render_Vulkan,
++                 "EDEN_PIPELINE_MEMORY_GATE: {} of {} builds waited, {} ms in all, {} at the limit, "
++                 "{} inside now, {} MiB free",
++                 waited, gate_counters.builds.load(std::memory_order_relaxed),
++                 gate_counters.wait_us.load(std::memory_order_relaxed) / 1000,
++                 gate_counters.timeouts.load(std::memory_order_relaxed),
++                 gate_counters.running.load(std::memory_order_relaxed), GateFree() >> 20);
++    } catch (const std::bad_alloc&) {
++    }
++}
++} // namespace PipelineMemoryGate
++
++namespace {
++// 0554, not in 0915: what the GPU thread's builds (build_in_parallel, not a translator) give the
++// gate for the free memory. While a builder's heap request waits for memory (EDEN_UP_HEAP_WAIT_MS),
++// 0 ("unknown": go ahead). That wait counts on the texture collector, which runs on this thread;
++// held at the gate behind that same builder, the two would wait on each other until the gate's
++// limit. Without EDEN_UP_HEAP_WAIT_MS eden_heap_wanted() stays 0 and this is the gate's own value.
++std::uint64_t GateFreeOnGpuThread() {
++    // With EDEN_PIPELINE_MEMORY_GATE_WORKERS=1 the driver compiles take their turns on the
++    // builders, and the GPU thread, which draws the frame and runs the texture collector they may
++    // be waiting on, never waits here (it still counts while inside).
++    if (PipelineMemoryGate::GateSettings().workers) {
++        return 0;
++    }
++    if (eden_heap_wanted && eden_heap_wanted() != 0) {
++        return 0;
++    }
++    return PipelineMemoryGate::GateFree();
++}
++} // Anonymous namespace
++
+ size_t ComputePipelineCacheKey::Hash() const noexcept {
+     const u64 hash = Common::CityHash64(reinterpret_cast<const char*>(this), sizeof *this);
+     return static_cast<size_t>(hash);
+@@ -2430,6 +2535,17 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
+     ShaderPools& pools, const GraphicsPipelineCacheKey& key,
+     std::span<Shader::Environment* const> envs, PipelineStatistics* statistics,
+     bool build_in_parallel, ShaderPrep::Stages* kept_out) try {
++    // EDEN_PIPELINE_MEMORY_GATE_MIB (pipeline_memory_gate.h): off unless set. Left before the
++    // handlers below run, as every local here.
++    const auto& gate_settings{PipelineMemoryGate::GateSettings()};
++    const PipelineMemoryGate::Gate memory_gate{
++        PipelineMemoryGate::GateCounters(),
++        build_in_parallel && !translating_detached ? &GateFreeOnGpuThread
++                                                   : &PipelineMemoryGate::GateFree,
++        gate_settings.mark, gate_settings.limit};
++    if (gate_settings.mark != 0) {
++        PipelineMemoryGate::GateReport();
++    }
+     auto hash = key.Hash();
+     LOG_DEBUG(Render_Vulkan, "{:#016x}", hash);
+     size_t env_index{0};
+@@ -3599,6 +3715,16 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
+ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
+     ShaderPools& pools, const ComputePipelineCacheKey& key, Shader::Environment& env,
+     PipelineStatistics* statistics, bool build_in_parallel) try {
++    // EDEN_PIPELINE_MEMORY_GATE_MIB, as for a graphics pipeline. Only the GPU thread builds
++    // compute pipelines in parallel; the disk cache's builders build them whole.
++    const auto& gate_settings{PipelineMemoryGate::GateSettings()};
++    const PipelineMemoryGate::Gate memory_gate{
++        PipelineMemoryGate::GateCounters(),
++        build_in_parallel ? &GateFreeOnGpuThread : &PipelineMemoryGate::GateFree,
++        gate_settings.mark, gate_settings.limit};
++    if (gate_settings.mark != 0) {
++        PipelineMemoryGate::GateReport();
++    }
+     auto hash = key.Hash();
+     if (device.HasBrokenCompute()) {
+         LOG_ERROR(Render_Vulkan, "Skipping {:#016x}", hash);

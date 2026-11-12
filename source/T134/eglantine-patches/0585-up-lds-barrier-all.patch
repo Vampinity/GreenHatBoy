@@ -1,0 +1,131 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: shared memory barrier before a warp's next load in every program (EDEN_UP_LDS_BARRIER_ALL), off by default
+
+What: patch 0190 (EDEN_NX2_NET_BARRIER) puts a subgroup memory barrier (MEMBAR bit 20, a
+subgroup-scope OpMemoryBarrier on shared memory) before the first shared load (LDS) after a shared
+store (STS) with no BAR.SYNC between, but only in programs with HMMA (the upscaler). With
+EDEN_UP_LDS_BARRIER_ALL=1 the same barrier goes into every program with that pattern. Its barrier
+runs in every lane (predicate PT), not under the load's own predicate, so in "STS; @P0 LDS; LDS"
+the lanes with P0 false also pass a barrier before the plain LDS. A memory-only fence may sit
+where only some lanes are, so this cannot hang. Programs EDEN_NX2_NET_BARRIER=1 already covers stay
+under that rule, byte for byte as before (its own gap included), and are not counted here.
+
+Switch: EDEN_UP_LDS_BARRIER_ALL (read once). Exact "1": insert. Exact "2": check only, count where
+a barrier would go (the pattern, not a proven bug), emit nothing. Unset or any other value: as
+before (but any set value changes the stamp, so leave it unset for off).
+Log (stderr, per program it acts on, the first 400 then powers of two): "EDEN_UP_LDS_BARRIER_ALL
+mode M: program N (I instructions, first at 0xA), barrier added|would get a barrier; B barriers in
+all so far". "first at" is the first load that gets a barrier. A program lowered twice (the
+high-uniform retry, the shader-set scan) counts twice; a lowering that fails later still counts.
+The scan follows instruction order, not jumps (a store at the end of a loop and a load at its top
+get no barrier), as upstream.
+
+Store stamp: the name is in TranslationSwitches (vk_pipeline_prep.cpp); unset it does not enter
+the stamp. A mode 1 or 2 boot gets its own kept-shader store, which takes one of the kept slots
+and can push out the normal store.
+
+Cost when off: one cached static and two local bools per lowered program, at translation time
+only; the translated shaders are byte for byte the same.
+
+Limits: ours is a memory-only fence, upstream's a subgroup control barrier (formally weaker; AMD
+runs a wave's lanes in lockstep). Upstream's bars showed only on NVIDIA's cooperative-matrix path,
+which RADV on the PS5 does not have; no visible change is expected. Vertex and pixel shaders cannot
+use shared memory, so text, shadow and fog faults are out of its reach.
+
+Origin and credit: port of NotRexed/Hookshot dd2369ee42 "fix(shaders): a subgroup barrier between
+a warp's shared memory store and its next load" (#2524) by Miguel Luna, GPL-3.0; our original rule
+is patch 0190 (EDEN_NX2_NET_BARRIER). Draft drafts-2026-11-11/ports-7/warp-subgroup-barrier/
+draft.v2.diff, placed unchanged (review fix: the barrier runs in every lane, PT).
+---
+diff --git a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+index c86fd03..d200ac1 100644
+--- a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
++++ b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+@@ -8,7 +8,9 @@
+ #include "common/settings.h"
+ #include <fmt/format.h>
+ #include <cstdlib>
++#include <cstdio>
+ #include <algorithm>
++#include <atomic>
+ #include <array>
+ #include <bit>
+ #include <span>
+@@ -281,10 +283,23 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+         const char* const text = std::getenv("EDEN_NX2_NET_BARRIER");
+         return text && text[0] == '1';
+     }();
+-    const bool keep_shared_order = order_warp_shared &&
++    const bool net_shared_order = order_warp_shared &&
+         std::any_of(code.begin(), code.end(), [](const auto& instruction) {
+             return instruction.Bits(0, 12) == 0x23c;
+         });
++    // EDEN_UP_LDS_BARRIER_ALL (NotRexed/Hookshot dd2369ee42, Miguel Luna): the same barrier in
++    // every program with a shared store then a shared load and no BAR between, not only in
++    // programs with HMMA. 1: insert it. 2: check only, count where it would go, change nothing.
++    // Unset or any other value: as before. A program EDEN_NX2_NET_BARRIER=1 already covers is
++    // left to that rule and not counted here.
++    static const u32 lds_barrier_all = [] {
++        const char* const text = std::getenv("EDEN_UP_LDS_BARRIER_ALL");
++        if (text == nullptr || text[0] == '\0' || text[1] != '\0') return 0U;
++        return text[0] == '1' ? 1U : text[0] == '2' ? 2U : 0U;
++    }();
++    const bool keep_shared_order = net_shared_order || lds_barrier_all != 0;
++    const bool lds_barrier_count_only = !net_shared_order && lds_barrier_all == 2;
++    bool lds_barrier_program_noted = false;
+     bool shared_store_pending = false;
+     for (const auto& instruction : code) {
+         const u32 op = instruction.Bits(0, 12);
+@@ -1621,8 +1636,37 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             const bool store = opcode != 0x984;
+             if (keep_shared_order) {
+                 if (!store && shared_store_pending) {
+-                    emit(0xef98000000000000ULL | predicate | (u64{1} << 20)); // subgroup MEMBAR
++                    if (!lds_barrier_count_only) {
++                        // EDEN_UP_LDS_BARRIER_ALL runs its barrier in every lane (PT), not under
++                        // the load's predicate: in STS; @P0 LDS; LDS the lanes with P0 false must
++                        // also pass a barrier before the plain LDS. A memory-only fence may sit in
++                        // code only some lanes reach, so this cannot hang. EDEN_NX2_NET_BARRIER
++                        // keeps the load's predicate, as before.
++                        const u64 barrier_predicate = net_shared_order ? predicate : u64{7} << 16;
++                        emit(0xef98000000000000ULL | barrier_predicate | (u64{1} << 20)); // subgroup MEMBAR
++                    }
+                     shared_store_pending = false;
++                    if (!net_shared_order) {
++                        // EDEN_UP_LDS_BARRIER_ALL: one line per program it acts on (the first
++                        // 400, then at powers of two); a program lowered twice is counted twice.
++                        static std::atomic<u64> lds_barriers{};
++                        static std::atomic<u32> lds_programs{};
++                        const u64 barriers = ++lds_barriers;
++                        if (!lds_barrier_program_noted) {
++                            lds_barrier_program_noted = true;
++                            const u32 programs = ++lds_programs;
++                            if (programs <= 400 || std::has_single_bit(programs))
++                                std::fprintf(stderr,
++                                             "EDEN_UP_LDS_BARRIER_ALL mode %u: program %u "
++                                             "(%zu instructions, first at 0x%x), %s; %llu "
++                                             "barriers in all so far\n",
++                                             lds_barrier_all, programs, code.size(),
++                                             static_cast<unsigned>(index * sizeof(Instruction)),
++                                             lds_barrier_count_only ? "would get a barrier"
++                                                                    : "barrier added",
++                                             static_cast<unsigned long long>(barriers));
++                        }
++                    }
+                 } else if (store) {
+                     shared_store_pending = true;
+                 }
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp b/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp
+index d7450cf..d190b4f 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp
+@@ -148,7 +148,8 @@ constexpr const char* TranslationSwitches[] = {
+     "EDEN_UP_FRITCHII_RELOCATE", "EDEN_UP_FRITCHII_RELOCATE_AREA_COUNT",
+     "EDEN_UP_FRITCHII_SHADOWMORE", "EDEN_UP_FRITCHII_TABLECHARGE", "EDEN_UP_FRITCHII_TOMBSTONE",
+     "EDEN_UP_FRITCHII_UNBACKED", "EDEN_UP_FRITCHII_WRITEMARK", "EDEN_UP_FRONT_BATCH",
+-    "EDEN_UP_HANDLE_FALLBACK_TRACE", "EDEN_UP_HELD_VS_DOWNLOAD", "EDEN_UP_LEAN_SSBO",
++    "EDEN_UP_HANDLE_FALLBACK_TRACE", "EDEN_UP_HELD_VS_DOWNLOAD", "EDEN_UP_LDS_BARRIER_ALL",
++    "EDEN_UP_LEAN_SSBO",
+     "EDEN_UP_NO_STALE_UPLOAD",
+     "EDEN_UP_NULL_POINTER_SLOTS", "EDEN_UP_OOT_FRONT_WAIT", "EDEN_UP_OOT_FSR_SHARPNESS",
+     "EDEN_UP_OOT_FSR_SPATIAL", "EDEN_UP_OOT_MIST_DEPTH", "EDEN_UP_OOT_MIST_DEPTH_ULPS",

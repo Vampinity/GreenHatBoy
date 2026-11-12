@@ -1,0 +1,164 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: memory census counts live images whose guest range was unmapped (inside EDEN_UP_MEM_CENSUS=1)
+
+DRAFT, not built. Measurement (job K1, AI draft). No new switch: inside EDEN_UP_MEM_CENSUS=1.
+A thread_local flag set before each ModifyGPUMemory call says whether the pages are now unmapped
+(Free, or Reserved for a sparse unmap); only then does UnmapGPUMemory mark the images. The census
+line gains unmapped_target=count/MiB (GpuModified) and unmapped_other=count/MiB.
+
+Reviewed draft (job K review, verdict "ready with corrections"): draft-k1-unmapped-images.v2.patch;
+all +/- lines byte-identical, context unchanged.
+---
+diff --git a/src/video_core/memory_census.h b/src/video_core/memory_census.h
+index 236f8a7..67359b4 100644
+--- a/src/video_core/memory_census.h
++++ b/src/video_core/memory_census.h
+@@ -89,6 +89,13 @@ namespace VideoCommon::MemoryCensus {
+     return enabled;
+ }
+ 
++/// MemoryManager::PageTableOp/BigPageTableOp, set right before each ModifyGPUMemory call: true
++/// when the pages it names are now unmapped (Free: an Unmap; Reserved: a sparse allocation's
++/// unmap, which nvhost_as_gpu does with MapSparse), false when they are now mapped. The texture
++/// cache's UnmapGPUMemory runs inside that call on the same thread, so it reads this thread's
++/// value. A plain bool: nothing to construct or destroy.
++inline thread_local bool g_modify_unmaps = false;
++
+ /// An image unused for this many frames counts as stale (AreaEvict's window is 120 frames too).
+ inline constexpr u64 StaleFrames = 120;
+ 
+@@ -96,6 +103,10 @@ enum Value : size_t {
+     // TextureCache::CensusTick
+     Images,       ///< ImageMemoryBytes of every image (the collector's own measure)
+     ImageCount,
++    UnmappedTargetCount,
++    UnmappedTarget, ///< Live images after GPU unmap, base + scaled bytes
++    UnmappedOtherCount,
++    UnmappedOther,
+     ImagesSparse, ///< Unbacked: what BindLayers/BindTiles gave them
+     ImagesTarget, ///< GpuModified: render targets and other images the GPU wrote
+     ImagesAstc,   ///< ASTC textures, as stored on the host (transcoded)
+@@ -293,14 +304,15 @@ inline void Write(unsigned number, const char* why, u64 largest, u64 low, double
+     const long long rest = out != 0 ? static_cast<long long>(out) - static_cast<long long>(named) : 0;
+     const u64 cpu_side = v[AsyncReady] + v[CpuScratch];
+ 
+-    char line[1024];
++    char line[2048];
+     int length = std::snprintf(
+         line, sizeof(line),
+         "EDEN_MEM_CENSUS n=%u why=%s t_s=%.1f largest=%llu low=%llu mark=%llu gpu=%s/%lldms "
+         "images=%llu/%llu sparse=%llu target=%llu astc=%llu other=%llu scaled=%llu stale_clean=%llu "
+         "stale_written=%llu retiring=%llu decode_in_flight=%llu decode_kept=%llu copy_buffers=%llu "
+         "msaa=%llu staging=%llu device=%llu upload=%llu download=%llu idle=%llu stream=%llu "
+-        "buffers=%llu async_ready=%llu/%llu cpu_scratch=%llu (MiB)\n",
++        "buffers=%llu async_ready=%llu/%llu cpu_scratch=%llu "
++        "unmapped_target=%llu/%llu unmapped_other=%llu/%llu (MiB; unmapped=count/MiB)\n",
+         number, why, seconds, Mib(largest), Mib(low), Mib(ThresholdBytes()),
+         fresh ? "fresh" : "stale", gpu_age_ms, Mib(v[Images]),
+         static_cast<unsigned long long>(v[ImageCount]), Mib(v[ImagesSparse]),
+@@ -309,7 +321,9 @@ inline void Write(unsigned number, const char* why, u64 largest, u64 low, double
+         Mib(v[DecodeKept]), Mib(v[CopyBuffers]), static_cast<unsigned long long>(v[MsaaScratch]),
+         Mib(staging), Mib(v[StagingDevice]), Mib(v[StagingUpload]), Mib(v[StagingDownload]),
+         Mib(v[StagingIdle]), Mib(v[StagingStream]), Mib(v[Buffers]), Mib(v[AsyncReady]),
+-        static_cast<unsigned long long>(v[AsyncWaiting]), Mib(v[CpuScratch]));
++        static_cast<unsigned long long>(v[AsyncWaiting]), Mib(v[CpuScratch]),
++        static_cast<unsigned long long>(v[UnmappedTargetCount]), Mib(v[UnmappedTarget]),
++        static_cast<unsigned long long>(v[UnmappedOtherCount]), Mib(v[UnmappedOther]));
+     if (length > 0) {
+         std::fputs(line, stderr);
+     }
+diff --git a/src/video_core/memory_manager.cpp b/src/video_core/memory_manager.cpp
+index 019295f..d0e0311 100644
+--- a/src/video_core/memory_manager.cpp
++++ b/src/video_core/memory_manager.cpp
+@@ -25,6 +25,7 @@
+ #include "video_core/nx2.h"
+ #include "video_core/host1x/host1x.h"
+ #include "video_core/invalidation_accumulator.h"
++#include "video_core/memory_census.h"
+ #include "video_core/memory_manager.h"
+ #include "video_core/rasterizer_download_area.h"
+ #include "video_core/rasterizer_interface.h"
+@@ -153,6 +154,8 @@ GPUVAddr MemoryManager::PageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr de
+     u64 modified_size{};
+     const auto flush_modified = [&] {
+         if (modified_size != 0) {
++            // EDEN_UP_MEM_CENSUS (TextureCache::UnmapGPUMemory): whether these pages are now unmapped.
++            VideoCommon::MemoryCensus::g_modify_unmaps = entry_type != EntryType::Mapped;
+             rasterizer->ModifyGPUMemory(unique_identifier, modified_start, modified_size);
+             modified_size = 0;
+         }
+@@ -189,6 +192,8 @@ GPUVAddr MemoryManager::BigPageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr
+     u64 modified_size{};
+     const auto flush_modified = [&] {
+         if (modified_size != 0) {
++            // EDEN_UP_MEM_CENSUS (TextureCache::UnmapGPUMemory): whether these pages are now unmapped.
++            VideoCommon::MemoryCensus::g_modify_unmaps = entry_type != EntryType::Mapped;
+             rasterizer->ModifyGPUMemory(unique_identifier, modified_start, modified_size);
+             modified_size = 0;
+         }
+diff --git a/src/video_core/texture_cache/image_base.h b/src/video_core/texture_cache/image_base.h
+index 084e803..d47c981 100644
+--- a/src/video_core/texture_cache/image_base.h
++++ b/src/video_core/texture_cache/image_base.h
+@@ -127,6 +127,8 @@ struct ImageBase {
+     std::vector<std::pair<u64, u64>> dirty_ranges;
+     u64 scale_tick = 0;
+     bool has_scaled = false;
++    /// Census only: some guest GPU range of this live image was unmapped.
++    bool census_guest_unmapped = false;
+     /// EDEN_UP_TC_KEEP_REMADE (texture_cache.h KeptRemade): the collectors leave this image alone
+     /// as EDEN_NX2_TC_KEEP_ASYNC leaves AsynchronousDecode images. Only ever set with the switch
+     /// on; tc_keep_remade_frame is the frame it was set.
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index dbafe28..ed8ef94 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -906,10 +906,23 @@ void TextureCache<P>::CensusTick() {
+         return;
+     }
+     u64 images = 0, count = 0, sparse = 0, target = 0, astc = 0, other = 0, scaled = 0;
++    u64 unmapped_target_count = 0, unmapped_target = 0;
++    u64 unmapped_other_count = 0, unmapped_other = 0;
+     for (const auto [image_id, image] : slot_images) {
+         const u64 bytes = ImageMemoryBytes(*image);
+         images += bytes;
+         ++count;
++        if (image->census_guest_unmapped) {
++            const u64 held = bytes +
++                (image->HasScaled() ? GetScaledImageSizeBytes(*image) : 0);
++            if (True(image->flags & ImageFlagBits::GpuModified)) {
++                ++unmapped_target_count;
++                unmapped_target += held;
++            } else {
++                ++unmapped_other_count;
++                unmapped_other += held;
++            }
++        }
+         if (image->HasScaled()) {
+             scaled += GetScaledImageSizeBytes(*image);
+         }
+@@ -953,6 +966,10 @@ void TextureCache<P>::CensusTick() {
+     using MemoryCensus::Set;
+     Set(MemoryCensus::Images, images);
+     Set(MemoryCensus::ImageCount, count);
++    Set(MemoryCensus::UnmappedTargetCount, unmapped_target_count);
++    Set(MemoryCensus::UnmappedTarget, unmapped_target);
++    Set(MemoryCensus::UnmappedOtherCount, unmapped_other_count);
++    Set(MemoryCensus::UnmappedOther, unmapped_other);
+     Set(MemoryCensus::ImagesSparse, sparse);
+     Set(MemoryCensus::ImagesTarget, target);
+     Set(MemoryCensus::ImagesAstc, astc);
+@@ -3292,6 +3309,12 @@ void TextureCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t siz
+             }
+         }
+         image.dirty_layers.clear(); // all of it
++        // EDEN_UP_MEM_CENSUS: Remapped also marks maps (this call comes for every page whose
++        // entry changed, mapped or not) and sparse replacements in WriteMemory/PrepareImage.
++        // Only an unmap marks the census, an already-Remapped image included.
++        if (MemoryCensus::Enabled() && MemoryCensus::g_modify_unmaps) {
++            image.census_guest_unmapped = true;
++        }
+         if (True(image.flags & ImageFlagBits::Remapped)) {
+             continue;
+         }

@@ -1,0 +1,52 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: RADV out-of-memory lend, the guest reserve lends blocks below its floor to the driver's retry (EDEN_UP_RADV_OOM_LEND)
+
+DRAFT, not built. An experiment (reserve job). This core patch holds only the switch: Id
+RadvOomLend (live, not armed) and its parser ParseLendBlocks (2 MiB blocks, decimal, 0 off, at
+most 128). The work is in the front tree, same commit: headless/performance.cpp (the driver's
+out-of-memory callback eden_radv_out_of_memory) and src/guest_memory_service.inc (the bounded
+reclaim, the lend, the keeper's 2 s hold and its "hold over" line). It is not a driver (mesa)
+patch. Off by default. EDEN_UP_RADV_OOM_LEND=16 lends up to 16 blocks below the floor, always
+keeping min(floor, 8). EDEN_UP_RADV_OOM_LEND_VERIFY=1 (boot) counts missed skips.
+
+Reviewed draft (verdict "ready with corrections"): radv-oom-floor-lend.v2.patch, split by tree.
+live_switch.h re-anchored after GcWritebackSkip; all +/- lines byte-identical to the v2.
+---
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+index ba611c2..844b30a 100644
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -205,6 +205,11 @@ enum class Id : u8 {
+     /// EDEN_UP_GC_WRITEBACK_SKIP. Each collector visit decides for its own image whether its
+     /// write-back would grow the swizzle scratch; a skipped image keeps its contents and flags.
+     GcWritebackSkip,
++    /// EDEN_UP_RADV_OOM_LEND=<blocks> (0 off, at most 128). Read once per call of the driver's
++    /// out-of-memory callback (headless/performance.cpp): each call lends the guest reserve down to
++    /// that many 2 MiB blocks under its floor or does not; a lend already made stays made, and the
++    /// reserve keeper fills it again 2 s later whatever the switch says then.
++    RadvOomLend,
+     Count,
+ };
+ 
+@@ -284,6 +289,13 @@ inline constexpr size_t NumSwitches = static_cast<size_t>(Id::Count);
+     return us;
+ }
+ 
++/// EDEN_UP_RADV_OOM_LEND: blocks of 2 MiB, decimal; unset, 0 or no number is 0 (off), more than
++/// 128 is 128.
++[[nodiscard]] inline s64 ParseLendBlocks(const char* text) noexcept {
++    const unsigned long asked = text != nullptr ? std::strtoul(text, nullptr, 10) : 0;
++    return static_cast<s64>((std::min)(asked, 128UL));
++}
++
+ struct Def {
+     const char* name;
+     s64 (*parse)(const char* text);
+@@ -334,6 +346,7 @@ inline constexpr std::array<Def, NumSwitches> kDefs{{
+     {"EDEN_UP_AHEAD_GUARD_HELD_AGE", ParseExactOne, false, -1},
+     {"EDEN_UP_AHEAD_GUARD_HELD_AGE_VERIFY", ParseExactOne, false, -1},
+     {"EDEN_UP_GC_WRITEBACK_SKIP", ParseExactOne, false, -1},
++    {"EDEN_UP_RADV_OOM_LEND", ParseLendBlocks, false, -1},
+ }};
+ 
+ static_assert(kDefs[static_cast<size_t>(Id::PollBackoffUs)].needs ==

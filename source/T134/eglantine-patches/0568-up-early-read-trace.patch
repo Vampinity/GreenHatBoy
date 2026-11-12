@@ -1,0 +1,629 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: early read trace, what the game read against what landed later (EDEN_UP_EARLY_READ_TRACE, log only)
+
+DRAFT, not built. Our own work (guard-door job). Log only. EDEN_UP_EARLY_READ_TRACE=1 (exact 1,
+read once at boot, Common::PeSwitch; not a live switch); off by default. On: "ER r" lines for
+reads that take guest memory as it is (present, ahead flag, 4 floats), "ER l" when a download
+later lands over such a range (old/new values, after_us), "ER s"/"ER L" for landings, and a 10 s
+counter line. At every present it bumps the read trap generation so each core's next read is
+looked up again. Cost on: about LANDING_TRACE's 2 fps plus the lookups (lookup_us).
+New file video_core/early_read_trace.h.
+
+Reviewed draft (verdict "ready with corrections"): early-read-trace.v2.patch. Re-anchored after
+0567 in gpu.cpp (OnCPURead: the note sits after AHEAD_READ_SYNC's test, before the shortcut's
+return) and nx2_gsv.h (after LandingTrace, before AHEAD_READ_SYNC's block); all +/- lines
+byte-identical to the v2.
+---
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index 18227e2..5cc8cf5 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -42,6 +42,7 @@
+ #include "core/perf_stats.h"
+ #include "video_core/ahead_guard.h"
+ #include "video_core/ahead_read_sync.h"
++#include "video_core/early_read_trace.h"
+ #include "video_core/landing_trace.h"
+ #include "video_core/gpu.h"
+ #include "video_core/gpu_split.h"
+@@ -2056,6 +2057,18 @@ private:
+             if (VideoCommon::LandingTrace::Enabled()) [[unlikely]] {
+                 VideoCommon::LandingTrace::AtPresent(m_presents, ran_ahead_now);
+             }
++            // EDEN_UP_EARLY_READ_TRACE (video_core/early_read_trace.h): reads and landings from
++            // here on are logged against this present. Every core's kept read area expires
++            // (RasterizerArmReadTraps(0, 0) only bumps the generation), so each area's first
++            // read in this frame reaches GPU::OnCPURead and the trace again. More lookups, and
++            // where a GPU write moved no generation (an image's FlushOnNextRead within its
++            // 250 ms limit) a read may get fresher bytes than without the trace; the 10 s line's
++            // lone_bumps and lookup_us say how often. At every present, ahead or not, so the
++            // full-wait arm is traced alike.
++            if (VideoCommon::EarlyReadTrace::Enabled()) [[unlikely]] {
++                VideoCommon::EarlyReadTrace::AtPresent(m_presents, ran_ahead_now);
++                system.ApplicationMemory().RasterizerArmReadTraps(0, 0);
++            }
+             // EDEN_UP_AHEAD_READ_SYNC (video_core/ahead_read_sync.h), live: while this present
+             // returns before its own frame's fence (judged at the reply, as ran_ahead), guest
+             // reads of fence-downloaded buffer ranges wait for this frame's bytes
+diff --git a/src/core/memory.cpp b/src/core/memory.cpp
+index c300aea..7fe1eba 100644
+--- a/src/core/memory.cpp
++++ b/src/core/memory.cpp
+@@ -36,6 +36,7 @@
+ #include "core/hle/kernel/k_thread.h"
+ #include "core/memory.h"
+ #include "video_core/ahead_guard.h"
++#include "video_core/early_read_trace.h"
+ #include "video_core/nx2.h"
+ #include "video_core/gpu.h"
+ #include "video_core/host1x/gpu_device_memory_manager.h"
+@@ -584,6 +585,11 @@ struct Memory::Impl {
+     void RasterizerArmReadTraps(u64 vaddr, u64 size) {
+         // Clean cached read areas also need invalidation when reactive flushing is enabled.
+         read_trap_generation.fetch_add(1, std::memory_order_release);
++        // EDEN_UP_EARLY_READ_TRACE: a move of the generation that is not the trace's own (0, 0)
++        // bump at a present (count only).
++        if (VideoCommon::EarlyReadTrace::Enabled() && (vaddr != 0 || size != 0)) [[unlikely]] {
++            VideoCommon::EarlyReadTrace::NoteGenerationMove();
++        }
+         if (vaddr == 0 || size == 0 || !AddressSpaceContains(*current_page_table, vaddr, size) ||
+             !ReadTrapsEnabled()) {
+             return;
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index 19e5d8f..de7be13 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -32,6 +32,7 @@
+ #include "video_core/host1x/gpu_device_memory_manager.h"
+ #include "video_core/nx2.h"
+ #include "video_core/hitch_trace.h"
++#include "video_core/early_read_trace.h"
+ #include "video_core/landing_trace.h"
+ #include "video_core/nx2_profile.h"
+ #include "video_core/texture_cache/util.h"
+@@ -2484,6 +2485,19 @@ void BufferCache<P>::WriteDownloadedMemory(const Common::RangeSet<DAddr>& cpu_wr
+         VideoCommon::LandingTrace::Note(
+             held || cpu_written.Intersects(device_addr, size) ? 'k' : 'b', device_addr, data, size);
+     }
++    // EDEN_UP_EARLY_READ_TRACE: pair this landing with the game's reads of it (log only). Before
++    // the write below, so guest memory still holds the old bytes.
++    if (VideoCommon::EarlyReadTrace::Enabled()) [[unlikely]] {
++        VideoCommon::EarlyReadTrace::NoteLanding(
++            held || cpu_written.Intersects(device_addr, size) ? 'k' : 'b', device_addr, size,
++            [this](u64 at, u8* out, u64 count) {
++                device_memory.ReadBlockUnsafe(at, out, count);
++                return true;
++            },
++            [data, device_addr](u64 at, u8* out, u64 count) {
++                std::memcpy(out, data + (at - device_addr), count);
++            });
++    }
+     // EDEN_UP_FRITCHII_DOWNLOAD_LANDING_STATS: what the download brought, wrote and kept off,
+     // until EndLandingStats.
+     const bool landing_stats = VideoCore::LandingPort::StatsEnabled();
+diff --git a/src/video_core/early_read_trace.h b/src/video_core/early_read_trace.h
+new file mode 100644
+index 0000000..0cdac0c
+--- /dev/null
++++ b/src/video_core/early_read_trace.h
+@@ -0,0 +1,409 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <algorithm>
++#include <array>
++#include <atomic>
++#include <chrono>
++#include <cstring>
++
++#include "common/common_types.h"
++#include "common/logging.h"
++#include "common/pe_switch.h"
++
++/// EDEN_UP_EARLY_READ_TRACE=1 (exact "1"; a diagnostic read once at start, off by default, log
++/// only): which GPU result the game reads before it has landed in guest memory.
++///
++/// Why: run a frame ahead (EDEN_NX2_FRAMES_AHEAD=1), the second after the cut into Link's house
++/// comes out about twice as bright in about 4 of 10 door walks, with or without the copy guard,
++/// and never with the full wait. One reading: frame N+1's CPU logic reads a GPU result (an
++/// exposure meter) before frame N's fence download has written it, so the game adapts from the
++/// black frame's value. LandingTrace logs what lands; nothing logged what the game reads. This
++/// pairs the two.
++///
++/// What it can see: a guest core keeps the area GPU::OnCPURead returns (a page or more, an image's
++/// whole extent) and reads inside it without asking again until the read trap generation moves.
++/// The trace moves it at every present, so it sees the FIRST read of each area in each frame, at
++/// that read's address, not every read. Hence two kinds of pair:
++///   hit=r  the landing covers the bytes of that first read: old is what that read got.
++///   hit=a  the landing covers only other bytes of the same area: the game touched the area under
++///          read_p before this landing, and old is what guest memory held at the landed address
++///          just before the landing wrote (what any read there since then got). Weaker: it does not
++///          prove the game read those bytes before the landing, only that it could have.
++///
++///   ER r p=<n> a=<0|1> [<begin>,<end>) area=[..) v=<4 floats>
++///       a guest read that GPU::OnCPURead answered from guest memory as it is (the "preemtive"
++///       shortcut, no flush), under the game's latest present n (a=1: it returned ahead), with
++///       the first 16 bytes guest memory holds there now. Capped at 32 a present.
++///   ER l p=<n> read_p=<m> ahead=<0|1> <kind> hit=<r|a> read=[..) area=[..) at=<addr>
++///       land=[<addr>,+<size>) after_us=<t> old=<4 floats|?> new=<4 floats>
++///       a download landing over a read made under present m (at most 3 presents back), t
++///       microseconds after that read. hit=r: one line per read. hit=a: at most one line per
++///       landing (the latest read of the area), capped at 8 a present for landings over 64 B.
++///       old=?: not known (an image landing, whose old bytes are gone when it is noted).
++///   ER s p=<n> <kind> [<addr>,+<size>) v=<4 floats>  every landing of 64 bytes or less
++///   ER L p=<n> <kind> [<addr>,+<size>)               bigger landings, 8 a present
++///   EarlyReadTrace 10 s: ...                        counters, see MaybeReport
++/// Kinds as in LandingTrace: b buffer download, k buffer download with bytes kept off, t texture
++/// cache buffer download, i image download (written by swizzling; "new" is read back from guest
++/// memory after it).
++///
++/// Threads: AtPresent and MaybeReport run on nx2:vi2 (the game's present thread); NoteRead on
++/// the guest thread that read (a CPU core, or a service thread); NoteLanding on the thread that
++/// lands downloads (GPUFencingThread at fence pops, GPUBack or the read's sync operation for
++/// flushes); NoteGenerationMove on whichever thread arms read traps (GPUBack, GPUFencingThread).
++/// All shared state below is atomics; the ring is a seqlock per entry, no lock, no allocation.
++/// It never changes a byte the game reads, a draw or a guard decision; the one effect with it on
++/// is the read-area expiry at each present (nx2_gsv.h), whose reach the 10 s line measures
++/// (other_moves, lone_bumps, lookup_us).
++namespace VideoCommon::EarlyReadTrace {
++
++[[nodiscard]] inline bool Enabled() {
++    static const bool enabled = Common::PeSwitch("EDEN_UP_EARLY_READ_TRACE");
++    return enabled;
++}
++
++inline constexpr u32 RingSize = 256; ///< a power of two
++inline constexpr u64 ValueBytes = 16;
++inline constexpr u64 PageBytes = 0x1000; ///< device memory page (YUZU_PAGESIZE)
++inline constexpr u64 PresentWindow = 3;  ///< a landing pairs with reads up to 3 presents back
++inline constexpr u32 ReadLinesAPresent = 32;
++inline constexpr u64 SmallLanding = 64;
++inline constexpr u32 BigLinesAPresent = 8;
++
++/// One guest read. seq: 0 never written, odd being written, even stable. consumed: the seq a
++/// landing already paired with hit=r (one such line per read).
++struct Entry {
++    std::atomic<u32> seq{};
++    std::atomic<u32> consumed{};
++    std::atomic<u64> begin{};
++    std::atomic<u64> end{};
++    std::atomic<u64> area_begin{};
++    std::atomic<u64> area_end{};
++    std::atomic<u64> present{};
++    std::atomic<u64> old_lo{};
++    std::atomic<u64> old_hi{};
++    std::atomic<u64> read_us{}; ///< steady clock at the read, microseconds
++    std::atomic<u32> ahead{};
++};
++
++struct Counters {
++    std::atomic<u64> presents{};
++    std::atomic<u64> ahead_presents{};
++    std::atomic<u64> reads{};       ///< preemptive reads recorded
++    std::atomic<u64> sync_reads{};  ///< reads OnCPURead flushed for (bytes are fresh)
++    std::atomic<u64> lookup_us{};   ///< guest threads' time in GetFlushArea for recorded reads
++    std::atomic<u64> ring_busy{};   ///< reads not recorded: their slot was being written
++    std::atomic<u64> ring_evicted{}; ///< entries overwritten unpaired inside the present window
++    std::atomic<u64> pairs{};       ///< hit=r
++    std::atomic<u64> pairs_ahead{}; ///< hit=r whose read was under an ahead present
++    std::atomic<u64> area_pairs{};  ///< hit=a
++    std::atomic<u64> area_pairs_ahead{};
++    std::atomic<u64> small_landings{};
++    std::atomic<u64> big_landings{};
++    std::atomic<u64> read_lines_dropped{};
++    std::atomic<u64> big_lines_dropped{};
++    std::atomic<u64> other_moves{}; ///< read trap generation moves not made by this trace
++    std::atomic<u64> lone_bumps{};  ///< presents whose expiry only this trace caused
++};
++
++/// A per-present line cap (racy like LandingTrace's: a line more or less at a present change).
++struct LineCap {
++    std::atomic<u64> present{~u64{0}};
++    std::atomic<u32> lines{};
++};
++
++inline std::array<Entry, RingSize> g_ring{};
++inline std::atomic<u32> g_next{};
++inline std::atomic<u64> g_present{}; ///< the game's latest present (nx2:vi2 writes)
++inline std::atomic<u32> g_ahead{};   ///< 1: that present returned before its frame's fence
++inline std::atomic<u64> g_moves{};   ///< generation moves by others since the last present
++inline Counters g_counters{};
++inline LineCap g_read_cap{};
++inline LineCap g_big_cap{};
++inline LineCap g_big_area_cap{};
++
++inline void Add(std::atomic<u64>& counter, u64 value = 1) {
++    counter.fetch_add(value, std::memory_order_relaxed);
++}
++
++[[nodiscard]] inline bool TakeLine(LineCap& cap, u64 present, u32 limit) {
++    if (cap.present.exchange(present, std::memory_order_relaxed) != present) {
++        cap.lines.store(0, std::memory_order_relaxed);
++    }
++    return cap.lines.fetch_add(1, std::memory_order_relaxed) < limit;
++}
++
++/// How many bytes from address to show: 16, kept inside its page.
++[[nodiscard]] inline u64 ValueSize(u64 address) {
++    return (std::min<u64>)(ValueBytes, PageBytes - (address & (PageBytes - 1)));
++}
++
++[[nodiscard]] inline u64 NowUs() {
++    return static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(
++                                std::chrono::steady_clock::now().time_since_epoch())
++                                .count());
++}
++
++[[nodiscard]] inline std::array<float, 4> Floats(const u8* bytes) {
++    std::array<float, 4> values{};
++    std::memcpy(values.data(), bytes, sizeof(values));
++    return values;
++}
++
++/// The 10 s line, from nx2:vi2 (AtPresent). Only that thread reads `last`.
++inline void MaybeReport() {
++    using Clock = std::chrono::steady_clock;
++    static Clock::time_point last = Clock::now();
++    const Clock::time_point now = Clock::now();
++    if (now - last < std::chrono::seconds{10}) {
++        return;
++    }
++    last = now;
++    const auto take = [](std::atomic<u64>& counter) {
++        return counter.exchange(0, std::memory_order_relaxed);
++    };
++    auto& c = g_counters;
++    LOG_INFO(HW_GPU,
++             "EarlyReadTrace 10 s: presents={} ahead={} reads={} sync_reads={} lookup_us={} "
++             "pairs={} pairs_ahead={} area_pairs={} area_pairs_ahead={} landings small={} big={} "
++             "lines_dropped read={} big={} ring_busy={} ring_evicted={} other_moves={} "
++             "lone_bumps={}",
++             take(c.presents), take(c.ahead_presents), take(c.reads), take(c.sync_reads),
++             take(c.lookup_us), take(c.pairs), take(c.pairs_ahead), take(c.area_pairs),
++             take(c.area_pairs_ahead), take(c.small_landings), take(c.big_landings),
++             take(c.read_lines_dropped), take(c.big_lines_dropped), take(c.ring_busy),
++             take(c.ring_evicted), take(c.other_moves), take(c.lone_bumps));
++}
++
++/// Core::Memory's RasterizerArmReadTraps with a real range (not the trace's own (0, 0) bump):
++/// the read trap generation moved for another reason. Any thread. Call only with Enabled().
++inline void NoteGenerationMove() {
++    g_moves.fetch_add(1, std::memory_order_relaxed);
++}
++
++/// From nx2:vi2 PresentClientBuffer at its reply, before the trace's own bump. Call only with
++/// Enabled().
++inline void AtPresent(u64 number, bool ahead) {
++    g_present.store(number, std::memory_order_relaxed);
++    g_ahead.store(ahead ? 1U : 0U, std::memory_order_relaxed);
++    Add(g_counters.presents);
++    if (ahead) {
++        Add(g_counters.ahead_presents);
++    }
++    // No other move since the last present: the areas the cores keep would have outlived this
++    // present without the trace, so its bump below changes which reads ask again.
++    const u64 moves = g_moves.exchange(0, std::memory_order_relaxed);
++    Add(g_counters.other_moves, moves);
++    if (moves == 0) {
++        Add(g_counters.lone_bumps);
++    }
++    MaybeReport();
++}
++
++/// GPU::OnCPURead answered with a flush: the bytes the game reads are this frame's. Count only.
++inline void NoteSyncRead() {
++    Add(g_counters.sync_reads);
++}
++
++/// GPU::OnCPURead answered "preemtive": the game reads [address, address + size) as guest memory
++/// holds it now, and keeps [area_begin, area_end). value: value_size (<= 16) bytes from address.
++/// lookup_start: NowUs() before GetFlushArea. Any guest or service thread. Call only with
++/// Enabled().
++inline void NoteRead(u64 address, u64 size, u64 area_begin, u64 area_end, const u8* value,
++                     u64 value_size, u64 lookup_start) {
++    const u64 now_us = NowUs();
++    Add(g_counters.reads);
++    Add(g_counters.lookup_us, now_us > lookup_start ? now_us - lookup_start : 0);
++    const u64 present = g_present.load(std::memory_order_relaxed);
++    const u32 ahead = g_ahead.load(std::memory_order_relaxed);
++    std::array<u8, ValueBytes> bytes{};
++    std::memcpy(bytes.data(), value, (std::min<u64>)(value_size, ValueBytes));
++    u64 lo = 0;
++    u64 hi = 0;
++    std::memcpy(&lo, bytes.data(), sizeof(lo));
++    std::memcpy(&hi, bytes.data() + sizeof(lo), sizeof(hi));
++
++    Entry& entry = g_ring[g_next.fetch_add(1, std::memory_order_relaxed) & (RingSize - 1)];
++    u32 seq = entry.seq.load(std::memory_order_relaxed);
++    if ((seq & 1) != 0 ||
++        !entry.seq.compare_exchange_strong(seq, seq + 1, std::memory_order_relaxed)) {
++        Add(g_counters.ring_busy);
++    } else {
++        // The entry this one replaces was never paired and is still inside the window: the ring
++        // is too small for this many reads a present (raise RingSize).
++        const u64 old_present = entry.present.load(std::memory_order_relaxed);
++        if (seq != 0 && entry.consumed.load(std::memory_order_relaxed) != seq &&
++            old_present <= present && present - old_present <= PresentWindow) {
++            Add(g_counters.ring_evicted);
++        }
++        std::atomic_thread_fence(std::memory_order_release);
++        entry.begin.store(address, std::memory_order_relaxed);
++        entry.end.store(address + (std::max<u64>)(size, 1), std::memory_order_relaxed);
++        entry.area_begin.store(area_begin, std::memory_order_relaxed);
++        entry.area_end.store(area_end, std::memory_order_relaxed);
++        entry.present.store(present, std::memory_order_relaxed);
++        entry.old_lo.store(lo, std::memory_order_relaxed);
++        entry.old_hi.store(hi, std::memory_order_relaxed);
++        entry.read_us.store(now_us, std::memory_order_relaxed);
++        entry.ahead.store(ahead, std::memory_order_relaxed);
++        entry.seq.store(seq + 2, std::memory_order_release);
++    }
++
++    if (!TakeLine(g_read_cap, present, ReadLinesAPresent)) {
++        Add(g_counters.read_lines_dropped);
++        return;
++    }
++    const auto v = Floats(bytes.data());
++    LOG_INFO(HW_GPU, "ER r p={} a={} [{:#x},{:#x}) area=[{:#x},{:#x}) v={} {} {} {}", present,
++             ahead, address, address + size, area_begin, area_end, v[0], v[1], v[2], v[3]);
++}
++
++/// A download lands on [address, address + size) (device address).
++/// read_old(at, out, n) -> bool: the n (<= 16) bytes guest memory holds at `at` before the landing
++/// writes them; false when they are no longer known (images: noted after the swizzle).
++/// read_new(at, out, n): the n bytes that land at `at`: from the download's data for buffers, from
++/// guest memory after the swizzle for images. Call only with Enabled(), on the landing thread.
++template <typename ReadOld, typename ReadNew>
++inline void NoteLanding(char kind, u64 address, u64 size, ReadOld&& read_old,
++                        ReadNew&& read_new) {
++    if (size == 0) {
++        return;
++    }
++    const u64 present = g_present.load(std::memory_order_relaxed);
++    const u64 land_end = address + size;
++    const bool small = size <= SmallLanding;
++    if (small) {
++        Add(g_counters.small_landings);
++        std::array<u8, ValueBytes> landed{};
++        read_new(address, landed.data(), (std::min<u64>)(size, ValueBytes));
++        const auto v = Floats(landed.data());
++        LOG_INFO(HW_GPU, "ER s p={} {} [{:#x},+{}) v={} {} {} {}", present, kind, address, size,
++                 v[0], v[1], v[2], v[3]);
++    } else {
++        Add(g_counters.big_landings);
++        if (TakeLine(g_big_cap, present, BigLinesAPresent)) {
++            LOG_INFO(HW_GPU, "ER L p={} {} [{:#x},+{})", present, kind, address, size);
++        } else {
++            Add(g_counters.big_lines_dropped);
++        }
++    }
++
++    const auto log_pair = [&](char hit, u64 read_present, u32 ahead, u64 begin, u64 end,
++                              u64 area_begin, u64 area_end, u64 at, u64 read_us,
++                              const std::array<u8, ValueBytes>* old_value) {
++        std::array<u8, ValueBytes> new_at{};
++        read_new(at, new_at.data(), (std::min<u64>)(ValueBytes, land_end - at));
++        const auto n = Floats(new_at.data());
++        const u64 now_us = NowUs();
++        const u64 after_us = now_us > read_us ? now_us - read_us : 0;
++        if (old_value != nullptr) {
++            const auto o = Floats(old_value->data());
++            LOG_INFO(HW_GPU,
++                     "ER l p={} read_p={} ahead={} {} hit={} read=[{:#x},{:#x}) area=[{:#x},{:#x}) "
++                     "at={:#x} land=[{:#x},+{}) after_us={} old={} {} {} {} new={} {} {} {}",
++                     present, read_present, ahead, kind, hit, begin, end, area_begin, area_end, at,
++                     address, size, after_us, o[0], o[1], o[2], o[3], n[0], n[1], n[2], n[3]);
++        } else {
++            LOG_INFO(HW_GPU,
++                     "ER l p={} read_p={} ahead={} {} hit={} read=[{:#x},{:#x}) area=[{:#x},{:#x}) "
++                     "at={:#x} land=[{:#x},+{}) after_us={} old=? new={} {} {} {}",
++                     present, read_present, ahead, kind, hit, begin, end, area_begin, area_end, at,
++                     address, size, after_us, n[0], n[1], n[2], n[3]);
++        }
++    };
++
++    // hit=a: the latest read whose area (not its own bytes) the landing covers.
++    bool area_found = false;
++    u64 a_present = 0;
++    u32 a_ahead = 0;
++    u64 a_begin = 0;
++    u64 a_end = 0;
++    u64 a_area_begin = 0;
++    u64 a_area_end = 0;
++    u64 a_read_us = 0;
++
++    for (Entry& entry : g_ring) {
++        const u32 seq = entry.seq.load(std::memory_order_acquire);
++        if (seq == 0 || (seq & 1) != 0) {
++            continue;
++        }
++        const u64 begin = entry.begin.load(std::memory_order_relaxed);
++        const u64 end = entry.end.load(std::memory_order_relaxed);
++        const u64 area_begin = entry.area_begin.load(std::memory_order_relaxed);
++        const u64 area_end = entry.area_end.load(std::memory_order_relaxed);
++        const u64 read_present = entry.present.load(std::memory_order_relaxed);
++        const u64 old_lo = entry.old_lo.load(std::memory_order_relaxed);
++        const u64 old_hi = entry.old_hi.load(std::memory_order_relaxed);
++        const u64 read_us = entry.read_us.load(std::memory_order_relaxed);
++        const u32 ahead = entry.ahead.load(std::memory_order_relaxed);
++        std::atomic_thread_fence(std::memory_order_acquire);
++        if (entry.seq.load(std::memory_order_relaxed) != seq) {
++            continue; // rewritten while read
++        }
++        if (read_present > present || present - read_present > PresentWindow) {
++            continue;
++        }
++        if (!(begin < land_end && address < end)) {
++            if (area_begin < land_end && address < area_end &&
++                (!area_found || read_us > a_read_us)) {
++                area_found = true;
++                a_present = read_present;
++                a_ahead = ahead;
++                a_begin = begin;
++                a_end = end;
++                a_area_begin = area_begin;
++                a_area_end = area_end;
++                a_read_us = read_us;
++            }
++            continue;
++        }
++        u32 paired = entry.consumed.load(std::memory_order_relaxed);
++        if (paired == seq ||
++            !entry.consumed.compare_exchange_strong(paired, seq, std::memory_order_relaxed)) {
++            continue;
++        }
++        // Both values from `at`: the read's first byte, or the landing's if it starts later.
++        const u64 at = (std::max)(begin, address);
++        const u64 shift = at - begin;
++        std::array<u8, ValueBytes> old_at{};
++        bool old_known = false;
++        if (shift < ValueBytes) {
++            std::array<u8, ValueBytes * 2> old_bytes{};
++            std::memcpy(old_bytes.data(), &old_lo, sizeof(old_lo));
++            std::memcpy(old_bytes.data() + sizeof(old_lo), &old_hi, sizeof(old_hi));
++            std::memcpy(old_at.data(), old_bytes.data() + shift, ValueBytes);
++            old_known = true;
++        } else {
++            old_known = read_old(at, old_at.data(), (std::min<u64>)(ValueBytes, land_end - at));
++        }
++        Add(g_counters.pairs);
++        if (ahead != 0) {
++            Add(g_counters.pairs_ahead);
++        }
++        log_pair('r', read_present, ahead, begin, end, area_begin, area_end, at, read_us,
++                 old_known ? &old_at : nullptr);
++    }
++
++    if (!area_found) {
++        return;
++    }
++    Add(g_counters.area_pairs);
++    if (a_ahead != 0) {
++        Add(g_counters.area_pairs_ahead);
++    }
++    if (!small && !TakeLine(g_big_area_cap, present, BigLinesAPresent)) {
++        Add(g_counters.big_lines_dropped);
++        return;
++    }
++    const u64 at = (std::max)(a_area_begin, address);
++    std::array<u8, ValueBytes> old_at{};
++    const bool old_known =
++        read_old(at, old_at.data(), (std::min<u64>)(ValueBytes, land_end - at));
++    log_pair('a', a_present, a_ahead, a_begin, a_end, a_area_begin, a_area_end, at, a_read_us,
++             old_known ? &old_at : nullptr);
++}
++
++} // namespace VideoCommon::EarlyReadTrace
+diff --git a/src/video_core/gpu.cpp b/src/video_core/gpu.cpp
+index f232e16..4f8a4a4 100644
+--- a/src/video_core/gpu.cpp
++++ b/src/video_core/gpu.cpp
+@@ -36,6 +36,7 @@
+ #include "video_core/control/channel_state.h"
+ #include "video_core/control/scheduler.h"
+ #include "video_core/dma_pusher.h"
++#include "video_core/early_read_trace.h"
+ #include "video_core/engines/fermi_2d.h"
+ #include "video_core/engines/kepler_compute.h"
+ #include "video_core/engines/kepler_memory.h"
+@@ -488,6 +489,10 @@ struct GPU::Impl {
+     }
+ 
+     VideoCore::RasterizerDownloadArea OnCPURead(DAddr addr, u64 size) {
++        // EDEN_UP_EARLY_READ_TRACE (video_core/early_read_trace.h): log only. Off: one test of a
++        // bool cached at start, per area lookup (not per read, not per draw).
++        const bool early_read_trace = VideoCommon::EarlyReadTrace::Enabled();
++        const u64 lookup_start = early_read_trace ? VideoCommon::EarlyReadTrace::NowUs() : 0;
+         auto raster_area = renderer->ReadRasterizer()->GetFlushArea(addr, size);
+         if (raster_area.preemtive) {
+             // EDEN_UP_AHEAD_READ_SYNC (video_core/ahead_read_sync.h), live: a fence-downloaded
+@@ -499,8 +504,16 @@ struct GPU::Impl {
+                 [[unlikely]] {
+                 return ReadAheadSync(raster_area, addr, size);
+             }
++            // The game reads guest memory as it is: note what it holds, for the landing that may
++            // follow.
++            if (early_read_trace) [[unlikely]] {
++                NoteEarlyRead(addr, size, raster_area, lookup_start);
++            }
+             return raster_area;
+         }
++        if (early_read_trace) [[unlikely]] {
++            VideoCommon::EarlyReadTrace::NoteSyncRead();
++        }
+         raster_area.preemtive = true;
+         // A guest CPU read of GPU-written memory (reactive flushing): count them, they decide
+         // whether buffer data must be copied back at every fence (EDEN_NX2_BUFFER_DOWNLOADS).
+@@ -537,6 +550,18 @@ struct GPU::Impl {
+         return raster_area;
+     }
+ 
++    /// EDEN_UP_EARLY_READ_TRACE: up to 16 bytes from addr as guest memory holds them now (the
++    /// reading guest thread; ReadBlockUnsafe, no rasterizer path), into the trace's ring.
++    void NoteEarlyRead(DAddr addr, u64 size, const VideoCore::RasterizerDownloadArea& area,
++                       u64 lookup_start) {
++        namespace EarlyReadTrace = VideoCommon::EarlyReadTrace;
++        std::array<u8, EarlyReadTrace::ValueBytes> value{};
++        const u64 value_size = EarlyReadTrace::ValueSize(addr);
++        system.Host1x().MemoryManager().ReadBlockUnsafe(addr, value.data(), value_size);
++        EarlyReadTrace::NoteRead(addr, size, area.start_address, area.end_address, value.data(),
++                                 value_size, lookup_start);
++    }
++
+     /// EDEN_UP_L1028_ASYNC_READBACK (zortos293/Lichii #1028): OnCPURead's flush. The GPU thread
+     /// submits the buffer downloads without waiting for the host GPU (FlushRegionForRead), and
+     /// this thread waits for them and writes them to guest memory (FinishRead) while the GPU
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 5326a34..9f85ba2 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -33,6 +33,7 @@
+ #include "video_core/engines/kepler_compute.h"
+ #include "video_core/guest_memory.h"
+ #include "video_core/memory_census.h"
++#include "video_core/early_read_trace.h"
+ #include "video_core/landing_trace.h"
+ #include "video_core/host1x/gpu_device_memory_manager.h"
+ #include "video_core/texture_cache/formatter.h"
+@@ -3733,6 +3734,16 @@ void TextureCache<P>::PopAsyncFlushes() {
+                     SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, download_span,
+                                  swizzle_data_buffer);
+                     ClearStaleImage(image);
++                    // EDEN_UP_EARLY_READ_TRACE: pair this landing with the game's reads of
++                    // it (log only); "new" is read back from guest memory after the swizzle.
++                    if (VideoCommon::EarlyReadTrace::Enabled()) [[unlikely]] {
++                        VideoCommon::EarlyReadTrace::NoteLanding(
++                            'i', image.cpu_addr, image.guest_size_bytes,
++                            [](u64, u8*, u64) { return false; },
++                            [this](u64 at, u8* out, u64 count) {
++                                device_memory.ReadBlockUnsafe(at, out, count);
++                            });
++                    }
+                 }
+             } else {
+                 const BufferDownload& buffer_info = slot_buffer_downloads[download_info.object_id];
+@@ -3742,6 +3753,22 @@ void TextureCache<P>::PopAsyncFlushes() {
+                     VideoCommon::LandingTrace::Note('t', buffer_info.address, download_span.data(),
+                                                     buffer_info.size);
+                 }
++                // EDEN_UP_EARLY_READ_TRACE: the same, at the buffer's device address (its first
++                // page's; a buffer mapped in pieces is named by its start). Before the write.
++                if (VideoCommon::EarlyReadTrace::Enabled()) [[unlikely]] {
++                    if (const auto landed = gpu_memory->GpuToCpuAddress(buffer_info.address)) {
++                        const u8* const data = download_span.data();
++                        VideoCommon::EarlyReadTrace::NoteLanding(
++                            't', *landed, buffer_info.size,
++                            [this](u64 at, u8* out, u64 count) {
++                                device_memory.ReadBlockUnsafe(at, out, count);
++                                return true;
++                            },
++                            [data, start = *landed](u64 at, u8* out, u64 count) {
++                                std::memcpy(out, data + (at - start), count);
++                            });
++                    }
++                }
+                 gpu_memory->WriteBlockUnsafe(buffer_info.address, download_span.data(),
+                                              buffer_info.size);
+                 ClearStaleGpu(buffer_info.address, buffer_info.size);

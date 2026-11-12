@@ -1,0 +1,536 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: stale backing fix, sub 102 unmaps every GPU range into destroyed memory and releases its device range (EDEN_UP_STALE_BACKING_FIX)
+
+DRAFT, not built. Port of zortos293/Lichii #1199 and the release half of #1236 (PantACRO4life's
+backing-lifetime fixes, 99ivs's release-on-destroy diagnosis), as carried in Frizti/Fritchii v5.7
+45e164c and 506a5ca; read through the GitHub API only. Our 0039 (EDEN_NX2_REFRESH_DEVICE_RANGES)
+already carries the refresh half of #1236 and stays as it is.
+EDEN_UP_STALE_BACKING_FIX=1 (boot, exact 1): sub 102 drops GPU-only tiles of the memory, unmaps
+every recorded GPU range into it (the own one and any 211 range), maps the region's own memory
+back under GPU-only ranges, and releases the memory's device (SMMU) range; a heap-mapper map that
+overlaps a heap release still queued for the GPU thread is itself queued behind it.
+EDEN_UP_STALE_BACKING_FIX_VERIFY=1 (boot, exact 1): with the fix off, count only (the old Unmap
+runs as before, outside the region lock; the counting takes the region lock for a short read-only
+walk); with the fix on, check after each 102 that no recorded GPU range still reaches the memory.
+With either switch every heap map also counts heap pages whose device page is not the CPU page
+(the 0039 comparison, count only), in the queued heap-map job too. Counter line
+"EDEN_UP_STALE_BACKING_FIX <check|fix> counts:" at the first 102, then at most every 10 s from a
+102 or from a map; per-range warning for the first 32, then every 1000th.
+Off: one branch on two static bools per 102, per heap map and per heap release, one thread_local
+bool test per device-range release; no lock, list, log or page walk.
+
+Known limits, documented and not fixed:
+- Heap pages still held by another heap entry (a 211 sub-range of the destroyed memory, or a
+  second address space of the session) keep their old backing after the fix: the queued heap
+  unmap only lowers their count. _VERIFY shows them as "pages stale at map"; nothing repairs them.
+- "maps overlapped a queued release" is no park signal in count mode: in count mode 102 releases
+  nothing, so the count only sees the older release callers (decoder images) and is near 0 by
+  construction. Decide on "other GPU ranges" and "pages stale at map".
+- Tiles in sparse regions (216 through MapSparseTile) are not touched (upstream the same).
+
+Reviewed draft v2 (third review, "builds as a count-only arm"), corrections applied here: the
+counter line also prints from the map path (counters moved to shared atomics,
+Nx2StaleBackingStats); "released" is counted inside Nx2Release when it really frees a device range
+for a 102 (exact key, last reference; check mode keeps "would release" by exact start); the
+after-check of the own device range that could never fail is dropped; stale pages are also
+counted inside the queued heap-map job; count-mode wording "may keep old pages".
+---
+diff --git a/src/core/hle/service/nvdrv/core/heap_mapper.h b/src/core/hle/service/nvdrv/core/heap_mapper.h
+index 491a12e..aafb131 100644
+--- a/src/core/hle/service/nvdrv/core/heap_mapper.h
++++ b/src/core/hle/service/nvdrv/core/heap_mapper.h
+@@ -37,6 +37,11 @@ public:
+         return m_size;
+     }
+ 
++    /// Device address Map(start, ...) returns, without mapping anything.
++    DAddr DeviceAddressOf(VAddr start) const {
++        return m_daddress + static_cast<DAddr>(start - m_vaddress);
++    }
++
+ private:
+     struct HeapMapperInternal;
+     VAddr m_vaddress;
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp b/src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp
+index ac1cc59..a30bf9c 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp
++++ b/src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp
+@@ -34,6 +34,27 @@
+ 
+ namespace Service::Nvidia::Devices {
+ 
++namespace {
++// EDEN_UP_STALE_BACKING_FIX_VERIFY: heap pages whose device page is not the CPU page behind the
++// address now (the 0039 comparison, count only, nothing mapped again).
++template <typename Smmu, typename Memory>
++u64 Nx2CountStalePages(Smmu& smmu, Memory& memory, u64 cpu_address, u64 size,
++                       DAddr device_address) {
++    constexpr u64 PageSize = Core::Memory::YUZU_PAGESIZE;
++    const u64 pages = Common::DivCeil(size + (cpu_address & (PageSize - 1)), PageSize);
++    const u64 cpu_base = Common::AlignDown(cpu_address, PageSize);
++    const DAddr device_base = Common::AlignDown(device_address, PageSize);
++    u64 stale = 0;
++    for (u64 page = 0; page < pages; ++page) {
++        if (memory.GetPointerSilent(Common::ProcessAddress{cpu_base + page * PageSize}) !=
++            smmu.template GetPointer<u8>(device_base + page * PageSize)) {
++            ++stale;
++        }
++    }
++    return stale;
++}
++} // namespace
++
+ nvhost_as_gpu::nvhost_as_gpu(Core::System& system_, Module& module_, NvCore::Container& core)
+     : nvdevice{system_}, module{module_}, container{core}, nvmap{core.GetNvMapFile()}, vm{},
+       gmmu{} {}
+@@ -202,11 +223,44 @@ void nvhost_as_gpu::Nx2Map(u64 gpu_address, u64 cpu_address, u64 size) {
+     // reuse its SMMU mapping.
+     Nx2DeviceRange range{};
+     bool reused = false;
++    bool heap_queued = false; ///< EDEN_UP_STALE_BACKING_FIX: the heap map runs in GPU order
+     if (const auto it = nx2_device_ranges.find({cpu_address, size}); it != nx2_device_ranges.end()) {
+         range = it->second;
+         reused = true;
+     } else if (session->has_preallocated_area && session->mapper->IsInBounds(cpu_address, size)) {
+-        range = {session->mapper->Map(cpu_address, size), true};
++        if ((Nx2StaleBackingFix() || Nx2StaleBackingVerify()) &&
++            Nx2PendingHeapReleases::Get().Overlaps(cpu_address, size)) {
++            // A release of these pages is still queued: mapping them now would only raise their
++            // count, and the late release would leave the old pages behind the device range.
++            Nx2PendingHeapReleases::Get().racing_maps.fetch_add(1, std::memory_order_relaxed);
++            heap_queued = Nx2StaleBackingFix();
++        }
++        if (heap_queued) {
++            // Behind the release on the GPU thread (and ahead of the GMMU map below), so the
++            // pages get mapped again from the CPU pages behind them by then. With _VERIFY the
++            // job also counts the pages that still come out stale (a page another heap entry,
++            // such as a 211 sub-range, still holds keeps its old backing). The process memory is
++            // held by a raw pointer, as the mapper is (CloseSession does not wait for the GPU
++            // thread either).
++            auto* const mapper = session->mapper.get();
++            auto* const memory = Nx2StaleBackingVerify() && session->process != nullptr
++                                     ? &session->process->GetMemory()
++                                     : nullptr;
++            auto& smmu = system.Host1x().MemoryManager();
++            range = {mapper->DeviceAddressOf(cpu_address), true};
++            system.GPU().RunInOrder([mapper, memory, &smmu, cpu_address, size] {
++                const DAddr mapped = mapper->Map(cpu_address, size);
++                if (memory != nullptr) {
++                    if (const u64 stale = Nx2CountStalePages(smmu, *memory, cpu_address, size,
++                                                             mapped)) {
++                        Nx2PendingHeapReleases::Get().stale_pages.fetch_add(
++                            stale, std::memory_order_relaxed);
++                    }
++                }
++            });
++        } else {
++            range = {session->mapper->Map(cpu_address, size), true};
++        }
+     } else {
+         bool allocated = false;
+         const auto allocate = [&]() -> u64 {
+@@ -238,6 +292,22 @@ void nvhost_as_gpu::Nx2Map(u64 gpu_address, u64 cpu_address, u64 size) {
+     if (reused && !range.heap) {
+         Nx2RefreshDeviceRange(device_address, cpu_address, size, *session);
+     }
++    if (range.heap && !heap_queued && Nx2StaleBackingVerify() && session->process != nullptr) {
++        // Count only: heap pages whose device page is not the CPU page behind the address now.
++        // 0039 skips heap ranges, so nothing repairs these (the check counts what it would see).
++        // A queued heap map counts in its own job instead, on the GPU thread.
++        if (const u64 stale =
++                Nx2CountStalePages(system.Host1x().MemoryManager(),
++                                   session->process->GetMemory(), cpu_address, size,
++                                   device_address)) {
++            Nx2PendingHeapReleases::Get().stale_pages.fetch_add(stale, std::memory_order_relaxed);
++        }
++    }
++    if (Nx2StaleBackingFix() || Nx2StaleBackingVerify()) {
++        // The counter line from the map path too, on the same 10 s gate, so counts that land
++        // after the last 102 of a run still reach the log.
++        Nx2LogStaleBackingCounters(false);
++    }
+     nx2_device_ranges[{cpu_address, size}] = range;
+     Nx2GpuMemoryRegistry::Get().RecordDeviceRange(cpu_address, size, device_address);
+     // On the GPU thread, like unmaps: a GMMU map takes the texture cache lock, and the callers hold
+@@ -272,15 +342,27 @@ void nvhost_as_gpu::Nx2Release(u64 cpu_address, u64 size) {
+         !Nx2GpuMemoryRegistry::Get().ReleaseDeviceRange(range.asid, cpu_address, size)) {
+         return; // another address space of the process still maps it
+     }
++    if (g_nx2_stale_backing_release) {
++        // EDEN_UP_STALE_BACKING_FIX: a 102 released this one (exact key, last reference).
++        Nx2StaleBackingStats::Get().released.fetch_add(1, std::memory_order_relaxed);
++    }
+     auto* session = container.GetSession(nx2_session);
+     auto* const mapper = range.heap && session != nullptr ? session->mapper.get() : nullptr;
+     auto& smmu = system.Host1x().MemoryManager();
++    // EDEN_UP_STALE_BACKING_FIX(_VERIFY): a heap map of these pages must not overtake this.
++    const bool tracked = mapper != nullptr && (Nx2StaleBackingFix() || Nx2StaleBackingVerify());
++    if (tracked) {
++        Nx2PendingHeapReleases::Get().Add(cpu_address, size);
++    }
+     // Queued after the GPU unmaps of the range, so the GPU thread is done with it.
+-    system.GPU().RunInOrder([&smmu, mapper, range, cpu_address, size] {
++    system.GPU().RunInOrder([&smmu, mapper, range, cpu_address, size, tracked] {
+         if (range.heap) {
+             if (mapper != nullptr) {
+                 mapper->Unmap(cpu_address, size);
+             }
++            if (tracked) {
++                Nx2PendingHeapReleases::Get().Done(cpu_address, size);
++            }
+             return;
+         }
+         smmu.Unmap(range.address, size);
+diff --git a/src/core/hle/service/nvdrv/devices/nx2_stub_device.h b/src/core/hle/service/nvdrv/devices/nx2_stub_device.h
+index 8dee9cc..1185fec 100644
+--- a/src/core/hle/service/nvdrv/devices/nx2_stub_device.h
++++ b/src/core/hle/service/nvdrv/devices/nx2_stub_device.h
+@@ -5,7 +5,9 @@
+ 
+ #include <algorithm>
+ #include <atomic>
++#include <chrono>
+ #include <compare>
++#include <cstdlib>
+ #include <functional>
+ #include <map>
+ #include <mutex>
+@@ -23,6 +25,127 @@ namespace Service::Nvidia::Devices {
+ // answer ioctls they don't know with a logged, input-echoing success instead of NotImplemented.
+ inline std::atomic<bool> g_nx2_driver{false};
+ 
++// EDEN_UP_STALE_BACKING_FIX=1 (zortos293/Lichii #1199 + #1236): sub 102 unmaps every GPU range
++// into the destroyed memory and releases its device range (nx2_gsv.h). Read once; anything but
++// exact "1" is off.
++inline bool Nx2StaleBackingFix() {
++    static const bool on = [] {
++        const char* value = std::getenv("EDEN_UP_STALE_BACKING_FIX");
++        return value != nullptr && value[0] == '1' && value[1] == '\0';
++    }();
++    return on;
++}
++
++// EDEN_UP_STALE_BACKING_FIX_VERIFY=1: count only (with the fix off), or check after each 102
++// (with it on).
++inline bool Nx2StaleBackingVerify() {
++    static const bool on = [] {
++        const char* value = std::getenv("EDEN_UP_STALE_BACKING_FIX_VERIFY");
++        return value != nullptr && value[0] == '1' && value[1] == '\0';
++    }();
++    return on;
++}
++
++// EDEN_UP_STALE_BACKING_FIX(_VERIFY): heap-mapper releases queued for the GPU thread and not run
++// yet. The heap mapper counts how often each page is mapped; a release drops its count only when
++// the GPU thread gets to it. A new map of the same pages on the service thread before that finds
++// them still mapped, maps nothing, and the late release then leaves the old pages in place. With
++// the fix a map that overlaps a queued release is itself queued behind it (nvhost_as_gpu.cpp).
++// Only used while one of the two switches is on. One list for every process and address space:
++// fine for one game at a time.
++class Nx2PendingHeapReleases {
++public:
++    static Nx2PendingHeapReleases& Get() {
++        static Nx2PendingHeapReleases pending;
++        return pending;
++    }
++
++    void Add(u64 cpu_address, u64 size) {
++        std::scoped_lock lk{mutex};
++        ranges.emplace_back(cpu_address, size);
++        queued.fetch_add(1, std::memory_order_relaxed);
++    }
++
++    // On the GPU thread, after the release ran.
++    void Done(u64 cpu_address, u64 size) {
++        std::scoped_lock lk{mutex};
++        if (const auto it = std::ranges::find(ranges, std::pair{cpu_address, size});
++            it != ranges.end()) {
++            ranges.erase(it);
++        }
++    }
++
++    bool Overlaps(u64 cpu_address, u64 size) {
++        std::scoped_lock lk{mutex};
++        return std::ranges::any_of(ranges, [&](const auto& range) {
++            return range.first < cpu_address + size && cpu_address < range.first + range.second;
++        });
++    }
++
++    std::atomic<u64> queued{};        ///< Heap releases queued in all
++    std::atomic<u64> racing_maps{};   ///< Heap maps that overlapped a queued release
++    std::atomic<u64> stale_pages{};   ///< _VERIFY: heap pages whose device page was not the CPU page
++
++private:
++    std::mutex mutex;
++    std::vector<std::pair<u64, u64>> ranges;
++};
++
++// EDEN_UP_STALE_BACKING_FIX(_VERIFY): totals since start for the counter line. Atomics, so the
++// 102 path (nx2_gsv.h, under its region lock) and the map path (nvhost_as_gpu.cpp, under the
++// address space lock) can both add to them and print the line.
++struct Nx2StaleBackingStats {
++    static Nx2StaleBackingStats& Get() {
++        static Nx2StaleBackingStats stats;
++        return stats;
++    }
++    std::atomic<u64> destroys{};        ///< 102s seen
++    std::atomic<u64> leftovers{};       ///< GPU ranges besides the memory's own (check: would be)
++    std::atomic<u64> tiles{};           ///< GPU-only tiles of destroyed memory (check: would drop)
++    std::atomic<u64> released{};        ///< Fix: device ranges a 102 released, counted in the
++                                        ///< release itself, one per address space that freed it
++    std::atomic<u64> would_release{};   ///< Check: destroyed memories with a device range
++                                        ///< recorded at their own address
++    std::atomic<u64> verify_failures{}; ///< Fix + _VERIFY: GPU ranges still reaching it after 102
++    std::atomic<std::chrono::steady_clock::rep> last_line{};
++};
++
++// Set by the 102 path (nx2_gsv.h) around its ReleaseBacking call, so Nx2Release counts the device
++// ranges it really frees for a 102 (and not those 215, the re-register or decoder images free).
++inline thread_local bool g_nx2_stale_backing_release = false;
++
++// The EDEN_UP_STALE_BACKING_FIX(_VERIFY) counter line: with `first` (the first 102) at once,
++// otherwise at most every 10 s, from a 102 or from a map, whichever comes. Totals since start.
++inline void Nx2LogStaleBackingCounters(bool first) {
++    using Clock = std::chrono::steady_clock;
++    auto& stats = Nx2StaleBackingStats::Get();
++    const Clock::rep now = Clock::now().time_since_epoch().count();
++    Clock::rep last = stats.last_line.load(std::memory_order_relaxed);
++    constexpr Clock::rep every =
++        std::chrono::duration_cast<Clock::duration>(std::chrono::seconds{10}).count();
++    if ((!first && last != Clock::rep{} && now - last < every) ||
++        !stats.last_line.compare_exchange_strong(last, now, std::memory_order_relaxed)) {
++        return; // too soon, or another thread prints this one
++    }
++    const bool apply = Nx2StaleBackingFix();
++    auto& heap = Nx2PendingHeapReleases::Get();
++    LOG_INFO(Service,
++             "EDEN_UP_STALE_BACKING_FIX {} counts: {} destroys (102); {} other GPU ranges {}; "
++             "{} GPU-only tiles {}; {} own device ranges {}; heap mapper: {} releases queued, "
++             "{} maps overlapped a queued release ({}), {} pages stale at map (_VERIFY); {} "
++             "verify failures",
++             apply ? "fix" : "check", stats.destroys.load(std::memory_order_relaxed),
++             stats.leftovers.load(std::memory_order_relaxed), apply ? "unmapped" : "would unmap",
++             stats.tiles.load(std::memory_order_relaxed), apply ? "dropped" : "would drop",
++             apply ? stats.released.load(std::memory_order_relaxed)
++                   : stats.would_release.load(std::memory_order_relaxed),
++             apply ? "released" : "would release", heap.queued.load(std::memory_order_relaxed),
++             heap.racing_maps.load(std::memory_order_relaxed),
++             apply ? "queued behind it" : "may keep old pages",
++             heap.stale_pages.load(std::memory_order_relaxed),
++             stats.verify_failures.load(std::memory_order_relaxed));
++}
++
+ inline NvResult Nx2UnknownIoctl(const char* device, Ioctl command, std::span<const u8> input,
+                                 std::span<u8> output) {
+     LOG_WARNING(Service_NVDRV, "(STUBBED) Switch 2 {} ioctl={:08X} group={:01X} command={:02X} in={:#x}",
+@@ -76,6 +199,53 @@ public:
+         }
+     }
+ 
++    // EDEN_UP_STALE_BACKING_FIX (zortos293/Lichii #1199): memory [cpu_address, +size) is
++    // destroyed (sub 102), so every GPU range that still reaches it stops reaching it, wherever it
++    // was mapped; the game reuses the memory as ordinary heap right after. With `apply` false
++    // nothing changes (the check mode only counts). Returns the ranges other than the one at the
++    // memory's own address, as (GPU address, size).
++    std::vector<std::pair<u64, u64>> UnmapMemory(u64 cpu_address, u64 size, bool apply) {
++        std::scoped_lock lk{mutex};
++        const u64 end = cpu_address + size;
++        struct Range {
++            u64 gpu_address;
++            u64 size;
++            bool own; ///< The mapping at the memory's own address
++        };
++        std::vector<Range> ranges;
++        for (const auto& m : mappings) {
++            const u64 first = (std::max)(m.cpu_address, cpu_address);
++            const u64 last = (std::min)(m.cpu_address + m.size, end);
++            if (first < last) {
++                ranges.push_back({m.gpu_address + (first - m.cpu_address), last - first,
++                                  m.gpu_address == m.cpu_address});
++            }
++        }
++        std::vector<std::pair<u64, u64>> leftovers;
++        for (const auto& range : ranges) {
++            if (apply) {
++                TrimMappings(range.gpu_address, range.size);
++                for (auto& [owner, listener] : listeners) {
++                    listener.unmap(range.gpu_address, range.size);
++                }
++            }
++            if (!range.own) {
++                leftovers.emplace_back(range.gpu_address, range.size);
++            }
++        }
++        return leftovers;
++    }
++
++    // Recorded GPU ranges that still reach CPU memory [cpu_address, +size) (check mode).
++    u64 CountRangesInto(u64 cpu_address, u64 size) {
++        std::scoped_lock lk{mutex};
++        const u64 end = cpu_address + size;
++        return static_cast<u64>(std::count_if(mappings.begin(), mappings.end(), [&](const auto& m) {
++            return (std::max)(m.cpu_address, cpu_address) <
++                   (std::min)(m.cpu_address + m.size, end);
++        }));
++    }
++
+     // Backing memory [cpu_address, +size) is about to be freed (its GPU mappings are gone): each
+     // address space drops its SMMU mapping of it, in GPU-thread order.
+     void ReleaseBacking(u64 cpu_address, u64 size) {
+@@ -231,6 +401,15 @@ public:
+         return range.second + (cpu_address - start);
+     }
+ 
++    // EDEN_UP_STALE_BACKING_FIX: whether a device range is recorded that starts exactly at
++    // cpu_address (the one 101 made for memory at its own address). Unlike DeviceAddressOf it does
++    // not fall back to an older entry below the address that happens to cover it: 211 ranges into
++    // earlier memory are recorded by their own start and never erased.
++    bool HasDeviceRangeAt(u64 cpu_address) {
++        std::scoped_lock lk{device_mutex};
++        return device_ranges.contains(cpu_address);
++    }
++
+ private:
+     // Separate lock: ranges are recorded from listeners that run under `mutex`.
+     std::mutex device_mutex;
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index 5cc8cf5..5d7f8f1 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -644,7 +644,11 @@ private:
+             LOG_DEBUG(Service, "nx2:gpu 102 destroy handle={} [{:#x}, +{:#x}] slot={}", handle,
+                       address, size, w[3]);
+             if (size != 0) {
+-                Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Unmap(address, size);
++                if (StaleBackingFix() || StaleBackingVerify()) {
++                    DestroyMemoryEverywhere(handle, address, size);
++                } else {
++                    Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Unmap(address, size);
++                }
+             }
+             if (size == 0x2000) {
+                 Tegra::Nx2RemoveSemaphoreRegion(address);
+@@ -658,6 +662,123 @@ private:
+         rb.Push(ResultSuccess);
+     }
+ 
++    // EDEN_UP_STALE_BACKING_FIX=1 (zortos293/Lichii #1199 + #1236, = Fritchii v5.7 45e164c +
++    // 506a5ca): sub 102 used to drop only the mapping 101 made at the memory's own address. A
++    // range 211 mapped into the same memory at another GPU address stayed mapped, so a draw through
++    // it read whatever the heap put there next (Lichii #849: an index buffer holding a heap header
++    // and an archive, the NaN behind the white wash on PC). With the fix every GPU range into the
++    // memory is unmapped, GPU-only tiles of it show their region's own memory again, and the
++    // memory's device (SMMU) range is released, so registering the address again gets a new one.
++    // Read once. Off (anything but exact "1"): the old path, one predictable branch per 102.
++    static bool StaleBackingFix() {
++        return Nvidia::Devices::Nx2StaleBackingFix();
++    }
++
++    // EDEN_UP_STALE_BACKING_FIX_VERIFY=1: with the fix off, count and log what it would have
++    // unmapped and released, changing nothing (the old call runs as before, outside the region
++    // lock). With the fix on, also check after each 102 that no recorded GPU range reaches the
++    // memory; failures are counted.
++    static bool StaleBackingVerify() {
++        return Nvidia::Devices::Nx2StaleBackingVerify();
++    }
++
++    void DestroyMemoryEverywhere(u32 handle, u64 address, u64 size) {
++        const bool apply = StaleBackingFix();
++        auto& registry = Nvidia::Devices::Nx2GpuMemoryRegistry::Get();
++        auto& stats = Nvidia::Devices::Nx2StaleBackingStats::Get();
++        {
++            std::scoped_lock lk{m_region_mutex};
++            std::vector<std::pair<u64, u64>> tiles;
++            for (const auto& [tile_address, tile] : m_gpu_only_tiles) {
++                if (tile.memory_handle == handle) {
++                    tiles.emplace_back(tile_address, tile.size);
++                }
++            }
++            // Check mode: the range 101 recorded at the memory's own address, by exact start (an
++            // older 211 entry below the address that covers it is not this memory's).
++            const bool had_device_range = !apply && registry.HasDeviceRangeAt(address);
++            if (apply) {
++                // Forget the tiles; what still reaches the memory is unmapped below and only those
++                // ranges get the region's own memory back (a later 211 map of the range is kept).
++                for (const auto& [tile_address, tile_size] : tiles) {
++                    DropGpuOnlyTiles(tile_address, tile_size, false);
++                }
++            }
++            const auto leftovers = registry.UnmapMemory(address, size, apply);
++            // This 102's own counts first, so the lines below include them (with the fix, its
++            // device range is counted by the release itself, after these lines).
++            const bool first = stats.destroys.fetch_add(1, std::memory_order_relaxed) == 0;
++            stats.tiles.fetch_add(tiles.size(), std::memory_order_relaxed);
++            if (had_device_range) {
++                stats.would_release.fetch_add(1, std::memory_order_relaxed);
++            }
++            for (const auto& [gpu_address, range_size] : leftovers) {
++                if (apply) {
++                    if (const auto backing = OwnBackingOf(gpu_address, range_size)) {
++                        registry.MapAt(gpu_address, *backing, range_size);
++                    }
++                }
++                // The first 32, then every 1000th.
++                const u64 seen = stats.leftovers.fetch_add(1, std::memory_order_relaxed) + 1;
++                if (seen <= 32 || seen % 1000 == 0) {
++                    LOG_WARNING(Service,
++                                "EDEN_UP_STALE_BACKING_FIX: 102 destroy of memory {} [{:#x}, "
++                                "+{:#x}] {} GPU range [{:#x}, +{:#x}] still mapped into it ({} so "
++                                "far, {} tiles, {} device ranges {})",
++                                handle, address, size, apply ? "unmapped" : "would unmap",
++                                gpu_address, range_size, seen,
++                                stats.tiles.load(std::memory_order_relaxed),
++                                apply ? stats.released.load(std::memory_order_relaxed)
++                                      : stats.would_release.load(std::memory_order_relaxed),
++                                apply ? "released" : "to release");
++                }
++            }
++            if (apply) {
++                // No GPU range reaches the memory any more: free its device range, so registering
++                // the address again gets a new one on the pages it has then (0039 only repairs a
++                // reused range whose pages changed, and never one from the heap mapper; a heap
++                // map that comes before the GPU thread runs this release is queued behind it,
++                // nvhost_as_gpu.cpp). Known limit: heap pages that another heap entry still holds
++                // (a 211 sub-range of this memory, or a second address space) keep their old
++                // backing; _VERIFY counts them as stale pages at map, nothing repairs them.
++                // Nx2Release counts what it really frees for this 102 (exact key, last
++                // reference), not "an entry exists at that start".
++                {
++                    struct CountReleases {
++                        CountReleases() {
++                            Nvidia::Devices::g_nx2_stale_backing_release = true;
++                        }
++                        ~CountReleases() {
++                            Nvidia::Devices::g_nx2_stale_backing_release = false;
++                        }
++                    } count_releases;
++                    registry.ReleaseBacking(address, size);
++                }
++                if (StaleBackingVerify()) {
++                    // ReleaseBacking has just erased the own device-range key, so only the GPU
++                    // ranges are worth checking here.
++                    const u64 still = registry.CountRangesInto(address, size);
++                    if (still != 0) {
++                        const u64 failures =
++                            stats.verify_failures.fetch_add(1, std::memory_order_relaxed) + 1;
++                        if (failures <= 32 || failures % 1000 == 0) {
++                            LOG_ERROR(Service,
++                                      "EDEN_UP_STALE_BACKING_FIX_VERIFY: after 102 of memory {} "
++                                      "[{:#x}, +{:#x}] {} GPU ranges still reach it ({} failures)",
++                                      handle, address, size, still, failures);
++                        }
++                    }
++                }
++            }
++            Nvidia::Devices::Nx2LogStaleBackingCounters(first);
++        }
++        if (!apply) {
++            // Check mode: the old call, outside the region lock as before, so the check arm is the
++            // old path plus counting.
++            registry.Unmap(address, size);
++        }
++    }
++
+     // Sub 214: GPU-only memory [start, last] (words 3-6, job slot in word 11). The graphics
+     // server backs it itself: the client never maps anything there but renders into it (title 4
+     // keeps its render targets in six 300 MB regions at 0x81_0000_0000). Back each region with

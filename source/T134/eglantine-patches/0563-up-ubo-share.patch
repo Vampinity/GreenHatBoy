@@ -1,0 +1,294 @@
+From: EglantinePS5 <Vampinity@users.noreply.github.com>
+Subject: up: small uniform binds share another stage's copy of the same bytes (EDEN_UP_UBO_SHARE)
+
+DRAFT, not built. Our own work (no upstream port). Gated by EDEN_UP_UBO_SHARE (exact 1), a live
+switch (Id UboShare, not armed); off by default. On: a small (stream-path) uniform bind first
+looks for another stage's allocation of the same range and cbuf index from this tick, newer
+than its own, and binds it after a full compare with current guest memory. Inert with
+EDEN_UP_AHEAD_GUARD>=2, EDEN_UP_UBO_SNAPSHOT or EDEN_UP_UBO_AHEAD (FromSource binds are never
+donors). EDEN_UP_UBO_SHARE_VERIFY=1 (boot) also checks the donor's ring copy and a plain guest
+read. 10 s line while on: "EDEN_UP_UBO_SHARE: N tries, ...".
+
+Reviewed draft from the draws job, v2: reviewer kept the slot serials only while the switch is
+on (the off path bumped them at six exits) and left BindSmallUniformFromSource as in T122,
+called CurrentTick() only when a newer candidate exists, and added "with its own copy current"
+to the log line so a useful share can be told from a neutral one.
+---
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+index 3a9df29..0ca4328 100644
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -178,6 +178,9 @@ enum class Id : u8 {
+     /// EDEN_UP_DMA_MISS_WAIT. Each drained macro read chooses its wait; both give the words after
+     /// the same flush entry.
+     DmaMissWait,
++    /// EDEN_UP_UBO_SHARE. Each small uniform bind looks for a donor; a donor's copy holds exactly
++    /// its slot bytes, checked against guest memory at every use.
++    UboShare,
+     Count,
+ };
+ 
+@@ -300,6 +303,7 @@ inline constexpr std::array<Def, NumSwitches> kDefs{{
+     {"EDEN_UP_L1161_DRAW", ParseExactOne, false, -1},
+     {"EDEN_UP_AREA_BUDGET", ParseExactOne, false, -1},
+     {"EDEN_UP_DMA_MISS_WAIT", ParseExactOne, false, -1},
++    {"EDEN_UP_UBO_SHARE", ParseExactOne, false, -1},
+ }};
+ 
+ static_assert(kDefs[static_cast<size_t>(Id::PollBackoffUs)].needs ==
+diff --git a/src/video_core/buffer_cache/uniform_stream_reuse.h b/src/video_core/buffer_cache/uniform_stream_reuse.h
+index 711e6d2..f9a6836 100644
+--- a/src/video_core/buffer_cache/uniform_stream_reuse.h
++++ b/src/video_core/buffer_cache/uniform_stream_reuse.h
+@@ -4,6 +4,7 @@
+ #pragma once
+ 
+ #include <array>
++#include <chrono>
+ #include <concepts>
+ #include <cstddef>
+ #include <cstdlib>
+@@ -12,6 +13,8 @@
+ #include <type_traits>
+ 
+ #include "common/common_types.h"
++#include "common/live_switch.h"
++#include "common/logging.h"
+ 
+ namespace VideoCommon {
+ 
+@@ -64,6 +67,17 @@ struct StreamUniformRefOf<R> {
+     return enabled;
+ }
+ 
++/// EDEN_UP_UBO_SHARE_VERIFY=1 (exact "1"), with EDEN_UP_UBO_SHARE on: every bind that would take
++/// another stage's copy also checks that the copy's stream memory still holds the donor's bytes
++/// and that a plain guest read gives them too, and binds the old way when either differs.
++[[nodiscard]] inline bool UniformShareVerifyEnabled() noexcept {
++    static const bool enabled = [] {
++        const char* const value = std::getenv("EDEN_UP_UBO_SHARE_VERIFY");
++        return value != nullptr && value[0] == '1' && value[1] == '\0';
++    }();
++    return enabled;
++}
++
+ template <class Ref>
+ class UniformStreamReuse {
+ public:
+@@ -75,6 +89,7 @@ public:
+         Ref ref{};
+         u64 tick{};
+         u64 device_addr{}; ///< Where BindSmallUniformReusing last read (EDEN_UP_L949_UBO_KEEP)
++        u64 serial{};      ///< `serial` below at this slot's last own bind (EDEN_UP_UBO_SHARE on)
+         u32 size{};        // 0: nothing streamed yet
+         std::array<u8, MaxBytes> bytes{};
+     };
+@@ -90,6 +105,19 @@ public:
+ 
+     std::array<std::array<Slot, NumSlots>, NumStages> slots{};
+     std::array<u8, MaxBytes> scratch{};
++
++    /// Own binds made while EDEN_UP_UBO_SHARE was on; the newest copy of a range has the highest.
++    u64 serial{};
++    // EDEN_UP_UBO_SHARE counters (GPUBack, under buffer_cache.mutex like everything here).
++    u64 share_tries{};
++    u64 share_hits{};
++    u64 share_own_current{}; ///< Shares where the slot's own copy was of this tick too
++    u64 share_misses_bytes{};
++    u64 share_no_donor{};
++    u64 share_no_span{};
++    u64 verify_checked{};
++    u64 verify_bad{};
++    u64 next_log_ns{};
+ };
+ 
+ template <class Ref>
+@@ -104,7 +132,114 @@ template <class Runtime>
+ inline void ResetUniformStreamReuse() noexcept {
+     if constexpr (StreamUniformReusable<Runtime>) {
+         UniformStreamReuseState<typename Runtime::StreamUniformRef>().Reset();
++        // EDEN_UP_UBO_SHARE: its first use, so that BindSmallUniformReusing's Peek reads it.
++        static_cast<void>(Common::LiveSwitch::Value<Common::LiveSwitch::Id::UboShare>());
++    }
++}
++
++/// EDEN_UP_UBO_SHARE: one line every 10 s while the switch is on, checked every 4096 tries.
++template <class Reuse>
++void LogUniformShare(Reuse& reuse) {
++    const u64 now = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                         std::chrono::steady_clock::now().time_since_epoch())
++                                         .count());
++    if (now < reuse.next_log_ns) {
++        return;
++    }
++    reuse.next_log_ns = now + 10'000'000'000ULL;
++    LOG_INFO(HW_GPU,
++             "EDEN_UP_UBO_SHARE: {} tries, {} shared ({} with its own copy current), {} bytes "
++             "differed, {} no newer donor, {} no single span; verify {} checked {} bad",
++             reuse.share_tries, reuse.share_hits, reuse.share_own_current,
++             reuse.share_misses_bytes, reuse.share_no_donor, reuse.share_no_span,
++             reuse.verify_checked, reuse.verify_bad);
++}
++
++/// EDEN_UP_UBO_SHARE_VERIFY: whether the donor's stream memory still holds its bytes and a plain
++/// guest read (ReadBlockUnsafe, as the old path reads) gives the same bytes as GetSpan did.
++template <class DeviceMemory, class Reuse>
++[[nodiscard]] bool UniformShareHolds(DeviceMemory& device_memory, Reuse& reuse,
++                                     const typename Reuse::Slot& donor, size_t stage, u32 index,
++                                     u64 device_addr, u32 size) {
++    ++reuse.verify_checked;
++    bool ring_holds = true;
++    if constexpr (requires { donor.ref.mapped; }) {
++        ring_holds = donor.ref.mapped != nullptr &&
++                     std::memcmp(donor.ref.mapped, donor.bytes.data(), size) == 0;
++    }
++    device_memory.ReadBlockUnsafe(device_addr, reuse.scratch.data(), size);
++    const bool guest_holds = std::memcmp(reuse.scratch.data(), donor.bytes.data(), size) == 0;
++    if (ring_holds && guest_holds) {
++        return true;
++    }
++    if (++reuse.verify_bad <= 32) {
++        LOG_WARNING(HW_GPU,
++                    "EDEN_UP_UBO_SHARE_VERIFY: stage {} cbuf {} at {:#x} size {:#x}: stream copy "
++                    "{}, guest read {}; bound the old way",
++                    stage, index, device_addr, size, ring_holds ? "same" : "CHANGED",
++                    guest_holds ? "same" : "DIFFERS");
+     }
++    return false;
++}
++
++/// EDEN_UP_UBO_SHARE: binds the newest allocation another stage made of the same range for the
++/// same cbuf index on this tick, when it is newer than this slot's own and guest memory still
++/// holds exactly the bytes it was filled with (compared in place). Returns false with nothing
++/// bound and the slot untouched otherwise, and the caller binds the old way. On a share the slot
++/// keeps its bytes, ref, tick and serial (they still match each other) and is marked so that no
++/// EDEN_UP_L949_UBO_KEEP or later share takes its now older allocation for this range.
++template <class Runtime, class DeviceMemory, class Reuse>
++[[nodiscard]] bool ShareSmallUniform(Runtime& runtime, DeviceMemory& device_memory, Reuse& reuse,
++                                     typename Reuse::Slot& slot, size_t stage, u32 index,
++                                     u64 device_addr, u32 size) {
++    if ((++reuse.share_tries & 4095) == 0) {
++        LogUniformShare(reuse);
++    }
++    const typename Reuse::Slot* donor = nullptr;
++    for (size_t other = 0; other < Reuse::NumStages; ++other) {
++        if (other == stage) {
++            continue;
++        }
++        const typename Reuse::Slot& candidate = reuse.slots[other][index];
++        if (candidate.device_addr == device_addr && candidate.size == size &&
++            (donor == nullptr || candidate.serial > donor->serial)) {
++            donor = &candidate;
++        }
++    }
++    // The tick (a call into the runtime) only for a candidate: most binds have none.
++    if (donor == nullptr || donor->serial <= slot.serial) {
++        ++reuse.share_no_donor;
++        return false;
++    }
++    const u64 tick = runtime.CurrentTick();
++    if (donor->tick != tick) {
++        ++reuse.share_no_donor;
++        return false;
++    }
++    const u8* guest = nullptr;
++    // Test memories have no GetSpan.
++    if constexpr (requires { device_memory.GetSpan(device_addr, size); }) {
++        guest = device_memory.GetSpan(device_addr, size);
++    }
++    if (guest == nullptr) {
++        ++reuse.share_no_span;
++        return false;
++    }
++    if (std::memcmp(donor->bytes.data(), guest, size) != 0) {
++        ++reuse.share_misses_bytes;
++        return false;
++    }
++    if (UniformShareVerifyEnabled() &&
++        !UniformShareHolds(device_memory, reuse, *donor, stage, index, device_addr, size)) {
++        return false;
++    }
++    runtime.RebindStreamUniform(donor->ref, size);
++    slot.device_addr = ~u64{0};
++    ++reuse.share_hits;
++    if (slot.size == size && slot.tick == tick) {
++        ++reuse.share_own_current;
++    }
++    return true;
+ }
+ 
+ /// Binds the small uniform buffer at `device_addr` for (stage, cbuf `index`) through the stream
+@@ -124,6 +259,13 @@ template <class Runtime, class DeviceMemory>
+     typename Reuse::Slot& slot = reuse.slots[stage][index];
+     // EDEN_UP_L949_UBO_KEEP (RebindKeptUniform): every path below binds what it read here.
+     slot.device_addr = device_addr;
++    // EDEN_UP_UBO_SHARE: another stage's copy of these bytes from this tick, if guest memory
++    // still holds them. Off: one plain load, and the serials below are not kept.
++    const bool share = Common::LiveSwitch::Peek<Common::LiveSwitch::Id::UboShare>() != 0;
++    if (share &&
++        ShareSmallUniform(runtime, device_memory, reuse, slot, stage, index, device_addr, size)) {
++        return true;
++    }
+     // Test memories have no GetSpan.
+     if constexpr (requires { device_memory.GetSpan(device_addr, size); }) {
+         const u8* const guest =
+@@ -132,6 +274,9 @@ template <class Runtime, class DeviceMemory>
+             const bool same = slot.size == size && std::memcmp(slot.bytes.data(), guest, size) == 0;
+             if (same && slot.tick == runtime.CurrentTick()) {
+                 runtime.RebindStreamUniform(slot.ref, size);
++                if (share) {
++                    slot.serial = ++reuse.serial;
++                }
+                 return true;
+             }
+             if (!same) {
+@@ -142,6 +287,9 @@ template <class Runtime, class DeviceMemory>
+             std::memcpy(span.data(), slot.bytes.data(), size);
+             slot.ref = runtime.LastStreamUniformRef();
+             slot.tick = runtime.CurrentTick();
++            if (share) {
++                slot.serial = ++reuse.serial;
++            }
+             return true;
+         }
+     }
+@@ -152,6 +300,9 @@ template <class Runtime, class DeviceMemory>
+         slot.size == size && std::memcmp(slot.bytes.data(), scratch, size) == 0;
+     if (same_bytes && slot.tick == runtime.CurrentTick()) {
+         runtime.RebindStreamUniform(slot.ref, size);
++        if (share) {
++            slot.serial = ++reuse.serial;
++        }
+         return true;
+     }
+     const std::span<u8> span = runtime.BindMappedUniformBuffer(stage, binding_index, size);
+@@ -163,6 +314,9 @@ template <class Runtime, class DeviceMemory>
+         slot.size = size;
+         std::memcpy(slot.bytes.data(), scratch, size);
+     }
++    if (share) {
++        slot.serial = ++reuse.serial;
++    }
+     return true;
+ }
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_buffer_cache.h b/src/video_core/renderer_vulkan/vk_buffer_cache.h
+index cff1c5b..4801807 100644
+--- a/src/video_core/renderer_vulkan/vk_buffer_cache.h
++++ b/src/video_core/renderer_vulkan/vk_buffer_cache.h
+@@ -235,6 +235,7 @@ public:
+         VkBuffer buffer;
+         VkDeviceAddress device_address; // base of `buffer`, 0 without buffer device address
+         u32 offset;
++        u8* mapped; // host view of the allocation; read only by EDEN_UP_UBO_SHARE_VERIFY
+     };
+ 
+     std::span<u8> BindMappedUniformBuffer([[maybe_unused]] size_t stage,
+@@ -245,6 +246,7 @@ public:
+             .buffer = ref.buffer,
+             .device_address = ref.device_address,
+             .offset = static_cast<u32>(ref.offset),
++            .mapped = ref.mapped_span.data(),
+         };
+         RebindStreamUniform(last_stream_uniform, size);
+         return ref.mapped_span;
