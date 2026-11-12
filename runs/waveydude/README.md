@@ -25,7 +25,7 @@ Title overrides are the staged preset.
 | boot-trace.txt | t120-build-o-memory-waits/run1-crash/boot-trace.prev.txt | 0 | 3 |
 | crash-summary.txt | t120-build-o-memory-waits/run1-crash/crash-20261111-095523.txt | 0 | 0 |
 
-## 02-lost-woods-35m47s
+## 02-later-area-a-35m47s
 
 Beat Stalfos and crashed leaving Lost Woods. Same GPUBack allocation failed with a 2 MiB largest free block. 2x frame generation.
 Revised memory-waits binary. Source commit bef232bb72fba49af9416b4937a971b5d8fa6542 describes the revised handler and matching code span 0x2c2e630.
@@ -42,7 +42,7 @@ Title overrides are the staged preset.
 | crash-summary.txt | t120-build-o-memory-waits-2/crash-20261111-105250/crash-20261111-105250.txt | 0 | 0 |
 | framegen.txt | t120-build-o-memory-waits-2/presets/framegen.txt | 0 | 0 |
 
-## 03-kakariko-9m11s
+## 03-later-area-b-9m11s
 
 Cleared Lost Woods, then CPUCore_5 failed allocating 65,011,712 bytes growing the Dynarmic JIT link table. Largest free block was 1 MiB. 2x frame generation. A ten-second window saw 252 runtime pipeline builds, 219 already on disk.
 Bounded ASTC scan. Published source equivalent e86889c515f5ecac1fde6519c62c6335e39ef8c4, same tree as c405b1f. Install record verified the signed executable and unchanged title settings and framegen file.
@@ -59,7 +59,7 @@ The install record says settings were unchanged, so the preceding build’s stag
 | crash-summary.txt | t120-build-o-astc-scan-bounded/crash-20261111-110634/crash-20261111-110634.txt | 0 | 0 |
 | framegen.txt | t120-build-o-memory-waits-2/presets/framegen.txt | 0 | 0 |
 
-## 04-dodongos-cavern-24m05s
+## 04-later-area-c-24m05s
 
 Reached Dodongo’s Cavern via Kakariko, beat the Lizalfos and stopped voluntarily after 24m05s of logged runtime. 2x frame generation.
 JIT shards stability baseline. Published source equivalent a657c6b764f15203a966f9249def754129feef81, same tree as 1f3c15b. Install record verified the signed executable and unchanged title settings and framegen file. Wave Ocarina 01 (4af9c45) came later.
