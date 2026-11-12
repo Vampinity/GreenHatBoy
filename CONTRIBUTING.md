@@ -28,6 +28,16 @@ If you do open a pull request:
 
 The switch keeps test builds comparable. A change goes in as a numbered patch in `patches/<your name>/`. It should do nothing until its switch is set, for example `EDEN_GBB_GUARD_EARLY=1`. A settings file in `envs/<your name>/` turns the switch on for a test. Add a line for your patch and its switch to the README in your patches folder.
 
+## Before a big job
+
+Planning something that takes more than an hour? Check first that nobody did it already.
+
+1. **Search** the `docs/` folders, the patches READMEs, `index.csv` and `CHANGELOG.md`, by switch name, patch number or a plain word. [AGENTS.md](AGENTS.md) lists every place.
+2. **Claim** it with one line in the pinned "Who is working on what" thread.
+3. **Write it down** when done: result in your docs folder, one line in the thread.
+
+Working with an AI assistant? It reads AGENTS.md on its own, or tell it: "read AGENTS.md first".
+
 ## What we cannot take
 
 - Game files, keys or firmware, or links to them. Not in issues, not in Discussions, not in a pull request.
