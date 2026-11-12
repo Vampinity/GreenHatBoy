@@ -29,6 +29,30 @@ GrowingBlackBeans, 11 Nov 2026. waveydude's four 13.60 runs and two 9.40 boots (
 5. **Shaders built while playing are worse in new areas.** They build 18-70 per minute of play, and only 30-53% of those were on disk; the rest are new or mesh pipelines met for the first time. Preload and Vampinity's T129 fix remove the on-disk part. First visits still stall, which only background translation (or a pre-seeded cache) avoids.
 6. **They live at the memory wall.** Every 13.60 run touched 1 MiB free, with the heap peaking at 0.96-1.18 GB and driver memory at 3.3-3.5 GB (lower than our 3.5-3.8 at 1×). The crashes were single big requests (32 MiB ASTC scratch, 62 MiB JIT table), which matches the arena finding: free room in other threads' arenas, and big requests that never ask them.
 
+## Update: frame generation tested, and heap.log added
+
+waveydude ran the same spot both ways (Kakariko, same build and settings, 0.75×, only frame generation changed). Two short sessions:
+
+| | Frame gen on (2×) | Frame gen off |
+|---|---|---|
+| Native fps | 11-12 | 22-28 |
+| Wait at present | 41-64 ms | 0-4 ms |
+
+Frame generation roughly halves native fps in a heavy view, and with it on, old frames reached the screen at 12-20 native fps. That fits point 4 (the back's cost per unit of work doubling in the frame-generation runs).
+
+`heap.log` (with `EDEN_GPU_TIME`) is now in each 13.60 run (`heap.log.gz`). Host GPU time per heavy frame, from the emulator's own submissions:
+
+| Run | Host GPU per heavy frame | Host GPU busy (heavy) |
+|---|---|---|
+| Lon Lon, no frame gen | 27.0 ms | 45% |
+| Lost Woods, frame gen | 15.7 ms | 31% |
+| Kakariko, frame gen | 19.6 ms | 31% |
+| Dodongo's Cavern, frame gen | 16.6 ms | 33% |
+
+So in the frame-generation runs the host GPU sits about a third busy: the halving isn't GPU throughput, at least not in what the probe counts. Frame generation's own GPU work may not go through these submissions. The present wait grows instead, which points at the frame-generation path holding up the present or the GPU side's thread.
+
+waveydude also tried preloading every pipeline: 8,657 built at boot against 4,681, and the heap grew 416 MiB in blocks under 256 KiB against 128 MiB. Preloading everything scales with the size of the shader cache, so it gets costlier the further a player gets. A narrower fix (Vampinity's refused-translation fix, a longer used-list life) ages better.
+
 ## Toolkit notes
 
 - These builds write `EDEN_GPU_TIME` to `heap.log`, which wasn't in the bundle. The checker now looks in `heap.log` too and only notes the lines as missing, instead of failing the run (fix in `eglog.py` / `checkrun.py`).
