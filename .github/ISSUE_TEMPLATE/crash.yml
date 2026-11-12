@@ -31,6 +31,57 @@ body:
       options: ["env.txt (as shipped)", "env-13x.txt", "env-fast.txt", "env-gbb-everyday.txt", "my own changes (say which below)"]
     validations:
       required: true
+  - type: input
+    id: loader
+    attributes:
+      label: Loader and its version
+      description: The tool that puts homebrew on your home screen.
+      placeholder: "ShadowMountPlus 1.7beta11"
+  - type: dropdown
+    id: start
+    attributes:
+      label: How did this session start
+      options:
+        - "New Game, the first start after installing or updating"
+        - "New Game, a later start"
+        - "Continue from a save"
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Console mode in the app
+      options: ["Docked (default)", "Handheld", "Not sure"]
+  - type: input
+    id: appsettings
+    attributes:
+      label: Settings changed in the app's own menu
+      description: For example a frame rate limit or another resolution. Write "none" if you left them alone.
+      placeholder: "none"
+  - type: input
+    id: howlong
+    attributes:
+      label: How long had the game been running
+      placeholder: "about 8 minutes"
+    validations:
+      required: true
+  - type: dropdown
+    id: ending
+    attributes:
+      label: How did it end
+      options:
+        - "The app closed by itself, back to the PS5 home screen"
+        - "The picture froze, and the app closed a while later"
+        - "The picture froze and I closed the app myself"
+        - "The screen stayed black"
+        - "It kept running, but something looked or sounded wrong"
+    validations:
+      required: true
+  - type: dropdown
+    id: repeat
+    attributes:
+      label: Does it happen again when you retry
+      options: ["Every time, at the same spot", "Sometimes", "I tried once"]
   - type: textarea
     id: what
     attributes:
