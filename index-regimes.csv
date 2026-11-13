@@ -162,6 +162,7 @@ runs/GrowingBlackBeans/2026-11-12-FW2,GrowingBlackBeans,2026-11-12-FW2,01.219.91
 runs/GrowingBlackBeans/2026-11-12-FW3,GrowingBlackBeans,2026-11-12-FW3,01.219.916 (Nov 12 2026 11:11:35),full-wait,71.889837,22.18,20.28,1.0,,0,,0,,0,20.85,23,30.05,22.36,218.8,0,2794,1348,22,,True,True
 runs/GrowingBlackBeans/2026-11-12-FX1-freeze1,GrowingBlackBeans,2026-11-12-FX1-freeze1,01.219.915 (Nov 12 2026 10:31:24),ahead-1,,,,,,0,,0,,0,,0,,,,0,9,378,0,,True,True
 runs/GrowingBlackBeans/2026-11-12-FX1,GrowingBlackBeans,2026-11-12-FX1,01.219.915 (Nov 12 2026 10:31:24),ahead-1,67.585579,31.36,25.03,0.0,29.36,18,23.57,4,,0,,0,,,140.5,0,2414,1370,0,,True,True
+runs/GrowingBlackBeans/2026-11-12-FX2-freeze,GrowingBlackBeans,2026-11-12-FX2-freeze,01.219.915 (Nov 12 2026 10:31:24),unknown,,,,,,0,,0,,0,,0,,,,0,9,375,0,,True,True
 runs/GrowingBlackBeans/2026-11-12-FX2,GrowingBlackBeans,2026-11-12-FX2,01.219.915 (Nov 12 2026 10:31:24),ahead-1,65.226473,31.65,25.99,0.0,29.21,20,21.6,2,,0,,0,,,140.6,0,2901,1497,0,,True,True
 runs/GrowingBlackBeans/2026-11-12-FX3,GrowingBlackBeans,2026-11-12-FX3,01.219.916 (Nov 12 2026 11:11:35),ahead-1,64.783397,31.52,25.59,0.0,29.68,18,24.05,4,,0,,0,,,122.5,0,2506,1344,27,,True,True
 runs/GrowingBlackBeans/2026-11-12-G2,GrowingBlackBeans,2026-11-12-G2,01.219.914 (Nov 11 2026 19:02:06),ahead-1,73.352259,31.45,23.33,0.64,30.98,13,,0,27.1,3,20.89,8,37.28,25.07,201.7,45,2862,1760,0,,True,True
@@ -173,6 +174,7 @@ runs/GrowingBlackBeans/2026-11-12-P1,GrowingBlackBeans,2026-11-12-P1,01.219.914 
 runs/GrowingBlackBeans/2026-11-12-P2,GrowingBlackBeans,2026-11-12-P2,01.219.914 (Nov 11 2026 19:02:06),ahead-1,65.96813,31.45,22.67,0.9,31.14,12,,0,28.4,1,22.3,10,34.81,25.21,115.4,0,3303,1813,0,,True,True
 runs/GrowingBlackBeans/2026-11-12-Play1,GrowingBlackBeans,2026-11-12-Play1,01.219.916 (Nov 12 2026 11:11:35),ahead-1,212.86299,33.98,28.74,0.27,31.98,232,29.85,6,29.24,133,23.14,136,33.78,22.54,381.7,304,1959,1226,2987,,True,True
 runs/GrowingBlackBeans/2026-11-12-Play2,GrowingBlackBeans,2026-11-12-Play2,01.219.919 (Nov 12 2026 21:34:59),ahead-1,70.597922,28.9,29.85,0.02,30.95,95,27.23,41,26.17,7,36.85,2,21.8,15.61,496.4,137,2017,1371,830,,True,True
+runs/GrowingBlackBeans/2026-11-12-Play2Alt,GrowingBlackBeans,2026-11-12-Play2Alt,01.219.920 (Nov 12 2026 22:10:46),ahead-1,72.435222,23.43,,,20.2,5,,0,22.57,3,12.8,1,41.02,27.4,412.8,28,747,981,21,,True,True
 runs/GrowingBlackBeans/2026-11-12-U1,GrowingBlackBeans,2026-11-12-U1,01.219.914 (Nov 11 2026 19:02:06),ahead-1,63.67827,31.31,24.57,0.67,31.14,14,,0,23.25,2,22.58,6,34.79,25.21,315.4,10,2298,1349,80,,True,True
 runs/GrowingBlackBeans/2026-11-12-U2,GrowingBlackBeans,2026-11-12-U2,01.219.914 (Nov 11 2026 19:02:06),ahead-1,69.447747,31.44,25.72,0.44,31.13,12,,0,25.96,5,23.6,5,33.33,24.76,253.8,24,3544,1926,80,,True,True
 runs/GrowingBlackBeans/2026-11-12-U3,GrowingBlackBeans,2026-11-12-U3,01.219.914 (Nov 11 2026 19:02:06),ahead-1,63.768215,31.7,23.96,0.7,31.16,12,,0,27.57,3,22.38,8,34.03,23.99,266.8,36,2671,1465,80,,True,True
@@ -184,6 +186,23 @@ runs/GrowingBlackBeans/2026-11-12-XG1,GrowingBlackBeans,2026-11-12-XG1,01.219.91
 runs/GrowingBlackBeans/2026-11-12-XG2,GrowingBlackBeans,2026-11-12-XG2,01.219.915 (Nov 12 2026 10:31:24),ahead-1,74.64007,31.68,25.91,0.0,30.02,18,22.12,4,,0,,0,,,136.7,2,2828,1475,0,,True,True
 runs/GrowingBlackBeans/2026-11-12-XG3,GrowingBlackBeans,2026-11-12-XG3,01.219.916 (Nov 12 2026 11:11:35),ahead-1,84.847012,31.23,24.83,0.0,29.25,20,20.15,2,,0,,0,,,251.9,0,1911,1163,0,,True,True
 runs/GrowingBlackBeans/2026-11-12-XU1,GrowingBlackBeans,2026-11-12-XU1,01.219.914 (Nov 11 2026 19:02:06),ahead-1,67.207366,31.78,26.71,0.0,30.11,18,23.55,4,,0,,0,,,124.9,9,2723,1442,28,,True,True
+runs/GrowingBlackBeans/2026-11-13-AS1,GrowingBlackBeans,2026-11-13-AS1,01.219.920 (Nov 12 2026 22:10:46),ahead-1,76.611027,28.28,26.12,0.0,26.46,5,27.13,16,22.5,1,,0,,,264.8,0,2719,1312,41,,True,True
+runs/GrowingBlackBeans/2026-11-13-GA1,GrowingBlackBeans,2026-11-13-GA1,01.219.922 (Nov 13 2026 16:40:33),ahead-1,82.796364,19.61,18.53,0.0,18.77,22,,0,,0,,0,,,108.6,0,2844,1393,29,,True,True
+runs/GrowingBlackBeans/2026-11-13-GA3,GrowingBlackBeans,2026-11-13-GA3,01.219.923 (Nov 13 2026 17:07:58),ahead-1,92.488573,19.33,17.99,0.0,18.49,23,,0,,0,,0,,,101.0,0,2775,1322,71,,True,True
+runs/GrowingBlackBeans/2026-11-13-GP1,GrowingBlackBeans,2026-11-13-GP1,01.219.925 (Nov 13 2026 20:08:50),ahead-1,76.339047,23.4,27.03,0.0,31.82,20,24.1,41,26.0,1,18.13,3,44.85,28.88,383.1,1,675,305,230,,True,True
+runs/GrowingBlackBeans/2026-11-13-GR1,GrowingBlackBeans,2026-11-13-GR1,01.219.922 (Nov 13 2026 16:40:33),ahead-1,79.781972,19.66,19.09,0.0,19.17,21,,0,,0,15.4,1,38.31,20.43,158.1,0,4010,2151,20,,True,True
+runs/GrowingBlackBeans/2026-11-13-GS1,GrowingBlackBeans,2026-11-13-GS1,01.219.925 (Nov 13 2026 20:08:50),ahead-1,121.300802,23.61,26.21,0.02,30.23,22,23.48,36,17.53,3,21.3,1,36.89,23.23,281.4,43,1327,648,277,,True,True
+runs/GrowingBlackBeans/2026-11-13-GT1,GrowingBlackBeans,2026-11-13-GT1,01.219.925 (Nov 13 2026 20:08:50),ahead-1,76.115132,20.28,23.74,0.0,31.82,14,20.86,47,18.8,1,13.1,2,70.96,36.04,399.8,2,1422,540,255,,True,True
+runs/GrowingBlackBeans/2026-11-13-Play3,GrowingBlackBeans,2026-11-13-Play3,01.219.920 (Nov 12 2026 22:10:46),ahead-1,75.372249,34.49,34.62,0.13,34.34,217,,0,35.0,30,35.58,38,13.03,11.76,487.3,290,482,203,0,,True,True
+runs/GrowingBlackBeans/2026-11-13-RC1,GrowingBlackBeans,2026-11-13-RC1,01.219.920 (Nov 12 2026 22:10:46),ahead-1,76.32845,19.57,19.06,0.0,19.05,23,,0,,0,,0,,,242.6,0,2964,1611,75,,True,True
+runs/GrowingBlackBeans/2026-11-13-RD1,GrowingBlackBeans,2026-11-13-RD1,01.219.921 (Nov 13 2026 11:13:19),ahead-1,83.067624,24.49,22.4,0.0,19.5,1,23.6,21,,0,15.5,1,55.82,31.15,393.0,0,2052,1094,0,,True,True
+runs/GrowingBlackBeans/2026-11-13-RD2,GrowingBlackBeans,2026-11-13-RD2,01.219.921 (Nov 13 2026 11:13:19),ahead-1,80.838786,18.78,18.09,0.0,18.73,18,17.32,4,,0,15.1,1,39.41,22.2,185.3,0,2879,1453,28,,True,True
+runs/GrowingBlackBeans/2026-11-13-RE1,GrowingBlackBeans,2026-11-13-RE1,01.219.921 (Nov 13 2026 11:13:19),ahead-1,160.029064,20.47,19.69,0.0,20.01,25,,0,,0,,0,,,115.4,0,2152,1224,84,,True,True
+runs/GrowingBlackBeans/2026-11-13-RE2,GrowingBlackBeans,2026-11-13-RE2,01.219.921 (Nov 13 2026 11:13:19),ahead-1,78.710183,20.28,19.74,0.0,20.0,28,,0,,0,,0,,,110.7,1,1927,985,32,,True,True
+runs/GrowingBlackBeans/2026-11-13-RO1,GrowingBlackBeans,2026-11-13-RO1,01.219.920 (Nov 12 2026 22:10:46),ahead-1,71.712292,19.57,18.9,0.0,19.4,21,,0,,0,17.3,1,36.24,21.11,284.9,0,2352,1116,0,,True,True
+runs/GrowingBlackBeans/2026-11-13-RO2,GrowingBlackBeans,2026-11-13-RO2,01.219.920 (Nov 12 2026 22:10:46),ahead-1,96.288685,19.84,18.98,0.0,19.35,23,,0,,0,19.4,1,31.8,18.55,275.9,0,1827,1042,80,,True,True
+runs/GrowingBlackBeans/2026-11-13-RX1,GrowingBlackBeans,2026-11-13-RX1,01.219.920 (Nov 12 2026 22:10:46),ahead-1,72.075276,27.79,25.51,0.0,27.15,6,26.57,17,,0,24.9,1,33.0,19.07,358.0,0,1850,909,110,,True,True
+runs/GrowingBlackBeans/2026-11-13-RX2,GrowingBlackBeans,2026-11-13-RX2,01.219.920 (Nov 12 2026 22:10:46),ahead-1,72.277353,27.9,26.4,0.0,26.47,7,26.88,13,,0,24.8,1,32.79,21.71,395.5,0,1806,984,0,,True,True
 runs/Vampinity/2026-11-05-run10-newgame-0321,Vampinity,2026-11-05-run10-newgame-0321,,unknown,,,,,,0,,0,,0,,0,,,,0,,,0,,False,False
 runs/Vampinity/2026-11-05-run11-0324,Vampinity,2026-11-05-run11-0324,,unknown,,,,,,0,,0,,0,,0,,,,0,,,,,False,False
 runs/Vampinity/2026-11-05-run12-pb-0329,Vampinity,2026-11-05-run12-pb-0329,,unknown,,,,,,0,,0,,0,,0,,,,0,,,,,False,False
@@ -1277,3 +1296,10 @@ runs/waveydude/2026-11-11-fw940-rendered,waveydude,2026-11-11-fw940-rendered,01.
 runs/waveydude/2026-11-11-later-area-a-35m47s,waveydude,2026-11-11-later-area-a-35m47s,,ahead-1,128.853498,,23.92,0.61,32.74,26,26.94,34,28.06,33,20.65,143,44.84,15.74,452.6,159,2511,1465,3203,,True,True
 runs/waveydude/2026-11-11-later-area-b-9m11s,waveydude,2026-11-11-later-area-b-9m11s,,ahead-1,181.368565,,21.01,0.79,30.15,2,30.02,4,26.27,3,18.95,34,48.93,19.6,497.1,144,5337,2940,260,,True,True
 runs/waveydude/2026-11-11-later-area-c-24m05s,waveydude,2026-11-11-later-area-c-24m05s,01.219.028 (Nov 11 2026 17:57:21),full-wait,88.962461,12.99,27.86,0.44,34.21,25,31.61,50,28.55,37,22.26,100,41.19,16.64,471.1,208,2989,1716,2309,,True,True
+runs/waveydude/2026-11-13-w13-crash-80m,waveydude,2026-11-13-w13-crash-80m,01.219.028,ahead-1,165.979019,,32.39,0.16,31.67,476,24.8,1,32.92,88,35.29,104,10.86,8.57,469.5,377,549,268,1297,,True,True
+runs/waveydude/2026-11-13-w14-crash-13m,waveydude,2026-11-13-w14-crash-13m,01.219.028,ahead-1,297.518322,23.35,26.11,0.08,26.36,39,29.88,4,25.91,8,18.32,4,41.01,28.01,445.1,133,3671,1854,619,,True,True
+runs/waveydude/2026-11-13-w15-crash-51m,waveydude,2026-11-13-w15-crash-51m,01.219.028,ahead-1,323.437737,,29.67,0.15,32.27,52,,0,27.98,18,20.92,12,37.14,33.54,477.5,209,3051,1501,722,,True,True
+runs/waveydude/2026-11-13-w17-crash-19m,waveydude,2026-11-13-w17-crash-19m,01.219.028,ahead-1,813.979556,26.74,13.87,0.5,24.66,8,,0,15.97,3,14.02,5,48.75,51.73,417.2,1,35268,12642,1490,,True,True
+runs/waveydude/2026-11-13-w18-crash-38m,waveydude,2026-11-13-w18-crash-38m,01.219.028,ahead-1,438.602575,28.2,34.23,0.52,32.83,56,29.73,11,31.54,20,36.12,93,14.42,11.06,474.6,111,5104,2473,7394,,True,True
+runs/waveydude/2026-11-13-w19-run1-24m,waveydude,2026-11-13-w19-run1-24m,01.219.028,ahead-1,102.643126,,16.72,0.21,17.14,78,,0,15.99,10,15.59,23,45.73,41.81,429.2,85,16597,7927,2517,,True,True
+runs/waveydude/2026-11-13-w19-run2-16m,waveydude,2026-11-13-w19-run2-16m,01.219.028,ahead-1,130.451343,,18.25,0.22,19.09,78,22.07,3,17.55,21,16.11,29,45.07,41.04,407.6,149,11569,5742,424,,True,True
