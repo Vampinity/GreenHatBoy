@@ -110,6 +110,10 @@ Start from `index.csv` and `index-regimes.csv`. Run `eglog.py summary` on the ru
     anatomy.py methods RUNDIR...  back-thread cost per method id (ms/s, count/s, us each)
     anatomy.py fit    RUNDIR...   frame time regressed on demand by class
     anatomy.py budget RUNDIR...   measured stage time and affordable cost per unit at 30 fps
+    anatomy.py fitall --list F    frame time on vitals demand across many runs, split by who sets the pace
+    anatomy.py stops  RUNDIR...   finds where the player stood still and reports demand per stop
+    anatomy.py gpfifo RUNDIR...   GPFIFO words the game submitted against ring words that reached the back
+    anatomy.py submits RUNDIR...  GPU submissions by site, waits for the GPU and 20 ms give-ups, per stop
 
 What the game asks the emulator for, against what each stage spends supplying it. Spine is
 `EDEN_GBB_VITALS` (one line a second), joined with `EDEN_GBB_BACK_CALLS`, the split-waits line and the
@@ -186,3 +190,19 @@ Two things it will tell you that are easy to get wrong:
 
 **Tested:** 8 self-test cases (black/white splits, per-mille regions, more cells than pixels, the
 channel weighting, hex ordering) plus an end-to-end run on a synthetic picture. All pass.
+
+### anatomy.py: the four commands added later on 13 Nov
+
+- **`stops`** finds standing stretches from **ring words per frame** (1.3% variation standing, 19.5%
+  walking). Not per second: per second follows the frame rate and found no stop in a run that had one.
+  It cannot see a camera pan that settles — compare the same stop across runs for that.
+- **`gpfifo`** needs patch 0934 (`EDEN_GBB_GPFIFO=1`). Ratio under 1.2: the demand is the game's.
+  Tested against planted answers of 2.00 and 1.05.
+- **`submits`** reads Vampinity's `EDEN_UP_SUBMIT_STATS` (patch 0545). Checks that each window's
+  per-site counts add up to its own total; tested on 22 real windows of his and on all four stops of a
+  spliced run.
+- **`fitall`** leaves out instrumented and read-sync runs, because both distort frame time.
+
+**Instrument costs, measured 13 Nov:** `EDEN_GBB_BACK_CALLS` adds about 25% to the back thread's time;
+the thread profiler adds about 12% more on top. Neither is "small". Counts survive instrumentation;
+times do not.

@@ -1,57 +1,53 @@
 # Log toolkit: what's built, what's designed, what's next
 
-GrowingBlackBeans, 11 Nov 2026, updated 12 Nov. The tools live in `tools/GrowingBlackBeans/eglog/` (see its README for tested/untested). This page tracks the rest of the plan, so anyone can pick a piece up.
+GrowingBlackBeans, 11 Nov 2026, brought up to date 13 Nov (late). The tools live in
+`tools/GrowingBlackBeans/eglog/` (its README says which are tested and how); the patches are in
+`patches/GrowingBlackBeans/t134/`. This page tracks the rest of the plan, so anyone can pick a piece up.
 
 ## Built
 
 | Piece | Where | State |
 |---|---|---|
-| Parser, per-run report, A/B with noise (cross-run and in-run live phases), run checker, ingest, regimes index | `eglog/` | tested |
-| Guide to every log line | `eglog/LOGS.md` | |
-| Back-thread breakdown (`EDEN_GBB_BACK_CALLS`) | patch 0921 | ran on the console (V1) |
-| Per-second vitals (`EDEN_GBB_VITALS`), per-event timeline (`EDEN_GBB_TIMELINE`) and reader | patch 0922, `eglog/timeline.py` | ran on the console; reader tested on a real capture (V1) |
-| Flight recorder (`EDEN_GBB_FLIGHT`), effective env line, touchpad + R3 marker | patch 0923 | ran on the console; the recorder should skip loading screens; the marker is too awkward to press while playing |
-| Frame anatomy (demand against supply, per-method cost, the fit, the 30 fps budget) | `eglog/anatomy.py` | **new 13 Nov**, tested on runRD1/runRD2 |
-| Flash counter (`EDEN_GBB_FLASH`) and reader | patch 0928, `eglog/flashes.py` | ran on the console (12 Nov); count with `flashes.py grids` at Vampinity's sizes, see `two-slot-guard-2026-11-12.md` |
+| Parser, per-run report, A/B with noise (cross-run and in-run live phases), run checker, ingest, regimes index | `eglog/` | tested on every run in this repo |
+| Guide to every log line, with each switch's measured cost | `eglog/LOGS.md` | |
+| Back-thread breakdown (`EDEN_GBB_BACK_CALLS`) | patch 0921 | ran (V1, RD1, GT1). **Costs about 25% of the back's time**: counts only, not times |
+| Per-second vitals (`EDEN_GBB_VITALS`), per-event timeline and reader | patch 0922, `eglog/timeline.py` | ran; reader tested on a real capture |
+| Flight recorder, effective env line, touchpad + R3 marker | patch 0923 | ran; the marker is too awkward to press while playing |
+| Flash counter (`EDEN_GBB_FLASH`) | patch 0928, `eglog/flashes.py` | **retracted as a flicker measure**. Use Vampinity's `tools/Vampinity/flash-counter/` on capture video |
+| GPFIFO counter (`EDEN_GBB_GPFIFO`): what the game submits, per channel | patch 0934, host test 16/16 | ran twice (GP1, GS1): ring/GPFIFO 0.73-0.86, the demand is the game's own |
+| Per-session log folders (`EDEN_GBB_LOG_SESSION`) | patch 0935 | built (gbb9); not yet switched on in a run |
+| Frame anatomy: per-window demand and supply, per-method cost, fit, 30 fps budget, fit across many runs, GPFIFO ratio, stops found from the data, `EDEN_UP_SUBMIT_STATS` reader | `eglog/anatomy.py` (`table methods fit budget fitall gpfifo stops submits`) | tested on RD1/RD2/V1, 45 clean runs, GP1/GT1/GS1 |
+| The copy guard's own counters (arming, exposure, two frames in flight) | `eglog/guard.py` | tested on 77 runs |
+| LOOK grids for the test harness, cut from a picture with the harness's own arithmetic | `eglog/make-look.py` | self-test 8/8; Vampinity's routes README points at it |
 
 ## Designed, not built
 
-### Where the player is (scene and room per second)
+### Scripted Kokiri route with fixed stops
 
-- **Why:** compare windows by place instead of by time, across routes and people. "Heavy" is a property of where you stand.
-- **How:**
-  - find the game's current-scene and current-room variables in guest memory (the decomp layout of the original game is a starting point; the Switch 2 build will differ);
-  - confirm them with a memory scan across a door transition;
-  - log `EDEN_GBB_WHERE scene=.. room=.. pos=x,y,z` once a second from the present thread, reading guest memory through the memory manager.
-- **Blocker:** the addresses. This needs a session with a debugger or a guest memory dump on both sides of a door. Patch 0903 can dump guest code; data dumps are similar.
+- **Why:** the anatomy's own rule fired. Places disagree, and hand-played stops drift (A and B repeat
+  within 0.4% and 1.2%; D drifted 12% over three runs). A script puts Link on the same point, facing
+  the same way, every run.
+- **How:** Vampinity's test harness (`headless/test_harness.h`, STEER over `minimap_steer.h`) is
+  already in t134-gbb9, with `EDEN_TEST_RECORD` and `EDEN_TEST_DISCARD_SAVE`. The plan:
+  `docs/GrowingBlackBeans/scripted-route-plan-2026-11-13.md`. It needs no new build.
+- **Missing:** Kokiri STEER point lists, and a tool to turn a recorded walk into points
+  (`steer-route.py`, named in the harness, not public). Asked for first. If they can't be shared, we
+  write it as a Python port of `minimap_steer::Find`, the way `make-look.py` ports `GridOf`.
 
-### Scripted Kokiri route
+### Where the player is
 
-- **Why:** hand-played runs differ by up to 3.6 fps; the share of heavy windows swings from 0.3 to 0.9 with where you walk. A scripted route makes runs comparable and lets them happen without a player.
-- **How:** write our route (Continue, through Link's house, out, the walking loop to the water) in the existing script-runner format, which drives the development input file (`headless/development_input.h`: "id mask duration [lx ly rx ry]"). Record the hand route once with markers to get the timings.
-
-### Per-session log folders
-
-- **Why:** the console's `logs/` folder piles up files from earlier sessions: samples, crash logs, guest code dumps. `checkrun.py` lists them, but a folder per session would remove the confusion at the source.
-- **How:** logs go to `logs/<date>-<pid>/`. Needs agreement on the shared layout first, because other tools read `logs/` directly.
+Replaced by the minimap tracker: STEER pins the position to within r per mille. A small optional
+patch would add `x=`, `y=` and `angle=` to the `steer_point` / `steer_met` lines. The guest-memory
+scene/room reader designed on 11 Nov is no longer needed for this.
 
 ## Ideas not yet designed
 
-- Guest-thread state sampling into the timeline (which guest thread is running or waiting at each present), to see the game's own chain frame by frame.
+- Put texture uploads and decodes (`EDEN_NX2_TC_LOG`, in 113 runs) and guest SVC waits into the
+  anatomy fit. They are the demand classes it hasn't covered.
+- Guest-thread state sampling into the timeline (which guest thread is running or waiting at each present).
 - Host CPU placement (which PS5 core each host thread runs on), to check SMT contention.
 
+## Where the anatomy phase ended
 
-## Added 13 Nov: the anatomy phase
-
-`eglog/anatomy.py` is built and tested. What it still needs:
-
-- **A GPFIFO counter** (entries and words per frame per channel, log only, off by default). This is the
-  demand boundary and nothing we have measures it. One patch.
-- **Several places.** The fit is not identified on one route: methods, calls and ring words correlate
-  above 0.95. Three or four fixed standing spots fix it; more runs of the same route do not.
-- **Extractors for signals already in the logs that no tool reads**: the guard line's "armed beside
-  another", "copies served both slots" and "reads took a newer frame's copy"; and the vitals line's
-  `gpu_subs_s` and `fence_pops_s`.
-- **0928 is retracted as a flicker measure.** It saturates after about 135 s (83-95% of frames flagged)
-  and cannot separate a no-lookahead run from a two-ahead run. Do not rate anything with it until it
-  gates on stillness and requires the excursion to revert.
+`docs/GrowingBlackBeans/anatomy-phase-closeout-2026-11-13.md`: the four decision rules against what
+was measured, and the ranked problem list (back cost per draw first).

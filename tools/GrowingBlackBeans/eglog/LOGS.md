@@ -60,7 +60,7 @@ Where things are: `eden_log.txt` (everything below unless noted), `stderr.log` (
 **`EDEN_GBB_BACK 5 s (ms per s): busy, waiting, idle hook; kinds; anchor`**, plus `EDEN_GBB_BACK calls` and `EDEN_GBB_BACK methods`
 - Switch: `EDEN_GBB_BACK_CALLS=1` (patch 0921).
 - What: the back's time per ring-entry kind, per method (by engine, inclusive) and per call thunk. Thunk addresses are offsets from `GbbBackCalls::Anchor`; resolve them with `nm` on that build's ELF.
-- Cost: one TSC read per ring entry; expected under 2%, not yet measured on the console.
+- Cost: **about 25% of the back thread's time** (measured 13 Nov, `runGT1` against `runGP1` at two matched stops: +23% and +26%). It costs fps only where the back sets the pace (-12.7% at a heavy stop, -0.9% at a light one). Counts are good; absolute times are inflated by about a quarter.
 
 **`Graphics pipeline built on the GPU thread in X ms: <on disk, not built at boot | mesh, not in the disk cache | ...>`**
 - Switch: always on.
@@ -168,3 +168,17 @@ Where things are: `eden_log.txt` (everything below unless noted), `stderr.log` (
 4. The effective env with defaults (patch 0923 adds `EDEN_GBB_ENV`, untested).
 5. GPU time with timestamps.
 6. Several switches leave no trace in the log (`EDEN_GBB_GUARD_EARLY`, `EDEN_UP_AHEAD_ALWAYS`, `EDEN_GBB_TRUST_COPY`), so `checkrun.py` can't verify them.
+
+## Demand at the guest boundary (patch 0934, and upstream's submission stats)
+
+**`EDEN_GBB_GPFIFO: last 10 s channel N entries E, words W, headers H`**, plus an `all channels` line
+- Switch: `EDEN_GBB_GPFIFO=1` (patch 0934, beside `EDEN_NX2_FETCH_COUNT` in `RecordParsedEntry`).
+- What: GPFIFO entries and words the game submitted, per channel, every 10 s. Divide vitals' ring words by it (`anatomy.py gpfifo`): above about 1.2 the front is amplifying the game's demand; below, the demand is the game's own.
+- Cost: a few counter adds per entry. Not measured on its own; every counts run since 13 Nov carries it, so they compare with each other.
+- Seen: 0.73-0.86 at four Kokiri stops in `runGP1` and `runGS1`. The back gets fewer words than the game sends.
+
+**`EDEN_UP_SUBMIT_STATS in X s, N frames: M submissions: <site> n (k waits for the GPU x ms, j waits to be submitted y ms), ...; w waits for a submission gave up after 20 ms`**
+- Switch: `EDEN_UP_SUBMIT_STATS=1` (upstream).
+- What: host GPU submissions by the code that asked for them, and the waits on each. Read with `anatomy.py submits` (self-checks that the sites add up to the total).
+- Cost: **about 2%** (measured 13 Nov, `runGS1` against `runGP1`: -2.0% fps at a heavy stop, 0.0% at a light one).
+- Pitfalls: the "fence" waits for the GPU (7.6-15.8 ms a frame in Kokiri) are on `GPUFencingThread`, not on the back thread, so they are not on the back's critical path. Don't add them to back time.
