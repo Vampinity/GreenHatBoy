@@ -1,0 +1,29 @@
+Subject: [PATCH] Give graphics pipeline OOM recovery time before the final retry
+
+Opt in with EDEN_NX2_GRAPHICS_PIPELINE_OOM_WAIT_RECOVERY=1. Runs only in the existing worker OOM retry path.
+
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -1836,6 +1836,22 @@
+             const std::uint64_t freed =
+                 eden_radv_out_of_memory ? eden_radv_out_of_memory(std::uint64_t{16} << 20) : 0;
+             std::this_thread::sleep_for(std::chrono::milliseconds{16});
++            // Give the existing reclaim request time to complete before the final retry.
++            // The low-memory guard rejects a build under 16 MiB. Retrying immediately
++            // there can leave a failed pipeline cached for every subsequent draw.
++            static const bool wait_for_recovery =
++                Common::PeSwitch("EDEN_NX2_GRAPHICS_PIPELINE_OOM_WAIT_RECOVERY");
++            if (wait_for_recovery) {
++                const auto deadline = std::chrono::steady_clock::now() +
++                                      std::chrono::milliseconds{128};
++                while (std::chrono::steady_clock::now() < deadline) {
++                    const auto free = PipelineMemoryGate::LiveFree();
++                    if (free == 0 || free >= (16ULL << 20)) {
++                        break;
++                    }
++                    std::this_thread::sleep_for(std::chrono::milliseconds{8});
++                }
++            }
+             static std::atomic<u32> logged{};
+             try {
+                 pipeline = create_pipeline();
