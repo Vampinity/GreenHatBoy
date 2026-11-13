@@ -44,10 +44,16 @@ Host test, a model of the pool in 16 KiB pages with lowest-fit placement, starte
 
 That is a model, not a console run.
 
-## Not shown yet
+## First W-20 console run (13 Nov)
 
-- No W-20 console run. The first one should show `pool_first` rising, `in_place` staying small, and a largest free block that follows what is free.
-- Whether whole 2 MiB blocks are enough for graphics, which asks 4 to 16 MiB at a time: free 2 MiB blocks that lie side by side join, scattered ones do not.
+First session with `EDEN_GUEST_SWAP_PACK_IN_PLACE=2` on base PS5 13.60:
+- **Result:** Played through a later area and successfully reached and obtained the Hookshot without crashing.
+- **Memory & Reclaim:** Under memory pressure, `EDEN_SWAP reclaim for graphics` repeatedly surrendered whole blocks to graphics (sweeps of 64 MiB, 65 MiB, 64 MiB, 64 MiB, 64 MiB, 42 MiB, 40 MiB) instead of returning 0 MiB as in W-19.
+- Whole 2 MiB blocks remained available in the pool, avoiding the sub-2 MiB tail exhaustion collapse that previously locked the largest free block at 1 MiB.
+
+## Still open / to watch
+
+- Whether whole 2 MiB blocks are enough across even longer sessions for graphics, which asks 4 to 16 MiB at a time: free 2 MiB blocks that lie side by side join, scattered ones do not.
 - Vampinity runs with in-place off, so this is probably not the first-start crash. The check is quick on any log: sum the four `EDEN_POOL_LEDGER` classes and compare with the largest free block.
 
 ## Two other things from these sessions
