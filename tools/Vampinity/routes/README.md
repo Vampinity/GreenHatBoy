@@ -96,6 +96,7 @@ and walks 6 s forward and 4 s forward-right in the village, open loop.
 ## Making your own LOOKs and STEER points
 
 A LOOK line is a brightness grid of a screen region. A tool that cuts one from a screenshot has to
-use the harness's own arithmetic (`GridOf` in `test_harness.h`). STEER points are minimap positions
-in per mille of the picture. We take them from a recording of our own walk. That tool is not in this
-folder yet.
+use the harness's own arithmetic (`GridOf` in `test_harness.h`). GrowingBlackBeans'
+[`make-look.py`](../../GrowingBlackBeans/eglog/make-look.py) does that. STEER points are minimap
+positions in per mille of the picture. We take them from a recording of our own walk. That tool is
+not in this folder yet.
