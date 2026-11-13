@@ -614,6 +614,96 @@ def cmd_stops(args):
     return 0
 
 
+SUBMIT_HEAD = re.compile(
+    r"EDEN_UP_SUBMIT_STATS in ([\d.]+) s, (\d+) frames: (\d+) submissions: (.*?); "
+    r"(\d+) waits for a submission gave up after 20 ms")
+SUBMIT_SITE = re.compile(
+    r"(?:^|, )([a-z][a-z ]*?) (\d+) \((\d+) waits for the GPU ([\d.]+) ms, "
+    r"(\d+) waits to be submitted ([\d.]+) ms\)")
+SUBMIT_DEFER = re.compile(
+    r"EDEN_UP_SUBMIT_STATS deferred: (\d+) flushes put off, (\d+) deferred submissions")
+SUBMIT_MACRO = re.compile(r"EDEN_UP_SUBMIT_STATS front macro reads: (\d+) snapshot hits; misses: (.*?);")
+
+
+def read_submits(log):
+    """Every EDEN_UP_SUBMIT_STATS window: (end t, seconds, frames, total, sites, gave_up, deferred).
+
+    Vampinity's patch 0545. One line every ~10 s of GPU submissions, split by the place in the code
+    that asked for each (draws, astc, fence, fence flush, list copy, idle, finish, wait, present,
+    other), with how many times the CPU waited for the GPU on each and for how long, and how often a
+    wait for a submission silently gave up after 20 ms. A second line counts deferred flushes. The
+    per-site counts must add up to the line's own total; a window where they do not is reported,
+    because that would mean the parser missed a site.
+    """
+    out, pending = [], None
+    for t, line in read_lines(log):
+        if t is None:
+            continue
+        m = SUBMIT_HEAD.search(line)
+        if m:
+            sites = {}
+            for sm in SUBMIT_SITE.finditer(m.group(4)):
+                sites[sm.group(1).strip()] = (int(sm.group(2)), int(sm.group(3)), float(sm.group(4)),
+                                              int(sm.group(5)), float(sm.group(6)))
+            pending = dict(t=t, secs=float(m.group(1)), frames=int(m.group(2)), total=int(m.group(3)),
+                           sites=sites, gave_up=int(m.group(5)), deferred=None)
+            out.append(pending)
+            continue
+        d = SUBMIT_DEFER.search(line)
+        if d and pending is not None:
+            pending["deferred"] = (int(d.group(1)), int(d.group(2)))
+    return out
+
+
+def cmd_submits(args):
+    """Submissions, GPU waits and give-ups per frame: overall, and per stop when the run has stops."""
+    for rundir in args.rundirs:
+        log = os.path.join(rundir, "eden_log.txt")
+        if not os.path.exists(log):
+            print(f"{rundir}: no eden_log.txt")
+            continue
+        wins = [w for w in read_submits(log) if w["frames"] > 0 and w["t"] >= args.skip]
+        run = os.path.basename(rundir.rstrip("/"))
+        print(f"\n=== {run}: GPU submissions (EDEN_UP_SUBMIT_STATS) ===")
+        if not wins:
+            print("  no EDEN_UP_SUBMIT_STATS windows with frames. Was EDEN_UP_SUBMIT_STATS=1 set?")
+            continue
+        bad = [w for w in wins if sum(v[0] for v in w["sites"].values()) != w["total"]]
+        print(f"  {len(wins)} windows; per-site counts add up to the total in "
+              f"{len(wins) - len(bad)} of {len(wins)}" + (" — PARSER MISSED A SITE" if bad else ""))
+
+        def table(ws, label):
+            frames = sum(w["frames"] for w in ws)
+            agg = defaultdict(lambda: [0, 0, 0.0, 0, 0.0])
+            for w in ws:
+                for k, v in w["sites"].items():
+                    a = agg[k]
+                    for i in range(5):
+                        a[i] += v[i]
+            gave = sum(w["gave_up"] for w in ws)
+            print(f"\n  {label}: {len(ws)} windows, {frames} frames")
+            print(f"  {'site':>12} {'per frame':>10} {'GPU waits/f':>12} {'GPU wait ms/f':>14} "
+                  f"{'submit waits/f':>15}")
+            for k, (n, gw, gms, sw, sms) in sorted(agg.items(), key=lambda kv: -kv[1][2]):
+                print(f"  {k:>12} {n / frames:10.2f} {gw / frames:12.2f} {gms / frames:14.3f} "
+                      f"{sw / frames:15.2f}")
+            print(f"  waits for a submission that gave up after 20 ms: {gave}")
+
+        table(wins, "whole run")
+        vit = []
+        for t, line in read_lines(log):
+            if t is None:
+                continue
+            m = VITALS.search(line)
+            if m:
+                vit.append((t, float(m.group(3)), int(m.group(11))))
+        for n, (a, b, secs) in enumerate(find_stops(vit, skip=args.skip), 1):
+            inside = [w for w in wins if a + w["secs"] <= w["t"] <= b + 2.0]
+            if inside:
+                table(inside, f"stop {n} ({a:.0f}-{b:.0f} s)")
+    return 0
+
+
 # numpy 2.0.2 on macOS uses Apple's Accelerate for matmul, which raises "divide by zero" and
 # "overflow encountered in matmul" on perfectly finite inputs. Checked 13 Nov: the same three warnings
 # fire on synthetic finite data, and the product agrees with a pure-numpy einsum to 1.4e-14. So they are
@@ -806,6 +896,10 @@ def main():
     q.add_argument("--max-cv", type=float, default=0.05,
                    help="how flat ring words PER FRAME must be (default 5%%; standing is ~1.3%%, walking ~19.5%%)")
     q.set_defaults(fn=cmd_stops)
+    q = sub.add_parser("submits", help="GPU submissions by site, waits and give-ups per frame (EDEN_UP_SUBMIT_STATS)")
+    q.add_argument("rundirs", nargs="+")
+    q.add_argument("--skip", type=float, default=60.0)
+    q.set_defaults(fn=cmd_submits)
     a = p.parse_args()
     return a.fn(a) or 0
 
