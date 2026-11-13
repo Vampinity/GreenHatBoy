@@ -1,0 +1,51 @@
+{
+ "format": 0,
+ "author": "waveydude",
+ "run_id": "w19-run1-24m",
+ "date": "2026-11-13",
+ "time": "06:21:00",
+ "batch": "w-series",
+ "test": "w19-run1-24m",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "W-19",
+  "commit": null,
+  "version": "01.219.028",
+  "eboot_sha256_16": null
+ },
+ "firmware": null,
+ "console": "PS5 base 13.60",
+ "route": {
+  "script": "hand-played, a later area",
+  "script_sha": null
+ },
+ "menu_settings": null,
+ "env_lines": 141,
+ "env_hash": null,
+ "control": null,
+ "ending": {
+  "kind": "hand_stopped",
+  "class": null,
+  "seconds": 1412,
+  "crash_app_s": null
+ },
+ "valid": null,
+ "gameplay_s": null,
+ "fps": {
+  "mean": 13.16,
+  "source": "nx2:vi2 5 s lines, whole session (frames / 5 s windows)",
+  "p99_ms": null,
+  "worst_ms": 16408.3
+ },
+ "worst_frame_ms": 16408.3,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": null,
+ "impressions": "W-19 (W-18 + 0936 pipeline OOM wait, EDEN_HEAP_SCRATCH_SPACES=1). No crash; closed by hand. Median 14 fps, largest free block 1 to 60 MiB from 10 min on, 23,259 texture storage refusals, 106 failed pipeline builds, about 15,000 images made and deleted per 600 frames. Pool ledger at the end: 11,010 MiB out, 1,342 MiB free, largest free block 3 MiB; 1,138 slots packed in place holding 1,140 MiB.",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 3,
+  "other_dump": 2,
+  "private_word": 4
+ }
+}

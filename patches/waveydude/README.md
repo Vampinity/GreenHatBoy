@@ -9,6 +9,8 @@ For the Eglantine submodule, applied after Vampinity's T120 series (`tools/eglan
 
 Not a core patch: `EDEN_UP_STALL_PROBE=1` (W-12, outer repo `src/stall_probe.h` and `src/guest_memory_service.inc`): times guest-memory slot lock waits and holds and block waits by role (fault, scanner, swapper, keeper), and writes an `EDEN_STALL` line for every 100 ms+ stall with what waited or held in it. Host test `tools/test-stall-probe.cpp`. Built (W-12); not run yet.
 
+Not a core patch either: `EDEN_GUEST_SWAP_PACK_IN_PLACE=2` (W-20, outer repo, `w20-front-pack-pool-first.patch`: `src/pack_place.h`, `PackOut` in `src/guest_memory_service.inc`). A packed guest slot's bytes go to a block of their own first and the slot's 2 MiB block goes back whole; in place only when the pool has no block. `=1` left 430 to 1,340 MiB of the pool free in holes under 2 MiB at every memory wall I hit (`docs/waveydude/pool-holes-in-place-pack-2026-11-13.md`). Host test `tools/test-pack-place.cpp`. Built and installed (W-20); **not run yet**. Settings: `envs/waveydude/w20-game.env.txt`.
+
 Settings for the test: `envs/waveydude/w13-game.env.txt` (the whole per-game env, with the switches above on).
 
 Also used, from others: `EDEN_UP_AHEAD_LOAD_WAIT=1` (in the core already) stops the title-screen freeze with two frames ahead.

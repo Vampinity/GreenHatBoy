@@ -1,0 +1,51 @@
+{
+ "format": 0,
+ "author": "waveydude",
+ "run_id": "w13-crash-80m",
+ "date": "2026-11-13",
+ "time": "03:16:52",
+ "batch": "w-series",
+ "test": "w13-crash-80m",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "W-13",
+  "commit": null,
+  "version": "01.219.028",
+  "eboot_sha256_16": null
+ },
+ "firmware": null,
+ "console": "PS5 base 13.60",
+ "route": {
+  "script": "hand-played, a later area",
+  "script_sha": null
+ },
+ "menu_settings": null,
+ "env_lines": 131,
+ "env_hash": null,
+ "control": null,
+ "ending": {
+  "kind": "crash",
+  "class": null,
+  "seconds": 4836,
+  "crash_app_s": 4836
+ },
+ "valid": null,
+ "gameplay_s": null,
+ "fps": {
+  "mean": 36.49,
+  "source": "nx2:vi2 5 s lines, whole session (frames / 5 s windows)",
+  "p99_ms": null,
+  "worst_ms": 7486.3
+ },
+ "worst_frame_ms": 7486.3,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": null,
+ "impressions": "W-13 (two frames ahead, two guard slots, driver cache at exit only). Smooth for over an hour, then laggy, then SIGSEGV on a CPU core writing guest memory with the pool's largest free block at 1 MiB. Pool ledger near the end: 11,107 MiB out of 12,352, so 1,245 MiB free in holes.",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 3,
+  "other_dump": 2,
+  "private_word": 4
+ }
+}

@@ -1,0 +1,51 @@
+{
+ "format": 0,
+ "author": "waveydude",
+ "run_id": "w19-run2-16m",
+ "date": "2026-11-13",
+ "time": "07:13:30",
+ "batch": "w-series",
+ "test": "w19-run2-16m",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "W-19",
+  "commit": null,
+  "version": "01.219.028",
+  "eboot_sha256_16": null
+ },
+ "firmware": null,
+ "console": "PS5 base 13.60",
+ "route": {
+  "script": "hand-played, a later area",
+  "script_sha": null
+ },
+ "menu_settings": null,
+ "env_lines": 141,
+ "env_hash": null,
+ "control": null,
+ "ending": {
+  "kind": "hand_stopped",
+  "class": null,
+  "seconds": 973,
+  "crash_app_s": null
+ },
+ "valid": null,
+ "gameplay_s": null,
+ "fps": {
+  "mean": 18.09,
+  "source": "nx2:vi2 5 s lines, whole session (frames / 5 s windows)",
+  "p99_ms": null,
+  "worst_ms": 10554.0
+ },
+ "worst_frame_ms": 10554.0,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": null,
+ "impressions": "W-19 again. Slow first load (1 to 8 fps for minutes with 6 GB free), then 17 to 19 fps. Largest free block 36 to 48 MiB from 13 min on with 710 MiB of the pool free; 373 slots packed in place. Closed by hand.",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 3,
+  "other_dump": 2,
+  "private_word": 4
+ }
+}

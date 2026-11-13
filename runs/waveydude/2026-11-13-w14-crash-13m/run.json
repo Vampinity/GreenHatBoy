@@ -1,0 +1,51 @@
+{
+ "format": 0,
+ "author": "waveydude",
+ "run_id": "w14-crash-13m",
+ "date": "2026-11-13",
+ "time": "03:34:28",
+ "batch": "w-series",
+ "test": "w14-crash-13m",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "W-14",
+  "commit": null,
+  "version": "01.219.028",
+  "eboot_sha256_16": null
+ },
+ "firmware": null,
+ "console": "PS5 base 13.60",
+ "route": {
+  "script": "hand-played, a later area",
+  "script_sha": null
+ },
+ "menu_settings": null,
+ "env_lines": 133,
+ "env_hash": null,
+ "control": null,
+ "ending": {
+  "kind": "crash",
+  "class": null,
+  "seconds": 772,
+  "crash_app_s": 772
+ },
+ "valid": null,
+ "gameplay_s": null,
+ "fps": {
+  "mean": 25.89,
+  "source": "nx2:vi2 5 s lines, whole session (frames / 5 s windows)",
+  "p99_ms": null,
+  "worst_ms": 3744.7
+ },
+ "worst_frame_ms": 3744.7,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": null,
+ "impressions": "W-14 (W-13 + mic probe). Boot built 5,215 pipelines; SIGSEGV on a CPU core 13 min in, largest free block 1 MiB.",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 3,
+  "other_dump": 2,
+  "private_word": 4
+ }
+}

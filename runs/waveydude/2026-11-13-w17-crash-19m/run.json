@@ -1,0 +1,51 @@
+{
+ "format": 0,
+ "author": "waveydude",
+ "run_id": "w17-crash-19m",
+ "date": "2026-11-13",
+ "time": "05:02:17",
+ "batch": "w-series",
+ "test": "w17-crash-19m",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "W-17",
+  "commit": null,
+  "version": "01.219.028",
+  "eboot_sha256_16": null
+ },
+ "firmware": null,
+ "console": "PS5 base 13.60",
+ "route": {
+  "script": "hand-played, a later area",
+  "script_sha": null
+ },
+ "menu_settings": null,
+ "env_lines": 138,
+ "env_hash": null,
+ "control": null,
+ "ending": {
+  "kind": "crash",
+  "class": null,
+  "seconds": 1144,
+  "crash_app_s": 1144
+ },
+ "valid": null,
+ "gameplay_s": null,
+ "fps": {
+  "mean": 16.34,
+  "source": "nx2:vi2 5 s lines, whole session (frames / 5 s windows)",
+  "p99_ms": null,
+  "worst_ms": 3834.0
+ },
+ "worst_frame_ms": 3834.0,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": null,
+ "impressions": "W-17, texture marks 1536/2048 (new shader store, so a 771 s boot of 5,000 pipelines). std::bad_alloc on the GPU back thread about 6 min into play, largest free block 1 MiB.",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 3,
+  "other_dump": 2,
+  "private_word": 4
+ }
+}

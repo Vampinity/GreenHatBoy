@@ -1,0 +1,61 @@
+EglantinePS5 crash report
+version: 01.219.028 (code size 0x2c30a20)
+time: 2026-11-12 19:34:28, 772 s after the app started
+what: SIGSEGV (invalid memory access), code 2, address 0x000000816f601360
+where: 0x00000012955f1b51 (outside the app's code: a system library or generated code)
+thread: CPUCore_3 (0x880f598c0)
+running: game The Legend of Zelda Ocarina of Time [0400486024DEC000][v131072].nup (0400486024dec000), Vulkan, resolution 0.75x, Bilinear, output 1080p, 60 Hz, mods: none
+memory: largest free block 1 MiB of 12352 MiB, heap 1216 MiB and 408 MiB in 279 large blocks
+registers:
+  rip 00000012955f1b51  rsp 00000012bdd93970  rbp 00000012bdd93d80
+  rax 000000124d270360  rbx 0000000000000001  rcx 0000000085435158
+  rdx 0000006f22391000  rsi 00000060f9800000  rdi 0000000000000c70
+  r8  0000001185710000  r9  0000000000001f80  r10 0000001001c83e70
+  r11 0000001001c83e70  r12 0000000000000001  r13 000000210e4f40f8
+  r14 00000011c9200000  r15 0000001002302090  flags 0000000000010206
+  trap 12  error 0x4
+code: 0x0000000000400000 to 0x0000000003030a20 (eboot+offset is an address in the build's llvm-pie.elf)
+calls found on the stack, most recent first ("?": not checked against a call instruction):
+  eboot+0x1bf0bf6 ?
+  eboot+0x1bf0bf6 ?
+  eboot+0x72a2ec ?
+  eboot+0x3209d0 ?
+  eboot+0x1bf0bf6 ?
+  eboot+0x709720 ?
+  eboot+0x1bf0bf6 ?
+  eboot+0x1bf0bf6 ?
+  eboot+0x1bf0bf6 ?
+  eboot+0x72a2ec ?
+  eboot+0x3209d0 ?
+  eboot+0x1bf0bf6 ?
+  eboot+0x709720 ?
+  eboot+0x1bf0bf6 ?
+  eboot+0x709720 ?
+  eboot+0x1bf0bf6 ?
+  eboot+0x709720 ?
+  eboot+0x72a2ec ?
+  eboot+0x31f2a1 ?
+  eboot+0x709720 ?
+  eboot+0x28f3ef8 ?
+  eboot+0x31bbc4 ?
+  eboot+0x308529 ?
+  eboot+0x1bf0bf6 ?
+  eboot+0x1bf0bf6 ?
+  eboot+0x28f26cd ?
+  eboot+0x709720 ?
+  eboot+0x1bf0bf6 ?
+  eboot+0x468717 ?
+  eboot+0x468fa3 ?
+  eboot+0x72a2ec ?
+  eboot+0x1bf0bf6 ?
+  eboot+0x468e80 ?
+  eboot+0x1bf0bf6 ?
+  eboot+0x468e80 ?
+  eboot+0x4696a0 ?
+  eboot+0x4b05cc ?
+  eboot+0x4b0529 ?
+  eboot+0x1c08130 ?
+  eboot+0x1c080c0 ?
+  eboot+0x1ca919f ?
+  eboot+0x1ca919f ?
+then: the app starts again
