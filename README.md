@@ -18,11 +18,6 @@ This repository is emulator work and test logs. It is not the game and does not 
 > [!IMPORTANT]
 > **Unofficial and experimental. No game is included here, and none is linked.** This repository holds no game files, no keys and no firmware. You need your own legally obtained copy of the game. Shader caches and saves are made on your own console and are never shared here. "Green Hat Boy" is this project's own name; it is not from or endorsed by the game's maker. Expect crashes and save often. Not affiliated with or endorsed by Nintendo, Sony, the Eglantine team or the Eden team; please send problems with these builds here, not to them. It is free, and it is not for sale.
 
-<p align="center">
-  <img src="docs/img/field-view.jpg" width="100%" alt="The boy in the green cap, seen from behind in the sun at the edge of the forest, looks out over a wide green field, while an owl flies off and feathers drift down">
-  <br><sub>Leaving the forest, on a base PS5</sub>
-</p>
-
 ## Is there a download?
 
 **Not for newcomers yet.** The game starts, the opening plays and the first village is playable. But on a fresh install the very first start still crashes on the way there about half the time, even with the best settings we have, and we do not want your first try to end like that. Starting again gets in: with the best settings, every second and third start in our tests reached the village.
