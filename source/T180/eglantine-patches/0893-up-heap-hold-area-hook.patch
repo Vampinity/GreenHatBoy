@@ -1,0 +1,51 @@
+From: EglantinePS5
+Subject: [PATCH] up: AreaEvict's window tells the front an area change is on (eden_heap_hold_area, for EDEN_UP_HEAP_HOLD_AT_LOAD) (KEEPS THE STORE)
+
+Store: KEEPS THE STORE. memory_census.h and texture_cache.h change; neither is among the translation
+id's inputs. EDEN_NX2_AREA_EVICT is in TranslationSwitches; this patch only reads its window, the
+setting does not change.
+
+The core half of the front's EDEN_UP_HEAP_HOLD_AT_LOAD=<s> (t174a front commit, headless/heap_arenas.inc).
+When AreaEvict opens or extends its window (a burst of EDEN_NX2_AREA_EVICT_BURST new images: the
+area burst; "EDEN_AREA_EVICT burst ..." line), it calls the front's eden_heap_hold_area (weak, PS5
+only, as the census's other front functions). The front then gives no heap piece back for <s> s.
+Off: the front returns at once (one relaxed load); without EDEN_NX2_AREA_EVICT nothing calls it.
+
+Why: run1395's heap gave 32 MiB back "because the pool is short" (stderr 983) 2 s into the load and
+needed 9.9 MiB 9 s later (stderr 2010-2015). The burst line of that load is stderr 906, before the
+give-back. Not checked: a build, the console.
+T173 note: 0885 also changes texture_cache.h; this hunk is AreaEvict's open_now block, away from
+0885's (its AreaEvict hunk is at the function's end).
+---
+diff --git a/src/video_core/memory_census.h b/src/video_core/memory_census.h
+index 1dc502c606..8e92b70261 100644
+--- a/src/video_core/memory_census.h
++++ b/src/video_core/memory_census.h
+@@ -92,6 +92,10 @@ void CodeRangeUsage(std::size_t* reserved, std::size_t* committed) noexcept __at
+ extern "C" void eden_heap_sites_report(void) __attribute__((weak));
+ extern "C" void eden_heap_growth_report(void) __attribute__((weak));
+ extern "C" void eden_heap_arena_report(void) __attribute__((weak));
++// EDEN_UP_HEAP_HOLD_AT_LOAD=<s> (headless/heap_arenas.inc, 0893): an area change began or goes on
++// (TextureCache::AreaEvict opened or extended its window): the heap keeps its pieces for <s> s
++// more. Returns at once when the switch is off.
++extern "C" void eden_heap_hold_area(void) __attribute__((weak));
+ #endif
+ 
+ namespace VideoCommon::MemoryCensus {
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 8ecca7d411..09a5afb984 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -1642,6 +1642,12 @@ void TextureCache<P>::AreaEvict() {
+         area_window_refused = false;
+     }
+     if (open_now) {
++#if VIDEO_CORE_CENSUS_FRONT
++        // EDEN_UP_HEAP_HOLD_AT_LOAD (0893, the front): no heap give-back through the load.
++        if (eden_heap_hold_area != nullptr) {
++            eden_heap_hold_area();
++        }
++#endif
+         const bool opening = !window_open();
+         if (guard && (opening || !needs_pressure)) {
+             area_evict_pressure_only = needs_pressure;

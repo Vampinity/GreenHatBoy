@@ -1,0 +1,258 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_SHADER_SET_PACK=1, the shader set file stores each program's code packed (about 900 MB to about 375 MB)
+
+Switch: EDEN_UP_SHADER_SET_PACK (exact "1", read once; off by default).
+
+Why: in the first console run of the before-play pass (13 Nov, run1382, T162) the shader list
+(prep_shader_set.bin) was ready 708 s after the pass began. The log puts the time here: the records
+were converted and written by 71 s ("dropped ..." lines, "31.8 s in all"), then nothing until
+"62344 facts and 40972 programs stored once, 922 MB in all" at 738 s. Between those two lines the
+code does only one thing: it writes the facts (about 18 MB) and each used program's lowered code
+(about 780 MB) through AtomicFile's 8 MiB pieces. So 667 s went into writing about 800 MB, about
+1.2 MB a second. The same code wrote the same part (860 MB file) in 75 s in test d4 (T138) and in
+175 s in t110-s; why this run's disk was ten times slower is not checked (the records part of the
+same run went at 10 MB a second or more; nothing else is logged in those 667 s). Lowering is not
+the cost: all 41,169 programs were lowered in 3.3 s (55.7 s to 59.1 s).
+
+What: with the switch, each program's code in the programs section is one zstd frame (level 1)
+and the file's magic at both ends is "edenset4" (same layout otherwise). Measured on the d4 file
+(763 MB of program code, 36,542 programs): 236 MB frame by frame, 2.4 s on the Mac (one thread).
+The file shrinks from about 900 MB to about 375 MB (records 121 MB and facts 18 MB stay). Each
+program's code is given back to memory as soon as it is written (about 800 MB held until the end
+before). ReadRecords and ForEachProgramCode read both kinds; a damaged frame ends the read as a cut
+file does. The stamp gets "programs packed 1", so turning the switch on or off makes the file
+again once. An older build reads a packed file as another layout (nothing read) and its stamp
+differs, so it converts again.
+
+Expected time for the save before play: 375 MB instead of 900 MB, so about 30 s at d4's rate and
+about 4-5 minutes at run1382's rate, plus about 5-8 s of packing on the console (not measured
+there). Reading: each record's programs are unpacked when the record is read (about 6 GB of
+unpacking for a whole pass of 119,524 records; zstd unpacks at 1 GB a second or more), small
+next to the pipeline builds.
+
+Off: one cached switch read per conversion and per file read (the magic check); the file and the
+stamp are as before. shader_set.cpp is not among the translation id's files
+(tools/gen-translation-id.py), so this patch alone does not move the id. Not checked: a run, a
+build.
+---
+diff --git a/src/video_core/shader_set.cpp b/src/video_core/shader_set.cpp
+index 780b73d8dc..4704cf2c66 100644
+--- a/src/video_core/shader_set.cpp
++++ b/src/video_core/shader_set.cpp
+@@ -132,6 +132,19 @@ size_t NupCacheCapMiB() {
+     return mib == 0 ? 512 : std::max<size_t>(static_cast<size_t>(mib), 16);
+ }
+ 
++/// EDEN_UP_SHADER_SET_PACK=1 (0830; exact "1", read once; off by default): each program's lowered
++/// code in the programs section is one zstd frame (level 1), and the file says so with the magic
++/// "edenset4" at both ends; records and facts are as before. Why: on 13 Nov (run1382, T162) the
++/// facts and programs (about 800 MB, almost all lowered code) took 667 s to write before play, at
++/// about 1.2 MB a second; the same 780 MB had taken 75 s in test d4. The code shrinks about 3.2
++/// times (763 MB to 236 MB measured on d4's file, frame by frame), so the file goes from about
++/// 900 MB to about 375 MB. A file of either kind is read by ReadRecords and ForEachProgramCode;
++/// an older build reads a packed file as one of another layout (empty), and its stamp differs.
++bool PackAsked() {
++    static const bool asked = Common::PeSwitch("EDEN_UP_SHADER_SET_PACK");
++    return asked;
++}
++
+ /// Written whole under a temporary name, committed to disk, then renamed over the final name:
+ /// a kill at any moment leaves the final name as it was (absent, or the last complete file).
+ class AtomicFile {
+@@ -202,6 +215,7 @@ std::string ExtractorLines() {
+     // 0780: a set with compute records is another file (off: no line, the stamp as before).
+     if (ComputeAsked()) lines += "compute 1\n";
+     if (MeshAsked()) lines += "mesh 1\n"; // 0782
++    if (PackAsked()) lines += "programs packed 1\n"; // 0830 (off: no line, the stamp as before)
+     // EDEN_UP_SHADER_SET_RECONVERT=<n> (a test aid): a number in the stamp, so a set made with
+     // another number (or none) is converted again once, e.g. to time the conversion.
+     if (const size_t again = SwitchNumber("EDEN_UP_SHADER_SET_RECONVERT", 0); again != 0) {
+@@ -444,6 +458,29 @@ void AppendEnvironment(std::vector<char>& out, std::span<const char> fact,
+ }
+ 
+ constexpr char SetMagic[9] = "edenset3";
++constexpr char PackedMagic[9] = "edenset4"; // 0830: the same layout, each program's code packed
++/// 0830: the largest lowered program a packed file may unpack to (MaximumInstructions native
++/// instructions make well under 4 MiB of lowered code).
++constexpr u64 MaxPackedProgramBytes = u64{16} << 20;
++
++/// 0830: unpacks one program's stored bytes (one zstd frame) into `code`; false when damaged.
++bool UnpackProgram(ZSTD_DCtx* context, std::span<const char> stored, std::vector<char>& code) {
++    const unsigned long long size = ZSTD_getFrameContentSize(stored.data(), stored.size());
++    if (size == ZSTD_CONTENTSIZE_ERROR || size == ZSTD_CONTENTSIZE_UNKNOWN ||
++        size > MaxPackedProgramBytes) {
++        return false;
++    }
++    code.resize(static_cast<size_t>(size));
++    const size_t made = ZSTD_decompressDCtx(context, code.data(), code.size(), stored.data(),
++                                            stored.size());
++    return !ZSTD_isError(made) && made == code.size();
++}
++struct FreeDContext {
++    void operator()(ZSTD_DCtx* context) const { ZSTD_freeDCtx(context); }
++};
++struct FreeCContext {
++    void operator()(ZSTD_CCtx* context) const { ZSTD_freeCCtx(context); }
++};
+ /// sizeof(ComputePipelineCacheKey): a record with a key this long is a compute record (0780);
+ /// a graphics key is 1,056 bytes.
+ constexpr u32 ComputeKeyBytes = 24;
+@@ -804,7 +841,10 @@ Outputs Prepare(u64 title, const std::filesystem::path& title_dir,
+         // key), then each used fact once, then each used program's lowered code once, then where
+         // those three parts are. Layout 1 wrote every record's environments whole: 4.3 GB for
+         // Ocarina's 113,054 records, and the PS5 writes that file at 1-1.5 MB a second.
+-        file.Write(Bytes{reinterpret_cast<const u8*>(SetMagic), 8});
++        // 0830: a packed file's magic says so at both ends.
++        const bool pack = PackAsked();
++        const char* const magic = pack ? PackedMagic : SetMagic;
++        file.Write(Bytes{reinterpret_cast<const u8*>(magic), 8});
+         file.Write(PipelineCacheVersion);
+         std::map<std::string, size_t> dropped;
+         std::vector<u64> used_programs; // lowered hashes with at least one converted record
+@@ -944,20 +984,41 @@ Outputs Prepare(u64 title, const std::filesystem::path& title_dir,
+             ++fact_count;
+         }
+         const u64 programs_at = file.Written();
++        // 0830: packed, each program's code is one zstd frame (level 1) and its memory is given
++        // back once written (nothing reads the lowered code after this loop).
++        std::unique_ptr<ZSTD_CCtx, FreeCContext> packer{pack ? ZSTD_createCCtx() : nullptr};
++        if (pack && !packer) throw std::runtime_error("no zstd context");
++        std::vector<u8> packed;
++        u64 code_bytes = 0;
+         for (u32 index = 0; index < r.programs.size(); ++index) {
+             if (!used_program[index]) continue;
+-            const auto& code = lowered[index]->code;
++            auto& code = lowered[index]->code;
+             file.Write(index);
+             file.Write(lowered[index]->hash);
+-            file.Write(static_cast<u64>(code.size() * 8));
+-            file.Write(Bytes{reinterpret_cast<const u8*>(code.data()), code.size() * 8});
++            code_bytes += code.size() * 8;
++            if (pack) {
++                packed.resize(ZSTD_compressBound(code.size() * 8));
++                const size_t size = ZSTD_compressCCtx(packer.get(), packed.data(), packed.size(),
++                                                      code.data(), code.size() * 8, 1);
++                if (ZSTD_isError(size)) throw std::runtime_error("program packing failed");
++                file.Write(static_cast<u64>(size));
++                file.Write(Bytes{packed.data(), size});
++                std::vector<u64>{}.swap(code);
++            } else {
++                file.Write(static_cast<u64>(code.size() * 8));
++                file.Write(Bytes{reinterpret_cast<const u8*>(code.data()), code.size() * 8});
++            }
+             ++program_count;
+         }
++        if (pack) {
++            LOG_INFO(Render_Vulkan, "Shader set: EDEN_UP_SHADER_SET_PACK=1: {} MB of program code "
++                     "stored as {} MB", code_bytes >> 20, (file.Written() - programs_at) >> 20);
++        }
+         for (const u64 value : {u64{12}, u64{converted}, facts_at, fact_count, programs_at,
+                                 program_count}) {
+             file.Write(value);
+         }
+-        file.Write(Bytes{reinterpret_cast<const u8*>(SetMagic), 8});
++        file.Write(Bytes{reinterpret_cast<const u8*>(magic), 8});
+         LOG_INFO(Render_Vulkan, "Shader set: {} facts and {} programs stored once, {} MB in all; "
+                  "{:.1f} s", fact_count, program_count, file.Written() >> 20, seconds());
+         // The old stamp goes first (it must never sit beside the new files), then records, then
+@@ -1055,9 +1116,13 @@ bool ReadRecords(
+         seek(0);
+         file.read(magic.data(), magic.size());
+         get(version);
+-        if (std::memcmp(magic.data(), SetMagic, 8) != 0 || version != cache_version) {
++        // 0830: "edenset4" is the same layout with each program's code packed.
++        const bool packed = std::memcmp(magic.data(), PackedMagic, 8) == 0;
++        if ((!packed && std::memcmp(magic.data(), SetMagic, 8) != 0) || version != cache_version) {
+             return true; // another layout's or another version's file: nothing to read
+         }
++        std::unique_ptr<ZSTD_DCtx, FreeDContext> unpacker{packed ? ZSTD_createDCtx() : nullptr};
++        if (packed && !unpacker) return false;
+         std::error_code ec;
+         const std::string identity = fmt::format(
+             "{} {} {}", path.string(), end,
+@@ -1075,7 +1140,7 @@ bool ReadRecords(
+             file.read(tail.data(), tail.size());
+             const u64 records = where[1], facts_at = where[2], facts = where[3];
+             const u64 programs_at = where[4], programs = where[5];
+-            if (std::memcmp(tail.data(), SetMagic, 8) != 0 || where[0] != 12 || facts_at < 12 ||
++            if (std::memcmp(tail.data(), magic.data(), 8) != 0 || where[0] != 12 || facts_at < 12 ||
+                 programs_at < facts_at || programs_at > end - TrailerBytes) {
+                 return false;
+             }
+@@ -1122,7 +1187,7 @@ bool ReadRecords(
+             std::scoped_lock lock{set_index_mutex};
+             set_index = index;
+         }
+-        std::vector<char> bytes, fact, code, key;
++        std::vector<char> bytes, fact, code, key, stored;
+         std::array<u64, 6> hashes{};
+         for (const SetIndex::Record& record : index->records) {
+             // 0780: a compute record goes to on_compute only; a reader without one never sees it.
+@@ -1157,9 +1222,15 @@ bool ReadRecords(
+                 fact.resize(f.size);
+                 seek(f.at);
+                 file.read(fact.data(), fact.size());
+-                code.resize(c.size);
+                 seek(c.at);
+-                file.read(code.data(), code.size());
++                if (packed) {
++                    stored.resize(c.size);
++                    file.read(stored.data(), stored.size());
++                    if (!UnpackProgram(unpacker.get(), stored, code)) return false;
++                } else {
++                    code.resize(c.size);
++                    file.read(code.data(), code.size());
++                }
+                 AppendEnvironment(bytes, fact, code);
+             }
+             bytes.insert(bytes.end(), key.begin(), key.end());
+@@ -1216,21 +1287,26 @@ bool ForEachProgramCode(const std::filesystem::path& path, u32 cache_version,
+         // `wanted` is not asked.
+         static constexpr char OldMagic[9] = "edenset2";
+         const bool old_layout = std::memcmp(magic.data(), OldMagic, 8) == 0;
+-        if ((!old_layout && std::memcmp(magic.data(), SetMagic, 8) != 0) ||
++        // 0830: "edenset4", each program's code packed (unpacked before `on_program` sees it).
++        const bool packed = std::memcmp(magic.data(), PackedMagic, 8) == 0;
++        if ((!old_layout && !packed && std::memcmp(magic.data(), SetMagic, 8) != 0) ||
+             version != cache_version) {
+             return true;
+         }
++        std::unique_ptr<ZSTD_DCtx, FreeDContext> unpacker{packed ? ZSTD_createDCtx() : nullptr};
++        if (packed && !unpacker) return false;
+         std::array<u64, 6> where{};
+         seek(end - TrailerBytes);
+         get(where);
+         file.read(tail.data(), tail.size());
+         const u64 programs_at = where[4], programs = where[5];
+-        if (std::memcmp(tail.data(), old_layout ? OldMagic : SetMagic, 8) != 0 || where[0] != 12 ||
++        if (std::memcmp(tail.data(), magic.data(), 8) != 0 || where[0] != 12 ||
+             programs_at < where[2] || programs_at > end - TrailerBytes) {
+             return false;
+         }
+         const u64 entry_head = old_layout ? 12 : 20;
+         std::vector<u8> code;
++        std::vector<char> stored, unpacked;
+         u64 at = programs_at;
+         for (u64 i = 0; i < programs; ++i) {
+             u32 program{};
+@@ -1242,9 +1318,17 @@ bool ForEachProgramCode(const std::filesystem::path& path, u32 cache_version,
+             get(size);
+             if (size > end - TrailerBytes - (at + entry_head)) return false;
+             if (old_layout || wanted(hash)) {
+-                code.resize(static_cast<size_t>(size));
+-                file.read(reinterpret_cast<char*>(code.data()), static_cast<std::streamsize>(size));
+-                on_program(hash, std::span<const u8>{code.data(), code.size()});
++                if (packed) {
++                    stored.resize(static_cast<size_t>(size));
++                    file.read(stored.data(), static_cast<std::streamsize>(size));
++                    if (!UnpackProgram(unpacker.get(), stored, unpacked)) return false;
++                    on_program(hash, std::span<const u8>{reinterpret_cast<const u8*>(unpacked.data()),
++                                                         unpacked.size()});
++                } else {
++                    code.resize(static_cast<size_t>(size));
++                    file.read(reinterpret_cast<char*>(code.data()), static_cast<std::streamsize>(size));
++                    on_program(hash, std::span<const u8>{code.data(), code.size()});
++                }
+             }
+             at += entry_head + size;
+         }

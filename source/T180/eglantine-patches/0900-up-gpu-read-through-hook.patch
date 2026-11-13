@@ -1,0 +1,283 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_GPU_READ_THROUGH hook: the GPU side's reads of guest memory (DeviceMemoryManager ReadBlock/ReadBlockUnsafe, MemoryManager ReadBlockImpl/ReadBlockUnsafe, GuestMemory read spans) go through a copy the front may set; GPU threads name themselves to the front; inert unless the front sets it
+
+The front's guest memory service (src/guest_memory_service.inc, EDEN_UP_GPU_READ_THROUGH=1) sets
+Common::GuestReadThrough::copy_fn and readable_fn through eden_core_set_guest_read_through. Then a
+read of a guest slot that is packed (EDEN_GUEST_SWAP=3) or in the swap file is copied from its packed
+bytes into the read's destination, under the slot's lock, without a block for the slot: the GPU back
+thread no longer faults there and waits in the fault handler for a block that only it could free
+(T166 drain A/B, runs 1399 and 1402: SIGSEGV in memcpy under ReadBlockImpl <- GuestMemory::Read <-
+UploadImageContents, and under WalkBlock <- ReadBlockUnsafe <- AheadGuard::Read <- ReadGuestForBuffer).
+A read-only GuestMemory whose direct span would cover such a slot takes the copy path instead.
+
+BackLoop (GPUBack) and the GPU thread call the front's weak eden_guest_gpu_thread_mark(1|2), so its
+fault handler can tell them apart (EDEN_UP_FAULT_RESERVE, EDEN_UP_FAULT_LOG).
+
+Unset: copy_fn and readable_fn stay null; each read is the same memcpy after one relaxed load of a
+null pointer, and spans are handed out as before. Files: common/guest_read_through.h (new),
+core/device_memory_manager.inc, core/guest_memory.h, video_core/memory_manager.cpp,
+video_core/gpu_split.cpp, video_core/gpu_thread.cpp. None is a translation id input (not in
+SINGLE, not reached from src/shader_recompiler), no name in TranslationSwitches: KEEPS THE STORE.
+---
+ src/common/guest_read_through.h    | 58 ++++++++++++++++++++++++++++++
+ src/core/device_memory_manager.inc | 13 +++----
+ src/core/guest_memory.h            | 11 +++++-
+ src/video_core/gpu_split.cpp       |  2 ++
+ src/video_core/gpu_thread.cpp      |  2 ++
+ src/video_core/memory_manager.cpp  | 15 ++++++--
+ 6 files changed, 91 insertions(+), 10 deletions(-)
+ create mode 100644 src/common/guest_read_through.h
+
+diff --git a/src/common/guest_read_through.h b/src/common/guest_read_through.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b84d0326f22c5d24c564bc722547c3f08322cc68
+--- /dev/null
++++ b/src/common/guest_read_through.h
+@@ -0,0 +1,58 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#pragma once
++
++// 0900 EDEN_UP_GPU_READ_THROUGH (the front's src/guest_memory_service.inc, off unless set): the
++// GPU's reads of the guest's memory go through the guest memory service, which copies a slot that
++// is packed or in the swap file straight from its packed bytes into the read's destination, without
++// mapping a block for it. Without the switch the front sets nothing here and every read is the plain
++// memcpy it was (one relaxed load of a null pointer more).
++//
++// Also the GPU threads name themselves to the front (eden_guest_gpu_thread_mark): its fault handler
++// treats a fault on them apart (EDEN_UP_FAULT_RESERVE, EDEN_UP_FAULT_LOG). Weak: a build without the
++// front (host tests) calls nothing.
++
++#include <atomic>
++#include <cstddef>
++#include <cstring>
++
++extern "C" void eden_guest_gpu_thread_mark(int kind) __attribute__((weak));
++
++namespace Common::GuestReadThrough {
++
++/// Copies `size` bytes from guest memory at `source` (a host pointer) to `dest`. True when it did;
++/// false when the range is not the service's (the caller copies as before).
++using CopyFn = bool (*)(void* dest, const void* source, std::size_t size);
++/// False when a direct span over `source` could touch a slot without a mapping (read a copy then).
++using ReadableFn = bool (*)(const void* source, std::size_t size);
++
++inline std::atomic<CopyFn> copy_fn{nullptr};
++inline std::atomic<ReadableFn> readable_fn{nullptr};
++
++/// memcpy for a read of the guest's memory by the GPU side.
++inline void Copy(void* dest, const void* source, std::size_t size) {
++    if (const CopyFn fn = copy_fn.load(std::memory_order_acquire); fn != nullptr) [[unlikely]] {
++        if (fn(dest, source, size)) {
++            return;
++        }
++    }
++    std::memcpy(dest, source, size);
++}
++
++/// Whether a span straight over guest memory may be handed out for reading.
++inline bool SpanReadable(const void* source, std::size_t size) {
++    const ReadableFn fn = readable_fn.load(std::memory_order_acquire);
++    return fn == nullptr || fn(source, size);
++}
++
++/// 1: the GPU back thread (EDEN_NX2_SPLIT), 2: the GPU thread.
++inline void MarkGpuThread(int kind) {
++    if (eden_guest_gpu_thread_mark != nullptr) {
++        eden_guest_gpu_thread_mark(kind);
++    }
++}
++
++} // namespace Common::GuestReadThrough
++
++/// The front sets or clears the two functions (defined in video_core/memory_manager.cpp).
++extern "C" void eden_core_set_guest_read_through(Common::GuestReadThrough::CopyFn copy,
++                                                  Common::GuestReadThrough::ReadableFn readable);
+diff --git a/src/core/device_memory_manager.inc b/src/core/device_memory_manager.inc
+index 61461de4f48e03630f26821434308c845944e5dd..2b869624ab3bb6ca6fbcb22ad8e9c15be2033a40 100644
+--- a/src/core/device_memory_manager.inc
++++ b/src/core/device_memory_manager.inc
+@@ -19,6 +19,7 @@
+ #include "common/alignment.h"
+ #include "common/assert.h"
+ #include "common/div_ceil.h"
++#include "common/guest_read_through.h" // 0900 EDEN_UP_GPU_READ_THROUGH
+ #include "common/memory_detect.h"
+ #include "common/paged_scalar.h"
+ #include "common/scope_exit.h"
+@@ -491,7 +492,7 @@ void DeviceMemoryManager<Traits>::ReadBlock(DAddr address, void* dest_pointer, s
+         TranslationCache& cache = Translations();
+         for (const TranslationEntry& entry : cache.slots) {
+             if (entry.guest_page == guest_page && entry.host_ptr != nullptr) {
+-                std::memcpy(dest_pointer, entry.host_ptr + page_offset, size);
++                Common::GuestReadThrough::Copy(dest_pointer, entry.host_ptr + page_offset, size);
+                 return;
+             }
+         }
+@@ -502,7 +503,7 @@ void DeviceMemoryManager<Traits>::ReadBlock(DAddr address, void* dest_pointer, s
+             auto* const mem_ptr = GetPointerFromRaw<u8>((PAddr(phys_addr - 1) << Memory::YUZU_PAGEBITS));
+             cache.slots[cache.cursor] = TranslationEntry{.guest_page = guest_page, .host_ptr = mem_ptr};
+             cache.cursor = (cache.cursor + 1) & 3U;
+-            std::memcpy(dest_pointer, mem_ptr + page_offset, size);
++            Common::GuestReadThrough::Copy(dest_pointer, mem_ptr + page_offset, size);
+             return;
+         }
+     }
+@@ -519,7 +520,7 @@ void DeviceMemoryManager<Traits>::ReadBlock(DAddr address, void* dest_pointer, s
+             std::memset(dest_pointer, 0, copy_amount);
+         },
+         [&](size_t copy_amount, const u8* const src_ptr) {
+-            std::memcpy(dest_pointer, src_ptr, copy_amount);
++            Common::GuestReadThrough::Copy(dest_pointer, src_ptr, copy_amount);
+         },
+         [&](const std::size_t copy_amount) {
+             dest_pointer = static_cast<u8*>(dest_pointer) + copy_amount;
+@@ -556,7 +557,7 @@ void DeviceMemoryManager<Traits>::ReadBlockUnsafe(DAddr address, void* dest_poin
+         TranslationCache& cache = Translations();
+         for (const TranslationEntry& entry : cache.slots) {
+             if (entry.guest_page == guest_page && entry.host_ptr != nullptr) {
+-                std::memcpy(dest_pointer, entry.host_ptr + page_offset, size);
++                Common::GuestReadThrough::Copy(dest_pointer, entry.host_ptr + page_offset, size);
+                 return;
+             }
+         }
+@@ -567,7 +568,7 @@ void DeviceMemoryManager<Traits>::ReadBlockUnsafe(DAddr address, void* dest_poin
+             auto* const mem_ptr = GetPointerFromRaw<u8>((PAddr(phys_addr - 1) << Memory::YUZU_PAGEBITS));
+             cache.slots[cache.cursor] = TranslationEntry{.guest_page = guest_page, .host_ptr = mem_ptr};
+             cache.cursor = (cache.cursor + 1) & 3U;
+-            std::memcpy(dest_pointer, mem_ptr + page_offset, size);
++            Common::GuestReadThrough::Copy(dest_pointer, mem_ptr + page_offset, size);
+             return;
+         }
+     }
+@@ -584,7 +585,7 @@ void DeviceMemoryManager<Traits>::ReadBlockUnsafe(DAddr address, void* dest_poin
+             std::memset(dest_pointer, 0, copy_amount);
+         },
+         [&](size_t copy_amount, const u8* const src_ptr) {
+-            std::memcpy(dest_pointer, src_ptr, copy_amount);
++            Common::GuestReadThrough::Copy(dest_pointer, src_ptr, copy_amount);
+         },
+         [&](const std::size_t copy_amount) {
+             dest_pointer = static_cast<u8*>(dest_pointer) + copy_amount;
+diff --git a/src/core/guest_memory.h b/src/core/guest_memory.h
+index 147b2c4d69fc25a29778a0d82d7840f94863697e..be06a55bc101f4ed9ed81ec4afa2d09cc0b0c147 100644
+--- a/src/core/guest_memory.h
++++ b/src/core/guest_memory.h
+@@ -10,6 +10,7 @@
+ #include <vector>
+ 
+ #include "common/assert.h"
++#include "common/guest_read_through.h" // 0900
+ #include "common/scratch_buffer.h"
+ 
+ namespace Core::Memory {
+@@ -124,7 +125,15 @@ public:
+             return {};
+         }
+ 
+-        if (this->TrySetSpan()) {
++        bool span = this->TrySetSpan();
++        if constexpr (!(FLAGS & GuestMemoryFlags::Write)) {
++            // 0900 EDEN_UP_GPU_READ_THROUGH: a span over a guest slot that is packed or in the swap
++            // file would fault when read; the copy below reads it through the guest memory service.
++            if (span && !Common::GuestReadThrough::SpanReadable(this->data(), this->size_bytes())) {
++                span = false;
++            }
++        }
++        if (span) {
+             if constexpr (FLAGS & GuestMemoryFlags::Safe && M::HAS_FLUSH_INVALIDATION) {
+                 m_memory->FlushRegion(m_addr, this->size_bytes());
+             }
+diff --git a/src/video_core/gpu_split.cpp b/src/video_core/gpu_split.cpp
+index 24dd8f4e0bae2b9640a0dcc649747d196e1e0af1..30c1c7240e4679bfbba4bb56fdfc1d608c6bdc23 100644
+--- a/src/video_core/gpu_split.cpp
++++ b/src/video_core/gpu_split.cpp
+@@ -19,6 +19,7 @@
+ #include <cstdio>
+ 
+ #include "common/cpu_features.h"
++#include "common/guest_read_through.h" // 0900
+ #include "common/logging.h"
+ #include "common/settings.h"
+ #include "common/thread.h"
+@@ -1109,6 +1110,7 @@ size_t GpuSplit::Execute(const u64* entry, size_t words) {
+ void GpuSplit::BackLoop(std::stop_token stop_token) {
+     Common::SetCurrentThreadName("GPUBack");
+     on_back_thread = true;
++    Common::GuestReadThrough::MarkGpuThread(1); // 0900: the front's fault handler knows this thread
+     back_running.store(true, std::memory_order_release);
+     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
+     Common::SetCurrentThreadToPerformanceCores();
+diff --git a/src/video_core/gpu_thread.cpp b/src/video_core/gpu_thread.cpp
+index c5e4daf8c42e17dbeebe11c00d1f44f22a8793c6..72093f29bdb267b908183a8e303e8ea50d8427e0 100644
+--- a/src/video_core/gpu_thread.cpp
++++ b/src/video_core/gpu_thread.cpp
+@@ -10,6 +10,7 @@
+ #include <thread>
+ 
+ #include "common/assert.h"
++#include "common/guest_read_through.h" // 0900
+ #include "common/pe_switch.h"
+ #include "common/scope_exit.h"
+ #include "common/settings.h"
+@@ -110,6 +111,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
+     thread = std::jthread([&](std::stop_token stop_token) {
+         Common::SetCurrentThreadName("GPU");
+         VideoCommon::GpuSplit::MarkGpuThread();
++        Common::GuestReadThrough::MarkGpuThread(2); // 0900: the front's fault handler knows this thread
+         Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
+         Common::SetCurrentThreadToPerformanceCores();
+         system.RegisterHostThread();
+diff --git a/src/video_core/memory_manager.cpp b/src/video_core/memory_manager.cpp
+index 9944ec67d345bc77d8f980caa61830aad6f7554f..c3e3ad87077ce5e9be7ac63cbe7db7260fe750de 100644
+--- a/src/video_core/memory_manager.cpp
++++ b/src/video_core/memory_manager.cpp
+@@ -14,6 +14,7 @@
+ #include <vector>
+ 
+ #include "common/alignment.h"
++#include "common/guest_read_through.h" // 0900 EDEN_UP_GPU_READ_THROUGH
+ #include "common/assert.h"
+ #include "common/live_switch.h"
+ #include "common/logging.h"
+@@ -36,6 +37,14 @@
+ #include "video_core/texture_cache/util.h"
+ #include "video_core/ubo_snapshot.h"
+ 
++// 0900 EDEN_UP_GPU_READ_THROUGH (common/guest_read_through.h): the front's guest memory service
++// sets its copy and span check here as it starts with the switch, and clears them as it stops.
++extern "C" void eden_core_set_guest_read_through(Common::GuestReadThrough::CopyFn copy,
++                                                  Common::GuestReadThrough::ReadableFn readable) {
++    Common::GuestReadThrough::readable_fn.store(readable, std::memory_order_release);
++    Common::GuestReadThrough::copy_fn.store(copy, std::memory_order_release);
++}
++
+ namespace Tegra {
+ bool MemoryManager::IsShuttingDown() const {
+     return system.IsShuttingDown();
+@@ -642,7 +651,7 @@ void MemoryManager::ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std:
+         }
+         // A device page without memory (a sparse block nobody wrote yet) reads zero.
+         if (const u8* physical = memory.GetPointer<u8>(dev_addr_base)) [[likely]] {
+-            std::memcpy(dest_buffer, physical, copy_amount);
++            Common::GuestReadThrough::Copy(dest_buffer, physical, copy_amount); // 0900
+         } else {
+             std::memset(dest_buffer, 0, copy_amount);
+         }
+@@ -658,7 +667,7 @@ void MemoryManager::ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std:
+         u8* const physical = IsBigPageContinuous(page_index) ? memory.GetPointer<u8>(dev_addr_base)
+                                                              : nullptr;
+         if (physical != nullptr) [[likely]] {
+-            std::memcpy(dest_buffer, physical, copy_amount);
++            Common::GuestReadThrough::Copy(dest_buffer, physical, copy_amount); // 0900
+         } else {
+             memory.ReadBlockUnsafe(dev_addr_base, dest_buffer, copy_amount);
+         }
+@@ -682,7 +691,7 @@ void MemoryManager::ReadBlockUnsafe(GPUVAddr gpu_src_addr, void* dest_buffer, co
+     constexpr std::size_t SmallPage = 0x1000;
+     if (size <= SmallPage && (gpu_src_addr & (SmallPage - 1)) + size <= SmallPage) {
+         if (const u8* const pointer = GetPointer(gpu_src_addr)) {
+-            std::memcpy(dest_buffer, pointer, size);
++            Common::GuestReadThrough::Copy(dest_buffer, pointer, size); // 0900
+             return;
+         }
+     }

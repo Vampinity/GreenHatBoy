@@ -1,0 +1,167 @@
+From: EglantinePS5
+Subject: [PATCH] up: the dynamic primitive topology follows the pipeline's class, a patch list with tessellation (CheezerWheezer, CheezyEmu f9b082ac7f: EDEN_UP_TESS_TOPOLOGY), off by default
+
+What: with VK_EXT_extended_dynamic_state (the console's RADV has it: "this device: EDS1 1") the
+primitive topology is dynamic state and a pipeline only fixes its class. MakePipeline gives a
+pipeline with tessellation stages a patch-list input assembly when the guest's topology is
+something else ("Patch topology not used with tessellation, using patch list", in our 5 Nov
+logs), but UpdateDynamicStates then set the guest's own topology over it. That is undefined
+behaviour; on RADV a PC player's GPU hung with "Illegal opcode in command stream" and reset
+right after the first tessellation pipelines were built.
+
+With EDEN_UP_TESS_TOPOLOGY=1 (exact "1", read once) PrepareDraw hands its pipeline to
+UpdateDynamicStates, and the dynamic topology is a patch list for a pipeline with tessellation
+programs and never a patch list for one without them (points, as MakePipeline does). It is
+recorded again when the guest topology changes (as before; a new command buffer resets the state
+tracker's topology) or when the class changes under the same guest topology (the new
+dynamic_topology member). Mesh pipelines have no input assembly and keep today's behaviour. One
+Render_Vulkan line on the 1st, 2nd, 4th ... correction.
+
+Changed from his: HasTessellation() comes from the key's programs only (his reads the key until
+MakePipeline runs, then the built stages): our MakePipeline can run on a worker while the GPU
+thread reads it. Mesh pipelines (IsMeshPipeline, which includes the mesh-as-compute ones) are
+left out by that test instead of his emulated_mesh flag. Our DrawTexture path (no guest
+pipeline) keeps the guest topology and keeps dynamic_topology up to date.
+
+Off: the old block byte for byte (now the else branch), one static bool test more per draw in
+PrepareDraw and one in UpdateDynamicStates, a 4-byte member never touched. Not a shader-prep
+stamp switch (not in TranslationSwitches): it changes no pipeline, only recorded state.
+
+Not seen in T151's 15-minute session: 0 "Patch topology not used" lines in its log, so these
+pipelines were not built there. Test where the 5 Nov line showed (run29-zelda-split1, 214 s).
+
+Origin and credit: CheezerWheezer, CheezerWheezer/CheezyEmu commit f9b082ac7f ("vulkan: the
+dynamic primitive topology follows the pipeline's class (tessellation: patch list)").
+---
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
+index b2c3af7..3a6ce82 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
+@@ -132,6 +132,14 @@ public:
+     [[nodiscard]] bool RunsMeshAsCompute() const noexcept {
+         return mesh_compute != nullptr;
+     }
++    /// EDEN_UP_TESS_TOPOLOGY: whether the key has tessellation programs (control or evaluation).
++    /// MakePipeline then fixes its input assembly to a patch list whatever the guest's topology.
++    /// Mesh pipelines have no input assembly and say false. From the key, so it is known before
++    /// the pipeline is built and is read on the GPU thread without a race (CheezyEmu f9b082ac7f
++    /// takes it from the key too until MakePipeline has run).
++    [[nodiscard]] bool HasTessellation() const noexcept {
++        return !IsMeshPipeline() && (key.unique_hashes[2] != 0 || key.unique_hashes[3] != 0);
++    }
+     /// The task or mesh workgroups of the draw being configured (the draw's vertex count).
+     void SetMeshDrawGroups(u32 groups) noexcept {
+         mesh_draw_groups = groups;
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index e641ad5..791d967 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -93,6 +93,20 @@ bool GbbPipelineOnce() {
+     return enabled;
+ }
+ 
++// EDEN_UP_TESS_TOPOLOGY=1 (exact "1", read once; CheezerWheezer, CheezyEmu f9b082ac7f): with
++// VK_EXT_extended_dynamic_state the primitive topology is dynamic state and a pipeline fixes only
++// its class. MakePipeline already gives a pipeline with tessellation stages a patch-list input
++// assembly ("Patch topology not used with tessellation, using patch list"), but the guest's own
++// topology was then set as dynamic state over it: undefined behaviour, and on RADV a GPU hang
++// ("Illegal opcode in command stream", then a reset) at the first tessellated ground. On: the
++// dynamic topology is a patch list for a pipeline with tessellation programs and never one for a
++// pipeline without them, and it is set again when the bound pipeline's class changes. Unset: the
++// guest's topology, as before.
++bool TessTopology() {
++    static const bool enabled = Common::PeSwitch("EDEN_UP_TESS_TOPOLOGY");
++    return enabled;
++}
++
+ struct DrawParams {
+     u32 base_instance;
+     u32 num_instances;
+@@ -1207,7 +1221,8 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
+ 
+     {
+         Profile::Scope scope{Profile::Zone::DynamicState};
+-        UpdateDynamicStates(GbbPipelineOnce() ? pipeline : nullptr);
++        UpdateDynamicStates(GbbPipelineOnce() ? pipeline : nullptr,
++                            TessTopology() ? pipeline : nullptr);
+     }
+ 
+     query_cache.NotifySegment(true);
+@@ -3349,7 +3364,8 @@ bool AccelerateDMA::BufferToImage(const Tegra::DMA::ImageCopy& copy_info,
+     return DmaBufferImageCopy<true>(copy_info, buffer_operand, image_operand);
+ }
+ 
+-void RasterizerVulkan::UpdateDynamicStates(GraphicsPipeline* draw_pipeline) {
++void RasterizerVulkan::UpdateDynamicStates(GraphicsPipeline* draw_pipeline,
++                                           const GraphicsPipeline* class_pipeline) {
+     auto& regs = maxwell3d->regs;
+     auto& flags = maxwell3d->dirty.flags;
+     const auto topology = maxwell3d->draw_manager.draw_state.topology;
+@@ -3378,7 +3394,40 @@ void RasterizerVulkan::UpdateDynamicStates(GraphicsPipeline* draw_pipeline) {
+             UpdateDepthWriteEnable(regs);
+             UpdateStencilTestEnable(regs);
+         }
+-        if (topology_changed) {
++        if (TessTopology()) {
++            // EDEN_UP_TESS_TOPOLOGY (CheezyEmu f9b082ac7f): the topology follows the class of the
++            // draw's pipeline. A new command buffer resets the state tracker's topology, so
++            // topology_changed records it again there; dynamic_topology catches a class change
++            // under the same guest topology. Mesh pipelines have no input assembly: unchanged.
++            const VkPrimitiveTopology guest_vk = MaxwellToVK::PrimitiveTopology(device, topology);
++            VkPrimitiveTopology topology_vk = guest_vk;
++            if (class_pipeline != nullptr && !class_pipeline->IsMeshPipeline()) {
++                if (class_pipeline->HasTessellation()) {
++                    topology_vk = VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
++                } else if (topology_vk == VK_PRIMITIVE_TOPOLOGY_PATCH_LIST) {
++                    topology_vk = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
++                }
++            }
++            if (topology_changed || topology_vk != dynamic_topology) {
++                if (topology_vk != guest_vk) {
++                    // GPU thread only; the 1st, 2nd, 4th, 8th ... time.
++                    static u64 corrected = 0;
++                    if (++corrected; (corrected & (corrected - 1)) == 0) {
++                        LOG_INFO(Render_Vulkan,
++                                 "EDEN_UP_TESS_TOPOLOGY: dynamic topology {} instead of the "
++                                 "guest's {} ({} tessellation), {} times so far",
++                                 static_cast<u32>(topology_vk), static_cast<u32>(guest_vk),
++                                 topology_vk == VK_PRIMITIVE_TOPOLOGY_PATCH_LIST ? "with"
++                                                                                 : "without",
++                                 corrected);
++                    }
++                }
++                dynamic_topology = topology_vk;
++                scheduler.Record([topology_vk](vk::CommandBuffer cmdbuf) {
++                    cmdbuf.SetPrimitiveTopologyEXT(topology_vk);
++                });
++            }
++        } else if (topology_changed) {
+             scheduler.Record([topology_vk = MaxwellToVK::PrimitiveTopology(device, topology)](
+                                  vk::CommandBuffer cmdbuf) {
+                 cmdbuf.SetPrimitiveTopologyEXT(topology_vk);
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.h b/src/video_core/renderer_vulkan/vk_rasterizer.h
+index e9cd7d5..9396079 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.h
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.h
+@@ -213,7 +213,10 @@ private:
+     void SubmitNx2ListCopies();
+ 
+     /// draw_pipeline: the draw's pipeline when the caller already looked it up, else null.
+-    void UpdateDynamicStates(GraphicsPipeline* draw_pipeline = nullptr);
++    /// class_pipeline (EDEN_UP_TESS_TOPOLOGY only): the draw's pipeline, whose class (tessellation
++    /// or not) the dynamic primitive topology must follow; null leaves the guest's topology.
++    void UpdateDynamicStates(GraphicsPipeline* draw_pipeline = nullptr,
++                             const GraphicsPipeline* class_pipeline = nullptr);
+ 
+     void HandleTransformFeedback();
+ 
+@@ -386,6 +389,9 @@ private:
+     /// reached its buffer.
+     VideoCommon::Nx2FastDraw::DeviceSpans handle_word_spans;
+     FastDrawStats fast_draw_stats;
++    /// EDEN_UP_TESS_TOPOLOGY: the primitive topology last recorded as dynamic state
++    /// (UpdateDynamicStates). Never read or written with the switch off.
++    VkPrimitiveTopology dynamic_topology{VK_PRIMITIVE_TOPOLOGY_MAX_ENUM};
+     /// Set by DrawIndirect around its PrepareDraw.
+     bool fast_draw_indirect{};
+ };

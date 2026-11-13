@@ -1,0 +1,53 @@
+From: EglantinePS5
+Subject: up: EDEN_NX2_SKIP_SAME read once per 3D engine into a member (unconditional, behaviour-neutral)
+
+What: Maxwell3D::SkipSameValueWrites() was a static function with a function-local static, called
+on every state register write (CallMethod, MacroWrite's short path) and every sink run, so each call
+checked the static's guard. It is now a member function returning a const member that the engine
+sets when it is made; the old static (renamed SkipSameValueWritesFirst) is only its initializer.
+Callers unchanged (all in maxwell_3d.cpp, all members).
+
+No switch, behaviour-neutral: the member takes the old static's value, so it is the value of the
+process's first read, as before. The only change is that the first read happens when the first 3D
+engine is made instead of at its first method write. Nothing sets EDEN_NX2_SKIP_SAME between the
+two: the front applies the testing switches, env.txt and env-<title id>.txt in main before the game
+loads (headless/main.cpp), and no core or front code sets that name later (setenv only in
+headless/main.cpp, memory_check.cpp and freedreno_debug.cpp, none of them for it).
+Not taken: the EDEN_NX2_PERF_VERIFY half (Nx2Perf::Verify()). Our core has no Nx2Perf / CallMethodFast
+path, so there is nothing to move. Nothing to see in a log (a few instructions per write).
+
+Origin and credit: the missing part of zortos293/Lichii 794602bfbd (#778), Zortos, from Frizti's
+Fritchii v4 and Marc Stampfli's #488 (its profile: the SKIP_SAME guard check was 0.9% of the back
+thread on a PC, the PERF_VERIFY one 0.3%).
+---
+diff --git a/src/video_core/engines/maxwell_3d.h b/src/video_core/engines/maxwell_3d.h
+index 0123016..1a14149 100644
+--- a/src/video_core/engines/maxwell_3d.h
++++ b/src/video_core/engines/maxwell_3d.h
+@@ -3387,7 +3387,15 @@ private:
+     void CallMacroMethod(Core::System& system, u32 method, std::span<const u32> parameters);
+ 
+     /// Whether state register writes that keep the register's value are dropped (CallMethod).
+-    static bool SkipSameValueWrites() {
++    /// A member read once per engine (skip_same_value_writes), so the method write paths test a
++    /// plain bool instead of a function static's guard on every write (Zortos, zortos293/Lichii
++    /// 794602bfbd #778, from Frizti's Fritchii v4 and #488).
++    bool SkipSameValueWrites() const {
++        return skip_same_value_writes;
++    }
++    /// EDEN_NX2_SKIP_SAME as it was first read in this process (the value the core keeps for the
++    /// life of the process, as before): only for skip_same_value_writes' initializer.
++    static bool SkipSameValueWritesFirst() {
+         static const bool skip = [] {
+             const char* value = std::getenv("EDEN_NX2_SKIP_SAME");
+             return value == nullptr || value[0] != '0';
+@@ -3453,6 +3461,9 @@ private:
+         true
+ #endif
+     };
++    /// SkipSameValueWrites(): set when the engine is made, before its first method write (the
++    /// constructor body and every write path read it after this initializer).
++    const bool skip_same_value_writes = SkipSameValueWritesFirst();
+     void RecordWrite(u32 method, u32 argument, u32 amount, u32 pending) {
+         if (!record_write_history) {
+             return;

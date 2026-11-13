@@ -1,0 +1,696 @@
+From: EglantinePS5
+Subject: [PATCH] up: the shader set's compute records are prepared and a dispatch takes a prepared one (EDEN_UP_SHADER_SET_COMPUTE=1), off by default
+
+Switch: EDEN_UP_SHADER_SET_COMPUTE=1 (the switch of 0780; needs 0780). Off: nothing changes (the
+preparation reads no compute record, a dispatch translates as before).
+
+Why: with 0780 the set holds the recipe's compute records, but the preparation and the store
+were graphics only, and a compute pipeline asked in play was always translated on the GPU thread
+(94 in the d4 start).
+
+What, with the switch:
+- PrepareShaderSet gives ReadRecords an on_compute callback. A compute record is prepared like a
+  graphics one: its key's store hash is KeptComputeHash (the key hash with "compute1" mixed in,
+  so it never meets a graphics key's), known or struck-out records are skipped, it waits its turn
+  exactly as a graphics record does: 0770's gate (cap, the before-play pass's time limit and skip
+  flag, index commit, memory floor with the before-play pass's wait counted over the whole pass
+  (0772), disk floor and its warning, yield to the runtime's builds, duty cycle, one slot) is
+  moved unchanged into a lambda, `admit(hash, hand_back)`, that both kinds call; then a worker of
+  the pass's own pool (0770's threads before play, the pipeline workers beside the game)
+  translates it and builds it once with the driver's own cache only, and keeps its SPIR-V, its
+  info and the answers its translation got in the prepared store (FlagPredicted |
+  FlagShaderSet), or remembers it as not keepable. Before play the compute jobs add to the
+  pass's kept and failed counts; the list pass (graphics keys only here) skips compute records.
+- CreateComputePipeline (the pools one) takes an optional Stages* that receives the SPIR-V and
+  the info (stage 0) before the IR may be freed; with it, the null pointer slot table is not
+  touched and the driver-only cache is used.
+- On the GPU thread, a compute pipeline that is not in compute_cache first tries
+  CreateKeptComputePipeline: found in the store under KeptComputeHash, its answers are checked
+  against the live dispatch with FileEnvironment::AnswersHoldFor (handle words listed from the
+  kept info as CreateKeptGraphicsPipeline lists them; shared memory and workgroup are checked
+  there too), then the pipeline is made from the kept SPIR-V and info (built on a worker as a
+  translated one). Anything that does not hold, cannot be read or throws gives null and the
+  dispatch translates as before; a refused key is not tried again this session. Not for a
+  rebuild (EDEN_UP_NULL_POINTER_SLOTS): that one is made from the live state on purpose. The
+  rest of the path is unchanged: the record still goes to vulkan.bin, the first-start list and
+  the pointer slot bookkeeping as before.
+- One line every 10 s while it is used: "Kept compute translations in the last 10 s: N compute
+  pipelines made without translating, M refused (reasons)", and one line per preparation pass
+  with the number of compute records read.
+
+Not done here: the live-first pass (prep_shader_set.live) only learns of vertex and pixel
+programs, so compute records are prepared in the whole-file pass, in the file's order. 0784 puts
+the C rows of the list files first (by KeptComputeHash) and counts compute keys in the before-play
+pass's done / total; 0785 keeps them off the per-start cap.
+
+T161s: made again on top of 0770-0772 (T157). The T158 version moved the T151 gate into `admit`;
+this one moves 0770's gate (with 0772's whole-pass memory wait) instead, and the compute callback
+queues on 0770's job_workers. Needs 0770 and 0772.
+---
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index bc05811..1b0d151 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -1515,6 +1515,14 @@ size_t ShaderSetNumber(const char* name, size_t fallback) {
+     return value != 0 ? static_cast<size_t>(value) : fallback;
+ }
+ 
++/// 0781, EDEN_UP_SHADER_SET_COMPUTE=1: compute pipelines are kept in the same store as graphics
++/// ones, under their key's hash with this mixed in (a graphics key hash and a compute key hash
++/// are hashes of other bytes; the mix keeps them apart for certain in practice).
++constexpr u64 KeptComputeMix = 0x636f6d7075746531ULL; // "compute1"
++u64 KeptComputeHash(const ComputePipelineCacheKey& key) noexcept {
++    return key.Hash() ^ KeptComputeMix;
++}
++
+ /// Thrown by PrepareShaderSet's record callback to end the pass: ReadPipelines catches it and
+ /// stops reading there (the rest of a ~1 GB file is not parsed for nothing).
+ struct StopReading : std::runtime_error {
+@@ -3852,8 +3860,16 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
+         env.SeedStoragePointers(previous->pointer_slots);
+     }
+ 
+-    main_pools.ReleaseContents();
+-    auto pipeline{CreateComputePipeline(main_pools, key, env, nullptr, true)};
++    // 0781, EDEN_UP_SHADER_SET_COMPUTE=1: a prepared shader set record of this key, when the
++    // dispatch's state still gives its answers (never for a rebuild: that one wants this state).
++    std::unique_ptr<ComputePipeline> pipeline;
++    if (previous == nullptr && shader_set_enabled && VideoCommon::ShaderSet::ComputeAsked()) {
++        pipeline = CreateKeptComputePipeline(key, env);
++    }
++    if (!pipeline) {
++        main_pools.ReleaseContents();
++        pipeline = CreateComputePipeline(main_pools, key, env, nullptr, true);
++    }
+     if (pipeline) {
+         static const bool up_collect = Common::PeSwitch("EDEN_UP_NULL_POINTER_SLOTS");
+         if (up_collect) env.StoragePointerSlots(pipeline->pointer_slots, pipeline->null_pointer_slots);
+@@ -3879,7 +3895,7 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
+ 
+ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
+     ShaderPools& pools, const ComputePipelineCacheKey& key, Shader::Environment& env,
+-    PipelineStatistics* statistics, bool build_in_parallel) try {
++    PipelineStatistics* statistics, bool build_in_parallel, ShaderPrep::Stages* kept_out) try {
+     const bool burst_log = BuildBurst::Enabled();
+     const BuildBurst::PoolSample pools_sample{burst_log && &pools == &main_pools ? &pools : nullptr};
+     std::optional<BuildBurst::Job> gpu_translation;
+@@ -3967,6 +3983,12 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
+     std::vector<u32> code{EmitSPIRV(profile, program)};
+     device.SaveShader(code);
+     vk::ShaderModule spv_module{BuildShader(device, code)};
++    if (kept_out) {
++        // 0781: what this translation gave, before the IR and the words may be freed below.
++        kept_out->present[0] = true;
++        kept_out->spirv[0] = code;
++        kept_out->infos[0] = program.info;
++    }
+ 
+     // Text log + .spv dump. Same split as the graphics path.
+     const bool should_log = GPU::Logging::IsActive();
+@@ -3988,7 +4010,8 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
+         const auto name{fmt::format("Shader {:016x}", key.unique_hash)};
+         spv_module.SetObjectNameEXT(name.c_str());
+     }
+-    if (NullSlotsMode() != 0 && env.IsNativeProgram()) {
++    if (NullSlotsMode() != 0 && env.IsNativeProgram() && kept_out == nullptr) {
++        // (0781: not for a pipeline that is only being prepared: no dispatch has asked for it.)
+         std::scoped_lock lock{compute_null_slots_mutex};
+         compute_null_slots[key].slots = env.NullStoragePointerSlots();
+     }
+@@ -4003,7 +4026,12 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
+         }
+     }
+     pools_sample.Publish();
+-    auto pipeline = std::make_unique<ComputePipeline>(device, scheduler, vulkan_pipeline_cache, descriptor_pool,
++    // 0781: a pipeline that is only being prepared is built with the driver's own cache alone,
++    // as a graphics one is (the emulator's is held in memory whole and written whole).
++    vk::PipelineCache& driver_cache{kept_out != nullptr && kept_out->driver_cache_only
++                                        ? prep_no_cache
++                                        : vulkan_pipeline_cache};
++    auto pipeline = std::make_unique<ComputePipeline>(device, scheduler, driver_cache, descriptor_pool,
+                                              guest_descriptor_queue, descriptor_buffer_ring,
+                                              thread_worker, statistics,
+                                              &shader_notify, program.info, std::move(spv_module),
+@@ -5217,6 +5245,131 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateKeptGraphicsPipeline(
+     return made;
+ }
+ 
++// 0781, EDEN_UP_SHADER_SET_COMPUTE=1 ---------------------------------------------------------
++
++std::unique_ptr<ComputePipeline> PipelineCache::CreateKeptComputePipeline(
++    const ComputePipelineCacheKey& key, Shader::Environment& env) try {
++    if (!prep_store.IsOpen() || !ShaderPrep::FastPath()) {
++        return nullptr;
++    }
++    const u64 hash = KeptComputeHash(key);
++    ShaderPrep::KeptStore::Record record;
++    if (prep_rejected.contains(hash) || !prep_store.Find(hash, record) ||
++        (record.flags & ShaderPrep::KeptStore::FlagNotKeepable) != 0) {
++        return nullptr;
++    }
++    // GPU thread only: what the kept compute translations did since the last line.
++    static u32 used{}, refused{};
++    static std::map<std::string, u32> reasons;
++    static auto window = std::chrono::steady_clock::now();
++    const auto report = [&]() noexcept {
++        try {
++            const auto now = std::chrono::steady_clock::now();
++            if (now - window < std::chrono::seconds{10}) {
++                return;
++            }
++            std::string why;
++            for (const auto& [reason, count] : reasons) {
++                why += fmt::format("{}{} {}", why.empty() ? "" : ", ", count, reason);
++            }
++            LOG_INFO(Render_Vulkan,
++                     "Kept compute translations in the last 10 s: {} compute pipelines made "
++                     "without translating, {} refused{}{}{}",
++                     used, refused, why.empty() ? "" : " (", why, why.empty() ? "" : ")");
++            used = 0;
++            refused = 0;
++            reasons.clear();
++            window = now;
++        } catch (const std::exception&) {
++        }
++    };
++    const auto refuse = [&](const char* why) noexcept -> std::unique_ptr<ComputePipeline> {
++        try {
++            ++refused;
++            prep_rejected.insert(hash);
++            ++reasons[why];
++        } catch (const std::exception&) {
++        }
++        report();
++        return nullptr;
++    };
++    if (record.env_count != 1 || record.infos[0] == ShaderPrep::NoBlob ||
++        record.spirv[0] == ShaderPrep::NoBlob || record.answers[0] == ShaderPrep::NoBlob) {
++        return refuse("other stages");
++    }
++    std::vector<u8> bytes;
++    Shader::Info info{};
++    if (!prep_store.Read(record.infos[0], bytes) || !ShaderPrep::DeserializeInfo(bytes, info)) {
++        prep_store.Forget(hash);
++        return refuse("files unreadable");
++    }
++    // The words the program's descriptors read their texture handles from may hold other
++    // handles now (as CreateKeptGraphicsPipeline lists them).
++    using AnswerHandle = VideoCommon::FileEnvironment::AnswerHandle;
++    using HandleKind = VideoCommon::FileEnvironment::HandleKind;
++    std::vector<AnswerHandle> handles;
++    const auto add = [&handles](const auto& desc, bool has_secondary, u32 shift_left,
++                                u32 secondary_index, u32 secondary_offset,
++                                u32 secondary_shift_left, HandleKind kind) {
++        if (desc.handle_program != ~0U) {
++            return;
++        }
++        handles.push_back({.index = desc.cbuf_index,
++                           .offset = desc.cbuf_offset,
++                           .shift_left = shift_left,
++                           .secondary_index = secondary_index,
++                           .secondary_offset = secondary_offset,
++                           .secondary_shift_left = secondary_shift_left,
++                           .has_secondary = has_secondary,
++                           .kind = kind});
++    };
++    for (const auto& desc : info.texture_buffer_descriptors) {
++        add(desc, desc.has_secondary, desc.shift_left, desc.secondary_cbuf_index,
++            desc.secondary_cbuf_offset, desc.secondary_shift_left, HandleKind::TextureBuffer);
++    }
++    for (const auto& desc : info.texture_descriptors) {
++        add(desc, desc.has_secondary, desc.shift_left, desc.secondary_cbuf_index,
++            desc.secondary_cbuf_offset, desc.secondary_shift_left,
++            desc.is_depth ? HandleKind::DepthTexture : HandleKind::Texture);
++    }
++    for (const auto& desc : info.image_buffer_descriptors) {
++        add(desc, false, 0, 0, 0, 0, HandleKind::ImageBuffer);
++    }
++    for (const auto& desc : info.image_descriptors) {
++        add(desc, false, 0, 0, 0, 0, HandleKind::Image);
++    }
++    if (!prep_store.Read(record.answers[0], bytes)) {
++        prep_store.Forget(hash);
++        return refuse("files unreadable");
++    }
++    const char* why = "";
++    if (!VideoCommon::FileEnvironment::AnswersHoldFor(bytes, env, handles, &why, nullptr)) {
++        return refuse(why);
++    }
++    if (!prep_store.Read(record.spirv[0], bytes) || bytes.empty() ||
++        bytes.size() % sizeof(u32) != 0) {
++        prep_store.Forget(hash);
++        return refuse("files unreadable");
++    }
++    std::vector<u32> words(bytes.size() / sizeof(u32));
++    std::memcpy(words.data(), bytes.data(), bytes.size());
++    vk::ShaderModule module{BuildShader(device, words)};
++    if (NullSlotsMode() != 0 && env.IsNativeProgram()) {
++        std::scoped_lock lock{compute_null_slots_mutex};
++        compute_null_slots[key].slots = env.NullStoragePointerSlots();
++    }
++    auto pipeline = std::make_unique<ComputePipeline>(
++        device, scheduler, vulkan_pipeline_cache, descriptor_pool, guest_descriptor_queue,
++        descriptor_buffer_ring, &workers, nullptr, &shader_notify, info, std::move(module),
++        key.unique_hash);
++    ++used;
++    report();
++    return pipeline;
++} catch (const std::exception&) {
++    // No memory, or the driver refused the module: the caller translates, as before.
++    return nullptr;
++}
++
+ // EDEN_UP_CANONICAL_KEYS=1 -----------------------------------------------------------------
+ 
+ void PipelineCache::RestoreRawKey() {
+@@ -5682,11 +5835,238 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+                      : fmt::format("{}", limit),
+                  floor >> 20, disk_floor >> 20);
+     }
+-    const auto skip_compute = [](std::ifstream& in, VideoCommon::FileEnvironment) {
++    // Before every record (graphics, and with 0781 compute): the cap, the prepass's time limit
++    // and skip flag, the index commit, the memory floor (the prepass waits under it, counted
++    // over the whole prepass), the disk floor, the yield to the runtime's own builds and the duty
++    // cycle, then a free slot. Throws StopReading to end the pass; `hand_back` first gives the
++    // prepass's key back to what is left. (0781 moved 0770's gate out of the graphics callback
++    // unchanged, so both kinds take the same turns.)
++    const auto admit = [&](u64 hash, const auto& hand_back) -> u32 {
++        if (queued >= limit) {
++            stopped = fmt::format("the cap of {} per start (EDEN_UP_SHADER_PREP_MAX)", limit);
++            throw StopReading{stopped};
++        }
++        if (pass != nullptr) {
++            // The prepass ends at its time limit or when the skip flag is seen; the game
++            // then starts and the rest goes on beside it (or at the next start).
++            const bool late = pass->deadline != std::chrono::steady_clock::time_point{} &&
++                              std::chrono::steady_clock::now() >= pass->deadline;
++            if (late || pass->skip.load(std::memory_order_relaxed)) {
++                hand_back();
++                stopped = late ? std::string{"the time limit (EDEN_UP_SHADER_SET_PREPASS_MAX_S)"}
++                               : std::string{"the skip flag (shader_set_prepass.skip)"};
++                throw StopReading{stopped};
++            }
++        }
++        // The index is written at most once a minute (it is rebuilt whole under the
++        // store's lock, which the GPU thread's lookups wait on) and at the end.
++        if (prep_store.Uncommitted() != 0 &&
++            std::chrono::steady_clock::now() - last_commit >= std::chrono::seconds{60}) {
++            prep_store.Commit();
++            last_commit = std::chrono::steady_clock::now();
++        }
++        // Before every record: the memory floor; every 64: the disk floor (the store grows
++        // by gigabytes over a full pass, and a full disk ends keeping for the session).
++        if (pass != nullptr) {
++            // The prepass waits under the memory floor (the jobs in flight give theirs
++            // back); it gives up once it has waited `memory_wait` in all over the prepass
++            // (0772: counted across records and passes, so memory that hovers at the floor
++            // cannot hold the boot for `memory_wait` per record).
++            std::chrono::steady_clock::time_point waiting_since{};
++            for (;;) {
++                const u64 free = VideoCommon::ShaderSet::FreeMemoryBytes();
++                const auto now = std::chrono::steady_clock::now();
++                if (free == 0 || free >= floor) {
++                    if (waiting_since != std::chrono::steady_clock::time_point{}) {
++                        pass->memory_waited += now - waiting_since;
++                    }
++                    break;
++                }
++                if (waiting_since == std::chrono::steady_clock::time_point{}) {
++                    waiting_since = now;
++                    LOG_INFO(Render_Vulkan,
++                             "Shader set prepass: {} MB free, under the {} MB memory floor "
++                             "(EDEN_UP_SHADER_SET_MIN_FREE_MB); waiting",
++                             free >> 20, floor >> 20);
++                }
++                const auto waited = pass->memory_waited + (now - waiting_since);
++                if (waited >= pass->memory_wait ||
++                    (pass->deadline != std::chrono::steady_clock::time_point{} &&
++                     now >= pass->deadline)) {
++                    pass->memory_waited = waited;
++                    hand_back();
++                    paused = true;
++                    stopped = fmt::format(
++                        "{} MB free, under the {} MB memory floor ({} s waited in all)",
++                        free >> 20, floor >> 20,
++                        std::chrono::duration_cast<std::chrono::seconds>(waited).count());
++                    throw StopReading{stopped};
++                }
++                if (!Common::StoppableTimedWait(stop, std::chrono::milliseconds{250})) {
++                    hand_back();
++                    stopped = "stopped at shutdown";
++                    throw StopReading{stopped};
++                }
++            }
++        } else if (const u64 free = VideoCommon::ShaderSet::FreeMemoryBytes();
++                   free != 0 && free < floor) {
++            paused = true;
++            stopped = fmt::format("{} MB free, under the {} MB memory floor "
++                                  "(EDEN_UP_SHADER_SET_MIN_FREE_MB)",
++                                  free >> 20, floor >> 20);
++            throw StopReading{stopped};
++        }
++        if (queued % 64 == 0) {
++            // space().available: what this process may still write on the store's file
++            // system (statvfs f_bavail), not the store's own size.
++            std::error_code space_error;
++            const auto space = std::filesystem::space(file.parent_path(), space_error);
++            if (!space_error && space.available < disk_floor) {
++                hand_back();
++                paused = true;
++                stopped = fmt::format("{} MB free on disk, under the {} MB floor",
++                                      space.available >> 20, disk_floor >> 20);
++                throw StopReading{stopped};
++            }
++            if (space_error && !std::exchange(said_disk_unknown, true)) {
++                LOG_WARNING(Render_Vulkan,
++                            "Shader set: free disk space cannot be read ({}); the disk floor "
++                            "is not checked this pass",
++                            space_error.message());
++            }
++        }
++        // Yield while the runtime has builds of its own queued on the shared workers, then
++        // rest as the duty cycle asks (busy time over wall time stays under `duty` percent).
++        for (;;) {
++            size_t in_flight{};
++            std::chrono::steady_clock::duration busy{};
++            {
++                std::scoped_lock lock{state.mutex};
++                in_flight = state.in_flight;
++                busy = state.busy;
++            }
++            if (job_workers.Pending() > in_flight) {
++                if (!Common::StoppableTimedWait(stop, std::chrono::milliseconds{100})) {
++                    hand_back();
++                    stopped = "stopped at shutdown";
++                    throw StopReading{stopped};
++                }
++                continue;
++            }
++            const auto rest = busy * static_cast<s64>(100 - duty) / static_cast<s64>(duty);
++            if (rest <= slept) {
++                break;
++            }
++            const auto nap = std::min<std::chrono::steady_clock::duration>(
++                rest - slept, std::chrono::seconds{2});
++            if (!Common::StoppableTimedWait(stop, nap)) {
++                hand_back();
++                stopped = "stopped at shutdown";
++                throw StopReading{stopped};
++            }
++            slept += nap;
++        }
++        u32 slot{};
++        {
++            std::unique_lock lock{state.mutex};
++            state.cv.wait(lock, [&] { return state.in_flight < max_in_flight; });
++            ++state.in_flight;
++            slot = state.free_slots.back();
++            state.free_slots.pop_back();
++            note_slot(slot, hash);
++        }
++        return slot;
++    };
++    // 0781, EDEN_UP_SHADER_SET_COMPUTE=1: compute records (0780) are prepared like graphics
++    // ones: translated and built once on a worker, their SPIR-V, info and answers kept under
++    // KeptComputeHash; a dispatch that needs one takes it (CreateKeptComputePipeline).
++    size_t compute_read = 0;
++    const auto on_compute = [&](std::ifstream& in, VideoCommon::FileEnvironment env) {
+         ComputePipelineCacheKey key;
+         in.read(reinterpret_cast<char*>(&key), sizeof(key));
++        if (stop.stop_requested()) {
++            stopped = "stopped at shutdown";
++            throw StopReading{stopped};
++        }
++        if (pass != nullptr && pass->only_keys != nullptr) {
++            return; // the prepass's list pass names graphics keys only: compute comes later
++        }
++        ++read;
++        ++compute_read;
++        const u64 hash = KeptComputeHash(key);
++        if (prep_store.Contains(hash)) {
++            ++known;
++            return;
++        }
++        if (struck_out(hash)) {
++            ++struck;
++            return;
++        }
++        const u32 slot = admit(hash, [] {});
++        ++queued;
++        constexpr u32 flags =
++            ShaderPrep::KeptStore::FlagPredicted | ShaderPrep::KeptStore::FlagShaderSet;
++        try {
++            job_workers.QueueWork([this, key, hash, slot, env_ = std::move(env), &state,
++                                   &note_slot, &seconds, queued, pass]() mutable {
++                bool ok = false;
++                bool kept = false;
++                const auto started = std::chrono::steady_clock::now();
++                try {
++                    ShaderPrep::Stages stages;
++                    stages.driver_cache_only = true;
++                    ShaderPools pools;
++                    // Built on this worker, then dropped: the driver keeps what it compiled.
++                    const auto pipeline{
++                        CreateComputePipeline(pools, key, env_, nullptr, false, &stages)};
++                    ok = pipeline != nullptr;
++                    if (ok && stages.present[0] && !stages.infos[0].requires_layer_emulation) {
++                        std::vector<std::vector<u8>> answers(1);
++                        env_.SerializeAnswers(answers[0]);
++                        prep_store.Add(hash, stages, answers, flags);
++                        kept = prep_store.IsKept(hash);
++                    } else {
++                        prep_store.AddNotKeepable(hash);
++                    }
++                } catch (const std::exception& e) {
++                    LOG_DEBUG(Render_Vulkan, "Shader set: a compute pipeline failed: {}", e.what());
++                }
++                const auto took = std::chrono::steady_clock::now() - started;
++                std::scoped_lock lock{state.mutex};
++                state.busy += took;
++                --state.in_flight;
++                ++state.finished;
++                if (!ok) {
++                    ++state.failed;
++                }
++                if (kept) {
++                    ++state.kept;
++                } else if (ok) {
++                    ++state.not_kept;
++                }
++                state.free_slots.push_back(slot);
++                note_slot(slot, 0);
++                if (pass != nullptr) {
++                    // (Not in the prepass's done / total: that counts graphics keys.)
++                    pass->kept.fetch_add(kept ? 1 : 0, std::memory_order_relaxed);
++                    pass->failed.fetch_add(ok ? 0 : 1, std::memory_order_relaxed);
++                }
++                if (pass == nullptr && state.finished % ShaderPrep::LogEvery() == 0) {
++                    LOG_INFO(Render_Vulkan,
++                             "Shader set: prepared {} of {} queued, {:.0f} s, {} failed",
++                             state.finished, queued, seconds(), state.failed);
++                }
++                state.cv.notify_all();
++            });
++        } catch (...) {
++            std::scoped_lock lock{state.mutex};
++            --state.in_flight;
++            state.free_slots.push_back(slot);
++            note_slot(slot, 0);
++            state.cv.notify_all();
++            throw;
++        }
+     };
+-    (void)skip_compute; // layout 2 holds graphics records only
+     const bool whole = VideoCommon::ShaderSet::ReadRecords(
+         file, CACHE_VERSION,
+         [&](std::ifstream& in, std::vector<VideoCommon::FileEnvironment> envs) {
+@@ -5740,139 +6120,7 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+                 taken();
+                 return;
+             }
+-            if (queued >= limit) {
+-                stopped = fmt::format("the cap of {} per start (EDEN_UP_SHADER_PREP_MAX)", limit);
+-                throw StopReading{stopped};
+-            }
+-            if (pass != nullptr) {
+-                // The prepass ends at its time limit or when the skip flag is seen; the game
+-                // then starts and the rest goes on beside it (or at the next start).
+-                const bool late = pass->deadline != std::chrono::steady_clock::time_point{} &&
+-                                  std::chrono::steady_clock::now() >= pass->deadline;
+-                if (late || pass->skip.load(std::memory_order_relaxed)) {
+-                    hand_back();
+-                    stopped = late ? std::string{"the time limit (EDEN_UP_SHADER_SET_PREPASS_MAX_S)"}
+-                                   : std::string{"the skip flag (shader_set_prepass.skip)"};
+-                    throw StopReading{stopped};
+-                }
+-            }
+-            // The index is written at most once a minute (it is rebuilt whole under the
+-            // store's lock, which the GPU thread's lookups wait on) and at the end.
+-            if (prep_store.Uncommitted() != 0 &&
+-                std::chrono::steady_clock::now() - last_commit >= std::chrono::seconds{60}) {
+-                prep_store.Commit();
+-                last_commit = std::chrono::steady_clock::now();
+-            }
+-            // Before every record: the memory floor; every 64: the disk floor (the store grows
+-            // by gigabytes over a full pass, and a full disk ends keeping for the session).
+-            if (pass != nullptr) {
+-                // The prepass waits under the memory floor (the jobs in flight give theirs
+-                // back); it gives up once it has waited `memory_wait` in all over the prepass
+-                // (0772: counted across records and passes, so memory that hovers at the floor
+-                // cannot hold the boot for `memory_wait` per record).
+-                std::chrono::steady_clock::time_point waiting_since{};
+-                for (;;) {
+-                    const u64 free = VideoCommon::ShaderSet::FreeMemoryBytes();
+-                    const auto now = std::chrono::steady_clock::now();
+-                    if (free == 0 || free >= floor) {
+-                        if (waiting_since != std::chrono::steady_clock::time_point{}) {
+-                            pass->memory_waited += now - waiting_since;
+-                        }
+-                        break;
+-                    }
+-                    if (waiting_since == std::chrono::steady_clock::time_point{}) {
+-                        waiting_since = now;
+-                        LOG_INFO(Render_Vulkan,
+-                                 "Shader set prepass: {} MB free, under the {} MB memory floor "
+-                                 "(EDEN_UP_SHADER_SET_MIN_FREE_MB); waiting",
+-                                 free >> 20, floor >> 20);
+-                    }
+-                    const auto waited = pass->memory_waited + (now - waiting_since);
+-                    if (waited >= pass->memory_wait ||
+-                        (pass->deadline != std::chrono::steady_clock::time_point{} &&
+-                         now >= pass->deadline)) {
+-                        pass->memory_waited = waited;
+-                        hand_back();
+-                        paused = true;
+-                        stopped = fmt::format(
+-                            "{} MB free, under the {} MB memory floor ({} s waited in all)",
+-                            free >> 20, floor >> 20,
+-                            std::chrono::duration_cast<std::chrono::seconds>(waited).count());
+-                        throw StopReading{stopped};
+-                    }
+-                    if (!Common::StoppableTimedWait(stop, std::chrono::milliseconds{250})) {
+-                        hand_back();
+-                        stopped = "stopped at shutdown";
+-                        throw StopReading{stopped};
+-                    }
+-                }
+-            } else if (const u64 free = VideoCommon::ShaderSet::FreeMemoryBytes();
+-                       free != 0 && free < floor) {
+-                paused = true;
+-                stopped = fmt::format("{} MB free, under the {} MB memory floor "
+-                                      "(EDEN_UP_SHADER_SET_MIN_FREE_MB)",
+-                                      free >> 20, floor >> 20);
+-                throw StopReading{stopped};
+-            }
+-            if (queued % 64 == 0) {
+-                // space().available: what this process may still write on the store's file
+-                // system (statvfs f_bavail), not the store's own size.
+-                std::error_code space_error;
+-                const auto space = std::filesystem::space(file.parent_path(), space_error);
+-                if (!space_error && space.available < disk_floor) {
+-                    hand_back();
+-                    paused = true;
+-                    stopped = fmt::format("{} MB free on disk, under the {} MB floor",
+-                                          space.available >> 20, disk_floor >> 20);
+-                    throw StopReading{stopped};
+-                }
+-                if (space_error && !std::exchange(said_disk_unknown, true)) {
+-                    LOG_WARNING(Render_Vulkan,
+-                                "Shader set: free disk space cannot be read ({}); the disk floor "
+-                                "is not checked this pass",
+-                                space_error.message());
+-                }
+-            }
+-            // Yield while the runtime has builds of its own queued on the shared workers, then
+-            // rest as the duty cycle asks (busy time over wall time stays under `duty` percent).
+-            for (;;) {
+-                size_t in_flight{};
+-                std::chrono::steady_clock::duration busy{};
+-                {
+-                    std::scoped_lock lock{state.mutex};
+-                    in_flight = state.in_flight;
+-                    busy = state.busy;
+-                }
+-                if (job_workers.Pending() > in_flight) {
+-                    if (!Common::StoppableTimedWait(stop, std::chrono::milliseconds{100})) {
+-                        hand_back();
+-                        stopped = "stopped at shutdown";
+-                        throw StopReading{stopped};
+-                    }
+-                    continue;
+-                }
+-                const auto rest = busy * static_cast<s64>(100 - duty) / static_cast<s64>(duty);
+-                if (rest <= slept) {
+-                    break;
+-                }
+-                const auto nap = std::min<std::chrono::steady_clock::duration>(
+-                    rest - slept, std::chrono::seconds{2});
+-                if (!Common::StoppableTimedWait(stop, nap)) {
+-                    hand_back();
+-                    stopped = "stopped at shutdown";
+-                    throw StopReading{stopped};
+-                }
+-                slept += nap;
+-            }
+-            u32 slot{};
+-            {
+-                std::unique_lock lock{state.mutex};
+-                state.cv.wait(lock, [&] { return state.in_flight < max_in_flight; });
+-                ++state.in_flight;
+-                slot = state.free_slots.back();
+-                state.free_slots.pop_back();
+-                note_slot(slot, hash);
+-            }
++            const u32 slot = admit(hash, hand_back);
+             ++queued;
+             constexpr u32 flags =
+                 ShaderPrep::KeptStore::FlagPredicted | ShaderPrep::KeptStore::FlagShaderSet;
+@@ -5971,7 +6219,10 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+             ++read;
+             ++known;
+             return false;
+-        });
++        },
++        VideoCommon::ShaderSet::ComputeAsked()
++            ? std::function<void(std::ifstream&, VideoCommon::FileEnvironment)>{on_compute}
++            : std::function<void(std::ifstream&, VideoCommon::FileEnvironment)>{});
+     wait_for_jobs();
+     {
+         std::scoped_lock lock{state.mutex};
+@@ -6011,6 +6262,10 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+                  ? fmt::format(" (the {} keys list files name; before play)", pass->only_keys->size())
+              : pass != nullptr ? std::string{" (before play)"}
+                                : std::string{});
++    if (compute_read != 0) {
++        LOG_INFO(Render_Vulkan, "Shader set: {} of the records read were compute records "
++                 "(EDEN_UP_SHADER_SET_COMPUTE=1)", compute_read);
++    }
+     if (paused && pass == nullptr) {
+         LOG_WARNING(Render_Vulkan,
+                     "Shader set: preparation paused ({}); it resumes at the next start", stopped);
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.h b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+index 73966e3..99f2610 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.h
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+@@ -243,11 +243,20 @@ private:
+     /// Whether a pointer slot the pipeline left out because it was null now holds a mapped address.
+     bool NullPointerSlotFilled(const ComputePipeline& pipeline) const;
+ 
++    /// kept_out (0781, EDEN_UP_SHADER_SET_COMPUTE): takes the SPIR-V and the info of the
++    /// translation (stage 0 of the Stages).
+     std::unique_ptr<ComputePipeline> CreateComputePipeline(ShaderPools& pools,
+                                                            const ComputePipelineCacheKey& key,
+                                                            Shader::Environment& env,
+                                                            PipelineStatistics* statistics,
+-                                                           bool build_in_parallel);
++                                                           bool build_in_parallel,
++                                                           ShaderPrep::Stages* kept_out = nullptr);
++    /// 0781, EDEN_UP_SHADER_SET_COMPUTE=1. GPU thread: the compute pipeline of `key` from the kept
++    /// SPIR-V and info of a shader set record when the dispatch's state still gives the answers
++    /// its translation got (`env`, the live environment, is asked); null otherwise (the caller
++    /// then translates, as before).
++    std::unique_ptr<ComputePipeline> CreateKeptComputePipeline(const ComputePipelineCacheKey& key,
++                                                               Shader::Environment& env);
+ 
+     void SerializeVulkanPipelineCache(const std::filesystem::path& filename,
+                                       const vk::PipelineCache& pipeline_cache, u32 cache_version);

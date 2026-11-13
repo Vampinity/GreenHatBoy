@@ -1,0 +1,145 @@
+From: EglantinePS5
+Subject: [PATCH] up: when the driver pipeline cache is written during play (EDEN_UP_DRIVER_CACHE_EXIT_ONLY=1, EDEN_UP_DRIVER_CACHE_EVERY=<n>; waveydude's 0931), off by default
+
+What: the driver's pipeline cache (vulkan_pipelines.bin) is written whole every 128 new pipelines,
+at most every 30 s or one second per MiB of cache (QueueVulkanPipelineCacheFlush, on the
+serialization thread): vkGetPipelineCacheData into one buffer, a .part file, a rename. For Ocarina
+with about 8,700 pipelines that is about 123 MiB, so at most one write per ~123 s.
+
+waveydude measured on a base PS5 (13.60), in a later area: the write took 24-55 s near the memory
+limit, and all three of his stretches of ~960 ms frames (one every ~2 s) ran while a write was in
+flight and ended within seconds of its log line (W-11: 261.3 s and 456.8 s; W-10: about 457 s).
+Timing only: he has not run it with the switch on yet.
+
+Switches (read once, at the first write or new pipeline):
+- EDEN_UP_DRIVER_CACHE_EXIT_ONLY=1 (exact "1"): as his 0931. A new pipeline is still counted
+  (EDEN_PE_PIPELINE_CACHE_EXIT's check at the end sees it as unsaved) and the function returns. The
+  writes at boot (LoadDiskResources) and at the end of the session (~PipelineCache) are as before.
+  Cost: a crash or power-off loses the driver builds made since boot; they are compiled again next
+  session. Translations (vulkan.bin, the kept store) are other files and are not touched.
+  Which ends write it (headless/main.cpp, stop_limit.h): every stop that reaches
+  system.ShutdownMainProcess: Touchpad + L1, the test harness's test-quit, the game ending itself,
+  a guest fault (also before its retry), a rendering failure. All of them run under the 10 s stop
+  limit, counted from the stop's start; a stop still going at 10 s restarts the app
+  (eden_restart_app), so an exit write that has not finished by then is lost (its .part is left,
+  the old file stays). The exit write took ~3 s in a 9 Nov log, but the play writes took 24-55 s
+  near the memory limit; with EXIT_ONLY a slow exit write loses every driver build since boot
+  (the next start logs "did not stop ... within ten seconds"). Not written: a crash (the crash
+  handler restarts the app), a freeze that ends in a kill, closing the app from the PS5 home
+  screen (the system ends the process; the app has no handler for it), a power-off.
+- EDEN_UP_DRIVER_CACHE_EVERY=<n> (digits only, 1-1000000; ours): every n new pipelines instead of 128. The time
+  floor stays. 128 = the old pacing plus the timing line, for a control arm. Ignored with EXIT_ONLY.
+- Either set: one line at start ("EDEN_UP_DRIVER_CACHE_EXIT_ONLY=1: ..." or
+  "EDEN_UP_DRIVER_CACHE_EVERY=n: ..."), and after each successful write
+  "EDEN_UP_DRIVER_CACHE: wrote N MiB in S.mmm s (K pipelines counted)" (LOG_INFO, Render_Vulkan),
+  after the usual "Vulkan driver pipelines cached at:". The write began S s before that line.
+
+Off (neither set): every 128 as before, no new lines; the only added work is one function-static
+read per new pipeline and per write.
+
+Not like 0931: our vk_pipeline_prep.cpp has no list of switches that change no translation, so
+the names are left out of TranslationSwitches (setting them must not start an empty kept store);
+our 0480's switch-list check is not in this tree. Not done: moving the write to fades or loads
+(our load-wait code knows them): a write lasts 24-55 s, far longer than any fade or load,
+so where it starts would not keep it out of play.
+
+Origin and credit: waveydude, Eglantine-PS5- branch w13-driver-cache-exit-only, commit ae7294b,
+patch 0931 (EXIT_ONLY and its log line). EDEN_UP_DRIVER_CACHE_EVERY and the timing line: ours.
+---
+---
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 9988e19..819c9da 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -102,6 +102,51 @@ constexpr size_t VULKAN_CACHE_FLUSH_PIPELINES = 128;
+ constexpr size_t VULKAN_CACHE_FLUSH_MIN_SECONDS = 30;
+ constexpr std::array<char, 8> VULKAN_CACHE_MAGIC_NUMBER{'y', 'u', 'z', 'u', 'v', 'k', 'c', 'h'};
+ 
++// When the driver pipeline cache file (vulkan_pipelines.bin) is written during play. Read once.
++// Neither switch set: every VULKAN_CACHE_FLUSH_PIPELINES new pipelines, as before, no new lines.
++// - EDEN_UP_DRIVER_CACHE_EXIT_ONLY=1 (exact "1"; waveydude's 0931): never during play, only at
++//   boot (LoadDiskResources) and when the session ends (~PipelineCache). A crash or a power-off
++//   loses the driver builds made since boot.
++// - EDEN_UP_DRIVER_CACHE_EVERY=<n> (1-1000000): every n new pipelines instead of 128; the time
++//   floor (30 s, or one second per MiB of cache) stays. 128 = the old pacing, with the timing line.
++// Either one set: each write logs "EDEN_UP_DRIVER_CACHE: wrote ..." with its size and duration.
++// Not in vk_pipeline_prep.cpp's TranslationSwitches: it changes no translation, so setting it
++// keeps the same kept-translation store.
++struct DriverCacheWrites {
++    bool exit_only = false;
++    size_t every = VULKAN_CACHE_FLUSH_PIPELINES;
++    bool timed = false;
++};
++
++const DriverCacheWrites& GetDriverCacheWrites() {
++    static const DriverCacheWrites writes = [] {
++        DriverCacheWrites result;
++        result.exit_only = Common::PeSwitch("EDEN_UP_DRIVER_CACHE_EXIT_ONLY");
++        if (const char* const value = std::getenv("EDEN_UP_DRIVER_CACHE_EVERY"); value != nullptr) {
++            // Digits only: a typo ("500x", " 500", "-5") is off, not some other number.
++            char* end = nullptr;
++            const unsigned long asked = std::strtoul(value, &end, 10);
++            if (value[0] >= '0' && value[0] <= '9' && end != nullptr && *end == '\0' && asked >= 1 &&
++                asked <= 1000000) {
++                result.every = static_cast<size_t>(asked);
++                result.timed = true;
++            }
++        }
++        result.timed = result.timed || result.exit_only;
++        if (result.exit_only) {
++            LOG_INFO(Render_Vulkan, "EDEN_UP_DRIVER_CACHE_EXIT_ONLY=1: the driver pipeline cache is "
++                                    "written at boot and when the session ends, not during play");
++        } else if (result.timed) {
++            LOG_INFO(Render_Vulkan,
++                     "EDEN_UP_DRIVER_CACHE_EVERY={}: the driver pipeline cache is written every {} "
++                     "new pipelines during play (at most every 30 s, or 1 s per MiB)",
++                     result.every, result.every);
++        }
++        return result;
++    }();
++    return writes;
++}
++
+ template <typename Container>
+ auto MakeSpan(Container& container) {
+     return std::span(container.data(), container.size());
+@@ -2344,7 +2389,13 @@ void PipelineCache::QueueVulkanPipelineCacheFlush() {
+         return;
+     }
+     pipelines_counted.fetch_add(1, std::memory_order_acq_rel);
+-    if (++pipelines_since_flush < VULKAN_CACHE_FLUSH_PIPELINES) {
++    // EDEN_UP_DRIVER_CACHE_EXIT_ONLY / _EVERY (GetDriverCacheWrites). The count above stays, so
++    // EDEN_PE_PIPELINE_CACHE_EXIT's check at the end still sees these pipelines as unsaved.
++    const DriverCacheWrites& writes = GetDriverCacheWrites();
++    if (writes.exit_only) {
++        return;
++    }
++    if (++pipelines_since_flush < writes.every) {
+         return;
+     }
+     const auto now = std::chrono::steady_clock::now();
+@@ -3961,6 +4012,10 @@ void PipelineCache::SerializeVulkanPipelineCache(const std::filesystem::path& fi
+     std::error_code error;
+     // Pipelines counted before the copy below: a write that succeeds marks them saved.
+     const size_t counted = pipelines_counted.load(std::memory_order_acquire);
++    // EDEN_UP_DRIVER_CACHE_EXIT_ONLY / _EVERY: the whole write (driver copy, file, rename) is timed.
++    const bool timed = GetDriverCacheWrites().timed;
++    const auto write_began =
++        timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+     try {
+         size_t cache_size = 0;
+         std::vector<char> cache_data;
+@@ -3997,6 +4052,13 @@ void PipelineCache::SerializeVulkanPipelineCache(const std::filesystem::path& fi
+         written_cache_size.store(cache_size, std::memory_order_release);
+         LOG_INFO(Render_Vulkan, "Vulkan driver pipelines cached at: {}",
+                  Common::FS::PathToUTF8String(filename));
++        if (timed) {
++            const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(
++                std::chrono::steady_clock::now() - write_began);
++            LOG_INFO(Render_Vulkan,
++                     "EDEN_UP_DRIVER_CACHE: wrote {} MiB in {}.{:03} s ({} pipelines counted)",
++                     cache_size >> 20, took.count() / 1000, took.count() % 1000, counted);
++        }
+     } catch (const std::ios_base::failure& e) {
+         LOG_ERROR(Common_Filesystem, "{}", e.what());
+         std::filesystem::remove(partial, error);

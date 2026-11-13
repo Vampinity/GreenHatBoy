@@ -1,0 +1,225 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_DRAIN_AT_AREA=1: an area change drains at once whatever waits, and opens a 20 s window in which a short pool drains with 16 MiB of deleted buffers waiting, 100 ms apart; off by default
+
+Switches: EDEN_UP_DRAIN_AT_AREA=1 (exact). Numbers (digits, else the default):
+_GROW_MIB=<MiB> allocator growth since the last frame end or area drain that means a burst (384),
+_DROP_MIB=<MiB> deleted buffers waiting with the pool not short that mean the old area goes (192),
+_PENDING_MIB=<MiB> worth a drain in the window with the pool short (16), _MS=<ms> window (20000),
+_GAP_MS=<ms> shortest time between drains at a burst or in the window (100). Acts with
+EDEN_UP_PRESSURE_DRAIN=1 (in a frame too) or 2 (frame ends only). Outside the window the drain is
+unchanged (EDEN_UP_PRESSURE_DRAIN_PENDING_MIB and _GAP_MS).
+Lines (stderr): "EDEN_UP_DRAIN_AT_AREA on: ..." once; "EDEN_UP_DRAIN_AT_AREA window <n> opened
+(<why>): allocator use ..., deleted buffers waiting ..., largest free piece ..."; "EDEN_UP_DRAIN_AT_AREA
+drain <n> (drain <m>, at a burst|in the window): ... freed, ... staging; deleted buffers before ...;
+largest free piece before ..." (the first 64).
+
+Why: with PENDING_MIB=256 the 13 Nov loads drained only when 923-947 MiB of deleted buffers waited
+and the pool was already short: run1395's drain 1 came after the 297 MiB depth image and its 288
+MiB staging upload (320 MiB of staging freed by it, largest free piece 8 MiB at the look, RADV
+available 5 MiB at t_s 191, stderr 860/902), run1397's before them (11 MiB staging, 239 MiB, stderr
+1157); 21 and 6 looks were skipped for "too little waiting" (stderr 982, 1213). The buffer cache's
+drop (425-439 MiB of deleted buffers waiting with 634-920 MiB in one piece, run1397 stderr 1136,
+run1395 stderr 848) came 3-11 s before the image burst; in the field the 10 s peaks were 1-54 MiB.
+
+What (RasterizerVulkan::PressureDrainLook): (a) the allocator's use (UsedBytes) grew by _GROW_MIB
+since the last frame-end look or area drain, or (b) the census's area count moved
+(MemoryCensus::NoteArea, EDEN_UP_MEM_CENSUS=1): a drain at once, past the pending mark and the
+short-pool test (the gap, the GPU-behind tick and conditional rendering still hold); it frees the
+staging pool's finished uploads and the deleted images too. (a), (b), or (c) _DROP_MIB of deleted
+buffers waiting while the pool is not short (no drain by itself) open or extend the window.
+With EDEN_UP_DRAIN_TO_POOL=1 buffers get memory of their own for the window (0896).
+Cost: at a burst one flush and a GPU wait of at most EDEN_UP_PRESSURE_DRAIN_MS (80) per drain, at
+most every 100 ms, in frames that take seconds; nothing in the field unless the pool is short or
+the allocator grows 384 MiB within a frame. Off: one test of a static per look.
+
+Translation id: vk_rasterizer.cpp and pressure_drain.h are not in gen-translation-id.py's inputs;
+the names are not in TranslationSwitches (EDEN_NX2_AREA_EVICT, which is, is not read): KEEPS THE
+STORE.
+
+---
+diff --git a/src/video_core/renderer_vulkan/pressure_drain.h b/src/video_core/renderer_vulkan/pressure_drain.h
+index 80bb39be59..31899a373a 100644
+--- a/src/video_core/renderer_vulkan/pressure_drain.h
++++ b/src/video_core/renderer_vulkan/pressure_drain.h
+@@ -130,6 +130,74 @@ struct Config {
+     return config;
+ }
+ 
++/// EDEN_UP_DRAIN_AT_AREA=1 (exact "1"; off unless set; acts with EDEN_UP_PRESSURE_DRAIN=1 or 2).
++///
++/// At the load past the field the drain waited for EDEN_UP_PRESSURE_DRAIN_PENDING_MIB (256) of
++/// deleted buffers with the pool already short, so its first drain came when the new area had
++/// taken the pool: in one start after the 297 MiB depth image and its 288 MiB staging upload were
++/// in (320 MiB of staging freed by that drain, the pool's largest piece 8 MiB at the look), in the
++/// other before them (11 MiB of staging, 239 MiB). With this switch an area change opens a window:
++///
++///   - signals: (a) the allocator's use grew by _GROW_MIB (384) or more since the last frame end or
++///     area drain (a burst of new images and buffers, seen inside the long load frame); (b) the
++///     census noted an image burst (EDEN_UP_MEM_CENSUS's own count of AREA_EVICT's burst: 100 new
++///     images in 30 frames, seen at a frame end); (c) _DROP_MIB (192) or more of deleted buffers
++///     waiting while the pool is not short (the buffer cache letting the old area go: 425-439 MiB
++///     3-11 s before the image burst in the 13 Nov starts; at most 54 MiB in any 10 s of the field).
++///   - (a) and (b) drain at once, whatever waits and however much room the pool has, at most every
++///     _GAP_MS (100): the staging pool's finished uploads and the deleted images go too.
++///   - for _MS (20000) after the last signal, with the pool short, a drain needs only _PENDING_MIB
++///     (16) of deleted buffers, at most every _GAP_MS. Outside the window: PENDING_MIB, as before.
++///   - with EDEN_UP_DRAIN_TO_POOL=1, new buffers get memory of their own for the window.
++///
++/// Lines: EDEN_UP_DRAIN_AT_AREA (each window opened, and each drain it made, the first 64), and the
++/// drain's own lines.
++struct AreaConfig {
++    bool on;
++    u64 grow;    ///< Bytes of allocator growth that mean a burst
++    u64 drop;    ///< Bytes of deleted buffers that mean the old area goes
++    u64 pending; ///< Bytes worth a drain inside the window with the pool short
++    std::chrono::milliseconds window;
++    std::chrono::milliseconds gap;
++};
++
++[[nodiscard]] inline const AreaConfig& GetAreaConfig() {
++    static const AreaConfig config = [] {
++        AreaConfig c{};
++        const char* const value = std::getenv("EDEN_UP_DRAIN_AT_AREA");
++        c.on = value != nullptr && std::strcmp(value, "1") == 0;
++        c.grow = EnvNumber("EDEN_UP_DRAIN_AT_AREA_GROW_MIB", 384, 32, 65535) << 20;
++        c.drop = EnvNumber("EDEN_UP_DRAIN_AT_AREA_DROP_MIB", 192, 16, 65535) << 20;
++        c.pending = EnvNumber("EDEN_UP_DRAIN_AT_AREA_PENDING_MIB", 16, 1, 65535) << 20;
++        c.window = std::chrono::milliseconds{
++            EnvNumber("EDEN_UP_DRAIN_AT_AREA_MS", 20000, 1000, 600000)};
++        c.gap = std::chrono::milliseconds{EnvNumber("EDEN_UP_DRAIN_AT_AREA_GAP_MS", 100, 10, 60000)};
++        if (c.on) {
++            std::fprintf(stderr,
++                         "EDEN_UP_DRAIN_AT_AREA on: a burst is %llu MiB of allocator growth or a "
++                         "census area note, the old area going is %llu MiB of deleted buffers; "
++                         "%lld ms window, %llu MiB worth a drain in it, %lld ms apart\n",
++                         static_cast<unsigned long long>(c.grow >> 20),
++                         static_cast<unsigned long long>(c.drop >> 20),
++                         static_cast<long long>(c.window.count()),
++                         static_cast<unsigned long long>(c.pending >> 20),
++                         static_cast<long long>(c.gap.count()));
++        }
++        return c;
++    }();
++    return config;
++}
++
++/// EDEN_UP_DRAIN_AT_AREA's state, the recording thread's.
++struct AreaState {
++    u64 baseline{};  ///< Allocator use at the last frame end or area drain (0: not read yet)
++    u32 census_notes{};
++    bool census_seen{};
++    std::chrono::steady_clock::time_point until{}; ///< The window's end
++    u64 windows{};
++    u64 drains{};
++};
++
+ /// The pool's largest free piece (the front's kernel query), 0 where it is not known.
+ [[nodiscard]] inline u64 LargestFree() {
+     return VideoCommon::MemoryCensus::FreeLargest();
+@@ -167,6 +235,7 @@ struct State {
+     u64 total_drains{};
+     u64 total_freed{};
+     Counts counts{};
++    AreaState area{}; ///< EDEN_UP_DRAIN_AT_AREA
+ };
+ 
+ /// The recording thread's (the split's back) only.
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 79cd71ea0a..ed83ad177c 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -3208,21 +3208,69 @@ void RasterizerVulkan::PressureDrainLook(bool frame_end) {
+     }
+     const bool refused = s.refusal_pending;
+     const bool short_pool = largest != 0 && largest < config.pool_mark;
++    // EDEN_UP_DRAIN_AT_AREA=1 (pressure_drain.h, AreaConfig): an area change drains at once and
++    // opens a window in which a short pool drains with little waiting.
++    const PD::AreaConfig& area = PD::GetAreaConfig();
++    bool burst = false;
++    bool area_open = false;
++    if (area.on) [[unlikely]] {
++        PD::AreaState& a = s.area;
++        const u64 used_now = memory_allocator.UsedBytes();
++        const char* why = nullptr;
++        if (a.baseline != 0 && used_now >= a.baseline + area.grow) {
++            burst = true;
++            why = "the allocator grew";
++        }
++        const u32 notes =
++            VideoCommon::MemoryCensus::Get().area_notes.load(std::memory_order_acquire);
++        if (a.census_seen && notes != a.census_notes) {
++            burst = true;
++            why = why != nullptr ? why : "the census saw an image burst";
++        }
++        a.census_notes = notes;
++        a.census_seen = true;
++        const bool drop = !burst && !short_pool && waiting.second >= area.drop;
++        if (burst || drop) {
++            if (now >= a.until) {
++                ++a.windows;
++                std::fprintf(stderr,
++                             "EDEN_UP_DRAIN_AT_AREA window %llu opened (%s): allocator use %llu "
++                             "MiB (%llu at the last frame end or area drain), deleted buffers "
++                             "waiting %zu, %llu MiB, largest free piece %llu MiB\n",
++                             static_cast<unsigned long long>(a.windows),
++                             why != nullptr ? why : "deleted buffers of the old area",
++                             PD::Mib(used_now), PD::Mib(a.baseline), waiting.first,
++                             PD::Mib(waiting.second), PD::Mib(largest));
++            }
++            a.until = now + area.window;
++            if (DrainToPool::OwnMemoryOn()) {
++                DrainToPool::Arm(static_cast<s64>(area.window.count()));
++            }
++        }
++        if (frame_end || a.baseline == 0) {
++            a.baseline = used_now;
++        }
++        area_open = now < a.until;
++    }
+     // EDEN_UP_DRAIN_TO_POOL=1 (vulkan_common/drain_to_pool.h): new buffers get memory of their own
+     // for the next 3 s while the pool is short or memory was refused.
+     if (DrainToPool::OwnMemoryOn() && (short_pool || refused)) [[unlikely]] {
+         DrainToPool::Arm(3000);
+     }
+-    if (!refused && !short_pool) {
++    if (!refused && !short_pool && !burst) {
+         line();
+         return;
+     }
+-    if (!refused && waiting.second < config.pending_mark) {
++    const u64 pending_mark = area_open ? area.pending : config.pending_mark;
++    if (!refused && !burst && waiting.second < pending_mark) {
+         ++c.nothing;
+         line();
+         return;
+     }
+-    const auto gap = refused ? config.gap / 4 : config.gap;
++    auto gap = refused ? config.gap / 4 : config.gap;
++    if (burst || area_open) {
++        gap = (std::min)(gap, std::chrono::duration_cast<decltype(gap)>(area.gap));
++    }
+     if (s.last_drain != std::chrono::steady_clock::time_point{} && now - s.last_drain < gap) {
+         ++c.skipped_gap;
+         line();
+@@ -3327,6 +3375,21 @@ void RasterizerVulkan::PressureDrainLook(bool frame_end) {
+         to_pool_seen.largest_after = PD::LargestFree();
+         PD::ToPoolLine(s.total_drains, freed, largest, to_pool_seen);
+     }
++    if (burst || area_open) [[unlikely]] {
++        PD::AreaState& a = s.area;
++        // The next burst is growth past what this drain left.
++        a.baseline = after;
++        if (++a.drains <= 64) {
++            std::fprintf(stderr,
++                         "EDEN_UP_DRAIN_AT_AREA drain %llu (drain %llu, %s): %llu MiB freed, "
++                         "%llu MiB of it staging; deleted buffers before: %zu, %llu MiB; largest "
++                         "free piece before %llu MiB\n",
++                         static_cast<unsigned long long>(a.drains),
++                         static_cast<unsigned long long>(s.total_drains),
++                         burst ? "at a burst" : "in the window", PD::Mib(freed), PD::Mib(staging),
++                         waiting.first, PD::Mib(waiting.second), PD::Mib(largest));
++        }
++    }
+     if (s.total_drains <= 16 || s.total_drains % 64 == 0) {
+         std::fprintf(stderr,
+                      "EDEN_UP_PRESSURE_DRAIN %llu %s%s: waited %llu ms, %s; %llu MiB freed "

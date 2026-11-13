@@ -1,0 +1,515 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: EglantinePS5
+Date: Fri, 13 Nov 2026 20:10:00 +0100
+Subject: [PATCH] util/disk_cache: a put the cache already holds is dropped before compressing or evicting (RADV_PS5_DISK_CACHE_SKIP_KNOWN); zlib level (RADV_PS5_DISK_CACHE_ZLIB_LEVEL)
+
+Upstream compresses every put (zlib at level 9, Z_BEST_COMPRESSION: the PS5
+build has no zstd) and then writes it. The multi-file cache first evicts (up to
+8 times while over MESA_SHADER_CACHE_MAX_SIZE; each eviction reads a random
+folder whole, two fstatat per file) and only after opening, locking and looking
+for the final file finds that it is there. The database looks only in the part
+it writes to, and only after making room, so a key held by another part is
+stored a second time.
+
+RADV_PS5_DISK_CACHE_SKIP_KNOWN=1 (exactly "1", read once per process):
+- multi-file: one access() on the entry's file; if it is there, nothing else
+  (no compression, no eviction, no file calls);
+- database: before compressing, every part that exists is asked
+  (mesa_cache_db_multipart_has_entry; no file access for the PS5's exclusively
+  owned parts); a known key is dropped;
+- database: the has-space look and the write become one step under the part's
+  lock (mesa_cache_db_entry_write_ex with compact_if_full=false). Upstream,
+  writers racing near a part's limit both pass mesa_cache_db_has_space, and
+  the second then compacts the part, evicting half of it, oldest first: the
+  entries this run just wrote. Now a full part is passed over for the next;
+  compaction happens only when every part is full, as upstream;
+- database, exclusive parts: a part found absent is remembered, so a lookup
+  that misses no longer looks for every absent part's folder every time
+  (mesa_cache_db_multipart_read_entry; up to 49 stat calls per miss).
+Off: upstream behaviour, one cached flag read per put and per database miss.
+
+RADV_PS5_DISK_CACHE_ZLIB_LEVEL=<0..9> (one digit, read once per process;
+anything else keeps level 9): the zlib level of util_compress_deflate, which
+only the disk cache uses here. A lower level makes bigger entries and costs the
+disk threads far less time; inflate reads any level, so entries written either
+way mix in one cache.
+
+One stderr line "<NAME>=<value> on" at first use of each. The database check is
+on the key's first 64 bits, the same test mesa_cache_db_entry_write already
+makes before it writes. Nothing about keys, entries, the file formats or the
+cache UUID changes. Ours.
+
+Compiled with the driver's flags, syntax only. Not linked, not run.
+
+Co-Authored-By: Claude Opus 5.5
+---
+diff --git a/src/util/compress.c b/src/util/compress.c
+index 1f4b429..f754614 100644
+--- a/src/util/compress.c
++++ b/src/util/compress.c
+@@ -40,8 +40,12 @@
+ 
+ #include "util/compress.h"
+ #include "util/perf/cpu_trace.h"
++#include "util/u_atomic.h"
+ #include "macros.h"
+ 
++#include <stdio.h>
++#include <stdlib.h>
++
+ /* 3 is the recomended level, with 22 as the absolute maximum */
+ #define ZSTD_COMPRESSION_LEVEL 3
+ 
+@@ -96,7 +100,21 @@ util_compress_deflate(const uint8_t *in_data, size_t in_data_size,
+    strm.avail_in = in_data_size;
+    strm.avail_out = out_buff_size;
+ 
+-   int ret = deflateInit(&strm, Z_BEST_COMPRESSION);
++   /* EglantinePS5: RADV_PS5_DISK_CACHE_ZLIB_LEVEL=<0..9> (read once per process; anything else
++    * is upstream's Z_BEST_COMPRESSION, 9). The disk cache's threads compress every put before
++    * they write it, and level 9 is the slowest; a lower level only makes bigger entries. Any
++    * level reads back the same (inflate does not care), so caches written either way mix. */
++   static int level = -2;
++   int asked = p_atomic_read(&level);
++   if (asked == -2) {
++      const char *value = getenv("RADV_PS5_DISK_CACHE_ZLIB_LEVEL");
++      asked = value && value[0] >= '0' && value[0] <= '9' && value[1] == '\0'
++                 ? value[0] - '0' : -1;
++      if (p_atomic_cmpxchg(&level, -2, asked) == -2 && asked >= 0)
++         fprintf(stderr, "RADV_PS5_DISK_CACHE_ZLIB_LEVEL=%d on\n", asked);
++   }
++
++   int ret = deflateInit(&strm, asked >= 0 ? asked : Z_BEST_COMPRESSION);
+    if (ret != Z_OK) {
+        (void) deflateEnd(&strm);
+        return 0;
+diff --git a/src/util/disk_cache.c b/src/util/disk_cache.c
+index 1f43388..54684a4 100644
+--- a/src/util/disk_cache.c
++++ b/src/util/disk_cache.c
+@@ -36,6 +36,7 @@
+ #include <errno.h>
+ #include <dirent.h>
+ #include <inttypes.h>
++#include <unistd.h>
+ 
+ #include "util/compress.h"
+ #include "util/crc32.h"
+@@ -457,12 +458,24 @@ cache_put(void *job, void *gdata, int thread_index)
+    } else if (dc_job->cache->type == DISK_CACHE_SINGLE_FILE) {
+       disk_cache_write_item_to_disk_foz(dc_job);
+    } else if (dc_job->cache->type == DISK_CACHE_DATABASE) {
+-      disk_cache_db_write_item_to_disk(dc_job);
++      /* EglantinePS5, RADV_PS5_DISK_CACHE_SKIP_KNOWN=1: a key a part holds is dropped before it
++       * is compressed (zlib level 9 here) and before the part's lock is taken to write it. */
++      if (!mesa_cache_db_multipart_skip_known() ||
++          !mesa_cache_db_multipart_has_entry(&dc_job->cache->cache_db, dc_job->key))
++         disk_cache_db_write_item_to_disk(dc_job);
+    } else if (dc_job->cache->type == DISK_CACHE_MULTI_FILE) {
+       filename = disk_cache_get_cache_filename(dc_job->cache, dc_job->key);
+       if (filename == NULL)
+          goto done;
+ 
++      /* EglantinePS5, RADV_PS5_DISK_CACHE_SKIP_KNOWN=1 (mesa_cache_db_multipart.c): a file that
++       * is there already is not written, so no room is made for it either. One look-up instead
++       * of up to 8 evictions (each reads a whole folder), the compression and the five file
++       * calls below that end in the same finding. A file that appears after this look is still
++       * caught below. */
++      if (mesa_cache_db_multipart_skip_known() && access(filename, F_OK) == 0)
++         goto done;
++
+       /* If the cache is too large, evict something else first. */
+       while (p_atomic_read_relaxed(&dc_job->cache->size->value) + dc_job->size > dc_job->cache->max_size &&
+              i < 8) {
+diff --git a/src/util/mesa_cache_db.c b/src/util/mesa_cache_db.c
+index ae12f11..e122681 100644
+--- a/src/util/mesa_cache_db.c
++++ b/src/util/mesa_cache_db.c
+@@ -991,18 +991,20 @@ mesa_cache_db_eviction_size(struct mesa_cache_db *db)
+    return db->max_cache_size / 2 - sizeof(struct mesa_db_file_header);
+ }
+ 
+-bool
+-mesa_cache_db_entry_write(struct mesa_cache_db *db,
+-                          const uint8_t *cache_key_160bit,
+-                          const void *blob, size_t blob_size)
++enum mesa_cache_db_write_result
++mesa_cache_db_entry_write_ex(struct mesa_cache_db *db,
++                             const uint8_t *cache_key_160bit,
++                             const void *blob, size_t blob_size,
++                             bool compact_if_full)
+ {
+    uint64_t hash = to_mesa_cache_db_hash(cache_key_160bit);
+    struct mesa_index_db_hash_entry *hash_entry = NULL;
+    struct mesa_cache_db_file_entry cache_entry;
+    struct mesa_index_db_file_entry index_entry;
++   enum mesa_cache_db_write_result result = MESA_CACHE_DB_WRITE_FAILED;
+ 
+    if (!mesa_db_lock(db))
+-      return false;
++      return MESA_CACHE_DB_WRITE_FAILED;
+ 
+    if (!db->alive)
+       goto fail;
+@@ -1013,7 +1015,20 @@ mesa_cache_db_entry_write(struct mesa_cache_db *db,
+    if (!mesa_db_seek_end(db->cache.file))
+       goto fail_fatal;
+ 
+-   if (!mesa_cache_db_has_space_locked(db, blob_size)) {
++   if (!compact_if_full) {
++      /* EglantinePS5 (RADV_PS5_DISK_CACHE_SKIP_KNOWN): a known key costs no space check, and
++       * a full database is left alone for the caller to try another. */
++      if (!db->owned && !mesa_db_update_index(db))
++         goto fail_fatal;
++      if (_mesa_hash_table_u64_search(db->index_db, hash)) {
++         result = MESA_CACHE_DB_WRITE_EXISTS;
++         goto fail;
++      }
++      if (!mesa_cache_db_has_space_locked(db, blob_size)) {
++         result = MESA_CACHE_DB_WRITE_NO_SPACE;
++         goto fail;
++      }
++   } else if (!mesa_cache_db_has_space_locked(db, blob_size)) {
+       if (!mesa_db_compact(db, MAX2(blob_size, mesa_cache_db_eviction_size(db)),
+                            NULL))
+          goto fail_fatal;
+@@ -1025,6 +1040,7 @@ mesa_cache_db_entry_write(struct mesa_cache_db *db,
+    hash_entry = _mesa_hash_table_u64_search(db->index_db, hash);
+    if (hash_entry) {
+       hash_entry = NULL;
++      result = MESA_CACHE_DB_WRITE_EXISTS;
+       goto fail;
+    }
+ 
+@@ -1064,16 +1080,46 @@ mesa_cache_db_entry_write(struct mesa_cache_db *db,
+ 
+    mesa_db_unlock(db);
+ 
+-   return true;
++   return MESA_CACHE_DB_WRITE_WRITTEN;
+ 
+ fail_fatal:
+    mesa_db_zap(db);
++   result = MESA_CACHE_DB_WRITE_FAILED;
+ fail:
+    mesa_db_unlock(db);
+ 
+    ralloc_free(hash_entry);
+ 
+-   return false;
++   return result;
++}
++
++bool
++mesa_cache_db_entry_write(struct mesa_cache_db *db,
++                          const uint8_t *cache_key_160bit,
++                          const void *blob, size_t blob_size)
++{
++   return mesa_cache_db_entry_write_ex(db, cache_key_160bit, blob, blob_size, true) ==
++          MESA_CACHE_DB_WRITE_WRITTEN;
++}
++
++bool
++mesa_cache_db_has_entry(struct mesa_cache_db *db,
++                        const uint8_t *cache_key_160bit)
++{
++   uint64_t hash = to_mesa_cache_db_hash(cache_key_160bit);
++   bool found = false;
++
++   if (!mesa_db_lock(db))
++      return false;
++
++   /* A database that cannot be brought up to date says no: the write that follows deals with
++    * it as upstream does. */
++   if (db->alive && mesa_db_refresh(db))
++      found = _mesa_hash_table_u64_search(db->index_db, hash) != NULL;
++
++   mesa_db_unlock(db);
++
++   return found;
+ }
+ 
+ bool
+diff --git a/src/util/mesa_cache_db.h b/src/util/mesa_cache_db.h
+index 6c5abb3..1d55fcf 100644
+--- a/src/util/mesa_cache_db.h
++++ b/src/util/mesa_cache_db.h
+@@ -21,6 +21,16 @@
+ extern "C" {
+ #endif
+ 
++/* EglantinePS5 (RADV_PS5_DISK_CACHE_SKIP_KNOWN): what mesa_cache_db_entry_write_ex did. */
++enum mesa_cache_db_write_result {
++   MESA_CACHE_DB_WRITE_FAILED,
++   MESA_CACHE_DB_WRITE_WRITTEN,
++   /* An entry with the key's hash is already in this database: nothing written. */
++   MESA_CACHE_DB_WRITE_EXISTS,
++   /* Only without compact_if_full: the entry does not fit under the size limit. */
++   MESA_CACHE_DB_WRITE_NO_SPACE,
++};
++
+ struct mesa_cache_db_file {
+    FILE *file;
+    char *path;
+@@ -79,6 +89,22 @@ bool
+ mesa_cache_db_entry_remove(struct mesa_cache_db *db,
+                            const uint8_t *cache_key_160bit);
+ 
++/* EglantinePS5: mesa_cache_db_entry_write with the outcome. compact_if_full=true is
++ * mesa_cache_db_entry_write. false: the key is looked up first, and an entry that does not fit
++ * is not written (no compaction, which evicts half the database): the space check and the write
++ * are one step under the lock. */
++enum mesa_cache_db_write_result
++mesa_cache_db_entry_write_ex(struct mesa_cache_db *db,
++                             const uint8_t *cache_key_160bit,
++                             const void *blob, size_t blob_size,
++                             bool compact_if_full);
++
++/* EglantinePS5: whether an entry with the key's hash is in the database (the same test
++ * mesa_cache_db_entry_write makes before it writes). No file access for an owned database. */
++bool
++mesa_cache_db_has_entry(struct mesa_cache_db *db,
++                        const uint8_t *cache_key_160bit);
++
+ bool
+ mesa_db_wipe_path(const char *cache_path);
+ 
+@@ -140,6 +166,22 @@ mesa_cache_db_entry_remove(struct mesa_cache_db *db,
+    return false;
+ }
+ 
++static inline enum mesa_cache_db_write_result
++mesa_cache_db_entry_write_ex(struct mesa_cache_db *db,
++                             const uint8_t *cache_key_160bit,
++                             const void *blob, size_t blob_size,
++                             bool compact_if_full)
++{
++   return MESA_CACHE_DB_WRITE_FAILED;
++}
++
++static inline bool
++mesa_cache_db_has_entry(struct mesa_cache_db *db,
++                        const uint8_t *cache_key_160bit)
++{
++   return false;
++}
++
+ static inline bool
+ mesa_db_wipe_path(const char *cache_path)
+ {
+diff --git a/src/util/mesa_cache_db_multipart.c b/src/util/mesa_cache_db_multipart.c
+index 8c3c24b..8cca42b 100644
+--- a/src/util/mesa_cache_db_multipart.c
++++ b/src/util/mesa_cache_db_multipart.c
+@@ -10,8 +10,11 @@
+ #include "detect_os.h"
+ #include "string.h"
+ #include "mesa_cache_db_multipart.h"
++#include "u_atomic.h"
+ #include "u_debug.h"
+ 
++#include <stdio.h>
++
+ /* A PS5 title's cache is in its own folder, used by it alone. */
+ #if defined(__PROSPERO__)
+ #define EXCLUSIVE_DEFAULT true
+@@ -19,6 +22,35 @@
+ #define EXCLUSIVE_DEFAULT false
+ #endif
+ 
++/* EglantinePS5: RADV_PS5_DISK_CACHE_SKIP_KNOWN=1 (exactly "1", read once per process; off
++ * otherwise). Upstream writes every put it is handed, and compresses it first (zlib at level 9
++ * on the PS5 build, which has no zstd): the multi-file cache then evicts for room before it
++ * finds that the file is there already, and the database looks only in the part it writes to,
++ * after making room, so a key held by another part is stored again. With the switch:
++ *  - multi-file (disk_cache.c): a put whose file exists is dropped before compressing or evicting;
++ *  - database: a put whose key any part holds is dropped before compressing
++ *    (mesa_cache_db_multipart_has_entry, disk_cache.c); a part that is full at write time is
++ *    passed over for the next one instead of compacted (the has-space look and the write were two
++ *    steps, so writers racing near a part's limit made it evict half its entries, the oldest
++ *    first: the ones just written); compaction only when every part is full, as upstream;
++ *  - database, exclusive parts: a part found absent is not looked for again (a lookup that
++ *    missed looked for every absent part's folder, every time).
++ * Off: upstream behaviour, one cached flag read per put. */
++static int multipart_skip_known = -1;
++
++bool
++mesa_cache_db_multipart_skip_known(void)
++{
++   int on = p_atomic_read(&multipart_skip_known);
++   if (on < 0) {
++      const char *value = getenv("RADV_PS5_DISK_CACHE_SKIP_KNOWN");
++      on = value && value[0] == '1' && value[1] == '\0';
++      if (p_atomic_cmpxchg(&multipart_skip_known, -1, on) == -1 && on)
++         fprintf(stderr, "RADV_PS5_DISK_CACHE_SKIP_KNOWN=1 on\n");
++   }
++   return on != 0;
++}
++
+ #if !DETECT_OS_WINDOWS
+ /* The parts opened exclusively, by path: a second cache of this process on
+  * the same path shares them, as their locks would otherwise shut it out. */
+@@ -102,6 +134,8 @@ mesa_cache_db_multipart_open(struct mesa_cache_db_multipart *db,
+    db->parts = calloc(db->num_parts, sizeof(*db->parts));
+    if (!db->parts)
+       return false;
++   /* RADV_PS5_DISK_CACHE_SKIP_KNOWN; without it, NULL is fine. */
++   db->absent = calloc(db->num_parts, sizeof(*db->absent));
+ 
+    simple_mtx_init(&db->lock, mtx_plain);
+ 
+@@ -201,6 +235,28 @@ mesa_cache_db_multipart_part_exists(struct mesa_cache_db_multipart *db,
+ #endif
+ }
+ 
++/* Whether part may hold entries: open, or its folder is there. RADV_PS5_DISK_CACHE_SKIP_KNOWN,
++ * exclusive parts: an absent part is remembered. The flag is only ever set, racing with a write
++ * that makes the part is harmless: that write puts the part in parts[] first, which is looked at
++ * first. */
++static bool
++mesa_cache_db_multipart_part_may_hold(struct mesa_cache_db_multipart *db,
++                                      unsigned int part)
++{
++   if (db->parts[part])
++      return true;
++
++   const bool remember = db->exclusive && db->absent && mesa_cache_db_multipart_skip_known();
++   if (remember && db->absent[part])
++      return false;
++
++   const bool exists = mesa_cache_db_multipart_part_exists(db, part);
++   if (!exists && remember)
++      db->absent[part] = true;
++
++   return exists;
++}
++
+ static bool
+ mesa_cache_db_multipart_init_part(struct mesa_cache_db_multipart *db,
+                                   unsigned int part)
+@@ -234,6 +290,7 @@ mesa_cache_db_multipart_close(struct mesa_cache_db_multipart *db)
+    }
+ 
+    free(db->parts);
++   free(db->absent);
+    simple_mtx_destroy(&db->lock);
+ }
+ 
+@@ -260,7 +317,7 @@ mesa_cache_db_multipart_read_entry(struct mesa_cache_db_multipart *db,
+    for (unsigned int i = 0; i < db->num_parts; i++) {
+       unsigned int part = (last_read_part + i) % db->num_parts;
+ 
+-      if (!db->parts[part] && !mesa_cache_db_multipart_part_exists(db, part))
++      if (!mesa_cache_db_multipart_part_may_hold(db, part))
+          continue;
+ 
+       if (!mesa_cache_db_multipart_init_part(db, part))
+@@ -298,6 +355,60 @@ mesa_cache_db_multipart_select_victim_part(struct mesa_cache_db_multipart *db)
+    return victim;
+ }
+ 
++bool
++mesa_cache_db_multipart_has_entry(struct mesa_cache_db_multipart *db,
++                                  const uint8_t *cache_key_160bit)
++{
++   for (unsigned int part = 0; part < db->num_parts; part++) {
++      if (!mesa_cache_db_multipart_part_may_hold(db, part))
++         continue;
++      if (!mesa_cache_db_multipart_init_part(db, part))
++         continue;
++      if (mesa_cache_db_has_entry(db->parts[part], cache_key_160bit))
++         return true;
++   }
++
++   return false;
++}
++
++/* RADV_PS5_DISK_CACHE_SKIP_KNOWN: returns true when the put is done with (written, or held by
++ * the part it went to: the other parts were asked before compressing, disk_cache.c), false when
++ * it failed; *all_full when every part was full (the caller then compacts as upstream). */
++static bool
++mesa_cache_db_multipart_entry_write_known(struct mesa_cache_db_multipart *db,
++                                          const uint8_t *cache_key_160bit,
++                                          const void *blob, size_t blob_size,
++                                          bool *all_full)
++{
++   *all_full = false;
++
++   unsigned last_written_part = db->last_written_part;
++
++   for (unsigned int i = 0; i < db->num_parts; i++) {
++      unsigned int part = (last_written_part + i) % db->num_parts;
++
++      if (!mesa_cache_db_multipart_init_part(db, part))
++         return false;
++
++      switch (mesa_cache_db_entry_write_ex(db->parts[part], cache_key_160bit, blob, blob_size,
++                                           false)) {
++      case MESA_CACHE_DB_WRITE_WRITTEN:
++         db->last_written_part = part;
++         return true;
++      case MESA_CACHE_DB_WRITE_EXISTS:
++         return true;
++      case MESA_CACHE_DB_WRITE_NO_SPACE:
++         continue;
++      case MESA_CACHE_DB_WRITE_FAILED:
++      default:
++         return false;
++      }
++   }
++
++   *all_full = true;
++   return false;
++}
++
+ bool
+ mesa_cache_db_multipart_entry_write(struct mesa_cache_db_multipart *db,
+                                     const uint8_t *cache_key_160bit,
+@@ -306,6 +417,21 @@ mesa_cache_db_multipart_entry_write(struct mesa_cache_db_multipart *db,
+    unsigned last_written_part = db->last_written_part;
+    int wpart = -1;
+ 
++   if (mesa_cache_db_multipart_skip_known()) {
++      bool all_full;
++      if (mesa_cache_db_multipart_entry_write_known(db, cache_key_160bit, blob, blob_size,
++                                                    &all_full))
++         return true;
++      if (!all_full)
++         return false;
++      /* Every part is full: the victim part is compacted, as upstream. */
++      wpart = mesa_cache_db_multipart_select_victim_part(db);
++      if (!mesa_cache_db_multipart_init_part(db, wpart))
++         return false;
++      db->last_written_part = wpart;
++      return mesa_cache_db_entry_write(db->parts[wpart], cache_key_160bit, blob, blob_size);
++   }
++
+    for (unsigned int i = 0; i < db->num_parts; i++) {
+       unsigned int part = (last_written_part + i) % db->num_parts;
+ 
+diff --git a/src/util/mesa_cache_db_multipart.h b/src/util/mesa_cache_db_multipart.h
+index 512faf9..de6d766 100644
+--- a/src/util/mesa_cache_db_multipart.h
++++ b/src/util/mesa_cache_db_multipart.h
+@@ -21,8 +21,21 @@ struct mesa_cache_db_multipart {
+    /* The parts are this process's alone (MESA_DISK_CACHE_DATABASE_EXCLUSIVE):
+     * opened once and shared by every cache of the process on the same path. */
+    bool exclusive;
++   /* EglantinePS5 (RADV_PS5_DISK_CACHE_SKIP_KNOWN, exclusive parts only): parts found absent.
++    * Only this process makes parts, and a part it makes is in parts[] first, so an absent part
++    * need not be looked for again. */
++   bool *absent;
+ };
+ 
++/* EglantinePS5: RADV_PS5_DISK_CACHE_SKIP_KNOWN=1 (exactly "1", read once per process). */
++bool
++mesa_cache_db_multipart_skip_known(void);
++
++/* EglantinePS5: whether any part holds an entry with the key's hash (each part's own test). */
++bool
++mesa_cache_db_multipart_has_entry(struct mesa_cache_db_multipart *db,
++                                  const uint8_t *cache_key_160bit);
++
+ bool
+ mesa_cache_db_multipart_open(struct mesa_cache_db_multipart *db,
+                              const char *cache_path);

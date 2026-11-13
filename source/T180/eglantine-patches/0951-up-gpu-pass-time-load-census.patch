@@ -1,0 +1,447 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_GPU_PASS_TIME=1 (log only): load census (common/nx2_load_census.h), one line group per 10 s: loads the OoT resource request thread issued (svc 0xF3 walks, [sp+0x108]), zstd one-shot decodes and stream starts by size + hash of the first 64 bytes, fs opens by path, file reads by name/offset/length, storage reads by offset/length; per source: events, MiB, distinct files, repeats within 60 s and the top 3 repeated; unset: as before
+
+T180p (writer P), part 3 of EDEN_UP_GPU_PASS_TIME=1. Log only: which files the game loads, and
+whether the steady loads in the area past the field are the same files again.
+common/nx2_load_census.h: per source, events, MiB, distinct files, events whose file was seen less
+than 60 s before ("seen again"), and the top 3 repeated files, one "EDEN_UP_LOAD_CENSUS" line per
+source per 10 s (written by the thread with the first event after the 10 s). Sources:
+- poll loads: the loads each walk of the OoT resource request thread issued ([sp+0x108] at svc
+  0xF3; only with EDEN_UP_OOT_POLL_BACKOFF=1, where that svc exists); counts only, no names.
+- zstd one-shot: ZSTD_decompressMultiFrame calls (svc 0xF0-0xF2, EDEN_UP_OOT_NATIVE_ZSTD=1), the
+  file named by its compressed size and a hash of its first 64 bytes; MiB = output capacity.
+- zstd streams: stream starts (svc 0xF4 in phase 1, EDEN_UP_OOT_ZSTD_STREAM=1), named by the first
+  chunk's size and first 64 bytes (the frame header with content size and dictionary id).
+- fs opens (IFileSystem::OpenFile, by path), fs file reads (IFile::Read, by the file's name,
+  offset and length) and storage reads (IStorage::Read, by offset and length), any title.
+Per event with the switch: a mutex, a hash map lookup and, for zstd, a 64-byte guest read; a name
+string only the first time a file is seen; at most 32768 files per source, older than 60 s pruned
+each line. Unset: one test of a static bool per event (and IFile keeps an empty string).
+KEEPS THE STORE (no shader, pipeline or translation file).
+---
+ src/common/nx2_load_census.h                  | 197 ++++++++++++++++++
+ src/core/hle/kernel/svc/svc_nx2_oot_poll.cpp  |   9 +
+ src/core/hle/kernel/svc/svc_nx2_zstd.cpp      |  34 +++
+ .../hle/service/filesystem/fsp/fs_i_file.cpp  |  16 +-
+ .../hle/service/filesystem/fsp/fs_i_file.h    |   1 +
+ .../filesystem/fsp/fs_i_filesystem.cpp        |   8 +
+ .../service/filesystem/fsp/fs_i_storage.cpp   |   9 +
+ 7 files changed, 273 insertions(+), 1 deletion(-)
+ create mode 100644 src/common/nx2_load_census.h
+
+diff --git a/src/common/nx2_load_census.h b/src/common/nx2_load_census.h
+new file mode 100644
+index 0000000000..f22995e4a9
+--- /dev/null
++++ b/src/common/nx2_load_census.h
+@@ -0,0 +1,197 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++// EDEN_UP_GPU_PASS_TIME=1 (patch 0951, log only; read once): what the game loads, so that a
++// steady stream of loads can be told apart from the same files loaded again. Each source counts
++// its events and keeps, per file, when it was last seen; an event whose file was seen less than
++// 60 s before counts as a repeat. Files are named where a name is known (fs opens and file
++// reads), else by offset and length (storage reads) or by the size and a hash of the first 64
++// compressed bytes (zstd decodes). At most one line group per 10 s ("EDEN_UP_LOAD_CENSUS"),
++// written by whichever thread notes the first event after the 10 s, with the top 3 repeated files
++// of each source. Unset: Enabled() is one test of a static bool and nothing else runs.
++
++#include <algorithm>
++#include <array>
++#include <chrono>
++#include <cstddef>
++#include <cstring>
++#include <mutex>
++#include <string>
++#include <string_view>
++#include <unordered_map>
++#include <vector>
++
++#include "common/common_types.h"
++#include "common/logging.h"
++#include "common/pe_switch.h"
++
++namespace Common::Nx2LoadCensus {
++
++enum class Source : u8 {
++    PollLoads,   ///< loads the OoT resource request thread issued (svc 0xF3, counts only)
++    ZstdOneShot, ///< ZSTD_decompressMultiFrame calls (svc 0xF0-0xF2), by size + first bytes
++    ZstdStream,  ///< zstd streams started (svc 0xF4, phase 1), by first chunk size + first bytes
++    FsOpen,      ///< IFileSystem::OpenFile, by path
++    FsFileRead,  ///< IFile::Read, by file name + offset + length
++    StorageRead, ///< IStorage::Read, by offset + length
++    Count,
++};
++
++inline bool Enabled() noexcept {
++    static const bool enabled = Common::PeSwitch("EDEN_UP_GPU_PASS_TIME");
++    return enabled;
++}
++
++inline u64 Hash(const void* data, size_t size, u64 seed = 0xcbf29ce484222325ULL) noexcept {
++    const auto* bytes = static_cast<const u8*>(data);
++    u64 hash = seed;
++    for (size_t i = 0; i < size; ++i) {
++        hash = (hash ^ bytes[i]) * 0x100000001b3ULL;
++    }
++    return hash;
++}
++
++inline u64 Mix(u64 a, u64 b) noexcept {
++    return Hash(&b, sizeof(b), a);
++}
++
++namespace Detail {
++constexpr long long kWindowNs = 10'000'000'000LL;
++constexpr long long kRepeatNs = 60'000'000'000LL;
++constexpr size_t kMaxEntries = 32768;
++constexpr size_t kSources = static_cast<size_t>(Source::Count);
++constexpr std::array<const char*, kSources> kNames{"poll loads", "zstd one-shot", "zstd streams",
++                                                   "fs opens", "fs file reads", "storage reads"};
++
++struct Entry {
++    long long last_ns{};
++    u32 window{};  ///< events in this 10 s window
++    u32 repeats{}; ///< of those, seen again within 60 s
++    std::string name;
++};
++struct SourceState {
++    u64 events{}, count{}, repeats{}, bytes{}, untracked{};
++    std::unordered_map<u64, Entry> seen;
++};
++struct State {
++    std::mutex mutex;
++    std::array<SourceState, kSources> sources;
++    long long window_start{};
++};
++inline State& Get() {
++    static State state;
++    return state;
++}
++inline long long NowNs() {
++    return std::chrono::duration_cast<std::chrono::nanoseconds>(
++               std::chrono::steady_clock::now().time_since_epoch())
++        .count();
++}
++
++// Under the mutex.
++inline void Report(State& state, long long now) {
++    const double secs = static_cast<double>(now - state.window_start) / 1e9;
++    for (size_t s = 0; s < kSources; ++s) {
++        SourceState& source = state.sources[s];
++        if (source.events == 0) {
++            continue;
++        }
++        size_t distinct = 0, distinct_repeated = 0;
++        std::vector<std::pair<u32, const Entry*>> top;
++        for (const auto& [key, entry] : source.seen) {
++            if (entry.window == 0) {
++                continue;
++            }
++            ++distinct;
++            if (entry.repeats != 0) {
++                ++distinct_repeated;
++                top.emplace_back(entry.repeats, &entry);
++            }
++        }
++        const size_t shown = (std::min<size_t>)(top.size(), 3);
++        std::partial_sort(top.begin(), top.begin() + static_cast<std::ptrdiff_t>(shown), top.end(),
++                          [](const auto& a, const auto& b) { return a.first > b.first; });
++        std::string names;
++        for (size_t i = 0; i < shown; ++i) {
++            names += fmt::format("{}{} x{} (+{} again)", i ? "; " : "", top[i].second->name,
++                                 top[i].second->window, top[i].first);
++        }
++        if (s == static_cast<size_t>(Source::PollLoads)) {
++            LOG_INFO(Kernel_SVC,
++                     "EDEN_UP_LOAD_CENSUS {:.1f} s: {}: {} walks issued {} loads ({:.1f}/s)", secs,
++                     kNames[s], source.events, source.count,
++                     secs > 0 ? static_cast<double>(source.count) / secs : 0.0);
++        } else {
++            LOG_INFO(Kernel_SVC,
++                     "EDEN_UP_LOAD_CENSUS {:.1f} s: {}: {} ({:.1f}/s), {} MiB, {} distinct, {} seen "
++                     "again within 60 s ({} distinct), {} untracked; top: {}",
++                     secs, kNames[s], source.events,
++                     secs > 0 ? static_cast<double>(source.events) / secs : 0.0,
++                     source.bytes >> 20, distinct, source.repeats, distinct_repeated,
++                     source.untracked, names.empty() ? std::string{"none"} : names);
++        }
++        source.events = source.count = source.repeats = source.bytes = source.untracked = 0;
++        for (auto it = source.seen.begin(); it != source.seen.end();) {
++            if (now - it->second.last_ns > kRepeatNs) {
++                it = source.seen.erase(it);
++            } else {
++                it->second.window = 0;
++                it->second.repeats = 0;
++                ++it;
++            }
++        }
++    }
++    state.window_start = now;
++}
++} // namespace Detail
++
++/// One event: `key` identifies the file (0: count only), `count` adds to the source's count
++/// (loads for PollLoads), `bytes` to its bytes; `name()` (a std::string) is called and kept only
++/// the first time the key is seen.
++template <typename NameFn>
++void Note(Source which, u64 key, u64 bytes, u64 count, NameFn&& name) {
++    if (!Enabled()) {
++        return;
++    }
++    using namespace Detail;
++    State& state = Get();
++    const long long now = NowNs();
++    std::scoped_lock lock{state.mutex};
++    if (state.window_start == 0) {
++        state.window_start = now;
++    }
++    SourceState& source = state.sources[static_cast<size_t>(which)];
++    ++source.events;
++    source.count += count;
++    source.bytes += bytes;
++    if (key != 0) {
++        auto it = source.seen.find(key);
++        if (it == source.seen.end()) {
++            if (source.seen.size() >= kMaxEntries) {
++                ++source.untracked;
++            } else {
++                it = source.seen.emplace(key, Entry{.last_ns = now, .window = 0, .repeats = 0,
++                                                    .name = std::string{name()}})
++                         .first;
++            }
++        } else if (now - it->second.last_ns <= kRepeatNs) {
++            ++source.repeats;
++            ++it->second.repeats;
++        }
++        if (it != source.seen.end()) {
++            ++it->second.window;
++            it->second.last_ns = now;
++        }
++    }
++    if (now - state.window_start >= kWindowNs) {
++        try {
++            Report(state, now);
++        } catch (const std::bad_alloc&) {
++            state.window_start = now;
++        }
++    }
++}
++
++} // namespace Common::Nx2LoadCensus
+diff --git a/src/core/hle/kernel/svc/svc_nx2_oot_poll.cpp b/src/core/hle/kernel/svc/svc_nx2_oot_poll.cpp
+index a354f90f03..9dd116d6ca 100644
+--- a/src/core/hle/kernel/svc/svc_nx2_oot_poll.cpp
++++ b/src/core/hle/kernel/svc/svc_nx2_oot_poll.cpp
+@@ -8,6 +8,7 @@
+ #include <mutex>
+ 
+ #include "common/live_switch.h"
++#include "common/nx2_load_census.h"
+ #include "common/logging.h"
+ #include "core/arm/arm_interface.h"
+ #include "core/core.h"
+@@ -115,6 +116,7 @@ struct WalkView {
+     u64 manager{};
+     u32 head{};
+     u32 count{};
++    u32 issued{}; ///< patch 0951: loads this walk issued ([sp+0x108])
+ };
+ 
+ bool Valid(Core::Memory::Memory& memory, u64 address, u64 size) {
+@@ -156,6 +158,7 @@ WalkView ReadWalk(Core::Memory::Memory& memory, const ThreadContext& ctx) {
+         return view;
+     }
+     view.manager = manager;
++    view.issued = memory.Read32(sp + kIssuedOffset);
+     view.head = memory.Read32(manager + kHeadOffset);
+     view.count = memory.Read32(manager + kCountOffset);
+     if (memory.Read32(manager + kStateOffset) != kStateWalking) {
+@@ -259,6 +262,12 @@ bool CallNx2OotPollBackoff(Core::System& system, u32 imm) {
+         view = ReadWalk(memory, ctx);
+     }
+ 
++    // EDEN_UP_GPU_PASS_TIME=1 (patch 0951, common/nx2_load_census.h): the loads each walk issued.
++    if (view.outcome != Outcome::Frame && view.issued != 0) {
++        Common::Nx2LoadCensus::Note(Common::Nx2LoadCensus::Source::PollLoads, 0, 0, view.issued,
++                                    [] { return std::string{}; });
++    }
++
+     // EDEN_UP_LIVE_SWITCHES (common/live_switch.h): a walk that would sleep returns at once
+     // in an off phase, as one that issued loads does. The slot below is kept up to date, so
+     // the next walk is measured from here either way.
+diff --git a/src/core/hle/kernel/svc/svc_nx2_zstd.cpp b/src/core/hle/kernel/svc/svc_nx2_zstd.cpp
+index 264c3ae9a5..00e74beb1f 100644
+--- a/src/core/hle/kernel/svc/svc_nx2_zstd.cpp
++++ b/src/core/hle/kernel/svc/svc_nx2_zstd.cpp
+@@ -20,6 +20,7 @@
+ 
+ #include "common/live_switch.h"
+ #include "common/logging.h"
++#include "common/nx2_load_census.h"
+ #include "common/pe_switch.h"
+ #include "common/scratch_buffer.h"
+ #include "core/arm/arm_interface.h"
+@@ -1390,6 +1391,26 @@ StepBy DecideStep(Core::Memory::Memory& memory, u64 state, u64 src, s32 size, u6
+     return StepBy::Game; // a stream of the game's
+ }
+ 
++// Patch 0951 (EDEN_UP_GPU_PASS_TIME=1, common/nx2_load_census.h): notes a zstd input by its size
++// and the hash of its first 64 bytes. `out_bytes` is what the census adds up (the output capacity
++// for a one-shot call, the chunk for a stream).
++void NoteCensus(Core::Memory::Memory& memory, Common::Nx2LoadCensus::Source source, u64 src,
++                u64 size, u64 out_bytes) {
++    std::array<u8, 64> head{};
++    const size_t n = static_cast<size_t>(std::min<u64>(size, head.size()));
++    if (n == 0 || !memory.IsValidVirtualAddressRange(src, n)) {
++        return;
++    }
++    memory.ReadBlock(src, head.data(), n);
++    const u64 key = Common::Nx2LoadCensus::Mix(Common::Nx2LoadCensus::Hash(head.data(), n), size);
++    try {
++        Common::Nx2LoadCensus::Note(source, key | 1, out_bytes, 1, [key, size] {
++            return fmt::format("zstd {:016x} {} B", key | 1, size);
++        });
++    } catch (const std::bad_alloc&) {
++    }
++}
++
+ bool CallStream(Core::System& system, u32 imm, std::span<uint64_t, 8> args) {
+     if (!StreamEnabled()) {
+         return false;
+@@ -1427,6 +1448,14 @@ bool CallStream(Core::System& system, u32 imm, std::span<uint64_t, 8> args) {
+     const u64 src = args[1];
+     const s32 size = static_cast<s32>(static_cast<u32>(args[2]));
+     const u64 ddict = args[3];
++    // EDEN_UP_GPU_PASS_TIME=1 (patch 0951): a stream's first step names its file by the first
++    // chunk's size and first bytes (the frame header: content size and dictionary id included).
++    if (Common::Nx2LoadCensus::Enabled() && size > 0 &&
++        memory.IsValidVirtualAddressRange(state, kStateBytes) &&
++        memory.Read8(state + kPhase) == kPhaseStart) {
++        NoteCensus(memory, Common::Nx2LoadCensus::Source::ZstdStream, src,
++                   static_cast<u64>(size), static_cast<u64>(size));
++    }
+     s32 ret = -1;
+     StepBy by = StepBy::Game;
+     if (memory.IsValidVirtualAddressRange(state, kStateBytes)) {
+@@ -1464,6 +1493,11 @@ bool CallNx2OotZstd(Core::System& system, u32 imm, std::span<uint64_t, 8> args)
+     }
+     const s64 now = NowNs();
+     g_stats.calls.fetch_add(1, std::memory_order_relaxed);
++    // EDEN_UP_GPU_PASS_TIME=1 (patch 0951): the file, by its compressed size and first bytes.
++    if (Common::Nx2LoadCensus::Enabled()) {
++        NoteCensus(process.GetMemory(), Common::Nx2LoadCensus::Source::ZstdOneShot, args[3], args[4],
++                   args[2]);
++    }
+     if (args[7] != 0) {
+         g_stats.ddict_calls.fetch_add(1, std::memory_order_relaxed);
+     }
+diff --git a/src/core/hle/service/filesystem/fsp/fs_i_file.cpp b/src/core/hle/service/filesystem/fsp/fs_i_file.cpp
+index 22cbe2be2c..490a647802 100644
+--- a/src/core/hle/service/filesystem/fsp/fs_i_file.cpp
++++ b/src/core/hle/service/filesystem/fsp/fs_i_file.cpp
+@@ -4,6 +4,7 @@
+ // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include "common/nx2_load_census.h"
+ #include "core/file_sys/errors.h"
+ #include "core/hle/service/cmif_serialization.h"
+ #include "core/hle/service/filesystem/fsp/fs_i_file.h"
+@@ -11,7 +12,8 @@
+ namespace Service::FileSystem {
+ 
+ IFile::IFile(Core::System& system_, FileSys::VirtualFile file_)
+-    : ServiceFramework{system_, "IFile"}, backend{std::make_unique<FileSys::Fsa::IFile>(file_)} {
++    : ServiceFramework{system_, "IFile"}, backend{std::make_unique<FileSys::Fsa::IFile>(file_)},
++      census_name{Common::Nx2LoadCensus::Enabled() && file_ ? file_->GetName() : std::string{}} {
+     // clang-format off
+     static const FunctionInfo functions[] = {
+         {0, D<&IFile::Read>, "Read"},
+@@ -32,6 +34,18 @@ Result IFile::Read(
+     s64 size) {
+     LOG_DEBUG(Service_FS, "called, option={}, offset={:#x}, length={}", option.value, offset,
+               size);
++    // EDEN_UP_GPU_PASS_TIME=1 (patch 0951, common/nx2_load_census.h): reads by file, offset, length.
++    if (Common::Nx2LoadCensus::Enabled()) {
++        const u64 key = Common::Nx2LoadCensus::Mix(
++            Common::Nx2LoadCensus::Mix(
++                Common::Nx2LoadCensus::Hash(census_name.data(), census_name.size()),
++                static_cast<u64>(offset)),
++            static_cast<u64>(size));
++        Common::Nx2LoadCensus::Note(Common::Nx2LoadCensus::Source::FsFileRead, key | 1,
++                                    static_cast<u64>(size > 0 ? size : 0), 1, [this, offset, size] {
++                                        return fmt::format("{}@{:#x}+{}", census_name, offset, size);
++                                    });
++    }
+ 
+     // Read the data from the Storage backend
+     R_RETURN(
+diff --git a/src/core/hle/service/filesystem/fsp/fs_i_file.h b/src/core/hle/service/filesystem/fsp/fs_i_file.h
+index 14348f7fc6..ee1f97c508 100644
+--- a/src/core/hle/service/filesystem/fsp/fs_i_file.h
++++ b/src/core/hle/service/filesystem/fsp/fs_i_file.h
+@@ -19,6 +19,7 @@ public:
+ 
+ private:
+     std::unique_ptr<FileSys::Fsa::IFile> backend;
++    std::string census_name; ///< patch 0951 (EDEN_UP_GPU_PASS_TIME=1): the file's name, else empty
+ 
+     Result Read(FileSys::ReadOption option, Out<s64> out_size, s64 offset,
+                 const OutBuffer<BufferAttr_HipcMapAlias | BufferAttr_HipcMapTransferAllowsNonSecure>
+diff --git a/src/core/hle/service/filesystem/fsp/fs_i_filesystem.cpp b/src/core/hle/service/filesystem/fsp/fs_i_filesystem.cpp
+index edd381f57c..64d814f0c9 100644
+--- a/src/core/hle/service/filesystem/fsp/fs_i_filesystem.cpp
++++ b/src/core/hle/service/filesystem/fsp/fs_i_filesystem.cpp
+@@ -4,6 +4,7 @@
+ // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include "common/nx2_load_census.h"
+ #include "common/string_util.h"
+ #include "core/file_sys/fssrv/fssrv_sf_path.h"
+ #include "core/hle/service/cmif_serialization.h"
+@@ -104,6 +105,13 @@ Result IFileSystem::OpenFile(OutInterface<IFile> out_interface,
+     FileSys::VirtualFile vfs_file{};
+     R_TRY(backend->OpenFile(&vfs_file, FileSys::Path(path->str),
+                             static_cast<FileSys::OpenMode>(mode)));
++    // EDEN_UP_GPU_PASS_TIME=1 (patch 0951, common/nx2_load_census.h): opens by path.
++    if (Common::Nx2LoadCensus::Enabled()) {
++        const std::string_view name{path->str, ::strnlen(path->str, sizeof(path->str))};
++        Common::Nx2LoadCensus::Note(Common::Nx2LoadCensus::Source::FsOpen,
++                                    Common::Nx2LoadCensus::Hash(name.data(), name.size()) | 1, 0, 1,
++                                    [name] { return std::string{name}; });
++    }
+ 
+     *out_interface = std::make_shared<IFile>(system, vfs_file);
+     R_SUCCEED();
+diff --git a/src/core/hle/service/filesystem/fsp/fs_i_storage.cpp b/src/core/hle/service/filesystem/fsp/fs_i_storage.cpp
+index dfbc13ee50..3633a900bc 100644
+--- a/src/core/hle/service/filesystem/fsp/fs_i_storage.cpp
++++ b/src/core/hle/service/filesystem/fsp/fs_i_storage.cpp
+@@ -8,6 +8,7 @@
+ #include <chrono>
+ #include <thread>
+ 
++#include "common/nx2_load_census.h"
+ #include "common/pe_switch.h"
+ #include "common/settings.h"
+ #include "core/file_sys/errors.h"
+@@ -36,6 +37,14 @@ Result IStorage::Read(
+ 
+     R_UNLESS(length >= 0, FileSys::ResultInvalidSize);
+     R_UNLESS(offset >= 0, FileSys::ResultInvalidOffset);
++    // EDEN_UP_GPU_PASS_TIME=1 (patch 0951, common/nx2_load_census.h): reads by offset and length.
++    if (Common::Nx2LoadCensus::Enabled()) {
++        const u64 key = Common::Nx2LoadCensus::Mix(static_cast<u64>(offset), static_cast<u64>(length));
++        Common::Nx2LoadCensus::Note(Common::Nx2LoadCensus::Source::StorageRead, key | 1,
++                                    static_cast<u64>(length), 1, [offset, length] {
++                                        return fmt::format("storage@{:#x}+{}", offset, length);
++                                    });
++    }
+ 
+     // EDEN_UP_FS_NO_THROTTLE=1 (Lichii 72e9429daf, #659): no 40 MB/s Switch 1 card throttle for
+     // Switch 2 titles. Ocarina of Time streams its movies with 150-460 reads a second (EDEN_NX2_IPC_SUMMARY,

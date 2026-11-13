@@ -1,0 +1,140 @@
+From: EglantinePS5
+Subject: [PATCH] up: a failed pipeline cache write no longer deletes the whole cache file, and out of memory while reading no longer cuts it (after Lichii #815), EDEN_UP_CACHE_KEEP_GOOD=1, off by default
+
+What: SerializePipeline deleted the whole pipeline cache file (or the mesh one) when a record could
+not be written (a full disk), and also when the file could not be opened: the failbit is armed
+before the open test, so the failed open throws and the catch deletes the file. Then the next
+start has no cached pipelines: a cold start, first-sight stutter everywhere.
+
+With the switch, in this core patch (shader_environment.cpp, SerializePipeline):
+- a file that cannot be opened is left alone (one error line);
+- a record that could not be written whole is cut off again (the file goes back to its size before
+  the record), so the next record follows complete records;
+- appends take a process-wide mutex (one writer thread today; cheap).
+
+The reading side: the PS5 build does not use LoadPipelines from this file. headless/CMakeLists.txt
+replaces it with headless/shader_cache_reader.inc, which already keeps the entries before a damaged
+one and cuts the file back to them (the main part of upstream #815, done here earlier). The same
+commit as this patch file changes that reader, with the same switch:
+- out of memory while reading stops the reading and keeps the file whole (before: the file was cut
+  back to the entry being read, so every entry after it was lost though nothing was damaged);
+  line "[EglantinePS5] shader cache: no memory while reading <file> after n bytes; reading stopped,
+  the file is kept whole (EDEN_UP_CACHE_KEEP_GOOD)";
+- the sixth size of each environment (constant buffer replacements) is checked too, before
+  anything is allocated for it;
+- a compute entry must hold one environment, a graphics entry no compute one.
+
+Not taken from upstream (much bigger, on code we do not have): the file lock between emulators (one
+emulator per console), the rewrite that removes stale or duplicate records, host-property tags,
+deeper per-environment checks, the tests.
+
+Switch: EDEN_UP_CACHE_KEEP_GOOD=1 (exact "1"), read once (core and reader read it each on their
+own). Off: one test of a static bool, then the old code in both places.
+
+Price: none in play. This changes the PS5 build's derived shader_environment.cpp, which is an input
+of tools/gen-translation-id.py: with EDEN_UP_SHADER_PREP_SOURCE_STAMP=1 the first boot of this build
+starts a new shader store (like any build that changes translation inputs).
+
+Test: normal starts should load the same pipeline count. The write part shows only on a full disk
+or a file that cannot be opened (the old code's delete would be followed by a cold next start). Not
+checked: a run.
+
+Origin and credit: Zortos, zortos293/Lichii cfa85c12b4 (#815), "video_core, vulkan: drop only damaged,
+stale or duplicate pipeline cache records"; the write part is his code (without the lock), the
+reader changes follow his load code (bad_alloc keeps the file; the stage checks).
+---
+diff --git a/src/video_core/shader_environment.cpp b/src/video_core/shader_environment.cpp
+index 352c6c0..baba148 100644
+--- a/src/video_core/shader_environment.cpp
++++ b/src/video_core/shader_environment.cpp
+@@ -23,6 +23,9 @@
+ #include <string>
+ #include <fstream>
+ #include <memory>
++#include <mutex>
++#include <new>
++#include <system_error>
+ #include <optional>
+ #include <utility>
+ 
+@@ -1605,9 +1608,80 @@ bool ReadPipelines(
+     }
+ }
+ 
++// EDEN_UP_CACHE_KEEP_GOOD=1 (exact "1"; 0747, after Lichii #815, Zortos): a record that cannot be
++// written is cut off again and a file that cannot be opened is left alone, instead of the whole
++// pipeline cache file being deleted. Off: the old code (any write error deletes the file). The
++// PS5 build reads the file with headless/shader_cache_reader.inc in place of LoadPipelines below
++// (headless/CMakeLists.txt), which already keeps the records before a damaged one; the same
++// switch changes that reader too.
++[[nodiscard]] static bool CacheKeepGood() {
++    static const bool enabled = [] {
++        const char* const value = std::getenv("EDEN_UP_CACHE_KEEP_GOOD");
++        return value != nullptr && value[0] == '1' && value[1] == '\0';
++    }();
++    return enabled;
++}
++
++// 0747: appends to the cache files, one at a time in this process.
++static std::mutex& CacheFileMutex() {
++    static std::mutex mutex;
++    return mutex;
++}
++
++// 0747: SerializePipeline with EDEN_UP_CACHE_KEEP_GOOD=1 (from Lichii cfa85c12b4, without its
++// file lock: one emulator per console).
++static void SerializePipelineKeepGood(std::span<const char> key,
++                                      std::span<const GenericEnvironment* const> envs,
++                                      const std::filesystem::path& filename, u32 cache_version,
++                                      bool with_mesh_state) {
++    std::scoped_lock lock{CacheFileMutex()};
++    std::ofstream file(filename, std::ios::binary | std::ios::ate | std::ios::app);
++    const std::streamoff size{file.is_open() ? std::streamoff{file.tellp()} : -1};
++    if (!file.is_open() || size < 0) {
++        LOG_ERROR(Common_Filesystem, "Failed to open pipeline cache file {}",
++                  Common::FS::PathToUTF8String(filename));
++        return;
++    }
++    try {
++        file.exceptions(std::ifstream::failbit);
++        if (size == 0) {
++            // Write header
++            file.write(MAGIC_NUMBER.data(), MAGIC_NUMBER.size())
++                .write(reinterpret_cast<const char*>(&cache_version), sizeof(cache_version));
++        }
++        if (!std::ranges::all_of(envs, &GenericEnvironment::CanBeSerialized)) {
++            return;
++        }
++        const u32 num_envs{static_cast<u32>(envs.size())};
++        file.write(reinterpret_cast<const char*>(&num_envs), sizeof(num_envs));
++        for (const GenericEnvironment* const env : envs) {
++            env->Serialize(file, with_mesh_state);
++        }
++        file.write(key.data(), key.size_bytes());
++        file.close();
++    } catch (const std::ios_base::failure& e) {
++        LOG_ERROR(Common_Filesystem, "{}", e.what());
++        // Cut off the part of the record that was written (a full disk), so that the next one
++        // follows complete records.
++        file.exceptions(std::ios::goodbit);
++        file.close();
++        std::error_code error;
++        std::filesystem::resize_file(filename, static_cast<std::uintmax_t>(size), error);
++        if (error) {
++            LOG_ERROR(Common_Filesystem,
++                      "Failed to cut pipeline cache file {} back to {} bytes: {}",
++                      Common::FS::PathToUTF8String(filename), size, error.message());
++        }
++    }
++}
++
+ void SerializePipeline(std::span<const char> key, std::span<const GenericEnvironment* const> envs,
+                        const std::filesystem::path& filename, u32 cache_version,
+                        bool with_mesh_state) try {
++    if (CacheKeepGood()) {
++        SerializePipelineKeepGood(key, envs, filename, cache_version, with_mesh_state);
++        return;
++    }
+     std::ofstream file(filename, std::ios::binary | std::ios::ate | std::ios::app);
+     file.exceptions(std::ifstream::failbit);
+     if (!file.is_open()) {

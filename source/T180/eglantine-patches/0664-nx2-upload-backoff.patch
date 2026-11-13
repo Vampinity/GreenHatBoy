@@ -1,0 +1,218 @@
+From: EglantinePS5
+Subject: [PATCH] nx2: a refused texture upload backs off before it is tried again (waveydude's 0919, EDEN_NX2_UPLOAD_BACKOFF), off by default
+
+What: a texture upload that finds no staging buffer, or whose decode the pool refused
+(EDEN_NX2_TRANSCODE_WAIT's refusal included), goes to UploadLater: the image stays CPU-modified and
+the next draw that samples it tries again. Under a long shortage that is every use, each one a
+refused staging request on the GPU thread.
+
+With EDEN_NX2_UPLOAD_BACKOFF=1 (exact "1", read once) UploadLater counts the refusals in a row and
+RefreshContents skips the image until frame_tick passes upload_retry_frame: 8, 16, 32, 64, then
+128 frames (upload_retry.h, BackoffFrames). A guest write to the image (the two places that mark it
+CPU-modified) and an upload that goes through reset the count and the wait. At the
+EDEN_NX2_UPLOAD_MAX_RETRIES-th refusal in a row (unset: 8, as in his 0919; "0": no limit) the image
+is given up: CpuModified cleared, drawn with what it holds until the guest writes it again, one
+LOG_ERROR line; with EDEN_NX2_BAD_ALLOC_ENDS=1 a bad_alloc is thrown instead.
+
+Do not use this on its own: an image given up before its first upload is black until the game
+writes it again. 0665 (his 0924) takes the limit away by default; use the two together.
+
+Changed from his: the switch (his 0919 has none: always on); the helpers are a core header
+(video_core/texture_cache/upload_retry.h, from his headless/upload_retry.h of 0924) so the core
+needs nothing of the wrapper; his UploadInChunks change ("return false" for "UploadLater; break")
+is left out: a refused chunk still goes to UploadLater, and the upload_retry_frame test after it
+already tells a refused upload from one that went through; his unused KeepContentsFallback
+declaration is left out.
+
+Off: two image fields that stay 0 (16 bytes per image with padding), two stores of 0 where the guest writes an
+image, one compare of a 0 frame per refresh of a CPU-modified image, one test of a static bool per
+refusal; no waits, no limit, no line. Not in the kept-store stamp.
+
+Origin and credit: waveydude, patch 0919 ("Back off repeated texture upload refusals"), commit
+792612f; BackoffFrames, GiveUp and NextFailCount from his headless/upload_retry.h (commit 2ca0fdb).
+---
+diff --git a/src/video_core/texture_cache/image_base.h b/src/video_core/texture_cache/image_base.h
+index ab11361..37a62e4 100644
+--- a/src/video_core/texture_cache/image_base.h
++++ b/src/video_core/texture_cache/image_base.h
+@@ -152,6 +152,10 @@ struct ImageBase {
+     /// (raised when an alias's tick is set or an alias is added): SynchronizeAliases has nothing
+     /// to do while it is not newer. Never read with the switch off.
+     u64 newest_alias_tick = 0;
++    /// EDEN_NX2_UPLOAD_BACKOFF (waveydude's 0919): the frame before which a refused upload is not
++    /// tried again, and the refusals in a row. Both stay 0 with the switch off.
++    u64 upload_retry_frame = 0;
++    u32 upload_fail_count = 0;
+     size_t lru_index = SIZE_MAX;
+ 
+     /// EDEN_UP_FRITCHII_RELOCATE / _COLD (Fritchii c98e63520a): the frame the GPU last wrote the
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index e60ce70..c54e7d3 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -42,6 +42,7 @@
+ #include "video_core/texture_cache/image_view_base.h"
+ #include "video_core/texture_cache/samples_helper.h"
+ #include "video_core/texture_cache/texture_cache_base.h"
++#include "video_core/texture_cache/upload_retry.h"
+ #include "video_core/texture_cache/util.h"
+ #include "video_core/nx2.h"
+ #include "video_core/nx2_fast_draw.h"
+@@ -241,6 +242,14 @@ constexpr u64 KeepRemadeWindow = 600;
+     return enabled;
+ }
+ 
++/// EDEN_NX2_UPLOAD_BACKOFF=1 (exact "1", read once; waveydude's 0919): a refused texture upload
++/// (UploadLater) is not tried again at every use but after a back-off that grows to 128 frames,
++/// with an optional give-up limit (EDEN_NX2_UPLOAD_MAX_RETRIES, upload_retry.h). Off: as before.
++[[nodiscard]] inline bool UploadBackoff() {
++    static const bool enabled = Common::PeSwitch("EDEN_NX2_UPLOAD_BACKOFF");
++    return enabled;
++}
++
+ /// EDEN_UP_FRITCHII_RELOCATE=1 (off unless set; Fritchii c98e63520a + 07b38b3caf, EXP43=3 of
+ /// 1735a6fd13): a render target a clear overwrites whole, which drifted a little off one or more
+ /// images of its own single-level, single-layer 2D shape (Ocarina of Time's bump-allocated
+@@ -3528,6 +3537,9 @@ void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
+             MarkLayersWritten(image, cpu_addr, size);
+             return;
+         }
++        // EDEN_NX2_UPLOAD_BACKOFF: the guest wrote it again, so the next use tries at once.
++        image.upload_fail_count = 0;
++        image.upload_retry_frame = 0;
+         if (True(image.flags & ImageFlagBits::CpuModified)) {
+             return;
+         }
+@@ -3682,6 +3694,8 @@ void TextureCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t siz
+         Image& image = slot_images[id];
+         if (False(image.flags & ImageFlagBits::CpuModified)) {
+             image.flags |= ImageFlagBits::CpuModified;
++            image.upload_fail_count = 0; // EDEN_NX2_UPLOAD_BACKOFF: new contents, no wait
++            image.upload_retry_frame = 0;
+             if (True(image.flags & ImageFlagBits::Tracked)) {
+                 UntrackImage(image, id);
+             }
+@@ -4443,6 +4457,11 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
+         // Only upload modified images
+         return;
+     }
++    // EDEN_NX2_UPLOAD_BACKOFF (UploadLater): a refused upload waits out its back-off; the image
++    // keeps what it holds until then. Never true with the switch off (the frame stays 0).
++    if (image.upload_retry_frame > frame_tick) {
++        return;
++    }
+     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::TextureUpload};
+     HitchTrace::Op upload_trace{HitchTrace::Kind::ImageUpload, image.guest_size_bytes,
+                                 HitchTraceDesc(image.info, image.gpu_addr)};
+@@ -4555,6 +4574,9 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
+     ++images_uploaded;
+     uploaded_bytes += image.guest_size_bytes;
+     largest_upload = (std::max<u64>)(largest_upload, image.guest_size_bytes);
++    // EDEN_NX2_UPLOAD_BACKOFF: UploadLater sets the frame again when this upload is refused, so
++    // a frame still 0 below means the upload went through and the refusal count starts over.
++    image.upload_retry_frame = 0;
+     try {
+         if (!UploadInChunks(image)) {
+             if (auto staging = UploadStagingNow(runtime, MapSizeBytes(image))) {
+@@ -4566,11 +4588,16 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
+                 if (refused) {
+                     UploadLater(image);
+                 } else {
++                    image.upload_fail_count = 0;
+                     runtime.InsertUploadMemoryBarrier();
+                 }
+             } else if (!UploadInChunks(image, 0)) {
+                 UploadLater(image);
++            } else if (image.upload_retry_frame == 0) {
++                image.upload_fail_count = 0;
+             }
++        } else if (image.upload_retry_frame == 0) {
++            image.upload_fail_count = 0;
+         }
+     } catch (const std::bad_alloc&) {
+         // No memory for one image's unswizzle or conversion scratch (tens of MiB in one piece, on
+@@ -4615,6 +4642,29 @@ void TextureCache<P>::UploadLater(Image& image) {
+                             "its upload waits for its next use",
+                     image.gpu_addr, MapSizeBytes(image), times);
+     }
++    // EDEN_NX2_UPLOAD_BACKOFF=1 (exact "1"; waveydude's 0919): the next try waits 8, 16, 32, 64,
++    // then 128 frames (RefreshContents skips the image until then), and with
++    // EDEN_NX2_UPLOAD_MAX_RETRIES=<n> the image is given up at its n-th refusal in a row: drawn
++    // with what it holds until the guest writes it again. Off: as before (no wait, no limit).
++    if (UploadBackoff()) {
++        image.upload_fail_count = UploadRetry::NextFailCount(image.upload_fail_count);
++        static const u32 max_retries =
++            UploadRetry::ReadMaxRetries(std::getenv("EDEN_NX2_UPLOAD_MAX_RETRIES"), 8);
++        if (UploadRetry::GiveUp(image.upload_fail_count, max_retries)) {
++            if (const char* value = std::getenv("EDEN_NX2_BAD_ALLOC_ENDS"); value && value[0] == '1') {
++                throw std::bad_alloc{};
++            }
++            LOG_ERROR(HW_GPU, "Repeated upload failures for image at {:#x}: keeping existing contents",
++                      image.gpu_addr);
++            image.flags &= ~ImageFlagBits::CpuModified;
++            runtime.TransitionImageLayout(image);
++            VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Invalidation);
++            image.upload_fail_count = 0;
++            image.upload_retry_frame = 0;
++            return;
++        }
++        image.upload_retry_frame = frame_tick + UploadRetry::BackoffFrames(image.upload_fail_count);
++    }
+     image.flags |= ImageFlagBits::CpuModified;
+     runtime.TransitionImageLayout(image);
+     // EDEN_UP_FAST_DRAW: the next draw that samples it uploads it, as without fast draws.
+diff --git a/src/video_core/texture_cache/upload_retry.h b/src/video_core/texture_cache/upload_retry.h
+new file mode 100644
+index 0000000..ca557b4
+--- /dev/null
++++ b/src/video_core/texture_cache/upload_retry.h
+@@ -0,0 +1,49 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++// EDEN_NX2_UPLOAD_BACKOFF (texture_cache.h UploadLater): when a texture upload that found no
++// memory is tried again, and when it is given up. From waveydude's 0919 and his
++// headless/upload_retry.h (0924), here in the core so the texture cache needs nothing of the
++// wrapper's.
++#pragma once
++
++#include <algorithm>
++#include <cstdint>
++#include <cstdlib>
++
++namespace VideoCommon::UploadRetry {
++
++constexpr std::uint64_t MaxBackoffFrames = 128;
++
++/// Frames to wait after the `fail_count`-th refusal in a row (1 for the first): 8, 16, 32, 64,
++/// then 128 for every one after.
++constexpr std::uint64_t BackoffFrames(std::uint32_t fail_count) {
++    const std::uint32_t shift = std::min<std::uint32_t>(fail_count, 5) + 2;
++    return std::min<std::uint64_t>(std::uint64_t{1} << shift, MaxBackoffFrames);
++}
++
++/// EDEN_NX2_UPLOAD_MAX_RETRIES as text: the refusals in a row after which the image is given up.
++/// No text: `unset`. "0", or text that does not start with a digit: 0, never given up.
++inline std::uint32_t ReadMaxRetries(const char* text, std::uint32_t unset) {
++    if (text == nullptr) {
++        return unset;
++    }
++    if (text[0] < '0' || text[0] > '9') {
++        return 0;
++    }
++    const unsigned long value = std::strtoul(text, nullptr, 10);
++    return value > 0xffffffffUL ? 0xffffffffU : static_cast<std::uint32_t>(value);
++}
++
++/// Whether the image is given up at its `fail_count`-th refusal in a row.
++constexpr bool GiveUp(std::uint32_t fail_count, std::uint32_t max_retries) {
++    return max_retries != 0 && fail_count >= max_retries;
++}
++
++/// The count after one more refusal: it stops at its top instead of wrapping to 0, which would
++/// start the short waits again.
++constexpr std::uint32_t NextFailCount(std::uint32_t fail_count) {
++    return fail_count == 0xffffffffU ? fail_count : fail_count + 1;
++}
++
++} // namespace VideoCommon::UploadRetry

@@ -1,0 +1,41 @@
+From: EglantinePS5
+Subject: [PATCH] up: the cold hint skips placeholder addresses past the device address space (cerroverb, zortos293/Lichii #1568), unconditional
+
+What: images at GPU addresses without memory get placeholder device addresses past the device
+address space (~(1 << 40) + n in texture_cache.h). An upload to one is recorded in uploaded_ranges
+like any other, and every 600 frames TextureCache::TickFrame hands each range to
+DeviceMemoryManager::HintCold, which indexed tracked_entries at those pages: far outside the table
+(ours has 2^36 bytes of device address space, so 2^24 pages). On another device that was a GPU-thread
+crash (SIGSEGV in HintCold from TickFrame, about 4 min into another game; gone with the fix over
+12 min). Nothing shows Ocarina hits it; a HintCold or TickFrame frame in one of our crash
+backtraces would say so.
+
+Now HintCold returns for a range that starts at or past 1 << AS_BITS and clips one that runs past
+the end. Unconditional, no switch: for every range inside the address space the loop reads the
+same pages as before and makes the same runs; only reads that were outside the table (undefined
+behaviour: a crash or a junk physical address hinted cold) are skipped. No log line.
+
+Origin and credit: cerroverb, zortos293/Lichii PR #1568 (open), commits 05beffd ("skip cold hints
+for placeholder addresses") and d6cbce6 ("clamp the cold hint size in DAddr"); their final state,
+applied as is.
+---
+diff --git a/src/core/device_memory_manager.inc b/src/core/device_memory_manager.inc
+index a71bf02..265f11e 100644
+--- a/src/core/device_memory_manager.inc
++++ b/src/core/device_memory_manager.inc
+@@ -191,6 +191,15 @@ void DeviceMemoryManager<Traits>::HintCold(DAddr address, size_t size) {
+         VAddr virtual_address; ///< 0: no CPU mapping known
+         u64 size;
+     };
++    // Images at GPU addresses without memory get placeholder addresses past the device address
++    // space (~(1 << 40) + n, texture_cache.h), which has no pages to look up: tracked_entries
++    // would be read far outside its table (cerroverb, zortos293/Lichii #1568). Skip a range that
++    // starts there, clip one that runs past the end.
++    constexpr DAddr address_space_end = DAddr{1} << AS_BITS;
++    if (address >= address_space_end) {
++        return;
++    }
++    size = static_cast<size_t>((std::min)(DAddr{size}, address_space_end - address));
+     std::vector<Run> runs;
+     const size_t page_end = Common::DivCeil(address + size, Memory::YUZU_PAGESIZE);
+     for (size_t page = address >> Memory::YUZU_PAGEBITS; page < page_end; ++page) {

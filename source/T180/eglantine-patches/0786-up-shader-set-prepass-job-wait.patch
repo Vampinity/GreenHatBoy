@@ -1,0 +1,391 @@
+From: EglantinePS5
+Subject: [PATCH] up: the before-play pass stops waiting for builds that do not return (EDEN_UP_SHADER_SET_PREPASS_JOB_WAIT_S, 120 s): the keys get their strike and the game starts
+
+Switch: EDEN_UP_SHADER_SET_PREPASS_JOB_WAIT_S=<seconds> (default 120; 0 = wait without a limit, as
+0770 did). Only in the before-play pass (EDEN_UP_SHADER_SET_PREPASS=1); the pass beside the game
+waits as before. Prepass off: nothing changes.
+
+Why (open fault of the T157 review): "a driver build that never returns hangs the boot". The
+pass waited without a limit for the jobs in flight at the end of each pass and for a free slot,
+and neither EDEN_UP_SHADER_SET_PREPASS_MAX_S nor the skip file could end those waits. The only
+way out was to kill the app; the keys in flight then got a strike from the journal, and after two
+kills were left out.
+
+What:
+- The end of a pass waits at most JOB_WAIT_S in all for the jobs in flight. A wait for a free
+  slot (the normal pace of the pass) ends only when no job came back for JOB_WAIT_S. Either way
+  the pass stops ("N build(s) in flight did not return for 120 s (...)"), no later pass runs, the
+  key being read is handed back, and the game starts.
+- The keys in flight get their strike: the pass's journal (.inflight_set) is closed with them
+  still in it and is not removed, so the next PrepareShaderSet (the pass beside the game, which
+  starts right after, or the next start) adds one strike each, exactly as after a kill. They are
+  also left out for the rest of this session (shader_set_abandoned_keys). A key that hangs at two
+  starts is struck out for good, as before.
+- How the abandoned jobs stay safe (nothing they still touch is freed):
+  * The jobs' shared state (mutex, condition, counts, free slots, slot keys, journal stream) is
+    on the heap in a std::shared_ptr that every job holds by value; it was on
+    PrepareShaderSet's stack before. note_slot is copied into each job and holds the state's
+    address; `seconds` captures the start time by value.
+  * The ShaderSetPass is made with std::make_shared in RunShaderSetPrepass (it derives from
+    enable_shared_from_this) and every job holds a shared pointer to it: its counters stay valid.
+    The jobs never touch `left`, the list sets or the reporter, which stay on the stack.
+  * A late job closes its slot on the closed journal stream: nothing is written (the strike
+    stays), and its counts go to the abandoned state.
+  * The prepass's thread pool is not joined (its destructor would wait for the stuck build): a
+    guard hands it to the cache (shader_set_abandoned_pools), also when the function throws.
+    ~PipelineCache waits for those pools first, before anything else, so a late build never
+    meets a destroyed cache, store or device. Cost: a build that never returns at all now holds
+    the exit instead of the boot (the runner's kill ends it, as it ended the boot before).
+  * The store: Add, AddNotKeepable, Commit and Compact all take the store's mutex, so a late
+    Add beside the next pass is safe (Compact only drops the dedupe maps, rebuilt on demand).
+  * Not covered: if putting the pool in that list throws (no memory for one pointer), the pool is
+    leaked unjoined, and a build that returns during the exit could then touch the cache.
+- The start line of the prepass names the limit.
+
+Needs 0770-0772 and 0780-0785 (it changes their job captures). Checked: apply in name order,
+PS5-target syntax check. Not checked: a real stuck build (none can be made on purpose here).
+---
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 9734473..3968c3f 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -1323,6 +1323,20 @@ bool DropMeshDrawsBeforeBuild() {
+ }
+ 
+ PipelineCache::~PipelineCache() {
++    // EDEN_UP_SHADER_SET_PREPASS_JOB_WAIT_S (0786): builds the prepass stopped waiting for run on
++    // its pools, using this cache; they are waited for before anything else here (a build that
++    // never returns holds the exit, as it held the boot before 0786).
++    {
++        std::vector<std::unique_ptr<Common::ThreadWorker>> pools;
++        {
++            std::scoped_lock lock{shader_set_abandoned_mutex};
++            pools.swap(shader_set_abandoned_pools);
++        }
++        if (!pools.empty()) {
++            LOG_INFO(Render_Vulkan, "Shader set prepass: waiting for the builds it left running");
++        }
++        pools.clear();
++    }
+     // EDEN_UP_SHADER_SET_WHY's timer (0771) first: the shutdown line below prints the last totals.
+     if (set_why_timer.joinable()) {
+         set_why_timer.request_stop();
+@@ -5664,9 +5678,18 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+     // list files only. Such a pass never writes the "every record is known" marker.
+     const bool partial = filtered || (pass != nullptr && pass->only_keys != nullptr);
+     const auto begin = std::chrono::steady_clock::now();
+-    const auto seconds = [&begin] {
++    // (By value: 0786's jobs may outlive this call.)
++    const auto seconds = [begin] {
+         return std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+     };
++    // EDEN_UP_SHADER_SET_PREPASS_JOB_WAIT_S (0786): the before-play pass may stop waiting for
++    // builds in flight that do not return (a driver build that never ends held the boot). The
++    // jobs then go on alone: everything they touch is held by shared pointers (the pass's state
++    // here, the ShaderSetPass) or lives as long as the cache (`this`; its destructor waits for
++    // them first). Only a pass whose ShaderSetPass is owned by a shared pointer can do this.
++    const std::shared_ptr<ShaderSetPass> pass_hold =
++        pass != nullptr ? pass->weak_from_this().lock() : nullptr;
++    const bool can_abandon = pass_hold != nullptr && pass->job_wait.count() > 0;
+     // EDEN_UP_SHADER_SET_PREP_ALL=1 lifts EDEN_UP_SHADER_PREP_MAX for these records: memory stays
+     // bounded by the few records in flight (each is translated, built once for the driver's
+     // cache, kept as SPIR-V and infos in the store, and dropped), the index is committed at
+@@ -5781,11 +5804,19 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+             }
+         }
+     }
+-    const auto struck_out = [&strikes](u64 hash) {
++    // 0786: keys whose builds a before-play pass stopped waiting for this session (they got
++    // their strike through the journal, as after a kill) are left out for the rest of it.
++    const std::unordered_set<u64> abandoned_keys = [this] {
++        std::scoped_lock lock{shader_set_abandoned_mutex};
++        return shader_set_abandoned_keys;
++    }();
++    const auto struck_out = [&strikes, &abandoned_keys](u64 hash) {
+         const auto it = strikes.find(hash);
+-        return it != strikes.end() && it->second >= 2;
++        return (it != strikes.end() && it->second >= 2) || abandoned_keys.contains(hash);
+     };
+-    struct {
++    // The jobs' shared state. 0786: on the heap, held by every job, so a job the pass stopped
++    // waiting for never touches freed memory.
++    struct JobState {
+         std::mutex mutex;
+         std::condition_variable cv;
+         size_t in_flight{};
+@@ -5795,8 +5826,13 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+         size_t not_kept{};
+         std::chrono::steady_clock::duration busy{}; ///< time the builds took, for the duty cycle
+         std::vector<u32> free_slots;
++        std::vector<u64> slot_keys; ///< 0786: the key in flight in each slot (0: none)
+         std::fstream journal;
+-    } state;
++        bool abandoned{}; ///< 0786: the pass stopped waiting for the jobs in flight
++    };
++    const auto job_state = std::make_shared<JobState>();
++    JobState& state = *job_state;
++    state.slot_keys.resize(max_in_flight);
+     {
+         std::ofstream create{journal_filename, std::ios::binary | std::ios::trunc};
+         const std::vector<char> zeros(max_in_flight * sizeof(u64), 0);
+@@ -5806,26 +5842,73 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+     for (u32 slot = 0; slot < max_in_flight; ++slot) {
+         state.free_slots.push_back(slot);
+     }
+-    const auto note_slot = [&state](u32 slot, u64 hash) noexcept {
++    // With state.mutex held. (A copy goes into each job: it holds the state's address, which
++    // the job's own shared pointer keeps valid.)
++    const auto note_slot = [journal_state = job_state.get()](u32 slot, u64 hash) noexcept {
+         try {
+-            if (!state.journal.is_open()) {
++            if (slot < journal_state->slot_keys.size()) {
++                journal_state->slot_keys[slot] = hash;
++            }
++            if (!journal_state->journal.is_open()) {
+                 return;
+             }
+-            state.journal.clear();
+-            state.journal.seekp(static_cast<std::streamoff>(slot * sizeof(u64)));
+-            state.journal.write(reinterpret_cast<const char*>(&hash), sizeof(hash));
+-            state.journal.flush();
++            journal_state->journal.clear();
++            journal_state->journal.seekp(static_cast<std::streamoff>(slot * sizeof(u64)));
++            journal_state->journal.write(reinterpret_cast<const char*>(&hash), sizeof(hash));
++            journal_state->journal.flush();
+         } catch (const std::exception&) {
+         }
+     };
+-    const auto wait_for_jobs = [&state] {
+-        std::unique_lock lock{state.mutex};
+-        state.cv.wait(lock, [&] { return state.in_flight == 0; });
+-    };
+ 
+     size_t read = 0, known = 0, left_out = 0, other = 0, struck = 0, queued = 0;
+     bool paused = false;
+     bool said_disk_unknown = false;
++    // 0786, with state.mutex held: the pass stops waiting for the jobs in flight. The journal is
++    // closed with their keys still in it (a late job cannot clear its slot), and is not removed:
++    // the next pass, beside the game or at the next start, gives each of them a strike as after
++    // a kill; this session leaves them out. Nothing is handed back to `left` for them.
++    const auto abandon_locked = [&](const char* where) {
++        state.abandoned = true;
++        state.journal.close();
++        std::string keys;
++        size_t count = 0;
++        try {
++            std::scoped_lock lock{shader_set_abandoned_mutex};
++            for (const u64 key_hash : state.slot_keys) {
++                if (key_hash != 0) {
++                    shader_set_abandoned_keys.insert(key_hash);
++                    keys += fmt::format("{}{:016x}", keys.empty() ? "" : " ", key_hash);
++                    ++count;
++                }
++            }
++        } catch (const std::exception&) {
++        }
++        pass->abandoned.store(true, std::memory_order_relaxed);
++        stopped = fmt::format("{} build(s) in flight did not return for {} s ({}; "
++                              "EDEN_UP_SHADER_SET_PREPASS_JOB_WAIT_S)",
++                              count, pass->job_wait.count(), where);
++        LOG_WARNING(Render_Vulkan,
++                    "Shader set prepass: {}; the game starts without waiting for them, each key "
++                    "gets a strike and is left out this session: {}",
++                    stopped, keys);
++    };
++    // The end of a pass: every job in flight back. 0786: before play, at most `job_wait` in all;
++    // false when the pass stopped waiting (now or earlier).
++    const auto wait_for_jobs = [&]() -> bool {
++        std::unique_lock lock{state.mutex};
++        if (!can_abandon) {
++            state.cv.wait(lock, [&] { return state.in_flight == 0; });
++            return true;
++        }
++        if (state.abandoned) {
++            return false;
++        }
++        if (!state.cv.wait_for(lock, pass->job_wait, [&] { return state.in_flight == 0; })) {
++            abandon_locked("at the end of a pass");
++            return false;
++        }
++        return true;
++    };
+     if (!filtered && pass == nullptr) {
+         LOG_INFO(Render_Vulkan,
+                  "Shader set: preparing the records of {} on the pipeline workers: {} in flight, "
+@@ -5977,7 +6060,32 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+         u32 slot{};
+         {
+             std::unique_lock lock{state.mutex};
+-            state.cv.wait(lock, [&] { return state.in_flight < max_in_flight; });
++            if (can_abandon) {
++                // 0786: waiting for a free slot is the normal pace, so only a wait in which no
++                // job came back for `job_wait` ends the pass (every slot held by a build that
++                // does not return).
++                auto finished = state.finished;
++                auto since = std::chrono::steady_clock::now();
++                while (!state.abandoned && state.in_flight >= max_in_flight) {
++                    if (state.cv.wait_for(lock, std::chrono::seconds{1},
++                                          [&] { return state.in_flight < max_in_flight; })) {
++                        break;
++                    }
++                    const auto now = std::chrono::steady_clock::now();
++                    if (state.finished != finished) {
++                        finished = state.finished;
++                        since = now;
++                    } else if (now - since >= pass->job_wait) {
++                        abandon_locked("waiting for a free slot");
++                    }
++                }
++                if (state.abandoned) {
++                    hand_back();
++                    throw StopReading{stopped};
++                }
++            } else {
++                state.cv.wait(lock, [&] { return state.in_flight < max_in_flight; });
++            }
+             ++state.in_flight;
+             slot = state.free_slots.back();
+             state.free_slots.pop_back();
+@@ -6029,8 +6137,11 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+             ShaderPrep::KeptStore::FlagPredicted | ShaderPrep::KeptStore::FlagShaderSet;
+         try {
+             const bool listed_key = pass != nullptr && pass->only_keys != nullptr;
+-            job_workers.QueueWork([this, key, hash, slot, env_ = std::move(env), &state,
+-                                   &note_slot, &seconds, queued, pass, listed_key]() mutable {
++            job_workers.QueueWork([this, key, hash, slot, env_ = std::move(env), job_state,
++                                   note_slot, seconds, queued, pass, pass_hold,
++                                   listed_key]() mutable {
++                JobState& state = *job_state;
++                (void)pass_hold; // keeps *pass alive (0786)
+                 bool ok = false;
+                 bool kept = false;
+                 const auto started = std::chrono::steady_clock::now();
+@@ -6183,8 +6294,11 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+             try {
+                 const bool listed_key =
+                     pass != nullptr && pass->only_keys != nullptr;
+-                job_workers.QueueWork([this, key, hash, slot, envs_ = std::move(envs), &state,
+-                                   &note_slot, &seconds, queued, pass, listed_key]() mutable {
++                job_workers.QueueWork([this, key, hash, slot, envs_ = std::move(envs), job_state,
++                                       note_slot, seconds, queued, pass, pass_hold,
++                                       listed_key]() mutable {
++                    JobState& state = *job_state;
++                    (void)pass_hold; // keeps *pass alive (0786)
+                     bool ok = false;
+                     bool kept = false;
+                     const auto started = std::chrono::steady_clock::now();
+@@ -6280,7 +6394,7 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+             ? std::function<void(std::ifstream&, VideoCommon::FileEnvironment)>{on_compute}
+             : std::function<void(std::ifstream&, VideoCommon::FileEnvironment)>{},
+         std::function<bool(std::span<const u8>)>{compute_key_wanted});
+-    wait_for_jobs();
++    const bool jobs_back = wait_for_jobs();
+     {
+         std::scoped_lock lock{state.mutex};
+         state.journal.close();
+@@ -6295,7 +6409,10 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+         prep_store.Compact();
+     }
+     std::error_code error;
+-    std::filesystem::remove(journal_filename, error);
++    if (jobs_back) {
++        // (0786: kept when the pass stopped waiting: its keys get their strike from it.)
++        std::filesystem::remove(journal_filename, error);
++    }
+     if (quiet) {
+         return false;
+     }
+@@ -6550,13 +6667,21 @@ void PipelineCache::RunShaderSetPrepass(const std::filesystem::path& title_dir,
+             : std::clamp<size_t>(ShaderSetNumber("EDEN_UP_SHADER_SET_PREPASS_WORKERS", cores), 1, 16);
+     const size_t max_seconds = ShaderSetNumber("EDEN_UP_SHADER_SET_PREPASS_MAX_S", 0);
+     const size_t memory_wait = ShaderSetNumber("EDEN_UP_SHADER_SET_PREPASS_MEMORY_WAIT_S", 300);
++    // 0786: how long the end of a pass waits for builds in flight, and how long a wait for a
++    // free slot may see none of them come back (0 = without a limit, as in 0770).
++    const char* const job_wait_text = std::getenv("EDEN_UP_SHADER_SET_PREPASS_JOB_WAIT_S");
++    const size_t job_wait = job_wait_text != nullptr && std::string_view{job_wait_text} == "0"
++                                ? 0
++                                : ShaderSetNumber("EDEN_UP_SHADER_SET_PREPASS_JOB_WAIT_S", 120);
+     LOG_INFO(Render_Vulkan,
+              "Shader set prepass (EDEN_UP_SHADER_SET_PREPASS=1): before the game starts, {} "
+              "threads of its own ({} cores but one), full duty, no cap, time limit {}, memory "
+-             "floor {} MB (waits up to {} s), disk floor {} MB",
++             "floor {} MB (waits up to {} s), disk floor {} MB, builds in flight waited for up "
++             "to {}",
+              jobs, cores, max_seconds ? fmt::format("{} s", max_seconds) : "none",
+              VideoCommon::ShaderSet::MinimumFreeBytes() >> 20, memory_wait,
+-             VideoCommon::ShaderSet::MinimumFreeDiskBytes() >> 20);
++             VideoCommon::ShaderSet::MinimumFreeDiskBytes() >> 20,
++             job_wait != 0 ? fmt::format("{} s", job_wait) : std::string{"no limit"});
+ 
+     // 1. The set file: reused while its stamp holds, else made now (once; minutes) at full duty.
+     VideoCommon::ShaderSet::OverrideDuty(100);
+@@ -6764,12 +6889,33 @@ void PipelineCache::RunShaderSetPrepass(const std::filesystem::path& title_dir,
+ 
+     // 4. The passes, with a reporter beside them: the boot screen twice a second, the log every
+     // 10 s, the skip flag once a second.
+-    const auto pool = std::make_unique<Common::ThreadWorker>(jobs, "ShaderSetPrepass");
+-    ShaderSetPass pass;
++    auto pool = std::make_unique<Common::ThreadWorker>(jobs, "ShaderSetPrepass");
++    // 0786: the jobs hold the pass by shared pointer (they may outlive this function).
++    const auto pass_owner = std::make_shared<ShaderSetPass>();
++    ShaderSetPass& pass = *pass_owner;
++    // Builds the pass stopped waiting for keep their pool: it is handed to the cache (whose
++    // destructor waits for it) instead of being joined here, also when this function throws.
++    struct KeepAbandonedPool {
++        PipelineCache& cache;
++        std::unique_ptr<Common::ThreadWorker>& pool;
++        const ShaderSetPass& pass;
++        ~KeepAbandonedPool() {
++            if (!pass.abandoned.load(std::memory_order_relaxed) || !pool) {
++                return;
++            }
++            try {
++                std::scoped_lock lock{cache.shader_set_abandoned_mutex};
++                cache.shader_set_abandoned_pools.push_back(std::move(pool));
++            } catch (...) {
++                (void)pool.release(); // never joined: its jobs hold what they use, `this` aside
++            }
++        }
++    } keep_abandoned_pool{*this, pool, pass};
+     pass.left = &left;
+     pass.pool = pool.get();
+     pass.jobs = jobs;
+     pass.memory_wait = std::chrono::seconds{memory_wait};
++    pass.job_wait = std::chrono::seconds{job_wait};
+     if (max_seconds != 0) {
+         pass.deadline = begin + std::chrono::seconds{max_seconds};
+     }
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.h b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+index 99f2610..3d8b385 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.h
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+@@ -495,8 +495,10 @@ private:
+     /// ones list files name). Full duty, no cap, `jobs` in flight on `pool` (the prepass's own
+     /// threads, so EDEN_NX2_PIPELINE_WORKERS keeps its meaning for play); under the memory floor
+     /// the reading waits (up to `memory_wait`) instead of stopping.
+-    struct ShaderSetPass {
+-        std::unordered_set<u64>* left{};
++    /// 0786: owned by a std::shared_ptr (RunShaderSetPrepass), the jobs hold it, so the pass may
++    /// stop waiting for builds that do not return (`job_wait`) and leave them running.
++    struct ShaderSetPass : std::enable_shared_from_this<ShaderSetPass> {
++        std::unordered_set<u64>* left{}; ///< (never touched by a job)
+         const std::unordered_set<u64>* only_keys{};
+         Common::ThreadWorker* pool{};
+         size_t jobs{1};
+@@ -510,7 +512,16 @@ private:
+         std::atomic<size_t> listed_done{}; ///< of them, keys a list named
+         std::atomic<bool> skip{};          ///< the skip flag file was seen: queue nothing more
+         std::string ended;                 ///< why reading stopped early (empty: read through)
++        /// 0786, EDEN_UP_SHADER_SET_PREPASS_JOB_WAIT_S (120; 0: wait without a limit, as before).
++        std::chrono::seconds job_wait{120};
++        std::atomic<bool> abandoned{}; ///< it stopped waiting for builds in flight
+     };
++    /// 0786: the prepass's thread pools whose builds it stopped waiting for. The destructor
++    /// waits for them first (before anything their jobs use is destroyed); keys in flight then
++    /// are left out of the later passes of this session. Under shader_set_abandoned_mutex.
++    std::mutex shader_set_abandoned_mutex;
++    std::vector<std::unique_ptr<Common::ThreadWorker>> shader_set_abandoned_pools;
++    std::unordered_set<u64> shader_set_abandoned_keys;
+     void RunShaderSetPrepass(const std::filesystem::path& title_dir, std::stop_token stop,
+                              const VideoCore::DiskResourceLoadCallback& callback);
+     /// Set by RunShaderSetPrepass: StartShaderSet's thread uses these instead of preparing the

@@ -1,0 +1,71 @@
+From: EglantinePS5
+Subject: [PATCH] up: the shader set's task/mesh records are prepared like graphics ones (EDEN_UP_SHADER_SET_MESH=1), off by default
+
+Switch: EDEN_UP_SHADER_SET_MESH=1 (the switch of 0782; needs 0782). Off: nothing changes.
+
+Why: PrepareShaderSet left out every record with a task or mesh environment ("left out
+(stages, driver or HLE macro)"), so 0782's records would never reach the store.
+
+What, with the switch: such a record goes the graphics record's way (canonical key, store lookup,
+strikes, the same gate, a worker translates and builds it once with the driver's own cache).
+Whether it is kept is CreateGraphicsPipeline's own answer: a pipeline the emulator runs as compute
+(EDEN_NX2_MESH_AS_COMPUTE=1, and with EDEN_NX2_MESH_COMPUTE_LONE=1 only the lone mesh ones) is
+made of more than SPIR-V and infos, so it is built once for the driver's disk cache and
+remembered as not keepable; a native task/mesh pipeline (our play env: EDEN_NX2_RADV_MESH_
+COMPUTE=1 in the driver, no EDEN_NX2_MESH_AS_COMPUTE) is kept, and a draw takes it through the
+existing CreateKeptGraphicsPipeline, which already checks the mesh registers and the pass-through
+header among the answers. One line per pass with the number of task/mesh records read.
+
+Not done: the live-first pass only learns of vertex and pixel programs, so task/mesh records are
+prepared in the whole-file pass. Cost: mesh pipelines are the expensive kind (T151: 18 ms mean
+translation, 112 ms max), 2,868 records at most.
+
+Touches PrepareShaderSet (one condition and a counter). T161s: made again on top of 0770-0772 and
+the remade 0781 (context lines only; in the before-play pass a task/mesh record is counted as
+taken like any graphics record). 0784 puts the M rows of the list files first.
+---
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 1b0d151..c3f0b28 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -5981,6 +5981,7 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+     // ones: translated and built once on a worker, their SPIR-V, info and answers kept under
+     // KeptComputeHash; a dispatch that needs one takes it (CreateKeptComputePipeline).
+     size_t compute_read = 0;
++    size_t mesh_read = 0; // 0783
+     const auto on_compute = [&](std::ifstream& in, VideoCommon::FileEnvironment env) {
+         ComputePipelineCacheKey key;
+         in.read(reinterpret_cast<char*>(&key), sizeof(key));
+@@ -6096,8 +6097,12 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+                     return env.ShaderStage() == Shader::Stage::Task ||
+                            env.ShaderStage() == Shader::Stage::Mesh;
+                 });
++            // 0783, EDEN_UP_SHADER_SET_MESH=1: task/mesh records (0782) are prepared too.
++            // Whether one can be kept is CreateGraphicsPipeline's answer (not when the emulator
++            // runs it as compute, EDEN_NX2_MESH_AS_COMPUTE): then it is only built once, for the
++            // driver's cache, and remembered as not keepable.
+             if (envs.empty() || envs.size() > ShaderPrep::NumStages ||
+-                key.unique_hashes[0] != 0 || mesh ||
++                key.unique_hashes[0] != 0 || (mesh && !VideoCommon::ShaderSet::MeshAsked()) ||
+                 key.state.driver_id != dynamic_features.driver_id ||
+                 key.state.driver_version != dynamic_features.driver_version ||
+                 key.state.app_stage.Value() == Tegra::Engines::Maxwell3D::EngineHint::OnHLEMacro) {
+@@ -6110,6 +6115,7 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+                 taken();
+                 return;
+             }
++            mesh_read += mesh ? 1 : 0;
+             if (prep_store.Contains(hash)) {
+                 ++known; // kept by an earlier start, or remembered as not keepable
+                 taken();
+@@ -6262,6 +6268,10 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+                  ? fmt::format(" (the {} keys list files name; before play)", pass->only_keys->size())
+              : pass != nullptr ? std::string{" (before play)"}
+                                : std::string{});
++    if (mesh_read != 0) {
++        LOG_INFO(Render_Vulkan, "Shader set: {} of the records read were task/mesh records "
++                 "(EDEN_UP_SHADER_SET_MESH=1)", mesh_read);
++    }
+     if (compute_read != 0) {
+         LOG_INFO(Render_Vulkan, "Shader set: {} of the records read were compute records "
+                  "(EDEN_UP_SHADER_SET_COMPUTE=1)", compute_read);

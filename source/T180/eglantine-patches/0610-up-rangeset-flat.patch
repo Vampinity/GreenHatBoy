@@ -1,0 +1,411 @@
+From: EglantinePS5
+Subject: up: RangeSet as one sorted array with binary search (EDEN_UP_RANGESET_FLAT), plus subtract and query-cache erase skips, off by default
+
+What: the buffer cache asks its RangeSets (gpu-modified, cpu-written, download, landing ... ranges)
+tens of thousands of questions a frame on the GPU back thread, most of which miss. Our RangeSet is a
+boost interval set whose tree nodes come from a pool behind a mutex. With EDEN_UP_RANGESET_FLAT=1
+every RangeSet keeps its ranges sorted and joined in one std::vector and answers Add, Subtract,
+Contains, Intersects, ForEach and ForEachInRange with a binary search over contiguous memory, no
+allocation per range. Semantics as before, including the joining of touching ranges and our
+Removals() counter (it still counts every Subtract, Clear and move, hit or miss).
+OverlapRangeSet (counts per segment, heap mapper) is not touched.
+
+Switch: EDEN_UP_RANGESET_FLAT=1 (exact "1"), read once when the first RangeSet is made. Both
+containers are compiled in; each RangeSet reads the switch into a const bool at construction and
+every call tests it. Off: the interval set's code as before after that one test, plus an empty
+std::vector (24 bytes) in each set. On: one line "EDEN_UP_RANGESET_FLAT on: RangeSet is a sorted
+array" on the C stream stderr (stderr.log).
+
+Also in this patch, always on (provably behaviour-neutral), the half of zortos293/Lichii #412 we
+did not have:
+- RangeSet::Subtract (interval-set path) returns after the Removals count when Intersects says the
+  range overlaps nothing: a subtract of a range that overlaps nothing changes nothing. The flat
+  array's own subtract starts with the same lookup.
+- QueryCacheBase::IterateCache erases a page's queries only when the scan found one in the range:
+  erase_if with no match removes nothing.
+#412's other parts are ours already: pipeline once is 0400 (EDEN_GBB_PIPELINE_ONCE), the
+usage-tracker reset skip is 0064. Not duplicated.
+
+Differences from #481: ForEachInRange has no early return for an empty query, so a query of size 0
+strictly inside a range calls back (start, start) as the interval set does. One known difference
+stays: ForEachInRange(0, 0) on the interval set hands back every range as an inverted pair
+(lower, 0) (its discrete interval [0,0) has last() = ~0); the flat array hands back none. Device
+address 0 with size 0 is not a query any caller makes on purpose. #481's catch2 test is not taken
+(our core has no tests folder); a Mac test compares both containers instead (below).
+
+Check (Mac, t140b/test/rangeset_equal.cpp): the T137 RangeSet against this one, switch off and on,
+on random add / subtract / clear / move / self-move sequences (u64 and u32, spaces 512 to 65,536,
+sizes 0 to the whole space, ends that wrap), after every step: same range list, Empty, Removals,
+the per-address model, no touching ranges, and 6 random Contains / Intersects / ForEachInRange
+queries. 3,036,315 checks, 0 mismatches both ways, and under ASan and UBSan with the switch on.
+Built with the classic libc++ tree search (_LIBCPP_ENABLE_LEGACY_TREE_LOWER_UPPER_BOUND): the
+Mac's libc++ 22 stops lower_bound at any overlapping node, which breaks the interval set's
+range walk on the Mac only; the PS5 build's libc++ 18.1 has the classic search.
+
+Origin and credit: zortos293/Lichii #481 (47a1f19d54, Marc Stampfli), the sorted-array RangeSet,
+taken line for line inside the switch; #412 (079941fc6f, Zortos, from Frizti), the subtract and
+query-cache erase skips. Author's numbers (PC, Ocarina village save, back thread the limit):
+RangeSet 5.0% -> 2.8% of the back thread, standing 42.7 -> 43.9 fps, camera pan 33.6 -> 34.7;
+#412's half about 3% of the back thread (Frizti's number).
+---
+diff --git a/src/common/range_sets.inc b/src/common/range_sets.inc
+index f514e69..cdd95fd 100644
+--- a/src/common/range_sets.inc
++++ b/src/common/range_sets.inc
+@@ -3,8 +3,11 @@
+ 
+ #pragma once
+ 
++#include <algorithm>
++#include <cstdio>
+ #include <limits>
+ #include <utility>
++#include <vector>
+ 
+ #include <boost/icl/interval.hpp>
+ #include <boost/icl/interval_base_set.hpp>
+@@ -15,6 +18,7 @@
+ #include <boost/pool/pool_alloc.hpp>
+ #include <boost/pool/poolfwd.hpp>
+ 
++#include "common/pe_switch.h"
+ #include "common/range_sets.h"
+ 
+ namespace Common {
+@@ -26,6 +30,21 @@ using RangeSetsAllocator =
+                                boost::details::pool::default_mutex, 1024, 2048>;
+ }
+ 
++// EDEN_UP_RANGESET_FLAT=1 (zortos293/Lichii #481, Marc Stampfli): RangeSet keeps its ranges in
++// one sorted array searched by binary search instead of the boost interval set (pooled tree nodes
++// behind a mutex). Read once, at the first RangeSet made; anything but exact "1" is off. Off, every
++// RangeSet call takes the interval set's code as before, after one test of a bool in the set.
++inline bool RangeSetFlat() noexcept {
++    static const bool on = [] {
++        const bool value = ::Common::PeSwitch("EDEN_UP_RANGESET_FLAT");
++        if (value) {
++            std::fputs("EDEN_UP_RANGESET_FLAT on: RangeSet is a sorted array\n", stderr);
++        }
++        return value;
++    }();
++    return on;
++}
++
+ template <typename AddressType>
+ struct RangeSet<AddressType>::RangeSetImpl {
+     using IntervalSet = boost::icl::interval_set<
+@@ -33,23 +52,181 @@ struct RangeSet<AddressType>::RangeSetImpl {
+         RangeSetsAllocator>;
+     using IntervalType = typename IntervalSet::interval_type;
+ 
++    // EDEN_UP_RANGESET_FLAT: sorted, disjoint, non-touching ranges in one array. The buffer cache
++    // looks these up tens of thousands of times a frame and most lookups miss; sets stay small
++    // (Ocarina of Time: ~200 ranges at a subtract, 763 at most), so moving a few hundred bytes on
++    // an insert costs less than tree nodes from a locked pool. Same semantics as the interval
++    // set, including the joining of touching ranges.
++    struct Range {
++        AddressType lower;
++        AddressType upper;
++    };
++    using Iterator = typename std::vector<Range>::iterator;
++    using ConstIterator = typename std::vector<Range>::const_iterator;
++
+     RangeSetImpl() = default;
+     ~RangeSetImpl() = default;
+ 
++    bool IsEmpty() const {
++        return flat ? m_ranges.empty() : m_ranges_set.empty();
++    }
++
++    void ClearAll() {
++        if (flat) {
++            m_ranges.clear();
++        } else {
++            m_ranges_set.clear();
++        }
++    }
++
++    /// Takes other's ranges and leaves it empty.
++    void TakeFrom(RangeSetImpl& other) {
++        if (flat && other.flat) {
++            m_ranges = std::move(other.m_ranges);
++            other.m_ranges.clear();
++        } else if (!flat && !other.flat) {
++            m_ranges_set = std::move(other.m_ranges_set);
++            other.m_ranges_set.clear();
++        } else {
++            // Not reached: the switch is read once for the process. Kept correct anyway.
++            ClearAll();
++            other.ForEach([this](AddressType lower, AddressType upper) {
++                Add(lower, static_cast<size_t>(upper - lower));
++            });
++            other.ClearAll();
++        }
++    }
++
++    /// Flat: the first range ending after `address`, the first that could overlap what starts
++    /// there.
++    ConstIterator FirstEndingAfter(AddressType address) const {
++        return std::upper_bound(
++            m_ranges.begin(), m_ranges.end(), address,
++            [](AddressType value, const Range& range) { return value < range.upper; });
++    }
++
+     void Add(AddressType base_address, size_t size) {
+         AddressType end_address = base_address + static_cast<AddressType>(size);
++        if (flat) {
++            FlatAdd(base_address, end_address);
++            return;
++        }
+         IntervalType interval{base_address, end_address};
+         m_ranges_set.add(interval);
+     }
+ 
+     void Subtract(AddressType base_address, size_t size) {
+         AddressType end_address = base_address + static_cast<AddressType>(size);
++        if (flat) {
++            FlatSubtract(base_address, end_address);
++            return;
++        }
+         IntervalType interval{base_address, end_address};
+         m_ranges_set.subtract(interval);
+     }
+ 
++    void FlatAdd(AddressType base_address, AddressType end_address) {
++        if (end_address <= base_address) {
++            return;
++        }
++        // Ranges that touch the new one join it: the first ending at or after its start...
++        auto first = std::lower_bound(
++            m_ranges.begin(), m_ranges.end(), base_address,
++            [](const Range& range, AddressType value) { return range.upper < value; });
++        if (first == m_ranges.end()) {
++            m_ranges.push_back(Range{base_address, end_address});
++            return;
++        }
++        // ...up to the first starting after its end.
++        const auto last = std::upper_bound(
++            first, m_ranges.end(), end_address,
++            [](AddressType value, const Range& range) { return value < range.lower; });
++        if (first == last) {
++            m_ranges.insert(first, Range{base_address, end_address});
++            return;
++        }
++        first->lower = (std::min)(first->lower, base_address);
++        first->upper = (std::max)((last - 1)->upper, end_address);
++        m_ranges.erase(first + 1, last);
++    }
++
++    void FlatSubtract(AddressType base_address, AddressType end_address) {
++        if (end_address <= base_address) {
++            return;
++        }
++        const auto first = m_ranges.begin() + (FirstEndingAfter(base_address) - m_ranges.cbegin());
++        const auto last = std::lower_bound(
++            first, m_ranges.end(), end_address,
++            [](const Range& range, AddressType value) { return range.lower < value; });
++        if (first == last) {
++            return;
++        }
++        const AddressType left_lower = first->lower;
++        const AddressType right_upper = (last - 1)->upper;
++        const bool keep_left = left_lower < base_address;
++        const bool keep_right = end_address < right_upper;
++        if (keep_left && keep_right && last - first == 1) {
++            // Cut out of the middle of one range: it becomes two.
++            first->upper = base_address;
++            m_ranges.insert(last, Range{end_address, right_upper});
++            return;
++        }
++        Iterator erase_from = first;
++        Iterator erase_to = last;
++        if (keep_left) {
++            first->upper = base_address;
++            ++erase_from;
++        }
++        if (keep_right) {
++            --erase_to;
++            erase_to->lower = end_address;
++        }
++        m_ranges.erase(erase_from, erase_to);
++    }
++
++    bool Contains(AddressType base_address, size_t size) const {
++        const AddressType end_address = base_address + static_cast<AddressType>(size);
++        if (flat) {
++            if (m_ranges.empty() || size == 0) {
++                return false;
++            }
++            const auto it = FirstEndingAfter(base_address);
++            return it != m_ranges.end() && it->lower <= base_address && it->upper >= end_address;
++        }
++        const auto& set = m_ranges_set;
++        if (set.empty() || size == 0) {
++            return false;
++        }
++        const auto it = set.find(base_address);
++        return it != set.end() && it->lower() <= base_address && it->upper() >= end_address;
++    }
++
++    bool Intersects(AddressType base_address, size_t size) const {
++        const AddressType end_address = base_address + static_cast<AddressType>(size);
++        if (flat) {
++            if (m_ranges.empty() || size == 0) {
++                return false;
++            }
++            const auto it = FirstEndingAfter(base_address);
++            return it != m_ranges.end() && it->lower < end_address;
++        }
++        const auto& set = m_ranges_set;
++        if (set.empty() || size == 0) {
++            return false;
++        }
++        // The first range not entirely below the query; it overlaps when it starts before its end.
++        const auto it = set.lower_bound(IntervalType{base_address, end_address});
++        return it != set.end() && it->lower() < end_address;
++    }
++
+     template <typename Func>
+     void ForEach(Func&& func) const {
++        if (flat) {
++            for (const Range& range : m_ranges) {
++                func(range.lower, range.upper);
++            }
++            return;
++        }
+         if (m_ranges_set.empty()) {
+             return;
+         }
+@@ -64,6 +241,17 @@ struct RangeSet<AddressType>::RangeSetImpl {
+ 
+     template <typename Func>
+     void ForEachInRange(AddressType base_addr, size_t size, Func&& func) const {
++        if (flat) {
++            // No early return for an empty query (#481 has one): the interval set's search below
++            // calls func(start, start) for a range strictly around start, and so does this loop.
++            const AddressType start_address = base_addr;
++            const AddressType end_address = start_address + static_cast<AddressType>(size);
++            for (auto it = FirstEndingAfter(start_address);
++                 it != m_ranges.end() && it->lower < end_address; ++it) {
++                func((std::max)(it->lower, start_address), (std::min)(it->upper, end_address));
++            }
++            return;
++        }
+         if (m_ranges_set.empty()) {
+             return;
+         }
+@@ -88,7 +276,9 @@ struct RangeSet<AddressType>::RangeSetImpl {
+         }
+     }
+ 
++    const bool flat{RangeSetFlat()};
+     IntervalSet m_ranges_set;
++    std::vector<Range> m_ranges;
+ };
+ 
+ template <typename AddressType>
+@@ -192,18 +382,16 @@ RangeSet<AddressType>::~RangeSet() = default;
+ template <typename AddressType>
+ RangeSet<AddressType>::RangeSet(RangeSet&& other) {
+     m_impl = std::make_unique<RangeSet<AddressType>::RangeSetImpl>();
+-    m_impl->m_ranges_set = std::move(other.m_impl->m_ranges_set);
+     // A moved-from container is only "valid but unspecified", and callers keep adding to the
+-    // source after handing its ranges over (BufferCache::AccumulateFlushes).
+-    other.m_impl->m_ranges_set.clear();
++    // source after handing its ranges over (BufferCache::AccumulateFlushes): TakeFrom empties it.
++    m_impl->TakeFrom(*other.m_impl);
+     ++other.m_removals;
+ }
+ 
+ template <typename AddressType>
+ RangeSet<AddressType>& RangeSet<AddressType>::operator=(RangeSet&& other) {
+     if (this != &other) {
+-        m_impl->m_ranges_set = std::move(other.m_impl->m_ranges_set);
+-        other.m_impl->m_ranges_set.clear();
++        m_impl->TakeFrom(*other.m_impl);
+         ++m_removals;
+         ++other.m_removals;
+     }
+@@ -218,41 +406,35 @@ void RangeSet<AddressType>::Add(AddressType base_address, size_t size) {
+ template <typename AddressType>
+ void RangeSet<AddressType>::Subtract(AddressType base_address, size_t size) {
+     ++m_removals;
++    // zortos293/Lichii #412 (Zortos, from Frizti): most subtractions miss every range (the buffer
++    // cache clears several sets per write), and the lookup is far cheaper than the interval set's
++    // subtract. A subtract that overlaps nothing changes nothing, so this holds with the switch
++    // off too. The flat array's own subtract starts with the same lookup.
++    if (!m_impl->flat && !m_impl->Intersects(base_address, size)) {
++        return;
++    }
+     m_impl->Subtract(base_address, size);
+ }
+ 
+ template <typename AddressType>
+ void RangeSet<AddressType>::Clear() {
+     ++m_removals;
+-    m_impl->m_ranges_set.clear();
++    m_impl->ClearAll();
+ }
+ 
+ template <typename AddressType>
+ bool RangeSet<AddressType>::Empty() const {
+-    return m_impl->m_ranges_set.empty();
++    return m_impl->IsEmpty();
+ }
+ 
+ template <typename AddressType>
+ bool RangeSet<AddressType>::Contains(AddressType base_address, size_t size) const {
+-    const auto& set = m_impl->m_ranges_set;
+-    if (set.empty() || size == 0) {
+-        return false;
+-    }
+-    const AddressType end_address = base_address + static_cast<AddressType>(size);
+-    const auto it = set.find(base_address);
+-    return it != set.end() && it->lower() <= base_address && it->upper() >= end_address;
++    return m_impl->Contains(base_address, size);
+ }
+ 
+ template <typename AddressType>
+ bool RangeSet<AddressType>::Intersects(AddressType base_address, size_t size) const {
+-    const auto& set = m_impl->m_ranges_set;
+-    if (set.empty() || size == 0) {
+-        return false;
+-    }
+-    const AddressType end_address = base_address + static_cast<AddressType>(size);
+-    // The first range not entirely below the query; it overlaps when it starts before its end.
+-    const auto it = set.lower_bound(typename RangeSetImpl::IntervalType{base_address, end_address});
+-    return it != set.end() && it->lower() < end_address;
++    return m_impl->Intersects(base_address, size);
+ }
+ 
+ template <typename AddressType>
+diff --git a/src/video_core/query_cache/query_cache_base.h b/src/video_core/query_cache/query_cache_base.h
+index 77740e5..d9c0c10 100644
+--- a/src/video_core/query_cache/query_cache_base.h
++++ b/src/video_core/query_cache/query_cache_base.h
+@@ -168,10 +168,12 @@ protected:
+                 continue;
+             }
+             auto& contents = it->second;
++            bool matched = false;
+             for (auto& query : contents) {
+                 if (!in_range(query.first)) {
+                     continue;
+                 }
++                matched = true;
+                 if constexpr (RETURNS_BOOL) {
+                     if (func(query.second) && WalkEarlyExit()) {
+                         return;
+@@ -181,6 +183,12 @@ protected:
+                 }
+             }
+             if constexpr (remove_from_cache) {
++                // zortos293/Lichii #412 (Zortos, from Frizti): only a page with a query in the
++                // range has anything to erase; the scan above found none on this one. Always on:
++                // erase_if without a match removes nothing.
++                if (!matched) {
++                    continue;
++                }
+                 const auto in_range2 = [&](const std::pair<u32, QueryLocation>& pair) {
+                     return in_range(pair.first);
+                 };

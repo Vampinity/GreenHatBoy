@@ -1,0 +1,67 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_LOG_FLUSH_MS set: the guest thread watchdog copies each process's thread list under its list lock and logs it after letting go (same lines); unset as before
+
+T175d. 0009's watchdog logs every guest thread every 15 s (40 times) while it holds the process's
+thread list lock. With every log line written to /data at once (the front's log_flush_line), a
+line waits whenever the disk does (after the before-play pass about a second a write), and each of
+those waits held the lock guest threads take to start, end or list threads. With the front's
+EDEN_UP_LOG_FLUSH_MS set (any value but empty or starting with 0) the list is copied under the lock
+(thread id, core, state, wait reason, pc, lr, sp) and logged after it is let go: the same lines in
+the same order. Unset: as before. core.cpp is not a translation id input and no name is added to
+TranslationSwitches: KEEPS THE STORE.
+
+---
+diff --git a/src/core/core.cpp b/src/core/core.cpp
+index 2c82d3279a44635aeb03cfda049393b4c38f0107..9af1119f9207b47a3be1414ebcc49fc076612693 100644
+--- a/src/core/core.cpp
++++ b/src/core/core.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include <array>
+ #include <cstdlib>
++#include <vector>
+ #include <atomic>
+ #include <chrono>
+ #include <memory>
+@@ -298,7 +299,41 @@ struct System::Impl {
+                         !stopped.empty()) {
+                         LOG_WARNING(Core, "GPU threads not going round their loop{}", stopped);
+                     }
++                    // EDEN_UP_LOG_FLUSH_MS set (the front's timed log flush): each list is copied
++                    // under the process's list lock and logged after it is let go, so a log write
++                    // that waits for the disk does not hold up the guest threads that take that
++                    // lock. Unset: logged under the lock, as before. The same lines either way.
++                    static const bool copy_first = [] {
++                        const char* const value = std::getenv("EDEN_UP_LOG_FLUSH_MS");
++                        return value != nullptr && value[0] != '\0' && value[0] != '0';
++                    }();
+                     for (auto& process : processes) {
++                        if (copy_first) {
++                            struct Row {
++                                u64 tid;
++                                s32 core;
++                                unsigned state, wait;
++                                u64 pc, lr, sp;
++                            };
++                            std::vector<Row> rows;
++                            {
++                                Kernel::KScopedLightLock ll{process->GetListLock()};
++                                for (auto& thread : process->GetThreadList()) {
++                                    const auto& ctx = thread.GetContext();
++                                    rows.push_back(Row{thread.GetThreadId(), thread.GetActiveCore(),
++                                                       static_cast<unsigned>(thread.GetState()) & 0xF,
++                                                       static_cast<unsigned>(thread.GetWaitReasonForDebugging()),
++                                                       ctx.pc, ctx.lr, ctx.sp});
++                                }
++                            }
++                            for (const Row& row : rows) {
++                                LOG_WARNING(Core,
++                                            " {} tid={} core={} state={} wait={} pc={:#x} lr={:#x} sp={:#x}",
++                                            process->GetName(), row.tid, row.core, row.state, row.wait,
++                                            row.pc, row.lr, row.sp);
++                            }
++                            continue;
++                        }
+                         Kernel::KScopedLightLock ll{process->GetListLock()};
+                         for (auto& thread : process->GetThreadList()) {
+                             const auto& ctx = thread.GetContext();

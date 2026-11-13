@@ -1,0 +1,134 @@
+From: EglantinePS5
+Subject: [PATCH] up: count equal-acquires whose value already went by (idea: CheezerWheezer, CheezyEmu 243c19bdf2), EDEN_UP_PASSED_ACQUIRE_COUNT=1, off by default (count only)
+
+Switch: EDEN_UP_PASSED_ACQUIRE_COUNT=1 (exact 1, read once at the first unmet drained poll).
+Unset: no line.
+
+What: a channel suspended on an "equal" semaphore acquire waits for one exact value. If the
+release it waits for happened and later releases moved the word on before the channel looked
+(the waiter latch only catches releases made while the channel waits), that value never comes
+again and the channel waits for good: the game hangs. CheezyEmu's commit: a tester's game hung for
+good during a song in Ocarina ("waits on semaphore ... (op 1, 0x19f1c, now 0x19f72)"). Upstream
+then lets the channel go on after 250 ms. This patch only counts: in CanResumeAcquire's drained
+path, after the word was read and did not match, an equal-acquire that has waited 250 ms or more
+with the word 1 to 1 << 20 past its value gets one line (once per wait): channel, ms waited,
+address, value, word, how far past, and a running count. First 64 lines, then every 64th. The
+channel keeps waiting as before. Nothing else changes.
+
+Why count first: it shows whether the recent hard freezes include this kind of hang before we let
+a channel skip a wait (on: a frame may run out of order). The existing 2 s line ("Channel n waits
+on semaphore ... (op 1, value, now word)") already shows such waits when they last 2 s; this line
+names them, catches them at 250 ms and counts them over a session.
+
+Where: video_core/engines/puller.h (PendingAcquire::passed_noted, WaitsForEqual), puller.cpp
+(NotePassedAcquire in the anonymous namespace, one call in CanResumeAcquire after the drained
+read). With EDEN_NX2_SEM_FAST or EDEN_UP_L949_ACQUIRE the drained path is taken less often (after
+2 s, or at the 1 ms valve), so the line can come later than 250 ms there.
+
+Differences from upstream: no "go on" (that is a later step), so also no extra DrainBack and word
+read in the poll without a drain (upstream adds one every 50 ms past 250 ms); our puller has no
+PollWithoutDrain. Switch name, once-per-wait flag and count ours.
+
+Origin and credit: CheezerWheezer, CheezyEmu (github.com/CheezerWheezer/CheezyEmu) commit
+243c19bdf2 "GPU: an equal-acquire whose value went by no longer hangs the game", 12 Nov 2026,
+GPL-3.0 (its switch EDEN_NX2_PASSED_ACQUIRE is on by default there). The 250 ms and 1 << 20 bounds
+are upstream's.
+
+Off: one function call with a cached bool test per unmet drained poll (at most every 2 ms per
+waiting channel with the split GPU thread). No shader translation change, no shader-store stamp
+change.
+
+Test: count only, in the next long sessions (and any session that froze). Look at: the
+"EDEN_UP_PASSED_ACQUIRE_COUNT" lines, and whether one comes right before a freeze. Pass to make
+the "go on" version: the line shows at least once; then the same spot with going on, no hang, no
+visible fault.
+---
+diff --git a/src/video_core/engines/puller.cpp b/src/video_core/engines/puller.cpp
+index f081fcae5e..91a94717db 100644
+--- a/src/video_core/engines/puller.cpp
++++ b/src/video_core/engines/puller.cpp
+@@ -10,6 +10,7 @@
+ #include "common/assert.h"
+ #include "common/live_switch.h"
+ #include "common/logging.h"
++#include "common/pe_switch.h"
+ #include "common/settings.h"
+ #include "core/core.h"
+ #include "video_core/nx2_profile.h"
+@@ -409,6 +410,38 @@ bool MetAfterPendingRelease(const DmaPusher& dma_pusher, GPUVAddr address, const
+     return true;
+ }
+ 
++// EDEN_UP_PASSED_ACQUIRE_COUNT=1 (0744, count only; the idea is CheezerWheezer's, CheezyEmu
++// 243c19bdf2): an equal-acquire whose value the semaphore has already gone past. The release it
++// waits for happened, and later ones moved the word on, before this channel looked (the waiter
++// latch only catches releases made while it waits), so nothing will write that value again and
++// the channel waits for good (CheezyEmu: a tester's game hung for good during a song, the word at
++// 0x19f72 while 0x19f1c was waited for). Counted once per wait, after 250 ms with the word at
++// most 1 << 20 past the value (a small ring of values that comes round again is left alone).
++// Upstream then lets the channel go on; this build only counts and keeps waiting.
++void NotePassedAcquire(DmaPusher& dma_pusher, Puller::PendingAcquire& acquire, u32 current) {
++    static const bool enabled = Common::PeSwitch("EDEN_UP_PASSED_ACQUIRE_COUNT");
++    if (!enabled || acquire.passed_noted || !acquire.WaitsForEqual()) {
++        return;
++    }
++    const auto waited = std::chrono::steady_clock::now() - acquire.since;
++    const u32 ahead = current - acquire.value;
++    if (waited < std::chrono::milliseconds{250} || ahead == 0 || ahead > (1U << 20)) {
++        return;
++    }
++    acquire.passed_noted = true;
++    static std::atomic<u64> passed{};
++    const u64 count = passed.fetch_add(1) + 1;
++    if (count <= 64 || count % 64 == 0) {
++        LOG_WARNING(HW_GPU,
++                    "EDEN_UP_PASSED_ACQUIRE_COUNT: channel {} has waited {} ms for semaphore "
++                    "{:#x} to equal {:#x}, already passed (now {:#x}, {:#x} ahead); keeps waiting "
++                    "({} such waits so far)",
++                    dma_pusher.channel_state.bind_id,
++                    std::chrono::duration_cast<std::chrono::milliseconds>(waited).count(),
++                    acquire.address, acquire.value, current, ahead, count);
++    }
++}
++
+ } // Anonymous namespace
+ 
+ bool Puller::PendingAcquire::Matches(u32 current) const {
+@@ -428,6 +461,10 @@ bool Puller::PendingAcquire::WaitsToReach() const {
+     return static_cast<GpuSemaphoreOperation>(operation) == GpuSemaphoreOperation::AcquireGequal;
+ }
+ 
++bool Puller::PendingAcquire::WaitsForEqual() const {
++    return static_cast<GpuSemaphoreOperation>(operation) == GpuSemaphoreOperation::AcquireEqual;
++}
++
+ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
+     if (!pending_acquire) {
+         return true;
+@@ -519,6 +556,7 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
+     if (pending_acquire->Matches(current)) {
+         return true;
+     }
++    NotePassedAcquire(dma_pusher, *pending_acquire, current); // 0744, count only
+     // With delayed fence operations (Balanced or Accurate fences, accurate GPU), a release
+     // queued after the acquire released the fences waits in the caches for the next fence. With
+     // every channel waiting none comes: release them again now and then while waiting.
+diff --git a/src/video_core/engines/puller.h b/src/video_core/engines/puller.h
+index b232182b75..b8cfd7d194 100644
+--- a/src/video_core/engines/puller.h
++++ b/src/video_core/engines/puller.h
+@@ -85,10 +85,14 @@ public:
+         /// EDEN_UP_L949_ACQUIRE, EDEN_UP_L949_DRAIN_VALVE: when an unmet poll last drained (the
+         /// 1 ms valve); unset means since the acquire began.
+         std::chrono::steady_clock::time_point last_drain{};
++        /// EDEN_UP_PASSED_ACQUIRE_COUNT (0744): this wait was already counted as passed by.
++        bool passed_noted{};
+ 
+         [[nodiscard]] bool Matches(u32 current) const;
+         /// Whether it waits for the word to reach `value` (greater or equal).
+         [[nodiscard]] bool WaitsToReach() const;
++        /// Whether it waits for the word to equal `value` exactly (0744).
++        [[nodiscard]] bool WaitsForEqual() const;
+     };
+ 
+     [[nodiscard]] bool HasPendingAcquire() const {

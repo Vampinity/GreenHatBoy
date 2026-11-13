@@ -1,0 +1,1140 @@
+From: EglantinePS5
+Subject: up: pipeline lists: export this console's pipeline records without code, import another console's (EDEN_UP_PIPELINE_LIST_EXPORT / EDEN_UP_PIPELINE_LIST_IMPORT), off by default
+
+What: a pipeline list is a console's pipeline records (vulkan.bin, vulkan_mesh.bin) with the
+game's code taken out: per record its kind, its key (six program hashes and the 1,008 bytes of
+drawing state) and, per program, the CityHash64 of its code and the environment's other bytes
+(code size, answers, program header). Format "EGPLIST1" 1: a 32-byte header (format, cache
+version 23, key sizes 1056 and 24, record count), then per record u8 kind (0 compute, 1
+graphics, 2 task/mesh with mesh state), u8 program count, u16 0, per program u64 code hash, u32
+size and the bytes, then the key. tools/pipeline-list.py writes the same bytes on the Mac.
+
+EDEN_UP_PIPELINE_LIST_EXPORT=1: at boot, before anything is built, the console's own record files
+of this shader folder go to pipeline_export.list beside them (written beside, renamed over).
+
+EDEN_UP_PIPELINE_LIST_IMPORT=1 (pipeline_import.list in the shader folder) or =<path>: at boot,
+before anything is built, each program's code is looked up by its hash in this console's own
+record files and in the shader set file made from the player's own game (prep_shader_set.bin,
+layouts edenset3 and the older edenset2: VideoCommon::ShaderSet::ForEachProgramCode). The list's
+records whose code was all found, that this console has no record of, that this device's dynamic
+state can draw (OtherDeviceBits) and that were made with this driver are written back whole:
+prep_imported.bin, prep_imported_mesh.bin, prep_imported_compute.bin. EDEN_UP_SHADER_PREP's
+preparation reads the first two as predicted records (translated on the workers before play,
+built once so the driver's disk cache holds them, kept; task/mesh ones, which run as compute,
+are built and remembered, not kept); the boot builds the compute ones like its own. One log line
+gives every count. prep_imported.stamp keeps the files as they are while the list, the shader
+set file, this device's dynamic states and key switches (ShaderSetDeviceIdentity) and (unless
+all code was found) the own record files are unchanged. A list that is
+gone, or not a list of this build, takes the three files away.
+EDEN_UP_PIPELINE_LIST_IMPORT_DRIVER=1: a record made with another driver version is taken with
+this device's driver fields; without it such records are counted and left out.
+
+Checks on every list record: a known kind, 1-6 programs, compute exactly one compute program,
+graphics as many programs as the key has hashes, task/mesh kind only with a task or mesh
+program, each program's bytes as long as FileEnvironment::RecordTailSize (new, from the head
+alone) says, code at most 16 MiB, each program's code hash XOR the native tag one of the key's
+program hashes (not for a task/mesh record's mesh-state slots), and found code of the same hash
+and size (checked again when it is copied back). A bad record is counted and left out; a list
+that cannot be read on stops there. With _DRIVER=1 two records that become one key are written
+once. Host check (t154/host): the console's records rebuilt from a list are byte for byte the
+original records (1,346 + 2,975 + 368 + 401 + 705 + 3,458 records, 0 differ); C++ export and
+tools/pipeline-list.py export give the same bytes.
+
+Off (both unset): one getenv in LoadDiskResources (two with EXPORT's) and one in PrepareKept,
+cached; nothing read, written or logged. Not in the store stamp (the translation is unchanged),
+but vk_pipeline_cache.cpp and shader_environment.cpp are inputs of the translation id (0596), so
+a build with this patch gives a new id and one cold preparation when EDEN_UP_SHADER_PREP_SOURCE_STAMP=1.
+
+Credits: the shader set's program table and extractor this reads (T122, Fritchii's extractor);
+the preparation it feeds (0567, after zortos293/Lichii#895 and #896, zmckenney).
+---
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 819c9da..896a31f 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -1313,6 +1313,823 @@ bool MeshCacheBoot() {
+ }
+ } // Anonymous namespace
+ 
++// EDEN_UP_PIPELINE_LIST_EXPORT / EDEN_UP_PIPELINE_LIST_IMPORT (0720, both off by default) -----
++//
++// A pipeline list is a console's pipeline records without the game's code. A record of
++// vulkan.bin / vulkan_mesh.bin holds, per program, the program's code (the game's shader, as
++// the lowerer made it), the answers its translation got from the game's state, and then the
++// key (the six program hashes and the 1,008 bytes of drawing state). A list record holds the
++// same minus the code: for each program the CityHash64 of its code and the environment's other
++// bytes (the code size is the first of them). So a list says which pipelines a game draws and
++// how, and cannot draw anything by itself.
++//
++// EXPORT=1: at boot, before anything is built, this console's own record files (vulkan.bin and
++// vulkan_mesh.bin, or their canonical files, in this build's shader folder) are written as
++// pipeline_export.list beside them (written beside and renamed over). Nothing else changes.
++//
++// IMPORT=1 reads pipeline_import.list from the same folder; IMPORT=<path> reads that file
++// (several consoles' lists go through tools/pipeline-list.py merge first). Each program's code
++// is looked for by its hash in this console's own files: its records, and the shader set file
++// made from the player's own game when it is there (prep_shader_set.bin, either layout). The
++// list's records whose code was all found, that this console has no record of, that are made
++// for this device's dynamic state and pass every check below are written back as whole
++// records: prep_imported.bin (ordinary graphics), prep_imported_mesh.bin (task/mesh, with their
++// mesh state) and prep_imported_compute.bin. The preparation (EDEN_UP_SHADER_PREP=1) reads the
++// first two as predicted records: translated on the workers, built once (the driver's disk
++// cache keeps the result), kept (task/mesh pipelines, which run as compute, cannot be kept and
++// are remembered as built), before play. The boot builds the compute ones as its own. A list
++// that is gone takes the three files with it. One line in the log gives every count. A stamp
++// (prep_imported.stamp: the list, the shader set file, this device's dynamic states and key
++// switches, and the own record files while code was missing) skips the work when unchanged.
++// EDEN_UP_PIPELINE_LIST_IMPORT_DRIVER=1: a record made with another driver version is taken
++// with this device's driver fields (the fields only exist to tell driver builds apart; the
++// translation and the build are made here); without it such records are counted and left out.
++//
++// Checked for every list record: the list's format, cache version and both key sizes; a known
++// kind; 1-6 programs (compute: exactly one, a compute program; graphics: none, and as many as
++// the key has program hashes; mesh: at least one task or mesh program; ordinary: none); each
++// program's bytes as long as its head says, the code at most 16 MiB; and the code found here
++// has that hash and that size; each program's code hash (XOR the native tag) is one of the
++// key's program hashes (task/mesh records: not for their mesh-state slots), so a key is never
++// built from another program's code. A record that fails is counted as invalid and left out. A list
++// that ends inside a record or holds more than it says stops the reading (what was read stays).
++//
++// Off (both unset): one switch read in LoadDiskResources and one in PrepareKept; nothing is
++// read, written or logged.
++namespace {
++constexpr std::array<char, 8> PipelineListMagic{'E', 'G', 'P', 'L', 'I', 'S', 'T', '1'};
++constexpr u32 PipelineListFormat = 1;
++constexpr std::array<char, 8> CacheFileMagic{'y', 'u', 'z', 'u', 'c', 'a', 'c', 'h'};
++constexpr u64 MostCodeBytes = 16ULL << 20;
++constexpr u64 NativeProgramTag = 0x4f554e4345000003ULL; // GenericEnvironment::Analyze
++enum : u8 { ListCompute = 0, ListGraphics = 1, ListMesh = 2 };
++
++struct PipelineListHeader {
++    std::array<char, 8> magic{};
++    u32 format{};
++    u32 cache_version{};
++    u32 graphics_key_size{};
++    u32 compute_key_size{};
++    u32 records{};
++    u32 flags{};
++};
++static_assert(sizeof(PipelineListHeader) == 32);
++
++struct RawEnvironment {
++    std::array<u8, VideoCommon::FileEnvironment::RecordHeadSize> head{};
++    std::vector<u8> code;
++    std::vector<u8> tail;
++    u64 code_hash{};
++
++    [[nodiscard]] u64 CodeSize() const noexcept {
++        u64 size{};
++        std::memcpy(&size, head.data(), sizeof(size));
++        return size;
++    }
++    [[nodiscard]] Shader::Stage Stage() const noexcept {
++        u32 value{};
++        std::memcpy(&value, head.data() + head.size() - sizeof(value), sizeof(value));
++        return static_cast<Shader::Stage>(value);
++    }
++};
++
++struct RawRecord {
++    u8 kind{};
++    std::vector<RawEnvironment> envs;
++    std::vector<u8> key;
++};
++
++[[nodiscard]] bool IsMeshStage(Shader::Stage stage) noexcept {
++    return stage == Shader::Stage::Task || stage == Shader::Stage::Mesh;
++}
++
++/// EDEN_UP_PIPELINE_LIST_IMPORT: "" off, "1" the default file, else the path given.
++[[nodiscard]] const std::string& PipelineListImportPath() {
++    static const std::string path = [] {
++        const char* const value = std::getenv("EDEN_UP_PIPELINE_LIST_IMPORT");
++        if (value == nullptr || value[0] == '\0' || (value[0] == '0' && value[1] == '\0')) {
++            return std::string{};
++        }
++        return std::string{value};
++    }();
++    return path;
++}
++
++[[nodiscard]] std::filesystem::path ImportedFile(const std::filesystem::path& dir, u8 kind) {
++    return dir / (kind == ListMesh      ? "prep_imported_mesh.bin"
++                  : kind == ListCompute ? "prep_imported_compute.bin"
++                                        : "prep_imported.bin");
++}
++
++/// One environment's bytes at `in`, `left` bytes before the end. False: not an environment.
++[[nodiscard]] bool ReadRawEnvironment(std::istream& in, u64& left, bool with_mesh_state,
++                                      RawEnvironment& env) {
++    if (left < env.head.size()) {
++        return false;
++    }
++    in.read(reinterpret_cast<char*>(env.head.data()), static_cast<std::streamsize>(env.head.size()));
++    left -= env.head.size();
++    const std::optional<u64> tail =
++        VideoCommon::FileEnvironment::RecordTailSize(env.head, with_mesh_state, left);
++    const u64 code_size = env.CodeSize();
++    if (!tail || code_size > MostCodeBytes || code_size + *tail > left) {
++        return false;
++    }
++    env.code.resize(static_cast<size_t>(code_size));
++    in.read(reinterpret_cast<char*>(env.code.data()), static_cast<std::streamsize>(code_size));
++    env.tail.resize(static_cast<size_t>(*tail));
++    in.read(reinterpret_cast<char*>(env.tail.data()), static_cast<std::streamsize>(*tail));
++    left -= code_size + *tail;
++    env.code_hash = Common::CityHash64(reinterpret_cast<const char*>(env.code.data()),
++                                       env.code.size());
++    return true;
++}
++
++/// Every record of a pipeline cache file of `cache_version`, in order, as bytes. Returns false
++/// when the file ends inside a record or holds one that cannot be (what was read stays read);
++/// a missing file or another version's reads as empty.
++template <typename OnRecord>
++bool ForEachRawRecord(const std::filesystem::path& path, u32 cache_version, bool with_mesh_state,
++                      OnRecord&& on_record) try {
++    std::ifstream file(path, std::ios::binary | std::ios::ate);
++    if (!file.is_open()) {
++        return true;
++    }
++    file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
++    u64 left = static_cast<u64>(file.tellg());
++    file.seekg(0);
++    if (left < 12) {
++        return left == 0;
++    }
++    std::array<char, 8> magic{};
++    u32 version{};
++    file.read(magic.data(), magic.size());
++    file.read(reinterpret_cast<char*>(&version), sizeof(version));
++    left -= 12;
++    if (magic != CacheFileMagic || version != cache_version) {
++        return true;
++    }
++    RawRecord record;
++    while (left != 0) {
++        u32 count{};
++        if (left < sizeof(count)) {
++            return false;
++        }
++        file.read(reinterpret_cast<char*>(&count), sizeof(count));
++        left -= sizeof(count);
++        if (count == 0 || count > 6) {
++            return false;
++        }
++        record.envs.resize(count);
++        for (RawEnvironment& env : record.envs) {
++            if (!ReadRawEnvironment(file, left, with_mesh_state, env)) {
++                return false;
++            }
++        }
++        const bool compute = record.envs.front().Stage() == Shader::Stage::Compute;
++        const size_t key_size =
++            compute ? sizeof(ComputePipelineCacheKey) : sizeof(GraphicsPipelineCacheKey);
++        if (left < key_size) {
++            return false;
++        }
++        record.key.resize(key_size);
++        file.read(reinterpret_cast<char*>(record.key.data()),
++                  static_cast<std::streamsize>(key_size));
++        left -= key_size;
++        record.kind = compute ? ListCompute : with_mesh_state ? ListMesh : ListGraphics;
++        on_record(record);
++    }
++    return true;
++} catch (const std::exception&) {
++    return false;
++}
++
++[[nodiscard]] u64 RecordKeyHash(const RawRecord& record) {
++    if (record.kind == ListCompute) {
++        ComputePipelineCacheKey key;
++        std::memcpy(&key, record.key.data(), sizeof(key));
++        return key.Hash();
++    }
++    GraphicsPipelineCacheKey key;
++    std::memcpy(&key, record.key.data(), sizeof(key));
++    return key.Hash();
++}
++
++template <typename T>
++void PutValue(std::vector<u8>& out, const T& value) {
++    const auto* const bytes = reinterpret_cast<const u8*>(&value);
++    out.insert(out.end(), bytes, bytes + sizeof(value));
++}
++
++/// Writes `bytes` to `path` beside itself and renames it over. False: nothing changed.
++[[nodiscard]] bool WriteFileWhole(const std::filesystem::path& path,
++                                  const std::function<bool(std::ofstream&)>& write) {
++    std::filesystem::path temporary = path;
++    temporary += ".tmp";
++    try {
++        {
++            std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
++            if (!out.is_open()) {
++                return false;
++            }
++            out.exceptions(std::ofstream::failbit | std::ofstream::badbit);
++            if (!write(out)) {
++                out.close();
++                std::error_code ignored;
++                std::filesystem::remove(temporary, ignored);
++                return false;
++            }
++            out.flush();
++        }
++        std::filesystem::rename(temporary, path);
++        return true;
++    } catch (const std::exception&) {
++        std::error_code ignored;
++        std::filesystem::remove(temporary, ignored);
++        return false;
++    }
++}
++
++/// EDEN_UP_PIPELINE_LIST_EXPORT: `sources` (file, read with mesh state) as one list at `path`.
++void ExportPipelineList(const std::vector<std::pair<std::filesystem::path, bool>>& sources,
++                        const std::filesystem::path& path, u32 cache_version) {
++    const auto begin = std::chrono::steady_clock::now();
++    std::array<size_t, 3> written{};
++    size_t skipped_mesh = 0;
++    bool whole = true;
++    u64 bytes = 0;
++    const bool ok = WriteFileWhole(path, [&](std::ofstream& out) {
++        PipelineListHeader header{};
++        header.magic = PipelineListMagic;
++        header.format = PipelineListFormat;
++        header.cache_version = cache_version;
++        header.graphics_key_size = static_cast<u32>(sizeof(GraphicsPipelineCacheKey));
++        header.compute_key_size = static_cast<u32>(sizeof(ComputePipelineCacheKey));
++        out.write(reinterpret_cast<const char*>(&header), sizeof(header));
++        std::vector<u8> row;
++        u32 records = 0;
++        for (const auto& [source, with_mesh_state] : sources) {
++            whole &= ForEachRawRecord(source, cache_version, with_mesh_state,
++                                      [&](const RawRecord& record) {
++                if (record.kind == ListGraphics &&
++                    std::ranges::any_of(record.envs, [](const RawEnvironment& env) {
++                        return IsMeshStage(env.Stage());
++                    })) {
++                    // A task/mesh record of vulkan.bin lacks its mesh state: no build reads it.
++                    ++skipped_mesh;
++                    return;
++                }
++                row.clear();
++                PutValue(row, record.kind);
++                PutValue(row, static_cast<u8>(record.envs.size()));
++                PutValue(row, u16{0});
++                for (const RawEnvironment& env : record.envs) {
++                    PutValue(row, env.code_hash);
++                    PutValue(row, static_cast<u32>(env.head.size() + env.tail.size()));
++                    row.insert(row.end(), env.head.begin(), env.head.end());
++                    row.insert(row.end(), env.tail.begin(), env.tail.end());
++                }
++                row.insert(row.end(), record.key.begin(), record.key.end());
++                out.write(reinterpret_cast<const char*>(row.data()),
++                          static_cast<std::streamsize>(row.size()));
++                bytes += row.size();
++                ++written[record.kind];
++                ++records;
++            });
++        }
++        header.records = records;
++        out.seekp(0);
++        out.write(reinterpret_cast<const char*>(&header), sizeof(header));
++        return true;
++    });
++    const double seconds =
++        std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
++    if (!ok) {
++        LOG_WARNING(Render_Vulkan, "EDEN_UP_PIPELINE_LIST_EXPORT: {} could not be written",
++                    Common::FS::PathToUTF8String(path));
++        return;
++    }
++    LOG_INFO(Render_Vulkan,
++             "EDEN_UP_PIPELINE_LIST_EXPORT: wrote {}: {} records ({} graphics, {} task/mesh, {} "
++             "compute), {} KiB, no program code; {} task/mesh records of vulkan.bin left out (no "
++             "mesh state){}; {:.1f} s",
++             Common::FS::PathToUTF8String(path), written[0] + written[1] + written[2],
++             written[ListGraphics], written[ListMesh], written[ListCompute],
++             (bytes + sizeof(PipelineListHeader)) >> 10, skipped_mesh,
++             whole ? "" : "; a record file could not be read to its end", seconds);
++}
++
++struct PipelineListImport {
++    std::filesystem::path list;
++    std::filesystem::path dir;
++    std::vector<std::pair<std::filesystem::path, bool>> own_files;
++    std::filesystem::path shader_set_file;
++    u32 cache_version{};
++    u32 driver_id{};
++    u32 driver_version{};
++    bool mesh_supported{};
++    std::function<u32(const GraphicsPipelineCacheKey&)> other_device;
++    /// What other_device's answer depends on (dynamic states, key switches): in the stamp, so
++    /// a changed setting (EDEN_NX2_MASK_COMPONENTS, say) imports again.
++    std::string device_identity;
++};
++
++/// One list record at `in` (`left` bytes before the end of the list). Returns 0 when read and
++/// valid, 1 when read but invalid (`record` partly filled), 2 when the list cannot be read on.
++[[nodiscard]] u32 ReadListRecord(std::istream& in, u64& left, const PipelineListHeader& header,
++                                 RawRecord& record) {
++    std::array<u8, 4> head{};
++    if (left < head.size()) {
++        return 2;
++    }
++    in.read(reinterpret_cast<char*>(head.data()), head.size());
++    left -= head.size();
++    record.kind = head[0];
++    const u32 count = head[1];
++    if (count == 0 || count > 6 || record.kind > ListMesh) {
++        return 2; // the record's size is unknown: nothing after it can be found
++    }
++    bool valid = true;
++    record.envs.resize(count);
++    for (RawEnvironment& env : record.envs) {
++        u32 size{};
++        if (left < sizeof(env.code_hash) + sizeof(size)) {
++            return 2;
++        }
++        in.read(reinterpret_cast<char*>(&env.code_hash), sizeof(env.code_hash));
++        in.read(reinterpret_cast<char*>(&size), sizeof(size));
++        left -= sizeof(env.code_hash) + sizeof(size);
++        if (size < env.head.size() || size > left) {
++            return 2;
++        }
++        in.read(reinterpret_cast<char*>(env.head.data()), env.head.size());
++        env.tail.resize(size - env.head.size());
++        in.read(reinterpret_cast<char*>(env.tail.data()),
++                static_cast<std::streamsize>(env.tail.size()));
++        left -= size;
++        env.code.clear();
++        const std::optional<u64> tail = VideoCommon::FileEnvironment::RecordTailSize(
++            env.head, record.kind == ListMesh, MostCodeBytes);
++        if (!tail || *tail != env.tail.size() || env.CodeSize() < 8) {
++            valid = false;
++        }
++    }
++    const size_t key_size =
++        record.kind == ListCompute ? header.compute_key_size : header.graphics_key_size;
++    if (left < key_size) {
++        return 2;
++    }
++    record.key.resize(key_size);
++    in.read(reinterpret_cast<char*>(record.key.data()), static_cast<std::streamsize>(key_size));
++    left -= key_size;
++    if (!valid) {
++        return 1;
++    }
++    const auto stage_of = [](const RawEnvironment& env) { return env.Stage(); };
++    // The code a record names must be the code of a program its key names, or a pipeline of
++    // one program would be built from another's code: a native program's key hash is its
++    // code's CityHash64 XOR NativeProgramTag (GenericEnvironment::Analyze). Not checkable from
++    // the list: a task/mesh record's vertex B / tessellation slots, which also carry the mesh
++    // state (ShaderCache, MeshStateHash); their code is still found by its own hash. A program
++    // that is not native (none of this game's 4,270 + 3,398 own records) is refused here.
++    if (record.kind == ListCompute) {
++        ComputePipelineCacheKey key;
++        std::memcpy(&key, record.key.data(), sizeof(key));
++        return count == 1 && record.envs.front().Stage() == Shader::Stage::Compute &&
++                       (record.envs.front().code_hash ^ NativeProgramTag) == key.unique_hash
++                   ? 0
++                   : 1;
++    }
++    if (std::ranges::any_of(record.envs, [&](const RawEnvironment& env) {
++            return stage_of(env) == Shader::Stage::Compute;
++        })) {
++        return 1;
++    }
++    const bool mesh = std::ranges::any_of(record.envs, [&](const RawEnvironment& env) {
++        return IsMeshStage(stage_of(env));
++    });
++    if (mesh != (record.kind == ListMesh)) {
++        return 1;
++    }
++    GraphicsPipelineCacheKey key;
++    std::memcpy(&key, record.key.data(), sizeof(key));
++    const auto programs = std::ranges::count_if(key.unique_hashes, [](u64 hash) {
++        return hash != 0;
++    });
++    if (static_cast<size_t>(programs) != count) {
++        return 1;
++    }
++    const bool paired = std::ranges::all_of(record.envs, [&](const RawEnvironment& env) {
++        const Shader::Stage stage = stage_of(env);
++        if (record.kind == ListMesh &&
++            (IsMeshStage(stage) || stage == Shader::Stage::VertexB ||
++             stage == Shader::Stage::TessellationControl ||
++             stage == Shader::Stage::TessellationEval)) {
++            return true;
++        }
++        return std::ranges::find(key.unique_hashes, env.code_hash ^ NativeProgramTag) !=
++               key.unique_hashes.end();
++    });
++    return paired ? 0 : 1;
++}
++
++void ImportPipelineList(const PipelineListImport& job) {
++    const auto begin = std::chrono::steady_clock::now();
++    const std::string list_name = Common::FS::PathToUTF8String(job.list);
++    const auto remove_outputs = [&job] {
++        std::error_code ignored;
++        for (const u8 kind : {ListGraphics, ListMesh, ListCompute}) {
++            std::filesystem::remove(ImportedFile(job.dir, kind), ignored);
++        }
++        std::filesystem::remove(job.dir / "prep_imported.stamp", ignored);
++    };
++    std::ifstream list(job.list, std::ios::binary | std::ios::ate);
++    if (!list.is_open()) {
++        remove_outputs();
++        LOG_WARNING(Render_Vulkan, "EDEN_UP_PIPELINE_LIST_IMPORT: no list at {}; nothing imported",
++                    list_name);
++        return;
++    }
++    // What the written files were made from. Kept as they are when it holds: the same list,
++    // the same shader set file and, unless every program was found last time, the same own
++    // record files (they grow when play makes new records).
++    std::error_code ec;
++    const auto stamp_of = [&ec](const std::filesystem::path& path) {
++        const auto size = std::filesystem::file_size(path, ec);
++        const auto time = std::filesystem::last_write_time(path, ec);
++        return ec ? std::string{"-"}
++                  : fmt::format("{}.{}", size,
++                                static_cast<long long>(time.time_since_epoch().count()));
++    };
++    static const bool rewrite_driver = Common::PeSwitch("EDEN_UP_PIPELINE_LIST_IMPORT_DRIVER");
++    std::string own_stamp;
++    for (const auto& [own, mesh] : job.own_files) {
++        own_stamp += ' ' + stamp_of(own);
++    }
++    const std::string base_stamp =
++        fmt::format("pipeline list import 2 cache {} driver {:x}.{:x} rewrite {} mesh {} list {} "
++                    "set {} device {}",
++                    job.cache_version, job.driver_id, job.driver_version, rewrite_driver ? 1 : 0,
++                    job.mesh_supported ? 1 : 0, stamp_of(job.list), stamp_of(job.shader_set_file),
++                    job.device_identity);
++    const auto stamp_path = job.dir / "prep_imported.stamp";
++    {
++        std::ifstream old(stamp_path);
++        std::string first, second;
++        std::getline(old, first);
++        std::getline(old, second);
++        const bool outputs_there = std::filesystem::exists(ImportedFile(job.dir, ListGraphics), ec);
++        if (outputs_there && first == base_stamp &&
++            (second == "missing 0" || second == "missing 1" + own_stamp)) {
++            LOG_INFO(Render_Vulkan,
++                     "EDEN_UP_PIPELINE_LIST_IMPORT: {} imported before, its files are used as "
++                     "they are",
++                     list_name);
++            return;
++        }
++    }
++    list.exceptions(std::ifstream::failbit | std::ifstream::badbit);
++    u64 list_left{};
++    PipelineListHeader header{};
++    try {
++        list_left = static_cast<u64>(list.tellg());
++        list.seekg(0);
++        if (list_left >= sizeof(header)) {
++            list.read(reinterpret_cast<char*>(&header), sizeof(header));
++            list_left -= sizeof(header);
++        }
++    } catch (const std::exception&) {
++        header = {};
++    }
++    if (header.magic != PipelineListMagic || header.format != PipelineListFormat ||
++        header.cache_version != job.cache_version ||
++        header.graphics_key_size != sizeof(GraphicsPipelineCacheKey) ||
++        header.compute_key_size != sizeof(ComputePipelineCacheKey)) {
++        remove_outputs();
++        LOG_WARNING(Render_Vulkan,
++                    "EDEN_UP_PIPELINE_LIST_IMPORT: {} is not a pipeline list of this build "
++                    "({}format {}, cache version {}, key sizes {} and {}; this build: {}, {}, {} "
++                    "and {}); nothing imported",
++                    list_name, header.magic == PipelineListMagic ? "" : "not a list file; ",
++                    header.format, header.cache_version, header.graphics_key_size,
++                    header.compute_key_size, PipelineListFormat, job.cache_version,
++                    sizeof(GraphicsPipelineCacheKey), sizeof(ComputePipelineCacheKey));
++        return;
++    }
++    const std::streamoff records_at = list.tellg();
++    const u64 records_left = list_left;
++
++    struct {
++        std::array<size_t, 3> read{};
++        size_t invalid{};
++        size_t twice{};
++        size_t own{};
++        size_t other_device{};
++        size_t other_driver{};
++        size_t no_mesh_shaders{};
++        size_t missing_code{};
++        std::array<size_t, 3> written{};
++        size_t from_own{};
++        size_t from_set{};
++        size_t programs_wanted{};
++        size_t programs_missing{};
++        bool cut{};
++    } count;
++
++    // First pass over the list: the code it needs (hash and size) and, for the shader set
++    // file, the program hashes its keys name.
++    std::unordered_map<u64, u64> code_size_of;
++    std::unordered_set<u64> program_hashes;
++    std::unordered_set<u64> list_keys;
++    RawRecord record;
++    const auto pass = [&](const std::function<void(const RawRecord&, u64)>& on_valid) {
++        list.clear();
++        list.seekg(records_at);
++        u64 left = records_left;
++        std::unordered_set<u64> seen;
++        for (u32 index = 0; index < header.records; ++index) {
++            u32 result = 2;
++            try {
++                result = ReadListRecord(list, left, header, record);
++            } catch (const std::exception&) {
++                result = 2;
++            }
++            if (result == 2) {
++                count.cut = true;
++                return;
++            }
++            if (result == 1) {
++                ++count.invalid;
++                continue;
++            }
++            const u64 hash = RecordKeyHash(record);
++            if (!seen.insert(hash ^ record.kind).second) {
++                ++count.twice;
++                continue;
++            }
++            ++count.read[record.kind];
++            on_valid(record, hash);
++        }
++        count.cut |= left != 0;
++    };
++    try {
++        pass([&](const RawRecord& valid, u64 hash) {
++            list_keys.insert(hash);
++            for (const RawEnvironment& env : valid.envs) {
++                code_size_of.emplace(env.code_hash, env.CodeSize());
++            }
++            if (valid.kind != ListCompute) {
++                GraphicsPipelineCacheKey key;
++                std::memcpy(&key, valid.key.data(), sizeof(key));
++                for (const u64 program : key.unique_hashes) {
++                    if (program != 0) {
++                        program_hashes.insert(program);
++                    }
++                }
++            }
++        });
++    } catch (const std::exception&) {
++        count.cut = true;
++    }
++    count.programs_wanted = code_size_of.size();
++
++    // The code, from this console's own files: whatever program of theirs has a hash the list
++    // wants is copied once into a scratch file beside the outputs.
++    const auto code_path = job.dir / "prep_imported.code";
++    struct Found {
++        u64 at{};
++        u64 size{};
++    };
++    std::unordered_map<u64, Found> found;
++    std::unordered_set<u64> own_keys;
++    bool sources_whole = true;
++    {
++        std::ofstream code_file(code_path, std::ios::binary | std::ios::trunc);
++        if (!code_file.is_open()) {
++            LOG_WARNING(Render_Vulkan, "EDEN_UP_PIPELINE_LIST_IMPORT: {} cannot be written; "
++                                       "nothing imported",
++                        Common::FS::PathToUTF8String(code_path));
++            return;
++        }
++        u64 code_end = 0;
++        const auto offer = [&](u64 hash, std::span<const u8> code) -> bool {
++            const auto wanted = code_size_of.find(hash);
++            if (wanted == code_size_of.end() || wanted->second != code.size() ||
++                found.contains(hash)) {
++                return false;
++            }
++            code_file.write(reinterpret_cast<const char*>(code.data()),
++                            static_cast<std::streamsize>(code.size()));
++            if (!code_file) {
++                return false;
++            }
++            found.emplace(hash, Found{code_end, code.size()});
++            code_end += code.size();
++            return true;
++        };
++        for (const auto& [own, with_mesh_state] : job.own_files) {
++            sources_whole &= ForEachRawRecord(own, job.cache_version, with_mesh_state,
++                                              [&](const RawRecord& mine) {
++                own_keys.insert(RecordKeyHash(mine));
++                for (const RawEnvironment& env : mine.envs) {
++                    if (offer(env.code_hash, env.code)) {
++                        ++count.from_own;
++                    }
++                }
++            });
++        }
++        if (!job.shader_set_file.empty() && found.size() < code_size_of.size()) {
++            sources_whole &= VideoCommon::ShaderSet::ForEachProgramCode(
++                job.shader_set_file, job.cache_version,
++                [&](u64 program) { return program_hashes.contains(program); },
++                [&](u64, std::span<const u8> code) {
++                    const u64 hash = Common::CityHash64(reinterpret_cast<const char*>(code.data()),
++                                                        code.size());
++                    if (offer(hash, code)) {
++                        ++count.from_set;
++                    }
++                });
++        }
++        if (!code_file) {
++            LOG_WARNING(Render_Vulkan, "EDEN_UP_PIPELINE_LIST_IMPORT: {} could not be written "
++                                       "to its end; nothing imported",
++                        Common::FS::PathToUTF8String(code_path));
++            code_file.close();
++            std::filesystem::remove(code_path, ec);
++            return;
++        }
++    }
++    count.programs_missing = code_size_of.size() - found.size();
++
++    // Second pass: the records to write, whole, by kind.
++    std::array<std::ofstream, 3> outputs;
++    std::array<std::filesystem::path, 3> temporaries;
++    bool write_ok = true;
++    std::ifstream code_in(code_path, std::ios::binary);
++    std::vector<u8> code;
++    std::vector<u8> row;
++    const auto open_output = [&](u8 kind) -> std::ofstream& {
++        std::ofstream& out = outputs[kind];
++        if (!out.is_open()) {
++            temporaries[kind] = ImportedFile(job.dir, kind);
++            temporaries[kind] += ".tmp";
++            out.open(temporaries[kind], std::ios::binary | std::ios::trunc);
++            out.write(CacheFileMagic.data(), CacheFileMagic.size());
++            out.write(reinterpret_cast<const char*>(&job.cache_version),
++                      sizeof(job.cache_version));
++        }
++        return out;
++    };
++    // Reset the counts of the first pass: the second reads the same records again.
++    const auto first_read = count.read;
++    const size_t first_invalid = count.invalid;
++    const size_t first_twice = count.twice;
++    // Keys written so far: with EDEN_UP_PIPELINE_LIST_IMPORT_DRIVER=1 two records of the list
++    // (one per driver version) can become one key; it is written once.
++    std::unordered_set<u64> written_keys;
++    size_t rewritten_twice = 0;
++    try {
++        pass([&](const RawRecord& valid, u64 hash) {
++            u64 written_hash = hash;
++            if (own_keys.contains(hash)) {
++                ++count.own;
++                return;
++            }
++            if (valid.kind == ListMesh && !job.mesh_supported) {
++                ++count.no_mesh_shaders;
++                return;
++            }
++            std::vector<u8> key_bytes = valid.key;
++            if (valid.kind != ListCompute) {
++                GraphicsPipelineCacheKey key;
++                std::memcpy(&key, key_bytes.data(), sizeof(key));
++                if (key.state.driver_id != job.driver_id ||
++                    key.state.driver_version != job.driver_version) {
++                    ++count.other_driver;
++                    if (!rewrite_driver) {
++                        return;
++                    }
++                    key.state.driver_id = job.driver_id;
++                    key.state.driver_version = job.driver_version;
++                    std::memcpy(key_bytes.data(), &key, sizeof(key));
++                    written_hash = key.Hash();
++                    if (own_keys.contains(written_hash)) {
++                        ++count.own;
++                        return;
++                    }
++                }
++                if (job.other_device && job.other_device(key) != 0) {
++                    ++count.other_device;
++                    return;
++                }
++            }
++            if (!written_keys.insert(written_hash ^ valid.kind).second) {
++                ++rewritten_twice;
++                return;
++            }
++            if (!std::ranges::all_of(valid.envs, [&](const RawEnvironment& env) {
++                    return found.contains(env.code_hash);
++                })) {
++                ++count.missing_code;
++                return;
++            }
++            row.clear();
++            PutValue(row, static_cast<u32>(valid.envs.size()));
++            for (const RawEnvironment& env : valid.envs) {
++                const Found& where = found.at(env.code_hash);
++                code.resize(static_cast<size_t>(where.size));
++                code_in.seekg(static_cast<std::streamoff>(where.at));
++                code_in.read(reinterpret_cast<char*>(code.data()),
++                             static_cast<std::streamsize>(code.size()));
++                if (!code_in ||
++                    Common::CityHash64(reinterpret_cast<const char*>(code.data()), code.size()) !=
++                        env.code_hash) {
++                    write_ok = false;
++                    return;
++                }
++                row.insert(row.end(), env.head.begin(), env.head.end());
++                row.insert(row.end(), code.begin(), code.end());
++                row.insert(row.end(), env.tail.begin(), env.tail.end());
++            }
++            row.insert(row.end(), key_bytes.begin(), key_bytes.end());
++            std::ofstream& out = open_output(valid.kind);
++            out.write(reinterpret_cast<const char*>(row.data()),
++                      static_cast<std::streamsize>(row.size()));
++            write_ok &= static_cast<bool>(out);
++            ++count.written[valid.kind];
++        });
++    } catch (const std::exception&) {
++        write_ok = false;
++    }
++    count.read = first_read;
++    count.invalid = first_invalid;
++    count.twice = first_twice + rewritten_twice;
++    code_in.close();
++    std::filesystem::remove(code_path, ec);
++    for (u8 kind = 0; kind < 3; ++kind) {
++        if (outputs[kind].is_open()) {
++            outputs[kind].flush();
++            write_ok &= static_cast<bool>(outputs[kind]);
++            outputs[kind].close();
++        }
++    }
++    if (write_ok) {
++        for (const u8 kind : {ListGraphics, ListMesh, ListCompute}) {
++            const auto final_path = ImportedFile(job.dir, kind);
++            if (count.written[kind] != 0) {
++                std::filesystem::rename(temporaries[kind], final_path, ec);
++                write_ok &= !ec;
++            } else {
++                std::filesystem::remove(final_path, ec);
++            }
++        }
++        if (count.written[ListGraphics] == 0) {
++            // The stamp's check looks for this file: an empty one stands for "none".
++            std::ofstream empty(ImportedFile(job.dir, ListGraphics), std::ios::binary);
++            empty.write(CacheFileMagic.data(), CacheFileMagic.size());
++            empty.write(reinterpret_cast<const char*>(&job.cache_version),
++                        sizeof(job.cache_version));
++        }
++    }
++    if (!write_ok) {
++        for (u8 kind = 0; kind < 3; ++kind) {
++            if (!temporaries[kind].empty()) {
++                std::filesystem::remove(temporaries[kind], ec);
++            }
++        }
++        remove_outputs();
++        LOG_WARNING(Render_Vulkan, "EDEN_UP_PIPELINE_LIST_IMPORT: the imported records could "
++                                   "not be written; nothing imported");
++        return;
++    }
++    {
++        std::ofstream stamp(stamp_path, std::ios::trunc);
++        stamp << base_stamp << '\n'
++              << (count.missing_code == 0 ? std::string{"missing 0"} : "missing 1" + own_stamp)
++              << '\n';
++    }
++    const double seconds =
++        std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
++    LOG_INFO(Render_Vulkan,
++             "EDEN_UP_PIPELINE_LIST_IMPORT: {}: {} records ({} graphics, {} task/mesh, {} compute), "
++             "{} invalid, {} twice; {} this console has already, {} for another dynamic state, {} "
++             "made with another driver ({}), {} task/mesh with no mesh shaders here, {} whose code "
++             "is not on this console ({} of {} programs not found; {} found in own records, {} in "
++             "the shader set file); written for the preparation: {} graphics, {} task/mesh, {} "
++             "compute (the preparation counts them as predicted){}{}; {:.1f} s",
++             list_name, count.read[0] + count.read[1] + count.read[2], count.read[ListGraphics],
++             count.read[ListMesh], count.read[ListCompute], count.invalid, count.twice, count.own,
++             count.other_device, count.other_driver,
++             rewrite_driver ? "taken with this driver's fields" : "left out", count.no_mesh_shaders,
++             count.missing_code, count.programs_missing, count.programs_wanted, count.from_own,
++             count.from_set, count.written[ListGraphics], count.written[ListMesh],
++             count.written[ListCompute], count.cut ? "; the list ends inside a record or holds "
++                                                     "more than it says: the rest is left out"
++                                                   : "",
++             sources_whole ? "" : "; an own record file could not be read to its end", seconds);
++}
++} // Anonymous namespace
++
+ bool DropMeshDrawsBeforeBuild() {
+     static const bool drop = [] {
+         const char* value = std::getenv("EDEN_NX2_NO_MESH_BUILD");
+@@ -2117,6 +2934,41 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
+                  prep_store.Size() != 0 ? "reused" : "new", prep_store.Size(),
+                  ShaderPrep::CurrentBuild());
+     }
++    // EDEN_UP_PIPELINE_LIST_EXPORT / EDEN_UP_PIPELINE_LIST_IMPORT (0720): before anything of
++    // the record files is read or built.
++    {
++        std::vector<std::pair<std::filesystem::path, bool>> own_files{
++            {pipeline_cache_filename, false}, {mesh_pipeline_cache_filename, true}};
++        if (canonical_keys && !legacy_pipeline_cache_filename.empty()) {
++            own_files.emplace_back(legacy_pipeline_cache_filename, false);
++            own_files.emplace_back(legacy_mesh_pipeline_cache_filename, true);
++        }
++        if (Common::PeSwitch("EDEN_UP_PIPELINE_LIST_EXPORT")) {
++            ExportPipelineList(own_files, base_dir / "pipeline_export.list", CACHE_VERSION);
++        }
++        if (const std::string& asked = PipelineListImportPath(); !asked.empty()) {
++            if (!prep) {
++                LOG_WARNING(Render_Vulkan,
++                            "EDEN_UP_PIPELINE_LIST_IMPORT needs EDEN_UP_SHADER_PREP=1 for its "
++                            "graphics records (only its compute records are built at boot)");
++            }
++            PipelineListImport job;
++            job.list = asked == "1" ? base_dir / "pipeline_import.list"
++                                    : std::filesystem::path{asked};
++            job.dir = base_dir;
++            job.own_files = std::move(own_files);
++            job.shader_set_file = base_dir / "prep_shader_set.bin";
++            job.cache_version = CACHE_VERSION;
++            job.driver_id = static_cast<u32>(dynamic_features.driver_id);
++            job.driver_version = dynamic_features.driver_version;
++            job.mesh_supported = device.IsExtMeshShaderSupported();
++            job.other_device = [this](const GraphicsPipelineCacheKey& key) {
++                return OtherDeviceBits(key);
++            };
++            job.device_identity = ShaderSetDeviceIdentity();
++            ImportPipelineList(job);
++        }
++    }
+     std::atomic<size_t> prep_compared{};
+     std::atomic<size_t> prep_differed{};
+     size_t skipped_pipelines = 0;
+@@ -2317,6 +3169,18 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
+         VideoCommon::LoadPipelines(stop_loading, mesh_pipeline_cache_filename, CACHE_VERSION,
+                                    load_compute, load_graphics, true);
+     }
++    if (!PipelineListImportPath().empty() && !stop_loading.stop_requested()) {
++        // EDEN_UP_PIPELINE_LIST_IMPORT: the list's compute records, built as own ones (the
++        // reader that never changes a file; its graphics records are none, skipped if any).
++        loading_mesh_file = false;
++        (void)VideoCommon::ReadPipelines(
++            ImportedFile(base_dir, ListCompute), CACHE_VERSION, load_compute,
++            [](std::ifstream& file, std::vector<FileEnvironment>) {
++                GraphicsPipelineCacheKey key;
++                file.read(reinterpret_cast<char*>(&key), sizeof(key));
++            },
++            false);
++    }
+     if (canonical_keys && !stop_loading.stop_requested()) {
+         // The files written without the switch: read with the reader that never changes a file
+         // (LoadPipelines cuts back one it cannot read), their records rekeyed by load_graphics.
+@@ -4370,6 +5234,17 @@ void PipelineCache::PrepareKept(std::stop_token stop_loading,
+         }
+         whole &= VideoCommon::ReadPipelines(predicted_filename, CACHE_VERSION, skip_compute,
+                                             graphics_for(false, false), false);
++        if (!PipelineListImportPath().empty()) {
++            // EDEN_UP_PIPELINE_LIST_IMPORT: the list's records whose code this console has,
++            // written back whole at this boot; prepared as predicted records.
++            const auto dir = pipeline_cache_filename.parent_path();
++            whole &= VideoCommon::ReadPipelines(ImportedFile(dir, ListGraphics), CACHE_VERSION,
++                                                skip_compute, graphics_for(false, false), false);
++            if (device.IsExtMeshShaderSupported()) {
++                whole &= VideoCommon::ReadPipelines(ImportedFile(dir, ListMesh), CACHE_VERSION,
++                                                    skip_compute, graphics_for(false, true), true);
++            }
++        }
+         if (canonical_keys && !legacy_pipeline_cache_filename.empty()) {
+             // EDEN_UP_CANONICAL_KEYS=1: this console's own records written without the switch,
+             // rekeyed by the scan as the boot rekeyed them.
+diff --git a/src/video_core/shader_environment.cpp b/src/video_core/shader_environment.cpp
+index 352c6c0..d215e9e 100644
+--- a/src/video_core/shader_environment.cpp
++++ b/src/video_core/shader_environment.cpp
+@@ -1162,6 +1162,59 @@ void FileEnvironment::Deserialize(std::ifstream& file, bool with_mesh_state) {
+     is_proprietary_driver = texture_bound == 2 || Shader::Ampere::HasNativeAddressMap(code);
+ }
+ 
++std::optional<u64> FileEnvironment::RecordTailSize(std::span<const u8> head,
++                                                   bool with_mesh_state, u64 limit) {
++    if (head.size() < RecordHeadSize) {
++        return std::nullopt;
++    }
++    // The order Serialize writes: code size, then the five answer counts.
++    std::array<u64, 6> counts{};
++    std::memcpy(counts.data(), head.data(), sizeof(counts));
++    static_assert(sizeof(Shader::Stage) == sizeof(u32));
++    u32 stage_value{};
++    std::memcpy(&stage_value, head.data() + RecordHeadSize - sizeof(stage_value),
++                sizeof(stage_value));
++    if (stage_value > static_cast<u32>(Shader::Stage::Mesh) || counts[0] > limit) {
++        return std::nullopt;
++    }
++    const auto record_stage = static_cast<Shader::Stage>(stage_value);
++    // One entry of each answer map, as Serialize writes it: its key, then its value.
++    const std::array<u64, 5> entry{
++        sizeof(u32) + sizeof(Shader::TextureType),
++        sizeof(u32) + sizeof(Shader::TexturePixelFormat),
++        sizeof(u64) + sizeof(u32),
++        sizeof(u64) + sizeof(u8),
++        sizeof(u64) + sizeof(Shader::ReplaceConstant),
++    };
++    u64 size = 0;
++    for (size_t index = 0; index < entry.size(); ++index) {
++        const u64 count = counts[index + 1];
++        if (count > limit / entry[index]) {
++            return std::nullopt;
++        }
++        size += count * entry[index];
++        if (size > limit) {
++            return std::nullopt;
++        }
++    }
++    if (record_stage == Shader::Stage::Compute) {
++        size += sizeof(workgroup_size) + sizeof(shared_memory_size);
++    } else {
++        size += sizeof(sph);
++        if (record_stage == Shader::Stage::Geometry) {
++            size += sizeof(gp_passthrough_mask);
++        }
++        if (with_mesh_state &&
++            (record_stage == Shader::Stage::Task || record_stage == Shader::Stage::Mesh)) {
++            size += sizeof(mesh_registers) + sizeof(mesh_primitive_header);
++        }
++    }
++    if (size > limit) {
++        return std::nullopt;
++    }
++    return size;
++}
++
+ void FileEnvironment::Dump(u64 pipeline_hash, u64 shader_hash) {
+     DumpImpl(pipeline_hash, shader_hash, code, read_highest, read_lowest, initial_offset, stage);
+ }
+diff --git a/src/video_core/shader_environment.h b/src/video_core/shader_environment.h
+index 5ce80d9..7a3e129 100644
+--- a/src/video_core/shader_environment.h
++++ b/src/video_core/shader_environment.h
+@@ -383,6 +383,17 @@ public:
+                                              const char** why = nullptr,
+                                              UnreadHandles* unread = nullptr);
+ 
++    /// EDEN_UP_PIPELINE_LIST_IMPORT / _EXPORT: one environment of a pipeline cache record
++    /// (GenericEnvironment::Serialize writes it, Deserialize reads it) is a head of
++    /// RecordHeadSize bytes (six u64 counts, the first the code size, then seven u32 fields, the
++    /// last the stage), the code, and a tail (the answers, then the stage's own fields).
++    static constexpr size_t RecordHeadSize = 6 * sizeof(u64) + 7 * sizeof(u32);
++    /// The tail's size in bytes, from the head alone. nullopt when the head cannot be an
++    /// environment's: shorter than RecordHeadSize, an unknown stage, or the code or the tail
++    /// larger than `limit` bytes.
++    [[nodiscard]] static std::optional<u64> RecordTailSize(std::span<const u8> head,
++                                                           bool with_mesh_state, u64 limit);
++
+ private:
+     std::vector<u64> code;
+     ::Common::unordered_map<u32, Shader::TextureType> texture_types;
+diff --git a/src/video_core/shader_set.cpp b/src/video_core/shader_set.cpp
+index 1588724..82d0400 100644
+--- a/src/video_core/shader_set.cpp
++++ b/src/video_core/shader_set.cpp
+@@ -1003,4 +1003,69 @@ bool ReadRecords(
+         return false;
+     }
+ }
++
++bool ForEachProgramCode(const std::filesystem::path& path, u32 cache_version,
++                        const std::function<bool(u64)>& wanted,
++                        const std::function<void(u64, std::span<const u8>)>& on_program) {
++    // The trailer and the programs section as ReadRecords reads them: [12, where[1] records,
++    // facts_at, facts, programs_at, programs] + the magic; a program is u32 id, u64 lowered
++    // hash, u64 size, then its code.
++    try {
++        std::ifstream file(path, std::ios::binary | std::ios::ate);
++        if (!file.is_open()) return true;
++        file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
++        const u64 end = static_cast<u64>(file.tellg());
++        constexpr u64 TrailerBytes = 6 * 8 + 8;
++        if (end < 12 + TrailerBytes) return true;
++        const auto get = [&file](auto& value) {
++            file.read(reinterpret_cast<char*>(&value), sizeof(value));
++        };
++        const auto seek = [&file](u64 at) { file.seekg(static_cast<std::streamoff>(at)); };
++        std::array<char, 8> magic{}, tail{};
++        u32 version{};
++        seek(0);
++        file.read(magic.data(), magic.size());
++        get(version);
++        // "edenset2" (the layout before T122, which consoles still hold): a program is u32 id,
++        // u64 size, code, with no lowered hash; every program is handed over, with hash 0, and
++        // `wanted` is not asked.
++        static constexpr char OldMagic[9] = "edenset2";
++        const bool old_layout = std::memcmp(magic.data(), OldMagic, 8) == 0;
++        if ((!old_layout && std::memcmp(magic.data(), SetMagic, 8) != 0) ||
++            version != cache_version) {
++            return true;
++        }
++        std::array<u64, 6> where{};
++        seek(end - TrailerBytes);
++        get(where);
++        file.read(tail.data(), tail.size());
++        const u64 programs_at = where[4], programs = where[5];
++        if (std::memcmp(tail.data(), old_layout ? OldMagic : SetMagic, 8) != 0 || where[0] != 12 ||
++            programs_at < where[2] || programs_at > end - TrailerBytes) {
++            return false;
++        }
++        const u64 entry_head = old_layout ? 12 : 20;
++        std::vector<u8> code;
++        u64 at = programs_at;
++        for (u64 i = 0; i < programs; ++i) {
++            u32 program{};
++            u64 hash{}, size{};
++            if (at + entry_head > end - TrailerBytes) return false;
++            seek(at);
++            get(program);
++            if (!old_layout) get(hash);
++            get(size);
++            if (size > end - TrailerBytes - (at + entry_head)) return false;
++            if (old_layout || wanted(hash)) {
++                code.resize(static_cast<size_t>(size));
++                file.read(reinterpret_cast<char*>(code.data()), static_cast<std::streamsize>(size));
++                on_program(hash, std::span<const u8>{code.data(), code.size()});
++            }
++            at += entry_head + size;
++        }
++        return true;
++    } catch (const std::exception&) {
++        return false;
++    }
++}
+ } // namespace VideoCommon::ShaderSet
+diff --git a/src/video_core/shader_set.h b/src/video_core/shader_set.h
+index 771b405..69b0eba 100644
+--- a/src/video_core/shader_set.h
++++ b/src/video_core/shader_set.h
+@@ -82,6 +82,18 @@ struct Identity {
+ /// The lowered program hashes a generated file was made from (its .programs sidecar).
+ [[nodiscard]] std::vector<u64> ReadPrograms(const std::filesystem::path& programs);
+ 
++/// EDEN_UP_PIPELINE_LIST_IMPORT: the programs of a generated file (layout 2 keeps each one's
++/// code once, in the programs section). `wanted` is asked with each program's lowered hash
++/// first, nothing else read; for those it wants, `on_program` gets the hash and the code bytes,
++/// exactly as a record of the file carries them as an environment's code (ReadRecords splices
++/// them in unchanged). A file of the older "edenset2" layout (no lowered hashes) hands every
++/// program over with hash 0, without asking `wanted`. Reads the file, never changes it. False:
++/// the file is cut or damaged, or a callback threw; a missing file or one of another layout or
++/// cache version reads as empty (true).
++[[nodiscard]] bool ForEachProgramCode(
++    const std::filesystem::path& file, u32 cache_version, const std::function<bool(u64)>& wanted,
++    const std::function<void(u64, std::span<const u8>)>& on_program);
++
+ /// Free physical memory, or 0 when the platform does not say (Linux: sysinfo; FreeBSD: the free
+ /// and inactive page counts).
+ [[nodiscard]] u64 FreeMemoryBytes();

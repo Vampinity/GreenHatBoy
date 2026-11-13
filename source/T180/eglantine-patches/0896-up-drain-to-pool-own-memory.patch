@@ -1,0 +1,84 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_DRAIN_TO_POOL=1: while the pool is short or memory was refused, a device-local buffer of EDEN_UP_DRAIN_TO_POOL_KIB (2048) or more that the DeviceBuffers pool would take gets memory of its own, so a drain that deletes it gives it back to the driver; off by default
+
+Switches: EDEN_UP_DRAIN_TO_POOL=1 (exact; with 0895's line), EDEN_UP_DRAIN_TO_POOL_KIB=<KiB>
+(digits, 64 to 8192; unset: 2048). Acts with EDEN_UP_PRESSURE_DRAIN=1 or 2: the drain's look arms
+it for 3 s whenever it sees the pool short (EDEN_UP_PRESSURE_DRAIN_MIB) or a refusal, and 0897's
+area window arms it for that window.
+
+Why: a buffer cache buffer of half a separate-pool block or less (8 MiB) goes to the DeviceBuffers
+pool's 16 MiB blocks (vulkan_memory_allocator.cpp 750-777, vulkan_device.cpp 929-950), and a block
+goes back to the driver only when its last allocation goes. At the 13 Nov loads the new area's
+buffers were made and deleted side by side: run1395's drain 1 freed 1,268 MiB (320 of it staging)
+while the driver's view of the app's device memory fell only about 270-340 MiB (RADV_PS5_MEMORY
+app= 3,452 MiB at t_s 191, peak 3,695, 3,422 at t_s 194, stderr 860 and 950) and the census found
+782 MiB empty inside the blocks (stderr 926). REFUSED_VMA's largest hole of 15 MiB (run1397 stderr
+1394) can only be inside a 16 MiB separate-pool block (the default blocks are 8 MiB). That room
+takes buffers only: the heap's 9.9 MiB piece and the big images could not use it.
+
+What: in CreateBufferInSeparatePool, before the pool: when DrainToPool::OwnMemoryFor(ci.size) (the
+switch, the size, the armed window: an atomic read and one clock read), vmaCreateBuffer with
+VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT and without WITHIN_BUDGET (the refusal path asks again
+outside the budget anyway); on failure, the pool as before. Counted for 0895's line.
+Smaller buffers stay in the blocks: many small objects of their own would cut the pool into pieces
+under the 2 MiB the heap grows by. The driver's rounding of a small object is not checked.
+Off: one test of a static per buffer the pool would take.
+
+Translation id: vulkan_memory_allocator.cpp, drain_to_pool.h, vk_rasterizer.cpp are not in
+gen-translation-id.py's inputs; the names are not in TranslationSwitches: KEEPS THE STORE.
+
+---
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 5231767617..79cd71ea0a 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -3208,6 +3208,11 @@ void RasterizerVulkan::PressureDrainLook(bool frame_end) {
+     }
+     const bool refused = s.refusal_pending;
+     const bool short_pool = largest != 0 && largest < config.pool_mark;
++    // EDEN_UP_DRAIN_TO_POOL=1 (vulkan_common/drain_to_pool.h): new buffers get memory of their own
++    // for the next 3 s while the pool is short or memory was refused.
++    if (DrainToPool::OwnMemoryOn() && (short_pool || refused)) [[unlikely]] {
++        DrainToPool::Arm(3000);
++    }
+     if (!refused && !short_pool) {
+         line();
+         return;
+diff --git a/src/video_core/vulkan_common/vulkan_memory_allocator.cpp b/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
+index ddf31b9c9a..d351ff5fbb 100644
+--- a/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
++++ b/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
+@@ -23,6 +23,7 @@
+ #include "common/literals.h"
+ #include "common/logging.h"
+ #include <ranges>
++#include "video_core/vulkan_common/drain_to_pool.h"
+ #include "video_core/vulkan_common/unbacked_fallback.h"
+ #include "video_core/vulkan_common/vma.h"
+ #include "video_core/vulkan_common/vma_trim.h"
+@@ -756,6 +757,25 @@ bool MemoryAllocator::CreateBufferInSeparatePool(const VkBufferCreateInfo& ci, M
+     if (usage != MemoryUsage::DeviceLocal || ci.size > Device::SeparatePoolBlockSize() / 2) {
+         return false;
+     }
++    // EDEN_UP_DRAIN_TO_POOL=1 (drain_to_pool.h): while the pool is short or an area loads, a
++    // buffer of _KIB or more gets memory of its own, which goes back to the driver as soon as the
++    // buffer is destroyed (a drain), instead of a place in a pool block that live buffers keep.
++    // Outside the budget, as the refusal path asks again anyway; nothing from the driver: the
++    // pool, as before.
++    if (DrainToPool::OwnMemoryFor(ci.size)) [[unlikely]] {
++        VmaAllocationCreateInfo own_ci = alloc_ci;
++        own_ci.flags = (own_ci.flags & ~VmaAllocationCreateFlags{
++                                           VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT}) |
++                       VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
++        if (vmaCreateBuffer(allocator, &ci, &own_ci, &handle, &allocation, &alloc_info) ==
++            VK_SUCCESS) {
++            DrainToPool::CountMade(alloc_info.size);
++            return true;
++        }
++        handle = VK_NULL_HANDLE;
++        allocation = VK_NULL_HANDLE;
++        DrainToPool::CountRefused();
++    }
+     u32 memory_type{};
+     {
+         std::scoped_lock lk{buffer_type_mutex};

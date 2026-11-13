@@ -1,0 +1,59 @@
+From: EglantinePS5
+Subject: [PATCH] up: a running samples query may reach up to 1024 banks before it is dropped (CheezerWheezer, CheezyEmu af349fbbf8: EDEN_UP_ZPASS_QUERY_MAX_BANKS=<n>, his default 32), off by default
+
+What: with EDEN_NX2_ZPASS_PAUSE=1 (in our settings) SamplesStreamer::CloseCounter drops
+the running occlusion count once it spans more than EDEN_UP_ZPASS_QUERY_BANKS banks of 256 slots
+(0447: 1 to 4, unset 1). A drop restarts the count, which reads as "visible" for the object the
+cut falls in: occlusion-tested objects blink for one frame. CheezyEmu measured Ocarina's gameplay
+windows just past 1,024 slots (1,025-1,040 at the river, several times a minute) and moved the
+bound to 32 banks (8,192 slots): one drop in two minutes (right after a load) instead of one every
+few seconds, 30.0 fps either way. Our settings leave EDEN_UP_ZPASS_QUERY_BANKS unset, so
+our bound is 256 slots, a quarter of even the 4-bank one.
+
+With EDEN_UP_ZPASS_QUERY_MAX_BANKS=<1 to 1024> (digits only, read once) that number of banks is
+the bound, over EDEN_UP_ZPASS_QUERY_BANKS; one Render_Vulkan line names it. Try 32 (his default).
+Anything else or unset: EDEN_UP_ZPASS_QUERY_BANKS as before.
+
+Price: each bank a running query spans is one 256-slot query pool kept while in use (32 banks:
+32 small pools at most). His run: no fps change.
+
+Off: one getenv at the first CloseCounter (the static initializer), nothing per call. A new name,
+not in TranslationSwitches: setting it does not change the shader-prep stamp (setting
+EDEN_UP_ZPASS_QUERY_BANKS does, which is why this is a separate name).
+
+Origin and credit: CheezerWheezer, CheezerWheezer/CheezyEmu commit af349fbbf8 ("Popping: let a
+running samples query reach 32 banks before dropping it"), proposed in zortos293/Lichii#1428; the
+bound itself is 0447 (Lichii PR 717/718, stephenjayakar).
+---
+diff --git a/src/video_core/renderer_vulkan/vk_query_cache.cpp b/src/video_core/renderer_vulkan/vk_query_cache.cpp
+index d0aa270..3709a6a 100644
+--- a/src/video_core/renderer_vulkan/vk_query_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_query_cache.cpp
+@@ -258,6 +258,27 @@ public:
+         // restarts its count, which reads as "visible" for the object the cut falls in. Unset or
+         // anything else: 1 bank, as before.
+         static const size_t max_running_slots = [] {
++            // EDEN_UP_ZPASS_QUERY_MAX_BANKS=<1 to 1024> (digits only; CheezerWheezer, CheezyEmu
++            // af349fbbf8, after zortos293/Lichii#1428): when set, the bound in banks, over the
++            // switch below. Ocarina's gameplay windows run just past 1,024 slots (1,025-1,040 at
++            // the river, several times a minute), so even 4 banks dropped the running count every
++            // few seconds and each drop made occlusion-tested objects blink for a frame; his
++            // default is 32 banks (8,192 slots). Each bank in use is one 256-slot query pool.
++            // Unset or not 1 to 1024: the switch below, as before. One line when it is used.
++            if (const char* const wide = std::getenv("EDEN_UP_ZPASS_QUERY_MAX_BANKS")) {
++                size_t banks = 0;
++                const char* digit = wide;
++                for (; *digit >= '0' && *digit <= '9' && banks <= 1024; ++digit) {
++                    banks = banks * 10 + static_cast<size_t>(*digit - '0');
++                }
++                if (*digit == '\0' && digit != wide && banks >= 1 && banks <= 1024) {
++                    LOG_INFO(Render_Vulkan,
++                             "EDEN_UP_ZPASS_QUERY_MAX_BANKS: a running samples query is dropped "
++                             "past {} banks ({} slots)",
++                             banks, banks * SamplesQueryBank::BANK_SIZE);
++                    return banks * SamplesQueryBank::BANK_SIZE;
++                }
++            }
+             const char* const value = std::getenv("EDEN_UP_ZPASS_QUERY_BANKS");
+             const long banks = value != nullptr ? std::strtol(value, nullptr, 10) : 1;
+             return static_cast<size_t>(banks >= 1 && banks <= 4 ? banks : 1) *

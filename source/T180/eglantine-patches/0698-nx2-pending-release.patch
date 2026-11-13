@@ -1,0 +1,348 @@
+From: EglantinePS5
+Subject: [PATCH] nx2: deleted buffers and images waiting for the GPU are destroyed early past a limit (waveydude's 0912 part, EDEN_NX2_BC_PENDING_MIB / EDEN_NX2_TC_PENDING_MIB / EDEN_NX2_BC_PENDING_LOG), off by default
+
+What: a deleted buffer keeps its memory for 8 frames (delayed_destruction_ring), and every buffer
+that grows leaves its old copy there; a deleted image waits until the GPU is past it, looked at
+once a frame. At an area load frames take seconds, so all of that waits through the load, at the
+moment memory is shortest. In waveydude's crash at a later area's gate (base PS5 13.60) GPU-only
+buffers went from 219 MiB in 289 buffers to 1,464 MiB in 1,626 within 2 s and the pool refused
+the area's images. In a hand-played T151 session the buffer cache went from 1 to 468 MiB at the first area load (250 s).
+
+With EDEN_NX2_BC_PENDING_MIB=<MiB> (a number; unset or 0: off): when a draw or dispatch is about
+to make a buffer (CreateBuffer, only while may_wait_for_memory: the buffer setup of a draw or
+dispatch, both caches locked) and that many MiB of deleted buffers wait, the GPU is waited for and
+they are destroyed (runtime.ReleaseForBuffer: the same call the refused-buffer path already makes
+there, which also destroys the texture cache's deleted images the GPU is past).
+EDEN_NX2_TC_PENDING_MIB=<MiB> does the same when that many MiB of deleted images wait
+(TextureCache::SentencedBytes, read through a new hook of the Vulkan buffer cache runtime). Either
+limit releases both. EDEN_NX2_BC_PENDING_LOG=1 (exact "1") only logs. Lines (stderr,
+EDEN_BC_PENDING): what waits each time it passes its highest so far by 64 MiB, and the 1st, 2nd,
+4th ... release.
+
+Price: each release is a full GPU wait on the GPU thread (a hitch), at most once per buffer made
+while over the limit; so set the limit high enough that it happens at loads only (his runs used
+128-256 MiB).
+
+New file video_core/buffer_cache/pending_destroy.h (his, unchanged): the ring's bytes, slot by
+slot. Changed from his: comments; BC_PENDING_LOG is exact "1" (his: first character).
+
+Off: one static check per buffer made (CreateBuffer), two adds per deleted buffer and a slot
+reset per frame in the byte ring; one hook pointer. No wait, no line. Not in the kept-store stamp.
+
+Origin and credit: waveydude, ocarina-private patch 0912 ("T120: integrate Build O and add idle
+texture pressure cleanup"; the pending-release part is from his Build O), commits dc8796d and
+3db885a.
+---
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index de7be13..8bcde22 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -165,6 +165,108 @@ void BufferCache<P>::CollectRefused() {
+ template <class P>
+ void BufferCache<P>::ReleaseFinished() {
+     delayed_destruction_ring.Clear();
++    pending_destroy.Clear();
++}
++
++// EDEN_NX2_BC_PENDING_MIB=<MiB> (unset or 0: off, as before; waveydude's 0912): a deleted buffer
++// keeps its memory for TICKS_TO_DESTROY frames (delayed_destruction_ring), and every buffer that
++// grows leaves its old copy there. When a frame takes seconds (an area streaming in) everything
++// replaced during it waits. With the switch, a draw or dispatch about to make a buffer while that
++// many MiB wait first waits for the GPU and destroys them (the refused buffer's own relief,
++// runtime.ReleaseForBuffer, before a refusal instead of after one).
++// EDEN_NX2_TC_PENDING_MIB=<MiB> (unset or 0: off) does the same for deleted images, which wait for
++// the GPU to pass them but are only looked at once a frame. The wait and the destruction are the
++// same call, so either limit being reached releases both. Only where a refused buffer may already
++// wait (may_wait_for_memory: a draw's or dispatch's buffer setup, both caches locked).
++// EDEN_NX2_BC_PENDING_LOG=1 only logs (stderr, EDEN_BC_PENDING): a line each time what waits, or
++// what the buffers hold, passes its highest so far by 64 MiB. Either limit logs the same lines.
++template <class P>
++void BufferCache<P>::ReleasePendingBuffers() {
++    static const u64 limit = [] {
++        const char* const value = std::getenv("EDEN_NX2_BC_PENDING_MIB");
++        const u64 mib = value != nullptr ? std::strtoull(value, nullptr, 10) : 0;
++        if (mib != 0) {
++            std::fprintf(stderr,
++                         "EDEN_BC_PENDING on: deleted buffers are destroyed early from %llu MiB "
++                         "waiting\n",
++                         static_cast<unsigned long long>(mib));
++        }
++        return mib << 20;
++    }();
++    static const u64 image_limit = [] {
++        const char* const value = std::getenv("EDEN_NX2_TC_PENDING_MIB");
++        const u64 mib = value != nullptr ? std::strtoull(value, nullptr, 10) : 0;
++        if (mib != 0) {
++            std::fprintf(stderr,
++                         "EDEN_TC_PENDING on: deleted images are destroyed early from %llu MiB "
++                         "waiting\n",
++                         static_cast<unsigned long long>(mib));
++        }
++        return mib << 20;
++    }();
++    static const bool log = [] {
++        const char* const value = std::getenv("EDEN_NX2_BC_PENDING_LOG");
++        return limit != 0 || image_limit != 0 ||
++               (value != nullptr && value[0] == '1' && value[1] == '\0');
++    }();
++    if (!log) {
++        return;
++    }
++    constexpr u64 step = u64{64} << 20;
++    const u64 waiting = pending_destroy.Bytes();
++    // The texture cache's figure is only read where the release below may run: both caches are
++    // locked there. Elsewhere it counts as nothing.
++    u64 images = 0;
++    if constexpr (requires { runtime.PendingImageBytes(); }) {
++        if (may_wait_for_memory) {
++            images = runtime.PendingImageBytes();
++        }
++    }
++    if (waiting >= pending_logged_bytes + step || buffer_bytes >= live_logged_bytes + step ||
++        images >= images_logged_bytes + step) {
++        pending_logged_bytes = (std::max)(pending_logged_bytes, waiting);
++        live_logged_bytes = (std::max)(live_logged_bytes, buffer_bytes);
++        images_logged_bytes = (std::max)(images_logged_bytes, images);
++        std::fprintf(stderr,
++                     "EDEN_BC_PENDING frame=%llu waiting=%llu MiB in %llu deleted buffers, the "
++                     "cache holds %llu MiB, deleted images waiting %llu MiB\n",
++                     static_cast<unsigned long long>(frame_tick),
++                     static_cast<unsigned long long>(waiting >> 20),
++                     static_cast<unsigned long long>(pending_destroy.Buffers()),
++                     static_cast<unsigned long long>(buffer_bytes >> 20),
++                     static_cast<unsigned long long>(images >> 20));
++    }
++    if (!may_wait_for_memory ||
++        !VideoCommon::PendingReleaseDue(waiting, limit, images, image_limit)) {
++        return;
++    }
++    if constexpr (requires { runtime.ReleaseForBuffer(); }) {
++        const u64 buffers = pending_destroy.Buffers();
++        // Ends in ReleaseFinished above, which empties the ring and the count, and in the texture
++        // cache's, which destroys the images the GPU is past: after the wait, all of them.
++        runtime.ReleaseForBuffer();
++        u64 images_left = 0;
++        if constexpr (requires { runtime.PendingImageBytes(); }) {
++            images_left = runtime.PendingImageBytes();
++        }
++        const u64 images_freed = images - (std::min)(images, images_left);
++        pending_released_bytes += waiting + images_freed;
++        // The 1st, 2nd, 4th, 8th ... release in the log.
++        if (const u64 times = ++pending_releases; (times & (times - 1)) == 0) {
++            std::fprintf(stderr,
++                         "EDEN_BC_PENDING release %llu at frame %llu: %llu MiB in %llu buffers and "
++                         "%llu MiB of images destroyed after a wait for the GPU (%llu MiB so far), "
++                         "still waiting: %llu MiB of buffers, %llu MiB of images\n",
++                         static_cast<unsigned long long>(times),
++                         static_cast<unsigned long long>(frame_tick),
++                         static_cast<unsigned long long>(waiting >> 20),
++                         static_cast<unsigned long long>(buffers),
++                         static_cast<unsigned long long>(images_freed >> 20),
++                         static_cast<unsigned long long>(pending_released_bytes >> 20),
++                         static_cast<unsigned long long>(pending_destroy.Bytes() >> 20),
++                         static_cast<unsigned long long>(images_left >> 20));
++        }
++    }
+ }
+ 
+ template <class P>
+@@ -284,6 +386,7 @@ void BufferCache<P>::TickFrame() {
+     }
+     ++frame_tick;
+     delayed_destruction_ring.Tick();
++    pending_destroy.Tick();
+ 
+     // EDEN_UP_L1028_ASYNC_READBACK (zortos293/Lichii #1028): pages draws wrote get their early
+     // downloads now that the frame's work is recorded (EDEN_UP_L1028_EARLY), and read downloads
+@@ -4897,6 +5000,7 @@ BufferId BufferCache<P>::CreateBuffer(DAddr device_addr, u32 wanted_size,
+     // The synchronized-range tables hold Buffer pointers and ids that this may move or reuse.
+     nx2_synced_ranges.fill({});
+     nx2_synced_vertex_buffers.fill({});
++    ReleasePendingBuffers(); // EDEN_NX2_BC_PENDING_MIB / EDEN_NX2_TC_PENDING_MIB
+     DAddr device_addr_end = Common::AlignUp(device_addr + wanted_size, CACHING_PAGESIZE);
+     device_addr = Common::AlignDown(device_addr, CACHING_PAGESIZE);
+     wanted_size = static_cast<u32>(device_addr_end - device_addr);
+@@ -5701,7 +5805,10 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
+ #ifdef YUZU_LEGACY
+     if (!do_not_mark || !immediately_free)
+ #endif
++    {
++        pending_destroy.Push(slot_buffers[buffer_id].SizeBytes());
+         delayed_destruction_ring.Push(std::move(slot_buffers[buffer_id]));
++    }
+ 
+     slot_buffers.erase(buffer_id);
+ 
+diff --git a/src/video_core/buffer_cache/buffer_cache_base.h b/src/video_core/buffer_cache/buffer_cache_base.h
+index fb1453d..67bfe8f 100644
+--- a/src/video_core/buffer_cache/buffer_cache_base.h
++++ b/src/video_core/buffer_cache/buffer_cache_base.h
+@@ -46,6 +46,7 @@
+ #include "video_core/ubo_ahead.h"
+ #include "video_core/buffer_cache/virtual_range_cache.h"
+ #include "video_core/control/channel_state_cache.h"
++#include "video_core/buffer_cache/pending_destroy.h"
+ #include "video_core/delayed_destruction_ring.h"
+ #include "video_core/dirty_flags.h"
+ #include "video_core/engines/maxwell_3d.h"
+@@ -272,6 +273,9 @@ public:
+     /// GPU.
+     void ReleaseFinished();
+ 
++    /// EDEN_NX2_BC_PENDING_MIB / EDEN_NX2_TC_PENDING_MIB (CreateBuffer): see buffer_cache.h.
++    void ReleasePendingBuffers();
++
+     /// write_mark_limit: EDEN_UP_FRITCHII_WRITEMARK's mark, spread over the segments in order.
+     bool BindMultiRangeStorage(const Binding& binding, bool is_written,
+                                std::span<const MultiRangeSegment> pool,
+@@ -1024,6 +1028,13 @@ private:
+     static constexpr size_t TICKS_TO_DESTROY = 8;
+ #endif
+     DelayedDestructionRing<Buffer, TICKS_TO_DESTROY> delayed_destruction_ring;
++    /// What the ring above holds, in bytes (EDEN_NX2_BC_PENDING_MIB, ReleasePendingBuffers).
++    PendingDestroyBytes<TICKS_TO_DESTROY> pending_destroy;
++    u64 pending_logged_bytes = 0; ///< Most that waited, as last logged
++    u64 live_logged_bytes = 0;    ///< Most the buffers held, as last logged
++    u64 images_logged_bytes = 0;  ///< Most deleted images waited, as last logged
++    u64 pending_releases = 0;
++    u64 pending_released_bytes = 0;
+ 
+     const Tegra::Engines::Maxwell3D::DrawManager::IndirectParams* current_draw_indirect{};
+ 
+diff --git a/src/video_core/buffer_cache/pending_destroy.h b/src/video_core/buffer_cache/pending_destroy.h
+new file mode 100644
+index 0000000..6c37d98
+--- /dev/null
++++ b/src/video_core/buffer_cache/pending_destroy.h
+@@ -0,0 +1,70 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <array>
++#include <cstddef>
++#include <cstdint>
++
++namespace VideoCommon {
++
++/// The bytes of deleted buffers still waiting in a DelayedDestructionRing, kept slot by slot the
++/// way the ring keeps the buffers: Push adds to the current slot, Tick moves on and empties the
++/// slot it lands on, Clear empties all. A deleted buffer keeps its memory for Ticks frames, so
++/// when a frame takes seconds (an area streaming in) everything replaced during it waits here.
++template <std::size_t Ticks>
++class PendingDestroyBytes {
++public:
++    void Push(std::uint64_t bytes) noexcept {
++        bytes_in[index] += bytes;
++        ++buffers_in[index];
++        total_bytes += bytes;
++        ++total_buffers;
++    }
++
++    void Tick() noexcept {
++        index = (index + 1) % Ticks;
++        total_bytes -= bytes_in[index];
++        total_buffers -= buffers_in[index];
++        bytes_in[index] = 0;
++        buffers_in[index] = 0;
++    }
++
++    void Clear() noexcept {
++        bytes_in.fill(0);
++        buffers_in.fill(0);
++        total_bytes = 0;
++        total_buffers = 0;
++    }
++
++    [[nodiscard]] std::uint64_t Bytes() const noexcept {
++        return total_bytes;
++    }
++    [[nodiscard]] std::uint64_t Buffers() const noexcept {
++        return total_buffers;
++    }
++
++    /// Whether what waits has reached `limit` bytes. A limit of 0 is "no limit": never.
++    [[nodiscard]] bool Over(std::uint64_t limit) const noexcept {
++        return limit != 0 && total_bytes >= limit;
++    }
++
++private:
++    std::size_t index = 0;
++    std::array<std::uint64_t, Ticks> bytes_in{};
++    std::array<std::uint64_t, Ticks> buffers_in{};
++    std::uint64_t total_bytes = 0;
++    std::uint64_t total_buffers = 0;
++};
++
++/// Whether to wait for the GPU and destroy what waits: deleted buffers have reached their limit, or
++/// deleted images theirs. A limit of 0 is "no limit" for that kind; both 0 is never.
++[[nodiscard]] constexpr bool PendingReleaseDue(std::uint64_t buffer_bytes, std::uint64_t buffer_limit,
++                                               std::uint64_t image_bytes,
++                                               std::uint64_t image_limit) noexcept {
++    return (buffer_limit != 0 && buffer_bytes >= buffer_limit) ||
++           (image_limit != 0 && image_bytes >= image_limit);
++}
++
++} // namespace VideoCommon
+diff --git a/src/video_core/renderer_vulkan/vk_buffer_cache.h b/src/video_core/renderer_vulkan/vk_buffer_cache.h
+index 4801807..908eb70 100644
+--- a/src/video_core/renderer_vulkan/vk_buffer_cache.h
++++ b/src/video_core/renderer_vulkan/vk_buffer_cache.h
+@@ -137,6 +137,17 @@ public:
+         release_context = context;
+     }
+ 
++    /// EDEN_NX2_TC_PENDING_MIB: device memory of deleted images that ReleaseForBuffer would give
++    /// back (the texture cache's, through the rasterizer). Only read where ReleaseForBuffer may be
++    /// called (both caches locked).
++    [[nodiscard]] u64 PendingImageBytes() const {
++        return pending_images_hook ? pending_images_hook(release_context) : 0;
++    }
++
++    void SetPendingImagesHook(u64 (*hook)(void* context)) noexcept {
++        pending_images_hook = hook;
++    }
++
+     /// Returns the mask of bindings whose repacked state changed.
+     u32 SetVertexRepackLayout(const Tegra::Engines::Maxwell3D::Regs& regs, bool dynamic_input);
+ 
+@@ -360,6 +371,7 @@ private:
+     vk::Buffer null_buffer;
+ 
+     void (*release_hook)(void* context) = nullptr;
++    u64 (*pending_images_hook)(void* context) = nullptr;
+     void* release_context = nullptr;
+ 
+     std::unique_ptr<Uint8Pass> uint8_pass;
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index fb0a426..31488d5 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -281,6 +281,10 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
+     buffer_cache_runtime.SetReleaseHook(
+         [](void* context) { static_cast<RasterizerVulkan*>(context)->ReleaseFinishedMemory(); },
+         this);
++    // EDEN_NX2_TC_PENDING_MIB (BufferCache::ReleasePendingBuffers): read with both caches locked.
++    buffer_cache_runtime.SetPendingImagesHook([](void* context) -> u64 {
++        return static_cast<RasterizerVulkan*>(context)->texture_cache.SentencedBytes();
++    });
+     buffer_cache.SetPendingCpuWrites(
+         [this](const std::function<void(DAddr, size_t)>& callback) {
+             gpu.ForEachPendingCpuWrite(callback);
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index ae3a93e..db99479 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -519,6 +519,11 @@ public:
+     /// Destroys the deleted images the GPU is done with, as TickFrame does. Mutex held.
+     void ReleaseFinished();
+ 
++    /// Device memory of deleted images still waiting for the GPU (EDEN_NX2_TC_PENDING_MIB).
++    [[nodiscard]] u64 SentencedBytes() const noexcept {
++        return gpu_sentenced_bytes;
++    }
++
+     /// EDEN_NX2_CLEAN_BY_TIME: the LRU tick at or below which an image counts as unused for
+     /// `frames` frames: with the switch, also for that many frames' time at 60 fps when that is at
+     /// least max(floor, 3, frames / 8) frames. Empty when nothing can be that old yet.

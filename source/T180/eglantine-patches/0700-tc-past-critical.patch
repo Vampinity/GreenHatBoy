@@ -1,0 +1,67 @@
+From: EglantinePS5
+Subject: [PATCH] texture cache: the further past the critical mark, the more images a collector pass deletes (sbihaiko, Lichii #1306, EDEN_NX2_TC_PAST_CRITICAL), off by default
+
+What: past the critical mark the collector is in aggressive mode: images unused for 10 frames, 40
+a pass. Where the game makes more images than that a frame (sbihaiko: breaking pots in a later
+area makes ~55 a frame, 25 small shadow maps and the frame's targets at moving addresses, none
+replacing an older one) the cache grows ~15 images a frame, 4 GiB in two seconds, until the device
+heap is full and the driver fails the next image.
+
+With EDEN_NX2_TC_PAST_CRITICAL=1 (exact "1", read once): in aggressive mode, while the cache counts
+more than the critical mark, a pass may delete one more image for each 2 MiB past the mark (at most
+1,024 more), and from 1 GiB past the mark images unused for 3 frames go (or EDEN_NX2_TC_MIN_AGE,
+when larger). With EDEN_NX2_CLEAN_BY_TIME the extra count is multiplied by the frame-time step like
+the base count. Everything else in the pass (what may go, downloads, EDEN_UP_GC_ONE_WAIT,
+EDEN_NX2_DEFER_WRITEBACK_OOM) is as before.
+
+Note for our env: EDEN_NX2_TC_CRITICAL_MIB=3328 pins the mark (ApplyThresholdOverrides
+lets it win over the budget-following marks unless EDEN_UP_TC_BUDGET_CAP=1), and in T151 the cache
+never counted more than 2.7 GiB, so with that env this switch does not fire. It matters with a lower
+mark or with EDEN_UP_TC_BUDGET_CAP=1.
+
+Changed from his: exact "1" (his: anything but "0"); the switch is a helper (PastCriticalEnabled)
+read only in aggressive mode; placed before the CLEAN_BY_TIME step (his core has no such step).
+
+Off: one test per collector Configure, only in aggressive mode. Not in the kept-store stamp.
+
+Origin and credit: sbihaiko, EglantinePS5 branch b24-keeps, commit 91a301c ("port the patches that
+still pay on the parent's new core", his 0915 EDEN_NX2_TC_PAST_CRITICAL), after zortos293/Lichii
+PR #1306.
+---
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index f1d30c5..759de42 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -575,6 +575,12 @@ extern "C" void eden_optional_allocation_scope(bool enter) noexcept __attribute_
+     }
+ }
+ 
++// EDEN_NX2_TC_PAST_CRITICAL=1 (exact "1"): see RunGarbageCollector's Configure.
++[[nodiscard]] inline bool PastCriticalEnabled() noexcept {
++    static const bool enabled = Common::PeSwitch("EDEN_NX2_TC_PAST_CRITICAL");
++    return enabled;
++}
++
+ template <class P>
+ void TextureCache<P>::RunGarbageCollector() {
+     bool high_priority_mode = false;
+@@ -600,6 +606,19 @@ void TextureCache<P>::RunGarbageCollector() {
+         ticks_to_destroy = aggressive_mode ? 10ULL : high_priority_mode ? 25ULL : 50ULL;
+         ticks_to_destroy = (std::max)(ticks_to_destroy, min_age);
+         num_iterations = aggressive_mode ? 40 : (high_priority_mode ? 20 : 10);
++        // EDEN_NX2_TC_PAST_CRITICAL=1 (sbihaiko, Lichii #1306): past the critical mark, 40 images
++        // a pass is not enough where the game makes more (in a later area ~55 a frame, at moving
++        // addresses, none replacing an older one: the cache grew ~15 images a frame, 4 GiB in two
++        // seconds, until the device heap was full). One more image for each 2 MiB past the mark
++        // (at most 1,024 more), and from 1 GiB past it images go after 3 frames unused (or
++        // EDEN_NX2_TC_MIN_AGE). Off: as before.
++        if (aggressive_mode && total_used_memory > critical_memory && PastCriticalEnabled()) {
++            const u64 over = total_used_memory - critical_memory;
++            num_iterations += static_cast<size_t>((std::min)(over / 2_MiB, u64{1024}));
++            if (over >= 1_GiB) {
++                ticks_to_destroy = (std::max)(min_age, u64{3});
++            }
++        }
+         num_iterations *= time_step;
+         // Each pass gets its own scan budget, so the aggressive pass is not starved by earlier ones.
+         num_scanned = 0;

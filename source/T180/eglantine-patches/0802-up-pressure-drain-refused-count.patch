@@ -1,0 +1,50 @@
+From: EglantinePS5
+Subject: [PATCH] up: with EDEN_UP_PRESSURE_DRAIN or EDEN_UP_PRESSURE_DRAIN_COUNT=1, a refused allocation's report also names the deleted buffers still holding memory (EDEN_REFUSED_BUFFERS_DELETED); count only
+
+What: BufferCache::ReportMemory (the port calls it from a refused allocation's report, after
+EDEN_REFUSED_BUFFERS) adds one line: "EDEN_REFUSED_BUFFERS_DELETED <n> deleted buffers hold <MiB>
+MiB, the largest <MiB> MiB; each goes 8 frame ends after its deletion" (a walk of
+delayed_destruction_ring at that moment).
+Why: at the load into the area past the field about 1.0-1.3 GB of the allocator's use is in no
+report and no census field. If this line shows hundreds of MiB to 1 GB of deleted buffers at the
+refusal, that is the unnamed memory, and 0801 is the fix; if it shows little, the unnamed memory
+is something else (0731's allocator map then says what). With EDEN_UP_PRESSURE_DRAIN_COUNT=1 the
+10 s line of 0801 also gives the peak of the same walk, before any refusal.
+Off: one cached test at a refused allocation's report, nothing else.
+
+---
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index 96b1a9710a..cf7092a3e2 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -142,6 +142,30 @@ void BufferCache<P>::ReportMemory() {
+     std::fprintf(stderr, "EDEN_REFUSED_BUFFERS %zu buffers hold %llu MiB, the largest %llu MiB\n",
+                  buffers, static_cast<unsigned long long>(total >> 20),
+                  static_cast<unsigned long long>(largest >> 20));
++    // EDEN_UP_PRESSURE_DRAIN=1|2 or EDEN_UP_PRESSURE_DRAIN_COUNT=1 (the same test as
++    // pressure_drain.h's GetMode): the deleted buffers still holding their memory
++    // (delayed_destruction_ring, freed TICKS_TO_DESTROY frame ends after their deletion, not when
++    // the GPU is done). No census field and no line above names them.
++    static const bool count_deleted = [] {
++        const char* const drain = std::getenv("EDEN_UP_PRESSURE_DRAIN");
++        const char* const count = std::getenv("EDEN_UP_PRESSURE_DRAIN_COUNT");
++        return (drain != nullptr && (drain[0] == '1' || drain[0] == '2') && drain[1] == '\0') ||
++               (count != nullptr && count[0] == '1' && count[1] == '\0');
++    }();
++    if (count_deleted) {
++        size_t deleted{};
++        u64 deleted_bytes{}, deleted_largest{};
++        delayed_destruction_ring.ForEach([&](const Buffer& buffer) {
++            ++deleted;
++            deleted_bytes += buffer.SizeBytes();
++            deleted_largest = (std::max)(deleted_largest, u64{buffer.SizeBytes()});
++        });
++        std::fprintf(stderr,
++                     "EDEN_REFUSED_BUFFERS_DELETED %zu deleted buffers hold %llu MiB, the largest "
++                     "%llu MiB; each goes %zu frame ends after its deletion\n",
++                     deleted, static_cast<unsigned long long>(deleted_bytes >> 20),
++                     static_cast<unsigned long long>(deleted_largest >> 20), TICKS_TO_DESTROY);
++    }
+ }
+ 
+ template <class P>

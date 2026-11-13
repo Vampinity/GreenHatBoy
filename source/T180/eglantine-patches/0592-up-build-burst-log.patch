@@ -1,0 +1,745 @@
+From: EglantinePS5
+Subject: up: a measuring line for run-time pipeline build bursts, naming the thread whose requests grew the heap (EDEN_UP_BUILD_BURST_LOG), log only, off by default
+
+What: on a true first start of a fresh install, about 2 s and again about 10 s after the house door
+opens, the heap grows 450-810 MiB within 2 s (about 3,400 requests of 256 KiB-1 MiB), the pool falls
+to 0-12 MiB and whatever asks next dies. A cold door builds 39-43 new pipelines in 10 s, a warm one
+0-3 and has no wave. Nothing logs who owns that memory. With EDEN_UP_BUILD_BURST_LOG=1 a reporter
+thread prints, every 2 s while run-time pipeline builds are queued, running or just finished, one
+window line (builds started, in flight, pending, finished, failed, the most in flight at once; new,
+on disk, evicted; heap pieces, large blocks and live use at start, peak and end; heap growth; the
+count of non-arena requests under 1 MiB; the pool's largest free block and its low; main IR pools),
+up to 12 thread lines (the heap records whose requests grew the heap most in that window, from the
+existing per-record `grown` counter, with their thread names) and one job line per build (how much
+heap its thread took since the build began: net, allocated and high-water). Only builds queued on a
+VkPipelineBuilder (graphics, including the mesh compute passes, and compute) count as driver jobs;
+the GPU thread's translation (kind 3) and translator threads (kind 2) are observations. Boot builds
+are not watched. It changes nothing that is built, when, or how much memory anything gets.
+
+Front part (headless/heap_arenas.inc, same commit): a 64-byte sidecar record per heap record
+(512 x 64 = 32 KiB; eden_heap_thread unchanged) counts bytes allocated and freed by a thread only
+while it is inside a build scope (eden_build_heap_begin/_read/_end), with a relaxed load and store
+(single writer, the record's own thread); eden_build_heap_enable turns the counting on once.
+Read-only exports eden_heap_record_growth (a record's `grown`, sidecar net and name) and
+eden_heap_under1m_count (EDEN_HEAP_CLASSES under1M). The core reaches all of them as weak
+functions; without the front the lines still come, with heap_hook=0 thread_hook=0 and thread=0.
+
+Switch (read once, when the first pipeline cache is made): EDEN_UP_BUILD_BURST_LOG=1 (exact "1").
+Log (the C stream stderr, so stderr.log on the console: snprintf into stack buffers and fputs, the
+census's call; no heap use, nothing thrown):
+"EDEN_BUILD_BURST event=on steady_ms= app_ms= window_ms=2000 reporter_stack_kib=256 heap_hook=
+pool_hook= thread_hook= under1m_hook=" once; per window "EDEN_BUILD_BURST event=window window=N
+start_ms= end_ms= app_start_ms= app_end_ms= partial= started= inflight= pending= finished= failed=
+max_inflight= overflow= graphics= compute= mesh= new= disk= evicted= unknown= other_inflight=
+growth_b= growth_mib= under1m_n= live_b= pool_b= pool_min_b= start_pieces_b= peak_pieces_b=
+end_pieces_b= start_large_b= peak_large_b= end_large_b= start_live_b= peak_live_b= peak_main_b=
+main_b= pieces_max_b= large_max_b= main_max_b= heap_hook= pool_hook= thread_hook=", then up to 12
+"EDEN_BUILD_BURST event=thread window=N rec=R name=<name|?> grew_mib=G net_b=D" (most grown first,
+then most net), then "EDEN_BUILD_BURST event=job window=N id= key= thread= kind= mesh= origin=
+queued= done= success= begin_ms= end_ms= net_b= allocated_b= peak_b="; if the reporter thread cannot
+be made "EDEN_BUILD_BURST event=off reason=no_reporter_thread error=E (switch stays off)"; if it
+does not end within 1 s of the cache's teardown "EDEN_BUILD_BURST event=stop finished=0
+waited_ms=1000". *_ms are steady-clock ms, app_*_ms the app clock (Common::g_wall_clock, the one
+Eden::Performance::NowNs reads). A job's thread is its heap record + 1 (rec + 1 on a thread line).
+
+Not in TranslationSwitches: no shader, SPIR-V or info changes.
+
+Cost when off: Lifetime reads a function-local static once per cache (one getenv at the first);
+per build 2-3 relaxed loads of a cached flag and disengaged std::optionals (graphics and compute
+constructors, their builder jobs, the cache's two translation functions, TickFrame); no lock,
+closure, thread_local, thread or allocation. Front: one relaxed load of a never-written flag per
+heap charge. Fixed state about 48 KiB (core, never destroyed) and 32 KiB (front).
+On: every heap charge on every thread loads the flag and its own record's depth; inside a build
+scope also a load and store of net (and allocated) and a high-water compare, on the thread's own
+cache line. One detached reporter thread with a 256 KiB stack, waking every 10 ms to check for its
+stop and polling every 100 ms; at a window's open up to 512 lock-free record reads.
+
+Default flip: none. This is a measuring line; it stays off unless a test asks for it.
+
+Fixes against the first draft (two reviews): sidecar records _Alignas(64), early return when a
+thread is not in a build scope, relaxed load + store instead of locked adds; Poll's row buffers
+static (only the reporter calls Poll); the reporter is a detached pthread with an explicit 256 KiB
+stack and its state is never destroyed (no joinable global std::thread for a static destructor),
+the cache's teardown waits at most 1 s for its last window, and a thread that cannot be made turns
+the switch off with one stderr line instead of throwing; under1m_n on the window line; up to 12
+event=thread lines per window from `grown`; app_start_ms/app_end_ms on the app clock. The draft's
+L1 (EDEN_UP_BUILD_BUDGET_MIB) and L2 (EDEN_UP_BUILD_RELEASE) are not placed.
+
+Risks (on only): counting costs every allocating thread a little (measure the fps against the
+switch off); `grown` names the thread whose request made the heap take a piece, not who holds the
+memory; net counts only inside build scopes and only on the thread that frees; driver helper
+threads show as their own records ("?" if unnamed); compute builds at run time are always "new"
+(origin); the 2 s windows and the census are on different clocks (match on app_*_ms or steady_ms).
+
+Print fix (T137, after T136's first cold start): T136 wrote every line with write(2) to descriptor 1.
+On the console the app reopens stdout and stderr with freopen (heap.log, stderr.log) and the system
+refuses dup2 and F_DUPFD (headless/log_flusher.h), so the streams do not keep descriptors 1 and 2 and
+not one EDEN_BUILD_BURST line reached a log file. Every line now goes through std::fputs on the C
+stream stderr (stderr.log, beside the EDEN_BIG_* and EDEN_MEM_CENSUS lines), the call the census's
+reporter thread uses; the stream's buffer is already set (no allocation), Poll still writes outside
+its mutex. Off path unchanged.
+
+Origin and credit: our own. Drafted first as two drafts (core and front),
+reviewed twice, every fix of both reviews placed.
+---
+diff --git a/src/video_core/renderer_vulkan/vk_build_burst.h b/src/video_core/renderer_vulkan/vk_build_burst.h
+new file mode 100644
+index 0000000..f4e9037
+--- /dev/null
++++ b/src/video_core/renderer_vulkan/vk_build_burst.h
+@@ -0,0 +1,441 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#pragma once
++#include <algorithm>
++#include <array>
++#include <atomic>
++#include <cerrno>
++#include <chrono>
++#include <cstdint>
++#include <cstdio>
++#include <mutex>
++#include <optional>
++#include <pthread.h>
++#include <time.h>
++#include <unistd.h>
++#include "common/cpu_features.h"
++#include "common/pe_switch.h"
++// headless/heap_arenas.inc (front part of 0592): per-thread build heap counters.
++extern "C" void eden_build_heap_enable(void) __attribute__((weak));
++extern "C" unsigned eden_build_heap_begin(void) __attribute__((weak));
++extern "C" void eden_build_heap_read(unsigned, long long*, unsigned long long*, unsigned long long*) __attribute__((weak));
++extern "C" void eden_build_heap_end(unsigned) __attribute__((weak));
++// ... and read only: a record's heap pieces grown (existing `grown`), sidecar net and name; the
++// count of non-arena requests under 1 MiB (EDEN_HEAP_CLASSES under1M).
++extern "C" int eden_heap_record_growth(unsigned, unsigned*, long long*, char*) __attribute__((weak));
++extern "C" unsigned long long eden_heap_under1m_count(void) __attribute__((weak));
++
++extern "C" void eden_heap_usage(std::size_t*, std::size_t*, std::size_t*) __attribute__((weak));
++extern "C" std::size_t eden_heap_committed(void) __attribute__((weak));
++extern "C" std::size_t eden_heap_large_held(unsigned*) __attribute__((weak));
++extern "C" unsigned long long eden_pool_largest_free(void) __attribute__((weak));
++namespace Vulkan::BuildBurst {
++using U64 = std::uint64_t;
++using Clock = std::chrono::steady_clock;
++enum class Origin : unsigned { New, Disk, Evicted, Unknown };
++inline constexpr unsigned kRecords = 512;   // EDEN_HEAP_THREADS; the front says where its table ends
++inline constexpr unsigned kThreadLines = 12; // event=thread lines per window, most grown first
++inline constexpr unsigned kPieceMib = 32;    // EDEN_HEAP_PIECE_SHIFT 25
++inline constexpr std::size_t kReporterStack = 256 * 1024;
++inline std::atomic<bool> enabled{};
++inline std::atomic<U64> main_held{};
++inline bool Enabled() noexcept { return enabled.load(std::memory_order_relaxed); }
++inline U64 Ms() noexcept {
++    return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
++}
++// The app clock: Common::g_wall_clock, the one Eden::Performance::NowNs reads (time since start).
++inline U64 AppMs() noexcept { return static_cast<U64>(Common::g_wall_clock.GetTimeMS().count()); }
++// The line goes to the C stream stderr (stderr.log), never to a fixed descriptor: on the console
++// freopen cannot keep descriptors 1 and 2 (dup2: EPERM, headless/log_flusher.h), so a line written
++// to descriptor 1 reached no log file (T136's first cold start: 0 lines). The census's call
++// (memory_census.h): fputs on the stream, whose buffer is already set (no allocation); it takes
++// only the stream's own lock, held by a printing thread for one line; Poll calls it outside
++// state.mutex.
++inline void Write(const char* line, int n, std::size_t capacity) noexcept {
++    if (n <= 0 || std::size_t(n) >= capacity) return;
++    const int saved = errno;
++    std::fputs(line, stderr);
++    errno = saved;
++}
++struct Heap { U64 pieces{}, large{}, live{}, returned{}, main{}, pool{}, under1m{}; };
++inline Heap ReadHeap() noexcept {
++    Heap h;
++    if (eden_heap_committed) h.pieces = eden_heap_committed();
++    if (eden_heap_large_held) h.large = eden_heap_large_held(nullptr);
++    if (eden_heap_usage) {
++        std::size_t live{}, returned{};
++        eden_heap_usage(nullptr, &live, &returned);
++        h.live = live; h.returned = returned;
++    }
++    h.main = main_held.load(std::memory_order_relaxed);
++    if (eden_pool_largest_free) h.pool = eden_pool_largest_free();
++    if (eden_heap_under1m_count) h.under1m = eden_heap_under1m_count();
++    return h;
++}
++struct Entry {
++    const void* owner{};
++    U64 id{}, key{}, begin{}, end{};
++    unsigned token{}, kind{}; // graphics=0, compute=1, translator=2, GPU translation=3
++    Origin origin{Origin::Unknown};
++    bool mesh{}, done{}, success{}, queued{};
++    long long net{};
++    unsigned long long allocated{}, peak{};
++};
++// A heap record's counters at the start of a window.
++struct ThreadBase { unsigned grown{}; long long net{}; };
++struct State {
++    std::mutex mutex;
++    std::array<Entry, 512> jobs{};
++    U64 id{}, sequence{}, start{}, app_start{}, started{}, finished{}, failed{}, active{}, max_active{}, overflow{},
++        observations{}, pending{};
++    Heap first{}, peak{}, last{};
++    U64 pieces_max{}, large_max{}, main_max{}, pool_min{};
++    std::array<ThreadBase, kRecords> thread_base{};
++    unsigned thread_records{};
++    bool open{};
++    // Reporter lifetime (Lifetime below), under its own mutex.
++    std::mutex lifetime_mutex;
++    unsigned users{};
++};
++// Never destroyed: the detached reporter may still be in Poll while static destructors run (an
++// exit that skips renderer teardown), so neither the state nor its mutexes may go away.
++union StateHolder {
++    State value;
++    constexpr StateHolder() : value{} {}
++    ~StateHolder() {}
++};
++constinit inline StateHolder state_holder;
++constinit inline State& state = state_holder.value;
++inline void ReadJob(Entry& e) noexcept {
++    if (!e.queued && !e.done && e.token && eden_build_heap_read)
++        eden_build_heap_read(e.token, &e.net, &e.allocated, &e.peak);
++}
++inline void Sample() noexcept { // state.mutex held; never reads a pool object from a builder
++    const auto h = ReadHeap(); state.last = h;
++    if (h.live >= state.peak.live) state.peak = h;
++    state.pieces_max = std::max(state.pieces_max, h.pieces);
++    state.large_max = std::max(state.large_max, h.large);
++    state.main_max = std::max(state.main_max, h.main);
++    state.pool_min = std::min(state.pool_min, h.pool);
++}
++// state.mutex held. Up to 512 lock-free reads of the front's table, only when a window opens.
++inline void SnapshotThreads() noexcept {
++    state.thread_records = 0;
++    if (!eden_heap_record_growth) return;
++    for (unsigned i = 0; i < kRecords; ++i) {
++        ThreadBase b{};
++        if (!eden_heap_record_growth(i, &b.grown, &b.net, nullptr)) break;
++        state.thread_base[i] = b;
++        state.thread_records = i + 1;
++    }
++}
++inline void Open(U64 now) noexcept {
++    state.open = true; state.start = now; state.app_start = AppMs();
++    state.first = state.peak = state.last = ReadHeap();
++    state.pieces_max = state.first.pieces; state.large_max = state.first.large;
++    state.main_max = state.first.main; state.pool_min = state.first.pool;
++    SnapshotThreads();
++}
++struct ThreadRow { unsigned rec{}; unsigned grew{}; long long net{}; char name[16]{}; };
++// One window summary, up to kThreadLines thread lines (which heap record's requests grew the heap
++// in this window) and fixed-size job lines with the same window id. Every job active at reporting,
++// and every job finishing in this window, gets a line. Only the reporter thread calls this (and a
++// host check, never concurrently), so the row buffers are static, not on its 256 KiB stack. The
++// lines are written outside the observation mutex.
++inline void Poll(bool force = false) noexcept {
++    State& s = state;
++    static std::array<Entry, 512> rows{};
++    static std::array<ThreadRow, kRecords> threads{};
++    Heap first{}, peak{}, last{};
++    U64 seq{}, start{}, end{}, app_start{}, app_end{}, started{}, finished{}, failed{}, active{}, max{}, overflow{},
++        pmax{}, lmax{}, mmax{}, low{}, pending{};
++    std::size_t count{}, thread_count{};
++    {
++        std::lock_guard lock{s.mutex};
++        if (!s.open) return;
++        Sample(); end = Ms();
++        if (!force && end - s.start < 2000) return;
++        app_end = AppMs();
++        first=s.first; peak=s.peak; last=s.last;
++        seq=++s.sequence; pending=s.pending; start=s.start; app_start=s.app_start; started=s.started;
++        finished=s.finished;
++        failed=s.failed; active=s.active; max=s.max_active; overflow=s.overflow;
++        pmax=s.pieces_max; lmax=s.large_max; mmax=s.main_max; low=s.pool_min;
++        for (auto& e : s.jobs) if (e.owner) {
++            ReadJob(e); rows[count++] = e;
++            if (e.done) e = {};
++        }
++        for (unsigned i = 0; i < s.thread_records; ++i) {
++            ThreadRow row{};
++            unsigned grown{};
++            long long net{};
++            if (!eden_heap_record_growth(i, &grown, &net, row.name)) break;
++            const ThreadBase& b = s.thread_base[i];
++            row.rec = i;
++            row.grew = grown >= b.grown ? grown - b.grown : grown; // a counter never goes down
++            row.net = net - b.net;
++            if (row.grew != 0 || row.net != 0) threads[thread_count++] = row;
++        }
++        s.started=s.finished=s.failed=s.overflow=0; s.max_active=s.active;
++        s.open = false;
++        if (force) { s.pending=0; s.observations=0; for (auto& e : s.jobs) e={}; }
++        else if (s.observations || s.pending) Open(end);
++    }
++    U64 graphics{}, compute{}, mesh{}, origins[4]{}, other{};
++    for (std::size_t i=0; i<count; ++i) {
++        const auto& e = rows[i];
++        other += e.kind >= 2 && !e.done && !e.queued;
++        if (e.done && e.success && e.kind < 2) {
++            ++(e.kind == 0 ? graphics : compute); mesh += e.mesh;
++            ++origins[static_cast<unsigned>(e.origin)];
++        }
++    }
++    char line[2048];
++    const long long growth = static_cast<long long>(last.pieces) - static_cast<long long>(first.pieces) +
++                             static_cast<long long>(last.returned - first.returned);
++    int n = std::snprintf(line, sizeof(line),
++        "EDEN_BUILD_BURST event=window window=%llu start_ms=%llu end_ms=%llu app_start_ms=%llu app_end_ms=%llu "
++        "partial=%u "
++        "started=%llu inflight=%llu pending=%llu finished=%llu failed=%llu max_inflight=%llu overflow=%llu "
++        "graphics=%llu compute=%llu mesh=%llu new=%llu disk=%llu evicted=%llu unknown=%llu other_inflight=%llu "
++        "growth_b=%lld growth_mib=%lld under1m_n=%llu live_b=%llu pool_b=%llu pool_min_b=%llu "
++        "start_pieces_b=%llu peak_pieces_b=%llu end_pieces_b=%llu "
++        "start_large_b=%llu peak_large_b=%llu end_large_b=%llu "
++        "start_live_b=%llu peak_live_b=%llu peak_main_b=%llu main_b=%llu "
++        "pieces_max_b=%llu large_max_b=%llu main_max_b=%llu heap_hook=%u pool_hook=%u thread_hook=%u\n",
++        (unsigned long long)seq, (unsigned long long)start, (unsigned long long)end,
++        (unsigned long long)app_start, (unsigned long long)app_end, unsigned(force),
++        (unsigned long long)started, (unsigned long long)active, (unsigned long long)pending, (unsigned long long)finished,
++        (unsigned long long)failed, (unsigned long long)max, (unsigned long long)overflow,
++        (unsigned long long)graphics, (unsigned long long)compute, (unsigned long long)mesh,
++        (unsigned long long)origins[0], (unsigned long long)origins[1], (unsigned long long)origins[2],
++        (unsigned long long)origins[3], (unsigned long long)other,
++        growth, growth / (1LL<<20), (unsigned long long)(last.under1m - first.under1m),
++        (unsigned long long)last.live, (unsigned long long)last.pool,
++        (unsigned long long)low, (unsigned long long)first.pieces, (unsigned long long)peak.pieces,
++        (unsigned long long)last.pieces, (unsigned long long)first.large, (unsigned long long)peak.large,
++        (unsigned long long)last.large, (unsigned long long)first.live, (unsigned long long)peak.live,
++        (unsigned long long)peak.main, (unsigned long long)last.main, (unsigned long long)pmax,
++        (unsigned long long)lmax, (unsigned long long)mmax,
++        unsigned(eden_build_heap_begin && eden_build_heap_read && eden_build_heap_end),
++        unsigned(eden_pool_largest_free != nullptr), unsigned(eden_heap_record_growth != nullptr));
++    Write(line, n, sizeof(line));
++    // The heap records whose requests grew the heap most in this window (then the most net bytes
++    // inside build scopes): a VkPipelineBuilder name = the builders, the GPU or VulkanWorker thread =
++    // the draw path, "?" = a thread that never named itself (a driver helper, for example).
++    const std::size_t shown = std::min<std::size_t>(thread_count, kThreadLines);
++    std::partial_sort(threads.begin(), threads.begin() + shown, threads.begin() + thread_count,
++                      [](const ThreadRow& a, const ThreadRow& b) {
++                          if (a.grew != b.grew) return a.grew > b.grew;
++                          return a.net > b.net;
++                      });
++    for (std::size_t i = 0; i < shown; ++i) {
++        ThreadRow& t = threads[i];
++        for (char& c : t.name) { // one key=value token for the parser
++            if (c == 0) break;
++            if (c == ' ' || c == '=' || c == '\t' || c == '\n' || c == '\r') c = '_';
++        }
++        n = std::snprintf(line, sizeof(line),
++            "EDEN_BUILD_BURST event=thread window=%llu rec=%u name=%s grew_mib=%llu net_b=%lld\n",
++            (unsigned long long)seq, t.rec, t.name[0] ? t.name : "?",
++            (unsigned long long)t.grew * kPieceMib, t.net);
++        Write(line, n, sizeof(line));
++    }
++    for (std::size_t i=0; i<count; ++i) {
++        const auto& e = rows[i];
++        n = std::snprintf(line, sizeof(line),
++            "EDEN_BUILD_BURST event=job window=%llu id=%llu key=%016llx thread=%u kind=%u mesh=%u "
++            "origin=%u queued=%u done=%u success=%u begin_ms=%llu end_ms=%llu net_b=%lld allocated_b=%llu peak_b=%llu\n",
++            (unsigned long long)seq, (unsigned long long)e.id, (unsigned long long)e.key,
++            e.token, e.kind, unsigned(e.mesh), unsigned(e.origin), unsigned(e.queued), unsigned(e.done), unsigned(e.success),
++            (unsigned long long)e.begin, (unsigned long long)e.end, e.net, e.allocated, e.peak);
++        Write(line, n, sizeof(line));
++    }
++}
++// Register before QueueWork: provenance can arrive before a queued job starts, or
++// after a very fast one finishes. No per-pipeline metadata or closure capture.
++class Queued {
++public:
++    Queued(const void* owner, U64 key, unsigned kind, bool mesh = false) : owner_{owner} {
++        std::lock_guard lock{state.mutex};
++        const auto now = Ms();
++        if (!state.open) Open(now);
++        ++state.pending;
++        for (auto& e : state.jobs) if (!e.owner) {
++            e.owner=owner; e.id=++state.id; e.key=key; e.kind=kind; e.mesh=mesh; e.queued=true;
++            return;
++        }
++        ++state.overflow;
++    }
++    ~Queued() {
++        if (committed_) return;
++        std::lock_guard lock{state.mutex};
++        --state.pending;
++        for (auto& e : state.jobs) if (e.owner == owner_ && e.queued) { e={}; break; }
++    }
++    void Commit() noexcept { committed_=true; }
++    Queued(const Queued&) = delete;
++    Queued& operator=(const Queued&) = delete;
++private:
++    const void* owner_;
++    bool committed_{};
++};
++class Job {
++public:
++    Job(const void* owner, U64 key, unsigned kind, bool mesh = false)
++        : kind_{kind} {
++        std::lock_guard lock{state.mutex};
++        const auto now = Ms();
++        if (!state.open) Open(now);
++        ++state.observations;
++        if (kind < 2) {
++            ++state.started; ++state.active;
++            state.max_active = std::max(state.max_active, state.active);
++        }
++        token_ = eden_build_heap_begin && eden_build_heap_read && eden_build_heap_end ? eden_build_heap_begin() : 0;
++        if (kind < 2) {
++            --state.pending;
++            for (auto& e : state.jobs) if (e.owner == owner && e.queued) { entry_=&e; break; }
++        }
++        if (entry_) {
++            entry_->begin=now; entry_->token=token_; entry_->queued=false;
++        } else {
++            for (auto& e : state.jobs) if (!e.owner) { entry_=&e; break; }
++            if (entry_) *entry_ = Entry{owner, ++state.id, key, now, 0, token_, kind, Origin::Unknown, mesh};
++            else ++state.overflow;
++        }
++        Sample();
++    }
++    ~Job() {
++        std::lock_guard lock{state.mutex};
++        if (entry_) {
++            ReadJob(*entry_); entry_->done = true; entry_->success = success_; entry_->end = Ms();
++        }
++        if (token_ && eden_build_heap_end) eden_build_heap_end(token_);
++        --state.observations;
++        if (kind_ < 2) { --state.active; ++state.finished; state.failed += !success_; }
++        Sample();
++    }
++    void Success() noexcept { success_ = true; }
++    Job(const Job&) = delete;
++    Job& operator=(const Job&) = delete;
++private:
++    bool success_{};
++    unsigned kind_{};
++    Entry* entry_{};
++    unsigned token_{};
++};
++inline void Classify(const void* owner, Origin origin) noexcept {
++    if (!Enabled()) return;
++    std::lock_guard lock{state.mutex};
++    // Constructors queue asynchronously; a fast job can have finished already.
++    Entry* latest{};
++    for (auto& e : state.jobs) if (e.owner == owner && (!latest || e.id > latest->id)) latest = &e;
++    if (latest) latest->origin = origin;
++}
++// Owned-thread publication, at translation boundaries and once per frame.
++// These pool walks never run on the reporter or builder threads.
++template <class Pools>
++class PoolSample {
++public:
++    explicit PoolSample(Pools* p) noexcept : pools_{p} { Publish(); }
++    ~PoolSample() { Publish(); }
++    void Publish() const noexcept {
++        if (pools_) main_held.store(pools_->inst.HeldBytes() + pools_->block.HeldBytes() +
++                                   pools_->flow_block.HeldBytes(), std::memory_order_relaxed);
++    }
++private: Pools* pools_;
++};
++// One process reporter shared by caches: a detached pthread with its own 256 KiB stack, so no
++// joinable std::thread is left for a static destructor (std::terminate at an exit that skips the
++// renderer's teardown). Lifetime is declared immediately before workers, hence stops after the
++// workers join; it waits for the reporter's last window at most 1 s and never throws.
++inline std::atomic<bool> stop{}, running{};
++inline void SleepMs(long ms) noexcept {
++    timespec t{ms / 1000, (ms % 1000) * 1000000L};
++    while (nanosleep(&t, &t) != 0 && errno == EINTR) {}
++}
++inline void* ReporterMain(void*) noexcept {
++    while (!stop.load(std::memory_order_acquire)) {
++        for (int i = 0; i < 10 && !stop.load(std::memory_order_acquire); ++i)
++            SleepMs(10);
++        if (stop.load(std::memory_order_acquire)) break;
++        Poll(); // no dependency on TickFrame or a draw completing
++    }
++    Poll(true);
++    running.store(false, std::memory_order_release);
++    return nullptr;
++}
++// lifetime_mutex held.
++inline bool StartReporter() noexcept {
++    char line[256];
++    for (int i = 0; i < 1000 && running.load(std::memory_order_acquire); ++i) SleepMs(1);
++    if (running.load(std::memory_order_acquire)) {
++        const int n = std::snprintf(line, sizeof(line),
++            "EDEN_BUILD_BURST event=off reason=old_reporter_still_running\n");
++        Write(line, n, sizeof(line));
++        return false;
++    }
++    pthread_attr_t attr;
++    int error = pthread_attr_init(&attr);
++    if (error == 0) {
++        error = pthread_attr_setstacksize(&attr, kReporterStack);
++        if (error == 0) error = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
++        if (error == 0) {
++            stop.store(false, std::memory_order_release);
++            running.store(true, std::memory_order_release);
++            pthread_t thread;
++            error = pthread_create(&thread, &attr, &ReporterMain, nullptr);
++            if (error != 0) running.store(false, std::memory_order_release);
++        }
++        pthread_attr_destroy(&attr);
++    }
++    if (error != 0) {
++        const int n = std::snprintf(line, sizeof(line),
++            "EDEN_BUILD_BURST event=off reason=no_reporter_thread error=%d (switch stays off)\n", error);
++        Write(line, n, sizeof(line));
++        return false;
++    }
++    if (eden_build_heap_enable) eden_build_heap_enable();
++    const int n = std::snprintf(line, sizeof(line),
++        "EDEN_BUILD_BURST event=on steady_ms=%llu app_ms=%llu window_ms=2000 reporter_stack_kib=%u "
++        "heap_hook=%u pool_hook=%u thread_hook=%u under1m_hook=%u\n",
++        (unsigned long long)Ms(), (unsigned long long)AppMs(), unsigned(kReporterStack >> 10),
++        unsigned(eden_build_heap_begin && eden_build_heap_read && eden_build_heap_end),
++        unsigned(eden_pool_largest_free != nullptr), unsigned(eden_heap_record_growth != nullptr),
++        unsigned(eden_heap_under1m_count != nullptr));
++    Write(line, n, sizeof(line));
++    return true;
++}
++// lifetime_mutex held.
++inline void StopReporter() noexcept {
++    stop.store(true, std::memory_order_release);
++    for (int i = 0; i < 1000 && running.load(std::memory_order_acquire); ++i) SleepMs(1);
++    if (running.load(std::memory_order_acquire)) {
++        char line[128];
++        const int n = std::snprintf(line, sizeof(line), "EDEN_BUILD_BURST event=stop finished=0 waited_ms=1000\n");
++        Write(line, n, sizeof(line));
++    }
++}
++struct Lifetime {
++    Lifetime() noexcept {
++        static const bool value = Common::PeSwitch("EDEN_UP_BUILD_BURST_LOG");
++        if (!value) return;
++        std::lock_guard lock{state.lifetime_mutex};
++        if (state.users == 0 && !StartReporter()) return; // said why; stays off
++        ++state.users;
++        active_ = true;
++        enabled.store(true, std::memory_order_relaxed);
++    }
++    ~Lifetime() {
++        if (!active_) return;
++        std::lock_guard lock{state.lifetime_mutex};
++        if (--state.users != 0) return;
++        enabled.store(false, std::memory_order_relaxed);
++        StopReporter();
++    }
++    Lifetime(const Lifetime&) = delete;
++    Lifetime& operator=(const Lifetime&) = delete;
++private:
++    bool active_{};
++};
++} // namespace Vulkan::BuildBurst
+diff --git a/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp b/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
+index 45ebe29..447733b 100644
+--- a/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
+@@ -15,6 +15,7 @@
+ #include "video_core/renderer_vulkan/pipeline_statistics.h"
+ #include "video_core/renderer_vulkan/vk_buffer_cache.h"
+ #include "video_core/renderer_vulkan/vk_driver_build_report.h"
++#include "video_core/renderer_vulkan/vk_build_burst.h"
+ #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
+ #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
+ #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
+@@ -84,6 +85,8 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
+         }
+     }
+ 
++    std::optional<BuildBurst::Queued> burst_queued;
++    if (BuildBurst::Enabled() && thread_worker) burst_queued.emplace(this, shader_hash, 1);
+     auto func{[this, shader_notify, pipeline_statistics, on_worker = thread_worker != nullptr] {
+         // EDEN_PIPELINE_MEMORY_GATE_WORKERS=1, as for a graphics pipeline (vk_graphics_pipeline.cpp).
+         const auto& gate_settings{PipelineMemoryGate::GateSettings()};
+@@ -93,6 +96,8 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
+         if (on_worker && gate_settings.workers) {
+             PipelineMemoryGate::GateReport();
+         }
++        std::optional<BuildBurst::Job> burst_job;
++        if (BuildBurst::Enabled() && on_worker) burst_job.emplace(this, shader_hash, 1);
+         const VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT subgroup_size_ci{
+             .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO_EXT,
+             .pNext = nullptr,
+@@ -134,6 +139,7 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
+             pipeline = DriverBuildReport::Build(DriverBuildReport::Kind::Compute, [&] {
+                 return device.GetLogical().CreateComputePipeline(compute_ci, *pipeline_cache);
+             });
++            if (burst_job) burst_job->Success();
+         } catch (const vk::Exception& exception) {
+             LOG_CRITICAL(Render_Vulkan, "Adreno rejected compute shader {:016X}: {}", shader_hash,
+                          exception.what());
+@@ -186,6 +192,7 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
+     } else {
+         func();
+     }
++    if (burst_queued) burst_queued->Commit();
+ }
+ 
+ void ComputePipeline::RunBuild() {
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+index 33da1f1..0e0a690 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -31,6 +31,7 @@
+ #include "video_core/renderer_vulkan/pipeline_statistics.h"
+ #include "video_core/renderer_vulkan/vk_buffer_cache.h"
+ #include "video_core/renderer_vulkan/vk_driver_build_report.h"
++#include "video_core/renderer_vulkan/vk_build_burst.h"
+ #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
+ #include "video_core/renderer_vulkan/vk_mesh_compute.h"
+ #include "shader_recompiler/backend/spirv/mesh_compute_layout.h"
+@@ -499,6 +500,8 @@ GraphicsPipeline::GraphicsPipeline(
+         }
+     }
+ 
++    std::optional<BuildBurst::Queued> burst_queued;
++    if (BuildBurst::Enabled() && worker_thread) burst_queued.emplace(this, key.Hash(), 0, IsMeshPipeline() || RunsMeshAsCompute());
+     auto func{[this, shader_notify, &render_pass_cache, pipeline_statistics,
+                on_worker = worker_thread != nullptr] {
+         // EDEN_PIPELINE_MEMORY_GATE_WORKERS=1 (with EDEN_PIPELINE_MEMORY_GATE_MIB; patch 0554): the
+@@ -513,6 +516,8 @@ GraphicsPipeline::GraphicsPipeline(
+         if (on_worker && gate_settings.workers) {
+             PipelineMemoryGate::GateReport();
+         }
++        std::optional<BuildBurst::Job> burst_job;
++        if (BuildBurst::Enabled() && on_worker) burst_job.emplace(this, key.Hash(), 0, IsMeshPipeline() || RunsMeshAsCompute());
+         const VkRenderPass render_pass{render_pass_cache.Get(MakeRenderPassKey(key.state, device))};
+         Validate();
+         try {
+@@ -520,6 +525,7 @@ GraphicsPipeline::GraphicsPipeline(
+             if (RunsMeshAsCompute()) {
+                 MakeMeshComputePipelines();
+             }
++            if (burst_job) burst_job->Success();
+         } catch (const vk::Exception& exception) {
+             LOG_CRITICAL(Render_Vulkan,
+                          "Graphics pipeline build failed: {} (stages: tcs={} tes={} geom={}, "
+@@ -582,6 +588,7 @@ GraphicsPipeline::GraphicsPipeline(
+     } else {
+         func();
+     }
++    if (burst_queued) burst_queued->Commit();
+ }
+ 
+ void GraphicsPipeline::RunBuild() {
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 959702d..51c684a 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -2444,6 +2444,9 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
+ }
+ 
+ void PipelineCache::TickFrame() {
++    if (BuildBurst::Enabled()) {
++        BuildBurst::PoolSample sample{&main_pools};
++    }
+     DriverBuildReport::Poll();
+     ++frame_count;
+     while (!evicted_pipelines.empty() && scheduler.IsFree(evicted_pipelines.front().first)) {
+@@ -2553,6 +2556,11 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
+     ShaderPools& pools, const GraphicsPipelineCacheKey& key,
+     std::span<Shader::Environment* const> envs, PipelineStatistics* statistics,
+     bool build_in_parallel, ShaderPrep::Stages* kept_out) try {
++    const bool burst_log = BuildBurst::Enabled();
++    const BuildBurst::PoolSample pools_sample{burst_log && &pools == &main_pools ? &pools : nullptr};
++    std::optional<BuildBurst::Job> gpu_translation;
++    if (burst_log && build_in_parallel && &pools == &main_pools)
++        gpu_translation.emplace(&pools, key.Hash(), 3);
+     // EDEN_PIPELINE_MEMORY_GATE_MIB (pipeline_memory_gate.h): off unless set. Left before the
+     // handlers below run, as every local here.
+     const auto& gate_settings{PipelineMemoryGate::GateSettings()};
+@@ -2971,6 +2979,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
+         // before the compile. kept_out holds copies too.
+         FreeIr(pools, programs, ir_free, thread_worker != nullptr, "graphics pipeline", hash);
+     }
++    pools_sample.Publish();
+     return std::make_unique<GraphicsPipeline>(
+         scheduler, buffer_cache, texture_cache, driver_cache, &shader_notify, device,
+         descriptor_pool, guest_descriptor_queue, descriptor_buffer_ring, thread_worker, statistics,
+@@ -3183,6 +3192,10 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
+     auto pipeline{kept ? std::move(kept)
+                        : CreateGraphicsPipeline(main_pools, graphics_key, environments.Span(),
+                                                 nullptr, true)};
++    if (pipeline && BuildBurst::Enabled()) {
++        BuildBurst::Classify(pipeline.get(), reason == RuntimeBuild::New ? BuildBurst::Origin::New :
++            reason == RuntimeBuild::OnDisk ? BuildBurst::Origin::Disk : BuildBurst::Origin::Evicted);
++    }
+     if (pipeline && EvictKeepSsbo()) {
+         // Out of memory: the pipeline is kept without its slots, as with the switch off.
+         try {
+@@ -3558,6 +3571,8 @@ void PipelineCache::TranslateGraphicsPipeline(std::list<TranslationJob> job,
+         done.set_value();
+         return;
+     }
++    std::optional<BuildBurst::Job> translation_job;
++    if (BuildBurst::Enabled()) translation_job.emplace(&work, work.key.Hash(), 2);
+     const auto begin = std::chrono::steady_clock::now();
+     translating_detached = true;
+     try {
+@@ -3584,6 +3599,7 @@ void PipelineCache::TranslateGraphicsPipeline(std::list<TranslationJob> job,
+                   work.key.Hash(), exception.what());
+     }
+     translating_detached = false;
++    if (work.pipeline && translation_job) translation_job->Success();
+     for (auto& env : work.envs) {
+         env.ReleaseSnapshot();
+     }
+@@ -3615,6 +3631,11 @@ void PipelineCache::AdoptTranslatedGraphicsPipelines() {
+         report.worker += job.time;
+         const bool built{job.pipeline != nullptr};
+         const bool is_mesh{built && job.pipeline->IsMeshPipeline()};
++        if (built && BuildBurst::Enabled()) {
++            const auto hash = job.key.Hash();
++            BuildBurst::Classify(job.pipeline.get(), used_and_evicted.contains(hash) ? BuildBurst::Origin::Evicted :
++                disk_pipelines.contains(hash) ? BuildBurst::Origin::Disk : BuildBurst::Origin::New);
++        }
+         report.failed += built ? 0 : 1;
+         const auto [slot, inserted]{graphics_cache.try_emplace(job.key)};
+         if (!inserted) {
+@@ -3733,6 +3754,11 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
+ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
+     ShaderPools& pools, const ComputePipelineCacheKey& key, Shader::Environment& env,
+     PipelineStatistics* statistics, bool build_in_parallel) try {
++    const bool burst_log = BuildBurst::Enabled();
++    const BuildBurst::PoolSample pools_sample{burst_log && &pools == &main_pools ? &pools : nullptr};
++    std::optional<BuildBurst::Job> gpu_translation;
++    if (burst_log && build_in_parallel && &pools == &main_pools)
++        gpu_translation.emplace(&pools, key.Hash(), 3);
+     // EDEN_PIPELINE_MEMORY_GATE_MIB, as for a graphics pipeline. Only the GPU thread builds
+     // compute pipelines in parallel; the disk cache's builders build them whole.
+     const auto& gate_settings{PipelineMemoryGate::GateSettings()};
+@@ -3850,11 +3876,14 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
+             code = std::vector<u32>{};
+         }
+     }
+-    return std::make_unique<ComputePipeline>(device, scheduler, vulkan_pipeline_cache, descriptor_pool,
++    pools_sample.Publish();
++    auto pipeline = std::make_unique<ComputePipeline>(device, scheduler, vulkan_pipeline_cache, descriptor_pool,
+                                              guest_descriptor_queue, descriptor_buffer_ring,
+                                              thread_worker, statistics,
+                                              &shader_notify, program.info, std::move(spv_module),
+                                              key.unique_hash);
++    if (burst_log && build_in_parallel) BuildBurst::Classify(pipeline.get(), BuildBurst::Origin::New);
++    return pipeline;
+ 
+ } catch (const Shader::Exception& exception) {
+     LOG_ERROR(Render_Vulkan, "{}", exception.what());
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.h b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+index ac73499..c9ba4a0 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.h
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+@@ -44,6 +44,7 @@
+ #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
+ #include "video_core/renderer_vulkan/vk_texture_cache.h"
+ #include "video_core/renderer_vulkan/vk_pipeline_prep.h"
++#include "video_core/renderer_vulkan/vk_build_burst.h"
+ #include "video_core/shader_cache.h"
+ #include "video_core/stage_cache.h"
+ 
+@@ -498,6 +499,7 @@ private:
+     std::atomic<u64> shader_set_live_serial{};
+     std::chrono::steady_clock::time_point audit_logged{};
+ 
++    [[no_unique_address]] BuildBurst::Lifetime burst_lifetime;
+     Common::ThreadWorker workers;
+     Common::ThreadWorker serialization_thread;
+     DynamicFeatures dynamic_features;

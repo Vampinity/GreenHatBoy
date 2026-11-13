@@ -1,0 +1,113 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_DIRTY_PAGE_SPLIT_COUNT=1 counts the guest writes that run past a 2 KiB tracker page and what the old path lost of them (log only, off by default)
+
+Ours, on top of 0835 (the Lichii 5e42857 + 26bf0e1 port by Zortos). The watcher's falsify step for
+the lost-write fix: does it ever fire in this game, and how much did it lose.
+
+What: GPUDirtyMemoryManager::Collect counts each collected write with (address & 2047) + size >
+2048, and works out what the old single transform would have kept of it (its shifts taken mod 32,
+as the hardware does them). memory.cpp logs, at each power of two of the count and every 1 Mi
+after:
+"EDEN_UP_DIRTY_PAGE_SPLIT_COUNT: <n> collected guest writes ran past their 2 KiB page; the old
+single transform would lose <n> of them whole and <n> 64-byte blocks in all; page split on (none
+lost)" (or "OFF (EDEN_UP_DIRTY_PAGE_SPLIT=0: these were lost)").
+Reading it: 0 lines in a whole walk = the fix never fires in this game and cannot explain any
+glitch. Many lines with blocks lost = every one of those was a write the GPU side never saw before
+0835 (a stale buffer or texture until the next write to the same blocks).
+Host check (Mac, scratch harness, scratch only): the predicted lost blocks equal the blocks the
+old path really lost in 4 of 4 crossing cases.
+Off: one cached test per collected write. On: three relaxed atomic adds per crossing write only
+(shared by all cores).
+
+---
+diff --git a/src/core/gpu_dirty_memory_manager.h b/src/core/gpu_dirty_memory_manager.h
+index fbda4e8042..0407df3c90 100644
+--- a/src/core/gpu_dirty_memory_manager.h
++++ b/src/core/gpu_dirty_memory_manager.h
+@@ -76,6 +76,10 @@ private:
+     return *flags;
+ }
+ 
++/// EDEN_UP_DIRTY_PAGE_SPLIT_COUNT (memory.cpp): one log line, at each power of two of the count
++/// and every 1 Mi writes after that.
++void ReportDirtyPageSplits(u64 writes, u64 lost_whole, u64 lost_blocks, bool split);
++
+ class GPUDirtyMemoryManager {
+ public:
+     GPUDirtyMemoryManager() : current{default_transform} {
+@@ -128,6 +132,9 @@ public:
+             // again at the bank's next bind (BufferCache::Nx2BankFlagPages).
+             CollectedWritePages().Mark(address, size);
+         }
++        if (CountSplits() && (address & page_mask) + size > page_size) [[unlikely]] {
++            NoteCrossingWrite(address, size);
++        }
+         if (!SplitAtPages()) [[unlikely]] {
+             return CollectInPage(address, size);
+         }
+@@ -143,6 +150,42 @@ public:
+     }
+ 
+ private:
++    /// EDEN_UP_DIRTY_PAGE_SPLIT_COUNT=1 (ours, log only; exact "1"): counts the collected writes
++    /// that run past their 2 KiB page, and what the old single transform would have lost of them
++    /// (its shifts taken mod 32, as x86 and arm64 do them). Off: one cached test per write.
++    [[nodiscard]] static bool CountSplits() {
++        static const bool on = Common::PeSwitch("EDEN_UP_DIRTY_PAGE_SPLIT_COUNT");
++        return on;
++    }
++
++    static void NoteCrossingWrite(PAddr address, size_t size) {
++        static std::atomic<u64> writes{};
++        static std::atomic<u64> lost_whole{};
++        static std::atomic<u64> lost_blocks{};
++        const size_t minor_address = address & page_mask;
++        const size_t minor_bit = minor_address >> align_bits;
++        const size_t top_bit = (minor_address + size + align_mask) >> align_bits;
++        const unsigned shift = static_cast<unsigned>(32 - top_bit) & 31U;
++        u32 old_mask = ~u32{0};
++        old_mask <<= shift;
++        old_mask >>= shift;
++        old_mask >>= minor_bit;
++        old_mask <<= minor_bit;
++        // 64-byte blocks the write covers, against the bits the old mask kept (all in the first
++        // page; the blocks past it were never in the mask).
++        const u64 blocks = ((address + size - 1) >> align_bits) - (address >> align_bits) + 1;
++        const u64 kept = static_cast<u64>(std::popcount(old_mask));
++        const u64 lost = blocks > kept ? blocks - kept : 0;
++        const u64 count = writes.fetch_add(1, std::memory_order_relaxed) + 1;
++        const u64 whole =
++            lost_whole.fetch_add(old_mask == 0 ? 1 : 0, std::memory_order_relaxed) +
++            (old_mask == 0 ? 1 : 0);
++        const u64 lost_sum = lost_blocks.fetch_add(lost, std::memory_order_relaxed) + lost;
++        if ((count & (count - 1)) == 0 || (count & ((u64{1} << 20) - 1)) == 0) [[unlikely]] {
++            ReportDirtyPageSplits(count, whole, lost_sum, SplitAtPages());
++        }
++    }
++
+     /// The old body of Collect. With the page split [address, address + size) lies in one page
+     /// and size is not 0, so the mask has bits.
+     bool CollectInPage(PAddr address, size_t size) {
+diff --git a/src/core/memory.cpp b/src/core/memory.cpp
+index 7fe1eba60e..6cb00b4cdc 100644
+--- a/src/core/memory.cpp
++++ b/src/core/memory.cpp
+@@ -45,6 +45,18 @@
+ #include "video_core/nx2_download_landing.h"
+ #include "video_core/rasterizer_download_area.h"
+ 
++namespace Core {
++// EDEN_UP_DIRTY_PAGE_SPLIT_COUNT=1 (gpu_dirty_memory_manager.h, log only).
++void ReportDirtyPageSplits(u64 writes, u64 lost_whole, u64 lost_blocks, bool split) {
++    LOG_INFO(HW_Memory,
++             "EDEN_UP_DIRTY_PAGE_SPLIT_COUNT: {} collected guest writes ran past their 2 KiB "
++             "page; the old single transform would lose {} of them whole and {} 64-byte blocks "
++             "in all; page split {}",
++             writes, lost_whole, lost_blocks,
++             split ? "on (none lost)" : "OFF (EDEN_UP_DIRTY_PAGE_SPLIT=0: these were lost)");
++}
++} // namespace Core
++
+ namespace Core::Memory {
+ 
+ u32& UnmappedReadFlag() {

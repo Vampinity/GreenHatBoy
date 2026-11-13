@@ -1,0 +1,99 @@
+From: EglantinePS5
+Subject: [PATCH] nx2: an eviction whose write-back scratch cannot grow keeps the image (waveydude's 0913, EDEN_NX2_DEFER_WRITEBACK_OOM), off by default
+
+What: the texture collector writes a GPU-written image back to guest memory before it deletes it.
+A block-linear write-back reads each guest level into the swizzle scratch (SwizzleImage), and the
+scratch grows to the level's size there, after the staging copy is made, in the middle of the
+write-back. waveydude's crash 20261111-005114 was that growth: a refused 32 MiB allocation during
+texture write-back.
+
+With EDEN_NX2_DEFER_WRITEBACK_OOM=1 (exact "1", read once; Common::PeSwitch) the scratch is grown to
+the image's largest level first, before a staging buffer is taken or a guest byte written: in the
+collector's Cleanup (right before the write-back, so also before the Vulkan port's prefetched copy is
+used) and in the refusal eviction's batch (EDEN_NX2_REFUSAL_EVICT). A refused growth (bad_alloc)
+keeps the image as it is, GPU-written, tracked and registered, for a later pass; Cleanup counts it in
+gc_downloads_deferred, the batch stops there as it does for a refused staging buffer. One line per
+refusal on the C stream stderr: "EDEN_NX2_DEFER_WRITEBACK_OOM scratch_bytes=<n>".
+
+Changed from his: the growth is asked for only when WritebackNeedsHeap (our 0565/GC_WRITEBACK_SKIP
+predictor, util.cpp) says the write-back would grow the scratch by a large request. His version
+grew it for every block-linear image, also one whose guest range is a single host span (no scratch
+used) or one the write-back bands cover: up to 32 MiB asked for at the moment memory is short, for
+nothing. The image and the write-back are his otherwise.
+
+Without 0663 (EDEN_NX2_DEFER_WRITEBACK_OOM's second half) a refused growth still goes through the
+operator new handler first (EDEN_UP_DOOR_WAIT, EDEN_UP_NEW_WAIT_MS waits, the EDEN_HEAP_FAILURE line,
+a heap snapshot) and is then caught here instead of ending the session.
+
+Off: one test of a static bool per dirty eviction, then the old lines; nothing allocated, nothing
+logged. Not in the kept-store stamp (TranslationSwitches): it changes no translation.
+
+Origin and credit: waveydude, patch 0913 ("Defer texture eviction if writeback scratch cannot
+grow"), commit 4c2e760.
+---
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 1e16e2d..d5210db 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -506,6 +506,36 @@ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManag
+     }
+ }
+ 
++// EDEN_NX2_DEFER_WRITEBACK_OOM=1 (exact "1"; waveydude's 0913): a block-linear write-back needs
++// scratch for one guest level at a time (SwizzleImage). When it would grow the scratch by a large
++// request (WritebackNeedsHeap: not a host span, not covered by the write-back bands, 256 KiB or
++// more past the capacity), the scratch is grown to the largest level first, before a staging buffer
++// is taken or any guest byte is written. A refused growth leaves the image as it is (still
++// GPU-written, tracked and registered, the guest's reads still get it): the caller keeps it for a
++// later pass. Off: true at once, nothing asked for.
++[[nodiscard]] inline bool ReserveEvictionWritebackScratch(Tegra::MemoryManager& gpu_memory,
++                                                          GPUVAddr gpu_addr, const ImageInfo& info,
++                                                          Common::ScratchBuffer<u8>& scratch) {
++    static const bool enabled = Common::PeSwitch("EDEN_NX2_DEFER_WRITEBACK_OOM");
++    if (!enabled || info.type == ImageType::Linear ||
++        !WritebackNeedsHeap(gpu_memory, gpu_addr, info, scratch.capacity())) {
++        return true;
++    }
++    const auto sizes = CalculateMipLevelSizes(info);
++    const size_t required = *std::ranges::max_element(sizes);
++    if (required <= scratch.capacity()) {
++        return true;
++    }
++    try {
++        scratch.resize_destructive(required);
++        return true;
++    } catch (const std::bad_alloc&) {
++        // No formatted log while the heap is exhausted: the C stream only.
++        std::fprintf(stderr, "EDEN_NX2_DEFER_WRITEBACK_OOM scratch_bytes=%zu\n", required);
++        return false;
++    }
++}
++
+ template <class P>
+ void TextureCache<P>::RunGarbageCollector() {
+     bool high_priority_mode = false;
+@@ -615,6 +645,12 @@ void TextureCache<P>::RunGarbageCollector() {
+         // EDEN_TEST_GC_WRITEBACK_STARVE=1 (test aid): the write-back below, up to End(), runs in
+         // the front's heap wait scope, where EDEN_TEST_HEAP_STARVE_GPU=1 refuses requests.
+         GcWritebackStarveScope writeback_starve{must_download && gc_writeback_starve_test};
++        // EDEN_NX2_DEFER_WRITEBACK_OOM (above): no scratch for the write-back, the image stays.
++        if (must_download && !ReserveEvictionWritebackScratch(*gpu_memory, image.gpu_addr,
++                                                              image.info, swizzle_data_buffer)) {
++            ++gc_downloads_deferred;
++            return false;
++        }
+         if (must_download) {
+             // EDEN_UP_GC_ONE_WAIT: this frame's wait is spent; the image stays, nothing is lost.
+             if (WaitHeld()) {
+@@ -1666,6 +1702,11 @@ void TextureCache<P>::RefusalDownloadEvict() {
+     u64 bytes = 0;
+     for (const ImageId image_id : chosen) {
+         Image& image = slot_images[image_id];
++        // EDEN_NX2_DEFER_WRITEBACK_OOM: this one and the rest stay, as for a refused staging buffer.
++        if (!ReserveEvictionWritebackScratch(*gpu_memory, image.gpu_addr, image.info,
++                                             swizzle_data_buffer)) {
++            break;
++        }
+         auto map = TryDownloadStaging(runtime, image.unswizzled_size_bytes, false);
+         if (!map) {
+             break; // The pool has none: the collector copies the rest back when it gets to them.

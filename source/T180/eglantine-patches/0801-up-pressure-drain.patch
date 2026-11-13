@@ -1,0 +1,513 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_PRESSURE_DRAIN=1|2: while the pool is short or memory was refused, the recording thread submits, waits up to 80 ms for the GPU and destroys the deleted buffers and images at once; off by default
+
+Switches: EDEN_UP_PRESSURE_DRAIN=1 (frame ends, and inside a frame at the start of a draw or
+dispatch, every 256th, at most every 50 ms), =2 (frame ends only), EDEN_UP_PRESSURE_DRAIN_COUNT=1
+(count only: no flush, no wait, nothing freed). Numbers (digits, else the default):
+_MIB=<MiB> pool short under this largest free piece (256), _PENDING_MIB=<MiB> deleted buffer
+memory that makes a short pool worth a drain (64), _MS=<ms> longest wait (80, at most 1000),
+_GAP_MS=<ms> shortest time between drains (500; a quarter of it after a refusal).
+Lines (stderr): "EDEN_UP_PRESSURE_DRAIN mode ..." once; "EDEN_UP_PRESSURE_DRAIN <n> ..." for the
+first 16 drains and every 64th; "EDEN_UP_PRESSURE_DRAIN_10S ..." every 10 s when anything was
+looked at: drains, MiB freed, ms waited, waits that ran out, skips by reason, the deleted buffers
+waiting (peak and now), the pool's largest free piece (low and now), the allocator's use.
+
+Why (READ, a hand-played session, T151, the load into the area past the
+field): at the refusal the allocator's device-local type held 3082 allocations, 3343 MiB
+(EDEN_REFUSED_VMA type 0), while the texture cache held 1625 images, 1876 MiB, and the buffer cache
+453 live buffers, 429 MiB: about 1000 allocations, about 1040 MiB, that no report names, about
+1 MiB each (live buffers average 0.95 MiB). Census n=51 (fresh, the burst frame): retiring=0 (no
+deleted image waiting), staging 32, decode 1, vma_slack 96, yet 1245 MiB of vma_used unnamed.
+Docked (a hand-played session, the load): 2653 allocations, 2651 MiB, against 1339 images 1476 MiB and
+470 buffers 365 MiB: about 840 allocations, 810 MiB, unnamed. Before the load (docked, line 4218)
+the same sum leaves 78 allocations, 167 MiB.
+The one holder that fits: the buffer cache's delayed_destruction_ring. A deleted buffer (every
+buffer that grows leaves its old copy there, and the port's buffer collector runs harder while
+memory is short) keeps its memory until 8 frame ends have passed; it is in no census field
+(MemoryCensus::Buffers counts registered buffers, Retiring counts images only). A load frame takes
+seconds (census gpu=stale for 8.5 s handheld, 48 s docked), so nothing in it goes back during the
+load; earlier loads' "626-894 MiB unnamed, drained within 3 s" is the ring emptying 8 frames later.
+(INFERRED from the counts; 0802's line and 0731's map would name it.) waveydude saw the same at a
+later area's gate: GPU-only buffers 219 MiB in 289 buffers to 1,464 MiB in 1,626 within 2 s
+(T153 0698's header).
+
+What: RasterizerVulkan::PressureDrainLook at the end of TickFrame and at the top of PrepareDraw and
+DispatchCompute (before FlushWork, so no draw is half set up). It reads the pool's largest free
+piece (MemoryCensus::FreeLargest), the allocator's refusal counter, the buffer cache's refused
+bytes, and walks the ring. With the pool short and _PENDING_MIB waiting, or after a refusal, at
+most every _GAP_MS (a refused buffer counts once per frame: RefusedBytes stays set until the
+frame's end, and the drain after it already let the cache ask again): both caches locked, scheduler.Flush(), MasterSemaphore::WaitFor(the tick
+recorded so far, _MS). Reached: TextureCache::ReleaseFinished (deleted images the GPU is past),
+BufferCache::ReleaseFinished (the whole ring), BufferCache::RetryRefusedNow, and the port's
+StagingBufferPool::ReleaseCompleted where it exists. Not reached: only the images the GPU is past
+and the staging it is done with; the ring stays, and no drain waits again until the GPU passes
+that tick (Refresh, no wait), so a hung GPU still reaches RADV's 10 s no-progress check.
+This is RasterizerVulkan::ReleaseFinishedMemory's work (EDEN_NX2_BUFFER_WAIT's relief after a
+refused buffer, on by default) with a bounded wait, before a refusal instead of after it.
+
+Safety: everything in the ring and in gpu_sentenced_images was deleted before this point, and at
+these points every command that used it is recorded in the current tick or an earlier one; the
+ring goes only once the GPU is past the current tick. No live image or buffer is deleted. A delta
+draw (EDEN_UP_FAST_DRAW) resolves in full after a drain (Nx2FastDraw::Break, as at a frame end).
+While the guest's conditional rendering is set nothing drains (its predicate buffer may be in the
+ring; ReleaseFinishedMemory ends conditional rendering instead, which draws what the guest meant to
+skip). The allocation that was refused has already taken its fallback (host memory, unbacked, or
+the refused-buffer path); buffers are asked for again at once after a drain, images are not
+re-made.
+Price: a drain is a submit and a wait of up to 80 ms on the GPU thread (a hitch), at most every
+500 ms. In the field the largest free piece sits under 192 MiB all the time, so _PENDING_MIB is
+what keeps it from draining in plain play: the 10 s line says how often it drains.
+Off: one static test per draw, per dispatch and per frame. Not in the shader stamp list.
+
+---
+diff --git a/src/video_core/renderer_vulkan/pressure_drain.h b/src/video_core/renderer_vulkan/pressure_drain.h
+new file mode 100644
+index 0000000000..71fff66159
+--- /dev/null
++++ b/src/video_core/renderer_vulkan/pressure_drain.h
+@@ -0,0 +1,213 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <algorithm>
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++
++#include "common/common_types.h"
++#include "video_core/memory_census.h"
++
++/// EDEN_UP_PRESSURE_DRAIN (off unless set; RasterizerVulkan::PressureDrainLook and PressureDrain).
++///
++/// Deleted graphics memory does not go back at once. A deleted buffer stays in the buffer cache's
++/// DelayedDestructionRing until TICKS_TO_DESTROY (8) frame ends have passed, whatever the GPU did
++/// meanwhile; a deleted image stays in the texture cache's gpu_sentenced_images until the GPU is
++/// past it and the next frame end (or ReleaseFinished) looks; a finished staging buffer stays in
++/// the staging pool until the sweep reaches its level. At an area load a frame takes seconds, so
++/// none of it goes back during the load, at the moment memory is shortest.
++///
++///   EDEN_UP_PRESSURE_DRAIN=1      drains at the end of a frame and, inside a long frame, at the
++///                                 start of a draw or dispatch (before anything of it is set up)
++///   EDEN_UP_PRESSURE_DRAIN=2      drains at the end of a frame only
++///   EDEN_UP_PRESSURE_DRAIN_COUNT=1  counts only (what waits, the 10 s line, and a line with each
++///                                 refused-allocation report); no flush, no wait, nothing freed
++///   EDEN_UP_PRESSURE_DRAIN_MIB=<MiB>      the pool is short while its largest free piece is under
++///                                 this (unset: 256)
++///   EDEN_UP_PRESSURE_DRAIN_PENDING_MIB=<MiB>  a drain for a short pool only when at least this
++///                                 much deleted buffer memory waits (unset: 64; a refusal needs 1)
++///   EDEN_UP_PRESSURE_DRAIN_MS=<ms>        the longest wait for the GPU in one drain (unset: 80,
++///                                 at most 1000)
++///   EDEN_UP_PRESSURE_DRAIN_GAP_MS=<ms>    the shortest time between two drains (unset: 500; after a
++///                                 refusal a quarter of it)
++///
++/// A drain: the recording thread submits what it has recorded, waits at most _MS for the GPU to
++/// finish it, and when the GPU did, destroys every deleted buffer and every deleted image the GPU
++/// is past, at once (RasterizerVulkan::ReleaseFinishedMemory's work, without its unbounded wait),
++/// and lets the buffer cache ask again at once for a buffer memory refused. The staging pool's
++/// finished buffers go too, where the console's port has ReleaseCompleted. When the wait runs out,
++/// only what the GPU is already past goes, and no drain waits again until the GPU has passed that
++/// tick (so a hung GPU still reaches RADV's 10 s no-progress check).
++///
++/// Lines in stderr: EDEN_UP_PRESSURE_DRAIN (the first 16 drains and every 64th) and
++/// EDEN_UP_PRESSURE_DRAIN_10S (every 10 s while anything was counted). With the counting on, a
++/// refused allocation's report adds EDEN_REFUSED_BUFFERS_DELETED (BufferCache::ReportMemory).
++namespace Vulkan::PressureDrain {
++
++enum class Mode : u8 {
++    Off,
++    Everywhere, ///< Frame ends and the start of draws and dispatches
++    FrameEnd,   ///< Frame ends only
++    CountOnly,  ///< Nothing drained, only counted
++};
++
++[[nodiscard]] inline u64 EnvNumber(const char* name, u64 fallback, u64 low, u64 high) {
++    const char* const value = std::getenv(name);
++    if (value == nullptr || value[0] < '0' || value[0] > '9') {
++        return fallback;
++    }
++    char* end = nullptr;
++    const unsigned long long number = std::strtoull(value, &end, 10);
++    if (end == value || *end != '\0' || number == 0) {
++        return fallback;
++    }
++    return std::clamp<u64>(number, low, high);
++}
++
++[[nodiscard]] inline Mode GetMode() {
++    static const Mode mode = [] {
++        const char* const value = std::getenv("EDEN_UP_PRESSURE_DRAIN");
++        if (value != nullptr && std::strcmp(value, "1") == 0) {
++            return Mode::Everywhere;
++        }
++        if (value != nullptr && std::strcmp(value, "2") == 0) {
++            return Mode::FrameEnd;
++        }
++        const char* const count = std::getenv("EDEN_UP_PRESSURE_DRAIN_COUNT");
++        if (count != nullptr && std::strcmp(count, "1") == 0) {
++            return Mode::CountOnly;
++        }
++        return Mode::Off;
++    }();
++    return mode;
++}
++
++/// Whether anything of this runs (drains or counting).
++[[nodiscard]] inline bool On() {
++    return GetMode() != Mode::Off;
++}
++
++[[nodiscard]] inline bool Drains() {
++    const Mode mode = GetMode();
++    return mode == Mode::Everywhere || mode == Mode::FrameEnd;
++}
++
++[[nodiscard]] inline bool InFrame() {
++    return GetMode() == Mode::Everywhere || GetMode() == Mode::CountOnly;
++}
++
++struct Config {
++    u64 pool_mark;    ///< Bytes: the pool is short under this largest free piece
++    u64 pending_mark; ///< Bytes of deleted buffers that make a short pool worth a drain
++    u64 wait_ns;
++    std::chrono::milliseconds gap;
++};
++
++[[nodiscard]] inline const Config& GetConfig() {
++    static const Config config = [] {
++        Config c{};
++        c.pool_mark = EnvNumber("EDEN_UP_PRESSURE_DRAIN_MIB", 256, 1, 65535) << 20;
++        c.pending_mark = EnvNumber("EDEN_UP_PRESSURE_DRAIN_PENDING_MIB", 64, 1, 65535) << 20;
++        c.wait_ns = EnvNumber("EDEN_UP_PRESSURE_DRAIN_MS", 80, 1, 1000) * 1'000'000ULL;
++        c.gap = std::chrono::milliseconds{EnvNumber("EDEN_UP_PRESSURE_DRAIN_GAP_MS", 500, 10, 60000)};
++        if (On()) {
++            std::fprintf(stderr,
++                         "EDEN_UP_PRESSURE_DRAIN mode %d: pool short under %llu MiB, %llu MiB of "
++                         "deleted buffers worth a drain, waits at most %llu ms, %lld ms apart\n",
++                         static_cast<int>(GetMode()),
++                         static_cast<unsigned long long>(c.pool_mark >> 20),
++                         static_cast<unsigned long long>(c.pending_mark >> 20),
++                         static_cast<unsigned long long>(c.wait_ns / 1'000'000ULL),
++                         static_cast<long long>(c.gap.count()));
++        }
++        return c;
++    }();
++    return config;
++}
++
++/// The pool's largest free piece (the front's kernel query), 0 where it is not known.
++[[nodiscard]] inline u64 LargestFree() {
++    return VideoCommon::MemoryCensus::FreeLargest();
++}
++
++/// Counts for the 10 s line. The recording thread only.
++struct Counts {
++    u32 looks{};
++    u32 drains{};
++    u32 frame_end{};
++    u32 in_frame{};
++    u32 after_refusal{};
++    u32 timed_out{};
++    u32 skipped_gap{};
++    u32 skipped_behind{}; ///< The GPU still behind a tick an earlier drain gave up on
++    u32 skipped_conditional{};
++    u32 nothing{};        ///< Short, but too little waiting
++    u64 freed{};          ///< What the allocator's use fell by in drains
++    u64 waited_us{};
++    u64 longest_us{};
++    u64 peak_waiting{};   ///< Deleted buffer memory, the most seen at a look
++    size_t peak_buffers{};
++    u64 low_largest{~0ULL};
++};
++
++struct State {
++    u32 draws{};
++    u32 seen_events{};
++    bool refusal_pending{};
++    bool buffer_refusal_used{}; ///< This frame's refused buffer already led to a drain
++    u64 behind_tick{}; ///< Non-zero: a wait for this tick ran out; no wait until the GPU passes it
++    std::chrono::steady_clock::time_point last_look{};
++    std::chrono::steady_clock::time_point last_drain{};
++    std::chrono::steady_clock::time_point last_line{};
++    u64 total_drains{};
++    u64 total_freed{};
++    Counts counts{};
++};
++
++/// The recording thread's (the split's back) only.
++inline State g_state{};
++
++inline unsigned long long Mib(u64 bytes) {
++    return static_cast<unsigned long long>(bytes >> 20);
++}
++
++/// The 10 s line, when anything was counted since the last one. used() gives the allocator's use
++/// (read only when the line is written).
++template <typename UsedBytes>
++inline void MaybeLine(std::chrono::steady_clock::time_point now, size_t buffers_waiting,
++                      u64 bytes_waiting, u64 largest, UsedBytes&& used) {
++    State& s = g_state;
++    if (s.last_line == std::chrono::steady_clock::time_point{}) {
++        s.last_line = now;
++        return;
++    }
++    if (now - s.last_line < std::chrono::seconds{10}) {
++        return;
++    }
++    s.last_line = now;
++    const Counts c = s.counts;
++    s.counts = {};
++    if (c.looks == 0) {
++        return;
++    }
++    std::fprintf(stderr,
++                 "EDEN_UP_PRESSURE_DRAIN_10S %u drains (%u at a frame end, %u in a frame, %u after "
++                 "a refusal), %llu MiB freed, waited %llu ms (longest %llu ms), %u waits ran out; "
++                 "skipped: %u too soon, %u GPU behind, %u conditional rendering, %u too little "
++                 "waiting; deleted buffers waiting: peak %zu buffers %llu MiB, now %zu buffers "
++                 "%llu MiB; largest free piece: low %llu MiB, now %llu MiB; allocator use %llu MiB; "
++                 "%u looks\n",
++                 c.drains, c.frame_end, c.in_frame, c.after_refusal, Mib(c.freed),
++                 static_cast<unsigned long long>(c.waited_us / 1000),
++                 static_cast<unsigned long long>(c.longest_us / 1000), c.timed_out, c.skipped_gap,
++                 c.skipped_behind, c.skipped_conditional, c.nothing, c.peak_buffers,
++                 Mib(c.peak_waiting), buffers_waiting, Mib(bytes_waiting),
++                 c.low_largest == ~0ULL ? 0ULL : Mib(c.low_largest), Mib(largest),
++                 Mib(used()), c.looks);
++}
++
++} // namespace Vulkan::PressureDrain
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 9fc3a0e9dd..f4a3d0104e 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -66,6 +66,7 @@
+ #include "video_core/renderer_vulkan/vk_state_tracker.h"
+ #include "video_core/renderer_vulkan/vk_texture_cache.h"
+ #include "video_core/renderer_vulkan/vk_update_descriptor.h"
++#include "video_core/renderer_vulkan/pressure_drain.h"
+ #include "video_core/shader_cache.h"
+ #include "video_core/texture_cache/texture_cache_base.h"
+ #include "video_core/vulkan_common/vulkan_device.h"
+@@ -1015,6 +1016,11 @@ template <typename Func>
+ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
+     static const bool pe_busy = Common::PeSwitch("EDEN_PE_ASTC_BUSY_ASYNC");
+     if (pe_busy) Eden::AstcPolicy::Draw();
++    // EDEN_UP_PRESSURE_DRAIN=1 (pressure_drain.h): before anything of this draw is set up.
++    static const bool pressure_drain = PressureDrain::InFrame();
++    if (pressure_drain) [[unlikely]] {
++        PressureDrainLook(false);
++    }
+ 
+     SCOPE_EXIT {
+         gpu.TickWork();
+@@ -2066,6 +2072,11 @@ void RasterizerVulkan::Clear(u32 layer_count) {
+ 
+ void RasterizerVulkan::DispatchCompute() {
+     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Compute};
++    // EDEN_UP_PRESSURE_DRAIN=1 (pressure_drain.h): before anything of this dispatch is set up.
++    static const bool pressure_drain = PressureDrain::InFrame();
++    if (pressure_drain) [[unlikely]] {
++        PressureDrainLook(false);
++    }
+     FlushWork();
+     gpu_memory->FlushCaching();
+ 
+@@ -3110,6 +3121,11 @@ void RasterizerVulkan::TickFrame() {
+         buffer_cache.CollectRefused();
+         ReleaseFinishedMemory();
+     }
++    // EDEN_UP_PRESSURE_DRAIN (pressure_drain.h): the frame is over, nothing is locked.
++    static const bool pressure_drain = PressureDrain::On();
++    if (pressure_drain) [[unlikely]] {
++        PressureDrainLook(true);
++    }
+ }
+ 
+ void RasterizerVulkan::ReportHang() {
+@@ -3132,6 +3148,166 @@ void RasterizerVulkan::ReleaseFinishedMemory() {
+     buffer_cache.ReleaseFinished();
+ }
+ 
++// EDEN_UP_PRESSURE_DRAIN (pressure_drain.h). Safe points only: the end of a frame, or the start of
++// a draw or dispatch before FlushWork, so no draw is half set up. Everything deleted so far was
++// last used by commands recorded up to the current tick: once the GPU is past that tick (submitted
++// here), nothing can still use them. The deleted buffers go only then (all of the ring at once,
++// as ReleaseFinishedMemory after its Finish); the deleted images go by their own tick either way
++// (TextureCache::ReleaseFinished). No live image or buffer is touched. A delta draw
++// (EDEN_UP_FAST_DRAW) resolves in full after a drain, as after a frame end. While the guest's
++// conditional rendering is on, nothing drains: its predicate buffer may be among the deleted ones
++// (ReleaseFinishedMemory ends it instead, which draws what the guest meant to skip).
++void RasterizerVulkan::PressureDrainLook(bool frame_end) {
++    namespace PD = PressureDrain;
++    PD::State& s = PD::g_state;
++    if (!frame_end && (++s.draws & 255) != 0) {
++        return;
++    }
++    const auto now = std::chrono::steady_clock::now();
++    if (now - s.last_look < std::chrono::milliseconds{50}) {
++        return;
++    }
++    s.last_look = now;
++    const PD::Config& config = PD::GetConfig();
++    PD::Counts& c = s.counts;
++    ++c.looks;
++    // A refusal: an image the allocator refused even over the budget, or a buffer refused to the
++    // buffer cache (cleared at the frame's end by CollectRefused).
++    if (const u32 events = memory_allocator.MemoryRefusalEvents(); events != s.seen_events) {
++        s.seen_events = events;
++        s.refusal_pending = true;
++    }
++    // A refused buffer counts once per frame: RefusedBytes stays set until CollectRefused at the
++    // frame's end, and the drain after it already let the buffer cache ask again. Without this,
++    // one refusal early in a long load frame drained every quarter gap until the frame ended.
++    if (buffer_cache.RefusedBytes() == 0) {
++        s.buffer_refusal_used = false;
++    } else if (!s.buffer_refusal_used) {
++        s.refusal_pending = true;
++    }
++    const u64 largest = PD::LargestFree();
++    if (largest != 0) {
++        c.low_largest = (std::min)(c.low_largest, largest);
++    }
++    std::pair<size_t, u64> waiting;
++    {
++        std::scoped_lock lock{buffer_cache.mutex};
++        waiting = buffer_cache.DeletedWaiting();
++    }
++    if (waiting.second > c.peak_waiting) {
++        c.peak_waiting = waiting.second;
++        c.peak_buffers = waiting.first;
++    }
++    const auto line = [&] {
++        PD::MaybeLine(now, waiting.first, waiting.second, largest,
++                      [this] { return memory_allocator.UsedBytes(); });
++    };
++    if (!PD::Drains()) {
++        line();
++        return;
++    }
++    const bool refused = s.refusal_pending;
++    const bool short_pool = largest != 0 && largest < config.pool_mark;
++    if (!refused && !short_pool) {
++        line();
++        return;
++    }
++    if (!refused && waiting.second < config.pending_mark) {
++        ++c.nothing;
++        line();
++        return;
++    }
++    const auto gap = refused ? config.gap / 4 : config.gap;
++    if (s.last_drain != std::chrono::steady_clock::time_point{} && now - s.last_drain < gap) {
++        ++c.skipped_gap;
++        line();
++        return;
++    }
++    MasterSemaphore& master = scheduler.GetMasterSemaphore();
++    if (s.behind_tick != 0) {
++        // An earlier wait ran out: no new wait until the GPU has moved past that tick.
++        master.Refresh();
++        if (!master.IsFree(s.behind_tick)) {
++            ++c.skipped_behind;
++            line();
++            return;
++        }
++        s.behind_tick = 0;
++    }
++    if (query_cache_runtime.IsHostConditionalRenderingSet()) {
++        ++c.skipped_conditional;
++        line();
++        return;
++    }
++    s.last_drain = now;
++    s.refusal_pending = false;
++    if (buffer_cache.RefusedBytes() != 0) {
++        s.buffer_refusal_used = true;
++    }
++    u64 before = 0, after = 0, waited_us = 0, staging = 0;
++    bool reached = false;
++    {
++        std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
++        before = memory_allocator.UsedBytes();
++        if (VideoCommon::Nx2FastDraw::Enabled()) {
++            VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Frame);
++        }
++        // Everything recorded so far is in this tick or an earlier one.
++        const u64 target = scheduler.CurrentTick();
++        scheduler.Flush();
++        const auto wait_start = std::chrono::steady_clock::now();
++        reached = master.WaitFor(target, config.wait_ns);
++        waited_us = static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(
++                                         std::chrono::steady_clock::now() - wait_start)
++                                         .count());
++        texture_cache.ReleaseFinished();
++        if (reached) {
++            buffer_cache.ReleaseFinished();
++            buffer_cache.RetryRefusedNow();
++        } else {
++            s.behind_tick = target;
++        }
++        // The console's port: the staging pool's buffers the GPU is done with (its
++        // ReleaseCompleted; nothing here where the pool has none).
++        staging = [](auto& pool) -> u64 {
++            if constexpr (requires { pool.ReleaseCompleted(); }) {
++                return static_cast<u64>(pool.ReleaseCompleted());
++            } else {
++                return 0;
++            }
++        }(staging_pool);
++        after = memory_allocator.UsedBytes();
++    }
++    const u64 freed = before > after ? before - after : 0;
++    ++c.drains;
++    ++(frame_end ? c.frame_end : c.in_frame);
++    if (refused) {
++        ++c.after_refusal;
++    }
++    if (!reached) {
++        ++c.timed_out;
++    }
++    c.freed += freed;
++    c.waited_us += waited_us;
++    c.longest_us = (std::max)(c.longest_us, waited_us);
++    ++s.total_drains;
++    s.total_freed += freed;
++    if (s.total_drains <= 16 || s.total_drains % 64 == 0) {
++        std::fprintf(stderr,
++                     "EDEN_UP_PRESSURE_DRAIN %llu %s%s: waited %llu ms, %s; %llu MiB freed "
++                     "(allocator use %llu -> %llu MiB, %llu MiB of it staging); deleted buffers "
++                     "before: %zu, %llu MiB; largest free piece %llu MiB; %llu MiB freed so far\n",
++                     static_cast<unsigned long long>(s.total_drains),
++                     frame_end ? "at a frame end" : "in a frame", refused ? " after a refusal" : "",
++                     static_cast<unsigned long long>(waited_us / 1000),
++                     reached ? "the GPU finished" : "the GPU did not finish (deleted buffers kept)",
++                     PD::Mib(freed), PD::Mib(before), PD::Mib(after), PD::Mib(staging),
++                     waiting.first, PD::Mib(waiting.second), PD::Mib(largest),
++                     PD::Mib(s.total_freed));
++    }
++    line();
++}
++
+ bool RasterizerVulkan::AccelerateConditionalRendering() {
+     gpu_memory->FlushCaching();
+     return query_cache.AccelerateHostConditionalRendering();
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.h b/src/video_core/renderer_vulkan/vk_rasterizer.h
+index 9396079208..8cfdb338cf 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.h
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.h
+@@ -179,6 +179,12 @@ public:
+     /// are locked by the caller.
+     void ReleaseFinishedMemory();
+ 
++    /// EDEN_UP_PRESSURE_DRAIN (pressure_drain.h): looks at the pool and at what waits to be
++    /// destroyed, and drains when the pool is short or memory was refused. frame_end: at the end of
++    /// a frame; otherwise at the start of a draw or dispatch, before any of it is set up. The
++    /// recording thread, no cache lock held.
++    void PressureDrainLook(bool frame_end);
++
+     /// EDEN_NX2_HANG_WATCH=1, the split's front in a long wait for the back: logs the caches' locks
+     /// and the scheduler's state. Never waits for the back or the worker.
+     void ReportHang();

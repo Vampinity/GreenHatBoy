@@ -2,6 +2,17 @@
 
 Newest first, with each day's test builds in brackets. Results are from our own tests on a base PS5 (firmware 12.40, docked, full resolution). Credits in full: [CREDITS.md](CREDITS.md).
 
+## 13 November 2026 (builds T138 to T181)
+
+- **Test build T180 for testers**, with play settings v3.9 (`envs/Vampinity/play-v39.env.txt`). Every count of starts below comes from scripted starts in handheld at 1x. None of it has been played by hand yet.
+- **The crash at the house door on a first start: the cause is one graphics driver compile, and a change for it.** A few large drawing programs took up to 909 MB each while the driver compiled them. With the change they take 78 to 89 MB, and the picture is the same. After that, 2 of 2 scripted first starts got through into the village (T144).
+- **Played by hand, the builds still crash.** All six starts played by hand that day ended in a crash. The last three crashed at the load from the field into the next area.
+- **The whole game's shaders can be built before play, once.** The list made from Fritchii's recipe has 119,524 records. The driver's disk cache slowed this step to about 5 a second after a minute or two. With our cache changes it held 55 to 60 a second for about four minutes, then about 12. On our console the 29,167 that were still missing took 1,505 seconds (about 25 minutes), and the next start skipped the step. Restart the app after that step: the one game started in the same session crashed. We have not checked yet whether play uses these shaders. v3.9 does not switch this step on.
+- **The load from the field into the next area:** 2 of 12 scripted starts got through on T166 and T173, and 23 of 31 on T175 to T180. With the settings that pack idle game memory sooner, 7 of 7 got through (4 with that change alone on T177 and T179, 3 with all of v3.9 on T180).
+- **Why the others died:** a thread waited 10 seconds for one 2 MiB block of memory and gave up. The parts that free memory only run when a frame is drawn, and no frame is drawn during that wait. A change for this is built (T181). It is not in T180 and has not been tested yet.
+- **The next area runs at about 15 fps** (14.6 to 15.6 in the three v3.9 starts). The graphics work there takes about 41 ms a frame, against 17 to 19 in the field. Not solved.
+- From others: the shader set is built on Fritchii's recipe. waveydude's switch for when the driver cache is written is in the build, and v3.9 uses our every-1024 mode of it. His pack in place (W-20) and two-slot guard are in the build, off by default, and his ASTC scan change is now on by default. GrowingBlackBeans' early guard is in v3.9 and the read sync from GrowingBlackBeans is in the build. Two ideas from heydemoura's heap memory research (his pull request 104 to EglantinePS5) are in the build, off by default. One memory block size for all pools, from lethevimlet's BC-250 work, is in the build, off by default. Many ported fixes come from the Lichii contributors.
+
 ## 12 November 2026 (builds T132 to T134)
 
 - **The black screen after the opening movie on a fresh install is solved with two settings.** On default settings every first start froze or crashed there (3 of 3). With the two settings, 3 of 3 got past it.

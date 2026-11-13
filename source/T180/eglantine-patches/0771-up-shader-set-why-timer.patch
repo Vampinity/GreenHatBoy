@@ -1,0 +1,127 @@
+From: EglantinePS5
+Subject: up: EDEN_UP_SHADER_SET_WHY totals from a timer thread too (EDEN_UP_SHADER_SET_WHY_EVERY_S, 10 s), not only from TickFrame
+
+Why: in test d4 the WHY totals printed from PipelineCache::TickFrame only (every 60 frames, at most
+once a minute through LogShaderSetAudit). The frames stalled after about 387 s and the start died
+at 555 s without a shutdown line, so the count stopped at 43 of the 611 pipelines the start asked
+for. Between 130 and 311 s the totals were also skipped because "asked" had not moved, though the
+catalogue had become ready and the waiting samples had been sorted.
+
+What (only with EDEN_UP_SHADER_SET_WHY=1, which needs EDEN_UP_SHADER_SET=1): StartShaderSet starts a
+small thread that every EDEN_UP_SHADER_SET_WHY_EVERY_S seconds (default 10, 1-3600) sorts the
+waiting samples and prints the totals line when a count moved (a new ask, or samples resolved since
+the last line). The GPU thread's NoteShaderSetWhy and every drain now hold set_why_mutex, so the
+timer and the GPU thread never touch the counts at once. TickFrame's line every 60 s and the
+shutdown line stay; the destructor stops the timer before the shutdown line. A crash loses at most
+the last interval's counts.
+
+Off (EDEN_UP_SHADER_SET_WHY unset): no thread, no lock taken (NoteShaderSetWhy is not called).
+On: one uncontended lock per new graphics pipeline.
+
+Test: with EDEN_UP_SHADER_SET_WHY=1 the "EDEN_UP_SHADER_SET_WHY totals" line appears within about
+10 s of each change, also while frames stall; the last line before a crash has asked close to the
+first_start.list's G + M rows.
+---
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 6e0805c..2411370 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -1323,6 +1323,11 @@ bool DropMeshDrawsBeforeBuild() {
+ }
+ 
+ PipelineCache::~PipelineCache() {
++    // EDEN_UP_SHADER_SET_WHY's timer (0771) first: the shutdown line below prints the last totals.
++    if (set_why_timer.joinable()) {
++        set_why_timer.request_stop();
++        set_why_timer.join();
++    }
+     // EDEN_UP_SHADER_SET: the background thread ends first (its jobs on the workers finish
+     // inside it), then the audit line.
+     if (shader_set_thread.joinable()) {
+@@ -5382,6 +5387,19 @@ void PipelineCache::StartShaderSet(const std::filesystem::path& title_dir) {
+         return;
+     }
+     audit_logged = std::chrono::steady_clock::now();
++    if (shader_set_why && !set_why_timer.joinable()) {
++        // EDEN_UP_SHADER_SET_WHY (0771): the totals every n seconds from a thread of their own,
++        // not only from TickFrame (in test d4 the frames stalled at 387 s and the count stopped
++        // at 43 of 611 asked). A line prints only when a count moved.
++        const auto every = std::chrono::seconds{
++            std::clamp<size_t>(ShaderSetNumber("EDEN_UP_SHADER_SET_WHY_EVERY_S", 10), 1, 3600)};
++        set_why_timer = std::jthread([this, every](std::stop_token stop) {
++            Common::SetCurrentThreadName("ShaderSetWhy");
++            while (Common::StoppableTimedWait(stop, every)) {
++                DrainShaderSetWhy(false, true);
++            }
++        });
++    }
+     const VideoCommon::ShaderSet::Identity identity = MakeShaderSetIdentity();
+     const auto output_dir = pipeline_cache_filename.parent_path();
+     // EDEN_UP_SHADER_SET_PREPASS: the prepass made or found the file already (or found none).
+@@ -6685,6 +6703,7 @@ void PipelineCache::StopShaderSetWhyIfFailed() {
+ }
+ 
+ void PipelineCache::NoteShaderSetWhy(const GraphicsEnvironments& environments) {
++    std::scoped_lock why_lock{set_why_mutex};
+     ++set_why.asked;
+     StopShaderSetWhyIfFailed();
+     if (!set_why_valid) {
+@@ -6707,10 +6726,15 @@ void PipelineCache::NoteShaderSetWhy(const GraphicsEnvironments& environments) {
+         set_why_valid = false;
+         return;
+     }
+-    DrainShaderSetWhy(false, false);
++    DrainShaderSetWhyLocked(false, false);
++}
++
++void PipelineCache::DrainShaderSetWhy(bool final, bool print) {
++    std::scoped_lock why_lock{set_why_mutex};
++    DrainShaderSetWhyLocked(final, print);
+ }
+ 
+-void PipelineCache::DrainShaderSetWhy(bool final, bool print) try {
++void PipelineCache::DrainShaderSetWhyLocked(bool final, bool print) try {
+     static_assert(SetWhyFieldCount == SetWhyRanges.size());
+     StopShaderSetWhyIfFailed();
+     std::shared_ptr<const SetWhyCatalogue> catalogue;
+@@ -6814,10 +6838,13 @@ void PipelineCache::DrainShaderSetWhy(bool final, bool print) try {
+                          set_why.exact_refused + set_why.exact_not_prepared +
+                          set_why.exact_no_store + set_why.near + set_why.no_record_known +
+                          set_why.no_record_unknown;
+-    if (!print || (!final && set_why.asked == set_why_printed)) {
++    // A line when a count moved: a new ask, or waiting samples sorted once the catalogue came.
++    if (!print || (!final && set_why.asked == set_why_printed &&
++                   resolved == set_why_printed_resolved)) {
+         return;
+     }
+     set_why_printed = set_why.asked;
++    set_why_printed_resolved = resolved;
+     std::string fields;
+     for (const auto& [field, count] : set_why_fields) {
+         fields += fmt::format(" {}={}", field, count);
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.h b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+index 10e7c73..1b2eaea 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.h
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+@@ -573,6 +573,12 @@ private:
+         u64 no_record_known{}, no_record_unknown{}, dropped{}, lines{};
+     } set_why;
+     u64 set_why_printed{};
++    /// EDEN_UP_SHADER_SET_WHY_EVERY_S (0771): the totals also print from a timer thread (every
++    /// 10 s by default), so a start whose frames stall or that dies still leaves them. The
++    /// counts are under set_why_mutex from then on (the GPU thread notes, the timer drains).
++    std::mutex set_why_mutex;
++    u64 set_why_printed_resolved{};
++    std::jthread set_why_timer;
+     void IndexShaderSetWhy(const std::filesystem::path& file, std::stop_token stop);
+     void NoteShaderSetWhy(const GraphicsEnvironments& environments);
+     /// GPU thread: once set_why_failed is set, stops the counts and frees the waiting samples.
+@@ -580,6 +586,8 @@ private:
+     /// Sorts the waiting samples once the catalogue is ready; `print`: the totals line too (with
+     /// the audit line every 60 s and at shutdown, not per pipeline).
+     void DrainShaderSetWhy(bool final, bool print = true);
++    /// The same with set_why_mutex held.
++    void DrainShaderSetWhyLocked(bool final, bool print);
+ 
+     /// EDEN_UP_FIRST_START_LIST_WRITE=1 (needs EDEN_UP_CANONICAL_KEYS=1; off: one bool test per
+     /// first use of a pipeline and per compute dispatch of a known one): the pipelines this

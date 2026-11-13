@@ -1,0 +1,448 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: EglantinePS5
+Date: Fri, 13 Nov 2026 18:00:00 +0100
+Subject: [PATCH] util/disk_cache: RADV_PS5_CACHE line every 10 s; writer threads (RADV_PS5_CACHE_THREADS)
+
+With RADV_PS5_CACHE_FAST=1, for the owned database caches (RADV's main cache
+and radv_builtin_shaders), one stderr line every 10 s while anything moved:
+
+  RADV_PS5_CACHE t_s= queued= queued_mib= added= added_mib= written= of
+  written_mib= ms_per_put= write_ms_per_put= add_wait_ms= add_waits= gets=
+  get_ms= flushes= flush_ms= deferred= compactions= compact_ms=
+  total_written= total_written_mib=
+
+queued: jobs in the disk$ queue now (and their uncompressed MiB; u_queue.c
+makes a put wait from 256 MiB). written N of M: database writes that stored an
+entry out of jobs finished (the rest were already there or failed).
+ms_per_put: time per job on a writer thread (compression, CRC, write);
+write_ms_per_put: the database write alone. add_wait_ms / add_waits: time the
+compiling threads spent in util_queue_add_job on adds of 1 ms or more, i.e.
+waiting for room. gets / get_ms: disk_cache_get calls on the database and
+their time (synchronous, on the compiling threads). flushes, deferred,
+compactions: lead-mesh-32 and -33. Deltas over the 10 s, totals at the end.
+A line "RADV_PS5_CACHE fast on: <path>, <n> writer threads" at start.
+
+RADV_PS5_CACHE_THREADS=1..4 sets the writer threads (4 by default, as
+upstream: they compress in parallel; the database write is one at a time per
+part). Also calls lead-mesh-33's idle compaction after a put when the queue is
+empty.
+
+Off: no registration, no line, one branch per put and get. Ours. Applies after
+lead-mesh-33.
+
+T172 rebase onto lead-mesh-29..31: one util_queue_init for both thread
+counts, so lead-mesh-31's exit drain registration is not skipped in fast mode.
+cache_put keeps lead-mesh-30's skip of known keys inside the counted database
+branch. disk_cache_put/_nocopy: one clock read for lead-mesh-31's and this
+patch's add counts, the job's fields read before util_queue_add_job (the job
+can be freed once it returns). Count lines (no field twice): with
+RADV_PS5_CACHE_FAST=1 this line is the only periodic one; lead-mesh-31's
+"radv/ps5 disk cache:" line is not printed for a fast cache even with
+RADV_PS5_DISK_CACHE_STATS=1. This line gains known= / known_mib= (puts dropped
+before compressing by RADV_PS5_DISK_CACHE_SKIP_KNOWN / _ONE_COPY; t168d's
+lead-mesh-40 called them skipped=) and, with RADV_PS5_DISK_CACHE_STATS=1,
+compress_ms= (lead-mesh-31's zlib time). Without RADV_PS5_CACHE_FAST
+lead-mesh-31's line is unchanged.
+
+Co-Authored-By: Claude Opus 5.5
+---
+diff --git a/src/util/disk_cache.c b/src/util/disk_cache.c
+index c3eed58..024c0dc 100644
+--- a/src/util/disk_cache.c
++++ b/src/util/disk_cache.c
+@@ -51,6 +51,9 @@
+ 
+ #include "disk_cache.h"
+ #include "disk_cache_os.h"
++#include "util/detect_os.h"
++#include "util/os_time.h"
++#include "util/simple_mtx.h"
+ 
+ /* The cache version should be bumped whenever a change is made to the
+  * structure of cache entries or the index. This will give any 3rd party
+@@ -137,7 +140,9 @@ dc_counting(void)
+ static void
+ dc_stats_maybe_line(struct disk_cache *cache)
+ {
+-   if (!dc_stats_enabled())
++   /* T172: a RADV_PS5_CACHE_FAST cache has the RADV_PS5_CACHE line
++    * (lead-mesh-34), which carries this line's fields; one line, not two. */
++   if (!dc_stats_enabled() || cache->ps5_fast)
+       return;
+ 
+    const uint64_t now = os_time_get_nano();
+@@ -273,12 +278,182 @@ do {                                       \
+    _dst += _src_size;                      \
+ } while (0);
+ 
++/* RADV_PS5_CACHE_FAST=1 (lead-mesh-34): the owned database caches of this
++ * process, for the RADV_PS5_CACHE line every 10 s and the drain
++ * (lead-mesh-35). Off: never registered, and every added line is behind
++ * cache->ps5_fast. */
++#define PS5_CACHE_MAX 4
++#define PS5_REPORT_NS (10ull * 1000 * 1000 * 1000)
++
++struct ps5_cache_counts {
++   uint64_t added, added_bytes, add_wait_ns, add_waits;
++   uint64_t done, put_ns, written, written_bytes, write_ns;
++   uint64_t gets, get_ns;
++   /* T172: puts dropped before compressing because a part held the key
++    * (RADV_PS5_DISK_CACHE_SKIP_KNOWN / _ONE_COPY). */
++   uint64_t known, known_bytes;
++};
++
++static simple_mtx_t ps5_caches_lock = SIMPLE_MTX_INITIALIZER;
++static struct disk_cache *ps5_caches[PS5_CACHE_MAX];
++static struct ps5_cache_counts ps5_counts;
++static struct ps5_cache_counts ps5_last;
++#if DETECT_OS_WINDOWS == 0
++static struct mesa_cache_db_ps5_counts ps5_db_last;
++#endif
++static uint64_t ps5_start_ns;
++static uint64_t ps5_compress_last;
++static uint64_t ps5_next_ns;
++static unsigned ps5_draining;
++
++static void
++ps5_cache_register(struct disk_cache *cache)
++{
++   simple_mtx_lock(&ps5_caches_lock);
++   for (unsigned i = 0; i < PS5_CACHE_MAX; i++) {
++      if (!ps5_caches[i]) {
++         ps5_caches[i] = cache;
++         break;
++      }
++   }
++   if (!ps5_start_ns) {
++      ps5_start_ns = os_time_get_nano();
++      p_atomic_set(&ps5_next_ns, ps5_start_ns + PS5_REPORT_NS);
++      fprintf(stderr, "RADV_PS5_CACHE fast on: %s, %u writer threads\n",
++              cache->path, cache->cache_queue.num_threads);
++   }
++   simple_mtx_unlock(&ps5_caches_lock);
++}
++
++static void
++ps5_cache_unregister(struct disk_cache *cache)
++{
++   simple_mtx_lock(&ps5_caches_lock);
++   for (unsigned i = 0; i < PS5_CACHE_MAX; i++) {
++      if (ps5_caches[i] == cache)
++         ps5_caches[i] = NULL;
++   }
++   simple_mtx_unlock(&ps5_caches_lock);
++}
++
++#define PS5_DELTA(field) (now_counts.field - ps5_last.field)
++
++/* One line every 10 s while anything moved: puts queued now and their MiB,
++ * puts added, puts written and their MiB (compressed, as stored), time per
++ * put on the writer threads (all of it, and the database write alone), time
++ * the compiling threads waited on the queue, the disk_cache_get calls and
++ * their time, and the database's flushes, deferred and done compactions. */
++static void
++ps5_cache_report(void)
++{
++   uint64_t now = os_time_get_nano();
++   uint64_t next = p_atomic_read(&ps5_next_ns);
++
++   if (!next || now < next ||
++       p_atomic_cmpxchg(&ps5_next_ns, next, now + PS5_REPORT_NS) != next)
++      return;
++
++   struct ps5_cache_counts now_counts = {
++      .added = p_atomic_read(&ps5_counts.added),
++      .added_bytes = p_atomic_read(&ps5_counts.added_bytes),
++      .add_wait_ns = p_atomic_read(&ps5_counts.add_wait_ns),
++      .add_waits = p_atomic_read(&ps5_counts.add_waits),
++      .done = p_atomic_read(&ps5_counts.done),
++      .put_ns = p_atomic_read(&ps5_counts.put_ns),
++      .written = p_atomic_read(&ps5_counts.written),
++      .written_bytes = p_atomic_read(&ps5_counts.written_bytes),
++      .write_ns = p_atomic_read(&ps5_counts.write_ns),
++      .gets = p_atomic_read(&ps5_counts.gets),
++      .get_ns = p_atomic_read(&ps5_counts.get_ns),
++      .known = p_atomic_read(&ps5_counts.known),
++      .known_bytes = p_atomic_read(&ps5_counts.known_bytes),
++   };
++   /* T172: with RADV_PS5_DISK_CACHE_STATS=1 too, lead-mesh-31's own line is
++    * not printed for these caches (dc_stats_maybe_line); the one field it has
++    * that this line has not, the zlib time, is added here. */
++   const uint64_t compress_now = p_atomic_read(&disk_cache_stat_compress_ns);
++   const uint64_t compress_ns = compress_now - ps5_compress_last;
++   ps5_compress_last = compress_now;
++   char compress_text[40] = "";
++   if (dc_stats_enabled())
++      snprintf(compress_text, sizeof(compress_text), " compress_ms=%.0f", compress_ns / 1e6);
++   struct mesa_cache_db_ps5_counts db = {0}, db_delta = {0};
++#if DETECT_OS_WINDOWS == 0
++   mesa_cache_db_ps5_get_counts(&db);
++   db_delta.flushes = db.flushes - ps5_db_last.flushes;
++   db_delta.flush_ns = db.flush_ns - ps5_db_last.flush_ns;
++   db_delta.deferred = db.deferred - ps5_db_last.deferred;
++   db_delta.compactions = db.compactions - ps5_db_last.compactions;
++   db_delta.compact_ns = db.compact_ns - ps5_db_last.compact_ns;
++   ps5_db_last = db;
++#endif
++
++   unsigned queued = 0;
++   uint64_t queued_bytes = 0;
++   simple_mtx_lock(&ps5_caches_lock);
++   for (unsigned i = 0; i < PS5_CACHE_MAX; i++) {
++      if (ps5_caches[i]) {
++         queued += ps5_caches[i]->cache_queue.num_queued;
++         queued_bytes += ps5_caches[i]->cache_queue.total_jobs_size;
++      }
++   }
++   simple_mtx_unlock(&ps5_caches_lock);
++
++   uint64_t done = PS5_DELTA(done);
++   if (PS5_DELTA(added) || done || queued || PS5_DELTA(gets) ||
++       db_delta.flushes || db_delta.compactions) {
++      fprintf(stderr,
++              "RADV_PS5_CACHE t_s=%" PRIu64 " queued=%u queued_mib=%.1f added=%" PRIu64
++              " added_mib=%.1f written=%" PRIu64 " of %" PRIu64 " written_mib=%.2f"
++              " ms_per_put=%.2f write_ms_per_put=%.2f add_wait_ms=%" PRIu64
++              " add_waits=%" PRIu64 " gets=%" PRIu64 " get_ms=%" PRIu64
++              " flushes=%" PRIu64 " flush_ms=%" PRIu64 " deferred=%" PRIu64
++              " compactions=%" PRIu64 " compact_ms=%" PRIu64
++              " known=%" PRIu64 " known_mib=%.1f%s"
++              " total_written=%" PRIu64 " total_written_mib=%.1f\n",
++              (uint64_t)((now - ps5_start_ns) / 1000000000ull), queued,
++              queued_bytes / (1024.0 * 1024.0), PS5_DELTA(added),
++              PS5_DELTA(added_bytes) / (1024.0 * 1024.0), PS5_DELTA(written), done,
++              PS5_DELTA(written_bytes) / (1024.0 * 1024.0),
++              done ? PS5_DELTA(put_ns) / 1e6 / done : 0.0,
++              done ? PS5_DELTA(write_ns) / 1e6 / done : 0.0,
++              PS5_DELTA(add_wait_ns) / 1000000, PS5_DELTA(add_waits),
++              PS5_DELTA(gets), PS5_DELTA(get_ns) / 1000000,
++              db_delta.flushes, db_delta.flush_ns / 1000000, db_delta.deferred,
++              db_delta.compactions, db_delta.compact_ns / 1000000,
++              PS5_DELTA(known), PS5_DELTA(known_bytes) / (1024.0 * 1024.0),
++              compress_text,
++              now_counts.written, now_counts.written_bytes / (1024.0 * 1024.0));
++   }
++   ps5_last = now_counts;
++}
++
++void
++disk_cache_ps5_note_write(size_t bytes, uint64_t ns, bool ok)
++{
++   p_atomic_add(&ps5_counts.write_ns, ns);
++   if (ok) {
++      p_atomic_inc(&ps5_counts.written);
++      p_atomic_add(&ps5_counts.written_bytes, (uint64_t)bytes);
++   }
++}
++
+ static bool
+ disk_cache_init_queue(struct disk_cache *cache)
+ {
+    if (util_queue_is_initialized(&cache->cache_queue))
+       return true;
+ 
++   /* RADV_PS5_CACHE_FAST: RADV_PS5_CACHE_THREADS=1..4 writer threads (4 by
++    * default: they compress in parallel; the database write is one at a
++    * time per part, and short in fast mode). T172: one util_queue_init for
++    * both, so lead-mesh-31's exit drain is registered either way. */
++   unsigned threads = 4;
++   if (cache->ps5_fast) {
++      threads = debug_get_num_option("RADV_PS5_CACHE_THREADS", 4);
++      threads = CLAMP(threads, 1, 4);
++   }
++
+    /* 4 threads were chosen below because just about all modern CPUs currently
+     * available that run Mesa have *at least* 4 cores. For these CPUs allowing
+     * more threads can result in the queue being processed faster, thus
+@@ -289,7 +464,7 @@ disk_cache_init_queue(struct disk_cache *cache)
+     * The queue will resize automatically when it's full, so adding new jobs
+     * doesn't stall.
+     */
+-   bool ok = util_queue_init(&cache->cache_queue, "disk$", 32, 4,
++   bool ok = util_queue_init(&cache->cache_queue, "disk$", 32, threads,
+                              UTIL_QUEUE_INIT_RESIZE_IF_FULL |
+                              UTIL_QUEUE_INIT_USE_MINIMUM_PRIORITY |
+                              UTIL_QUEUE_INIT_SET_FULL_THREAD_AFFINITY, NULL);
+@@ -368,9 +543,15 @@ disk_cache_type_create(const char *gpu_name,
+    if (cache->type == DISK_CACHE_DATABASE)
+       mesa_cache_db_multipart_set_size_limit(&cache->cache_db, cache->max_size);
+ 
++   /* RADV_PS5_CACHE_FAST: owned database parts only (mesa_cache_db.c). */
++   cache->ps5_fast = cache->type == DISK_CACHE_DATABASE && cache->cache_db.fast;
++
+    if (!disk_cache_init_queue(cache))
+       goto fail;
+ 
++   if (cache->ps5_fast)
++      ps5_cache_register(cache);
++
+    cache->path_init_failed = false;
+ 
+  path_fail:
+@@ -535,6 +716,9 @@ disk_cache_destroy(struct disk_cache *cache)
+                 cache->stats.misses);
+    }
+ 
++   if (cache && cache->ps5_fast)
++      ps5_cache_unregister(cache);
++
+    if (cache && util_queue_is_initialized(&cache->cache_queue)) {
+       util_queue_finish(&cache->cache_queue);
+       util_queue_destroy(&cache->cache_queue);
+@@ -673,11 +857,32 @@ cache_put(void *job, void *gdata, int thread_index)
+    } else if (dc_job->cache->type == DISK_CACHE_SINGLE_FILE) {
+       disk_cache_write_item_to_disk_foz(dc_job);
+    } else if (dc_job->cache->type == DISK_CACHE_DATABASE) {
+-      /* EglantinePS5, RADV_PS5_DISK_CACHE_SKIP_KNOWN=1: a key a part holds is dropped before it
+-       * is compressed (zlib level 9 here) and before the part's lock is taken to write it. */
++      struct disk_cache *cache = dc_job->cache;
++      int64_t start = cache->ps5_fast ? os_time_get_nano() : 0;
++
++      /* EglantinePS5, RADV_PS5_DISK_CACHE_SKIP_KNOWN=1 (alias RADV_PS5_DISK_CACHE_ONE_COPY=1): a
++       * key a part holds is dropped before it is compressed (zlib level 9 here) and before the
++       * part's lock is taken to write it. */
+       if (!mesa_cache_db_multipart_skip_known() ||
+-          !mesa_cache_db_multipart_has_entry(&dc_job->cache->cache_db, dc_job->key))
++          !mesa_cache_db_multipart_has_entry(&cache->cache_db, dc_job->key)) {
+          disk_cache_db_write_item_to_disk(dc_job);
++      } else if (cache->ps5_fast) {
++         /* T172: the RADV_PS5_CACHE line's known= / known_mib= (lead-mesh-40's skipped=). */
++         p_atomic_inc(&ps5_counts.known);
++         p_atomic_add(&ps5_counts.known_bytes, (uint64_t)dc_job->size);
++      }
++
++      if (cache->ps5_fast) {
++         p_atomic_add(&ps5_counts.put_ns, os_time_get_nano() - start);
++         p_atomic_inc(&ps5_counts.done);
++         p_atomic_inc(&cache->ps5_done);
++         /* Writers idle: a part that went over its cap is compacted now,
++          * one per idle put, not during a burst (lead-mesh-33). */
++         if (!p_atomic_read(&cache->cache_queue.num_queued) &&
++             !p_atomic_read(&ps5_draining))
++            mesa_cache_db_multipart_maintain(&cache->cache_db);
++         ps5_cache_report();
++      }
+    } else if (dc_job->cache->type == DISK_CACHE_MULTI_FILE) {
+       filename = disk_cache_get_cache_filename(dc_job->cache, dc_job->key);
+       if (filename == NULL)
+@@ -804,6 +1009,21 @@ blob_get_compressed(struct disk_cache *cache, const cache_key key,
+    return data;
+ }
+ 
++/* A put handed to the queue; a wait of 1 ms or more is the queue being full
++ * (256 MiB, u_queue.c S_256MB) and the compiling thread stopped. */
++static void
++ps5_cache_added(struct disk_cache *cache, size_t size, uint64_t ns)
++{
++   p_atomic_inc(&cache->ps5_added);
++   p_atomic_inc(&ps5_counts.added);
++   p_atomic_add(&ps5_counts.added_bytes, (uint64_t)size);
++   if (ns >= 1000000) {
++      p_atomic_inc(&ps5_counts.add_waits);
++      p_atomic_add(&ps5_counts.add_wait_ns, ns);
++   }
++   ps5_cache_report();
++}
++
+ void
+ disk_cache_put(struct disk_cache *cache, const cache_key key,
+                const void *data, size_t size,
+@@ -817,10 +1037,15 @@ disk_cache_put(struct disk_cache *cache, const cache_key key,
+ 
+    if (dc_job) {
+       util_queue_fence_init(&dc_job->fence);
+-      const uint64_t add_start = dc_job->counted ? os_time_get_nano() : 0;
++      /* lead-mesh-31 and -34 (T172): one clock read for both counts; the
++       * job may be gone once util_queue_add_job returns. */
++      const bool counted = dc_job->counted;
++      const uint64_t add_start = counted || cache->ps5_fast ? os_time_get_nano() : 0;
+       util_queue_add_job(&cache->cache_queue, dc_job, &dc_job->fence,
+                          cache_put, destroy_put_job, size);
+-      if (add_start)
++      if (cache->ps5_fast)
++         ps5_cache_added(cache, size, os_time_get_nano() - add_start);
++      if (counted)
+          dc_note_add(cache, size, add_start);
+    }
+ }
+@@ -840,10 +1065,15 @@ disk_cache_put_nocopy(struct disk_cache *cache, const cache_key key,
+ 
+    if (dc_job) {
+       util_queue_fence_init(&dc_job->fence);
+-      const uint64_t add_start = dc_job->counted ? os_time_get_nano() : 0;
++      /* lead-mesh-31 and -34 (T172): one clock read for both counts; the
++       * job may be gone once util_queue_add_job returns. */
++      const bool counted = dc_job->counted;
++      const uint64_t add_start = counted || cache->ps5_fast ? os_time_get_nano() : 0;
+       util_queue_add_job(&cache->cache_queue, dc_job, &dc_job->fence,
+                          cache_put, destroy_put_job_nocopy, size);
+-      if (add_start)
++      if (cache->ps5_fast)
++         ps5_cache_added(cache, size, os_time_get_nano() - add_start);
++      if (counted)
+          dc_note_add(cache, size, add_start);
+    }
+ }
+@@ -865,7 +1095,13 @@ disk_cache_get(struct disk_cache *cache, const cache_key key, size_t *size)
+       } else if (cache->type == DISK_CACHE_SINGLE_FILE) {
+          buf = disk_cache_load_item_foz(cache, key, size);
+       } else if (cache->type == DISK_CACHE_DATABASE) {
++         int64_t start = cache->ps5_fast ? os_time_get_nano() : 0;
++
+          buf = disk_cache_db_load_item(cache, key, size);
++         if (cache->ps5_fast) {
++            p_atomic_inc(&ps5_counts.gets);
++            p_atomic_add(&ps5_counts.get_ns, os_time_get_nano() - start);
++         }
+       } else if (cache->type == DISK_CACHE_MULTI_FILE) {
+          char *filename = disk_cache_get_cache_filename(cache, key);
+          if (filename)
+diff --git a/src/util/disk_cache_os.c b/src/util/disk_cache_os.c
+index c4b8dc7..2eccd36 100644
+--- a/src/util/disk_cache_os.c
++++ b/src/util/disk_cache_os.c
+@@ -103,6 +103,7 @@ disk_cache_get_function_identifier(void *ptr, blake3_hasher *ctx)
+ #include "util/u_debug.h"
+ #include "util/ralloc.h"
+ #include "util/rand_xor.h"
++#include "util/os_time.h"
+ 
+ /* A PS5 title's cache stays open to the console's FTP service, which runs as
+  * another user: folders 0777 and files 0666, whatever the umask. Elsewhere
+@@ -1242,9 +1243,12 @@ disk_cache_db_write_item_to_disk(struct disk_cache_put_job *dc_job)
+    if (!create_cache_item_header_and_blob(dc_job, &cache_blob))
+       return false;
+ 
++   int64_t start = dc_job->cache->ps5_fast ? os_time_get_nano() : 0;
+    bool r = mesa_cache_db_multipart_entry_write(&dc_job->cache->cache_db,
+                                                 dc_job->key, cache_blob.data,
+                                                 cache_blob.size);
++   if (dc_job->cache->ps5_fast)
++      disk_cache_ps5_note_write(cache_blob.size, os_time_get_nano() - start, r);
+ 
+    blob_finish(&cache_blob);
+    return r;
+diff --git a/src/util/disk_cache_os.h b/src/util/disk_cache_os.h
+index 9de16ce..57d81f8 100644
+--- a/src/util/disk_cache_os.h
++++ b/src/util/disk_cache_os.h
+@@ -105,8 +105,19 @@ struct disk_cache {
+ 
+    /* Internal RO FOZ cache for combined use of RO and RW caches. */
+    struct disk_cache *foz_ro_cache;
++
++   /* RADV_PS5_CACHE_FAST=1 (lead-mesh-34): an owned database cache, counted
++    * for the RADV_PS5_CACHE line and the drain (lead-mesh-35). */
++   bool ps5_fast;
++   uint32_t ps5_added;
++   uint32_t ps5_done;
+ };
+ 
++/* lead-mesh-34: a database write's bytes and time, for the RADV_PS5_CACHE
++ * line. */
++void
++disk_cache_ps5_note_write(size_t bytes, uint64_t ns, bool ok);
++
+ struct cache_entry_file_data {
+    uint32_t crc32;
+    uint32_t uncompressed_size;

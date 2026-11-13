@@ -108,7 +108,7 @@ These steps are for people who help test. If you are new here, please wait for t
 
 **Steps**
 
-1. **Get the build** from the tester who sent it to you.
+1. **Get the build** from [Releases](https://github.com/Vampinity/GreenHatBoy/releases): the newest test build (a pre-release).
 2. **Unzip it.** Inside are a folder `PPSA98515` (the app), the settings files, `LICENSE` and the build's notes.
 3. **Put it on the USB drive.** On the drive, make a folder called `homebrew` and put the whole `PPSA98515` folder in it. Then make a second folder for your own files, for example `eglantine`, with three folders inside it: `keys`, `firmware` and `roms`. Put your own files in the folder the app names for each.
 4. **Plug the drive into the PS5** with your jailbreak running. A tile called **EglantinePS5** appears on the home screen. No tile? Restart the PS5 and run your jailbreak again.

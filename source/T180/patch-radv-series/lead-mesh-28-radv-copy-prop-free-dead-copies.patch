@@ -1,0 +1,162 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: EglantinePS5
+Date: Fri, 13 Nov 2026 02:00:00 +0100
+Subject: [PATCH] nir: free a finished branch's copy-prop arrays (EDEN_NX2_RADV_COPY_PROP_FREE)
+
+nir_opt_copy_prop_vars gives every if arm and loop body a struct copies whose
+arrays (the eagerly cloned non-variable array and every lazily cloned
+per-variable array) live on the pass context until the whole pass ends, so a
+large shader with many branches holds every dead branch's arrays at once.
+
+With EDEN_NX2_RADV_COPY_PROP_FREE=1 (exactly "1", read once per process) each
+struct copies is the ralloc parent of the arrays it owns, and the struct is
+freed when its branch ends instead of being kept for reuse. Only the owning
+struct's table can point at those arrays: a table inherits only its parent's
+or older arrays, and a parent never takes a child's array (no merge; the
+parent is invalidated from the pre-pass write sets). No decision reads an
+array address, so the result is the same. Off: upstream behaviour, plus one
+load per new array. One stderr line "EDEN_NX2_RADV_COPY_PROP_FREE on" at first
+use. Ours. Applies after lead-mesh-21.
+
+diff --git a/src/compiler/nir/nir_opt_copy_prop_vars.c b/src/compiler/nir/nir_opt_copy_prop_vars.c
+--- a/src/compiler/nir/nir_opt_copy_prop_vars.c
++++ b/src/compiler/nir/nir_opt_copy_prop_vars.c
+@@ -26,8 +26,12 @@
+ #include "nir_deref.h"
+ 
+ #include "util/bitscan.h"
++#include "util/u_call_once.h"
+ #include "util/u_dynarray.h"
+ 
++#include <stdlib.h>
++#include <string.h>
++
+ static const bool debug = false;
+ 
+ /**
+@@ -122,8 +126,38 @@
+ 
+    bool has_non_ssa_src_entries;
+ 
++   /* EDEN_NX2_RADV_COPY_PROP_FREE=1: each struct copies is the ralloc parent
++    * of its own arrays and is freed when its if arm or loop body ends.
++    */
++   bool free_dead_copies;
++
+    bool progress;
+ };
++
++/* EglantinePS5 lead-mesh-28. Upstream keeps every finished if arm's and loop
++ * body's cloned arrays on the pass context until the whole pass ends. With
++ * EDEN_NX2_RADV_COPY_PROP_FREE=1 (exactly "1", read once per process) a
++ * branch's own arrays hang off its struct copies, which is freed at the end of
++ * that branch instead of being kept for reuse. Off: upstream behaviour.
++ */
++static bool copy_prop_free_dead_copies;
++static util_once_flag copy_prop_free_once = UTIL_ONCE_FLAG_INIT;
++
++static void
++copy_prop_free_configure(void)
++{
++   const char *const value = getenv("EDEN_NX2_RADV_COPY_PROP_FREE");
++   copy_prop_free_dead_copies = value && !strcmp(value, "1");
++   if (copy_prop_free_dead_copies)
++      fputs("EDEN_NX2_RADV_COPY_PROP_FREE on\n", stderr);
++}
++
++/* The ralloc parent for arrays that this struct copies owns. */
++static void *
++copies_mem_ctx(struct copy_prop_var_state *state, struct copies *copies)
++{
++   return state->free_dead_copies ? (void *)copies : state->mem_ctx;
++}
+ 
+ static nir_component_mask_t
+ value_equals_store_src(struct value *value, nir_intrinsic_instr *intrin)
+@@ -319,13 +353,14 @@
+    }
+ }
+ 
+-/* Creates a fresh dynarray */
++/* Creates a fresh dynarray, owned by copies */
+ static struct copies_dynarray *
+-get_copies_dynarray(struct copy_prop_var_state *state)
++get_copies_dynarray(struct copy_prop_var_state *state, struct copies *copies)
+ {
++   void *mem_ctx = copies_mem_ctx(state, copies);
+    struct copies_dynarray *cp_arr =
+-      ralloc(state->mem_ctx, struct copies_dynarray);
+-   util_dynarray_init(&cp_arr->arr, state->mem_ctx);
++      ralloc(mem_ctx, struct copies_dynarray);
++   util_dynarray_init(&cp_arr->arr, mem_ctx);
+    return cp_arr;
+ }
+ 
+@@ -364,7 +399,7 @@
+       copies_array = (struct copies_dynarray *)ht_entry->data;
+    } else {
+       /* Clone the array and set the data value for future access */
+-      copies_array = get_copies_dynarray(state);
++      copies_array = get_copies_dynarray(state, copies);
+       copies_array->owner = copies;
+       clone_copies_dynarray_from_src(copies_array, ht_entry->data);
+       ht_entry->data = copies_array;
+@@ -381,7 +416,7 @@
+    if (entry != NULL)
+       return get_copies_array_from_ht_entry(state, copies, entry);
+ 
+-   struct copies_dynarray *copies_array = get_copies_dynarray(state);
++   struct copies_dynarray *copies_array = get_copies_dynarray(state, copies);
+    copies_array->owner = copies;
+    _mesa_hash_table_insert(&copies->ht, var, copies_array);
+ 
+@@ -1471,7 +1506,7 @@
+    assert(clones->ht.table == NULL);
+    _mesa_hash_table_copy(&clones->ht, &copies->ht, state->mem_ctx);
+ 
+-   util_dynarray_clone(&clones->arr, state->mem_ctx, &copies->arr);
++   util_dynarray_clone(&clones->arr, copies_mem_ctx(state, clones), &copies->arr);
+ }
+ 
+ /* Returns an existing struct for reuse or creates a new on if they are
+@@ -1485,7 +1520,7 @@
+    if (list_is_empty(&state->unused_copy_structs_list)) {
+       copies = ralloc(state->mem_ctx, struct copies);
+       copies->ht.table = NULL;
+-      util_dynarray_init(&copies->arr, state->mem_ctx);
++      util_dynarray_init(&copies->arr, copies_mem_ctx(state, copies));
+    } else {
+       copies = list_entry(state->unused_copy_structs_list.next,
+                           struct copies, node);
+@@ -1501,6 +1536,16 @@
+ {
+    _mesa_hash_table_fini(&copies->ht, NULL);
+ 
++   if (state->free_dead_copies) {
++      /* Frees this struct's own copies_dynarrays, their data and copies->arr
++       * (all its ralloc children). Only this struct's table pointed at them:
++       * a parent's table holds the parent's or older arrays, and children
++       * were freed before this branch ended.
++       */
++      ralloc_free(copies);
++      return;
++   }
++
+    list_add(&copies->node, &state->unused_copy_structs_list);
+ }
+ 
+@@ -1606,11 +1651,14 @@
+       printf("## nir_copy_prop_vars_impl for %s\n", impl->function->name);
+    }
+ 
++   util_call_once(&copy_prop_free_once, copy_prop_free_configure);
++
+    struct copy_prop_var_state state = {
+       .impl = impl,
+       .mem_ctx = mem_ctx,
+       .lin_ctx = linear_context(mem_ctx),
+       .has_non_ssa_src_entries = false,
++      .free_dead_copies = copy_prop_free_dead_copies,
+    };
+    _mesa_pointer_hash_table_init(&state.vars_written_map, mem_ctx);
+    list_inithead(&state.unused_copy_structs_list);

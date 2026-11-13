@@ -1,0 +1,90 @@
+From: EglantinePS5
+Subject: [PATCH] up: compute and task/mesh records of the shader set do not count against EDEN_UP_SHADER_PREP_MAX, and a known compute record is skipped before its environment is built
+
+Switches: none new. Acts only with EDEN_UP_SHADER_SET_COMPUTE=1 (0781) or EDEN_UP_SHADER_SET_MESH=1
+(0783); without them every record that is prepared is a vertex/pixel graphics record and the cap
+counts as before.
+
+Why (T158 review):
+1. The background pass (beside the game) stops at EDEN_UP_SHADER_PREP_MAX (5,000) records a
+   start. With 0781/0783 compute and task/mesh records came in the file's order between the
+   graphics ones and used up that cap. The before-play pass (0770) has no cap at all, so there
+   it changed nothing; this is about the pass beside the game.
+2. on_compute was handed each compute record after its environment was built (code read and
+   decoded), then asked the store: every background pass decoded up to 4,088 compute records
+   even when all were known.
+
+What:
+- PrepareShaderSet's gate (`admit`) takes whether the record counts against the cap. Only
+  vertex/pixel graphics records do (a separate count, queued_capped). Compute and task/mesh
+  records are bounded by their number in the set (d4 recipe: 4,088 and 2,874) and pass the same
+  floors, duty cycle and slots. The disk check every 64 records still counts all records.
+- The compute key filter (0784's compute_key_wanted) asks the store first in the background
+  pass: a known compute record is counted as known and skipped before its environment is built.
+  In the prepass `left` holds only unknown keys already.
+- The cap's stop line says "graphics records".
+
+Needs 0784. Checked: apply in name order, PS5-target syntax check. Not checked on the console.
+---
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 1880bce..9734473 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -5841,9 +5841,17 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+     // cycle, then a free slot. Throws StopReading to end the pass; `hand_back` first gives the
+     // prepass's key back to what is left. (0781 moved 0770's gate out of the graphics callback
+     // unchanged, so both kinds take the same turns.)
+-    const auto admit = [&](u64 hash, const auto& hand_back) -> u32 {
+-        if (queued >= limit) {
+-            stopped = fmt::format("the cap of {} per start (EDEN_UP_SHADER_PREP_MAX)", limit);
++    // 0785: `capped` says whether the record counts against the cap (EDEN_UP_SHADER_PREP_MAX,
++    // the background pass only: the prepass has none): vertex/pixel graphics records do;
++    // compute (0781) and task/mesh (0783) records do not, so turning those switches on does not
++    // push graphics records past the cap. They are bounded by their number in the set (4,088
++    // and 2,874 in the d4 recipe) and pass the same floors and duty cycle.
++    size_t queued_capped = 0;
++    const auto admit = [&](u64 hash, const auto& hand_back, bool capped) -> u32 {
++        if (capped && queued_capped >= limit) {
++            stopped = fmt::format("the cap of {} graphics records per start "
++                                  "(EDEN_UP_SHADER_PREP_MAX)",
++                                  limit);
+             throw StopReading{stopped};
+         }
+         if (pass != nullptr) {
+@@ -6015,7 +6023,7 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+             taken();
+             return;
+         }
+-        const u32 slot = admit(hash, hand_back);
++        const u32 slot = admit(hash, hand_back, false);
+         ++queued;
+         constexpr u32 flags =
+             ShaderPrep::KeptStore::FlagPredicted | ShaderPrep::KeptStore::FlagShaderSet;
+@@ -6099,7 +6107,15 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+             }
+             return pass->left->erase(hash) != 0;
+         }
+-        return true;
++        // 0785: a compute record the store knows is not built again from the file (its
++        // environment was built before the store was asked, for up to 4,088 records a pass).
++        if (!prep_store.Contains(hash)) {
++            return true;
++        }
++        ++read;
++        ++compute_read;
++        ++known;
++        return false;
+     };
+     const bool whole = VideoCommon::ShaderSet::ReadRecords(
+         file, CACHE_VERSION,
+@@ -6159,8 +6175,9 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+                 taken();
+                 return;
+             }
+-            const u32 slot = admit(hash, hand_back);
++            const u32 slot = admit(hash, hand_back, !mesh);
+             ++queued;
++            queued_capped += mesh ? 0 : 1;
+             constexpr u32 flags =
+                 ShaderPrep::KeptStore::FlagPredicted | ShaderPrep::KeptStore::FlagShaderSet;
+             try {

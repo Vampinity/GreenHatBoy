@@ -1,0 +1,289 @@
+From: EglantinePS5
+Subject: [PATCH] up: making the shader list before play tells the boot screen and the log how far it is (reading, making, saving), through a hook the front sets
+
+Switch: none of its own; only while the front has set the hook, which it does only with
+EDEN_UP_SHADER_SET_PREPASS=1 (0770, off by default) and only around LoadDiskResources.
+
+Why: in run1382 (13 Nov, T162) the boot screen showed "2594/2594" (the boot pipelines) and then
+nothing moved for about 12 minutes while the shader list was made and saved, and the log had
+nothing between 71 s and 738 s. The owner wants the progress shown.
+
+This is T165a's 0832 (branch t165a) without its vk_pipeline_cache.cpp part. That file is one of
+the files the translation id (tools/gen-translation-id.py, <build>/vk_pipeline_cache_cost.cpp) is
+made of, and with EDEN_UP_SHADER_PREP_SOURCE_STAMP=1 the prepared store's stamp and the shader
+set's stamp carry that id: any change to it gives a new, empty store and makes the shader list
+again (12 minutes in run1382). Our console is filling T162's store now, so T165 keeps the
+id: this patch changes only shader_set.cpp/.h, the new shader_set_progress.h and
+nx2_shader_extract.h, none of which the id reads. 0831 (the time limit from when preparing starts) is left out of T165 for the same reason.
+
+What:
+- ShaderSet::Prepare takes an optional OnProgress (Part::Files / Records / Save, done, total):
+  called when a part begins, about twice a second while it runs, and at its end. Never called
+  when the file is reused (its stamp holds).
+- shader_set_progress.h holds Part, OnProgress and SetBootProgress, so the front can include it
+  without shader_set.h (which brings in the engine headers; the front builds with -Werror and
+  the port's macro.h fails there).
+- ShaderSet::SetBootProgress(hook): the front's hook. While it is set, a Prepare called without
+  OnProgress (the before-play pass calls it so) sends its parts there; it is called under a mutex,
+  so a hook cleared with SetBootProgress({}) is never called again.
+- With either, Prepare logs one line every 10 s per part in one format: "Shader set before play:
+  <part>: <done> of <total> <unit> (<n>%), <rate> a second, about <m> min left; <s> s; <MB> MB
+  free memory" (the free memory is there to show next time whether the slow save of run1382 went
+  with little free memory; not checked). The extractor's own 10 s "extracting:" line is replaced
+  by it then.
+- The extractor's progress interval (Nx2ShaderExtract::Progress::every) is in milliseconds now
+  (500 ms with a hook, 10 s as before without; its loop checks every 250 ms).
+
+Not here (they need vk_pipeline_cache.cpp): the count of the list's keys (12.5 s in run1382) gets
+no counter (the screen keeps the saving part at 100% meanwhile), and the preparing line keeps its
+old format. Hook not set: nothing changes. Not checked: a run, a build.
+---
+diff --git a/src/core/file_sys/nx2_shader_extract.h b/src/core/file_sys/nx2_shader_extract.h
+index 0af43a4104..9d9a4ddb37 100644
+--- a/src/core/file_sys/nx2_shader_extract.h
++++ b/src/core/file_sys/nx2_shader_extract.h
+@@ -76,9 +76,10 @@ struct Progress {
+     // PS5 port: what a progress line needs while Extract runs (the caller blocks in it).
+     std::atomic<u64> bytes_read{};   ///< RomFS bytes read so far
+     std::atomic<u64> wanted_found{}; ///< distinct wanted fingerprints stored so far
+-    /// Called on the calling thread about every `every` seconds while the workers run.
++    /// Called on the calling thread about every `every` while the workers run (0832: a duration
++    /// in milliseconds, so a boot screen can be told more than once a second; checked every 250 ms).
+     std::function<void(const Progress&)> on_progress;
+-    std::chrono::seconds every{10};
++    std::chrono::milliseconds every{10000};
+     /// The workers run at low priority (Common::ThreadPriority::Low, background placement).
+     bool low_priority{};
+     /// PS5 port (v3.1): called by each worker after each file with the time the file took, on
+diff --git a/src/video_core/shader_set.cpp b/src/video_core/shader_set.cpp
+index 4704cf2c66..ce7c543f35 100644
+--- a/src/video_core/shader_set.cpp
++++ b/src/video_core/shader_set.cpp
+@@ -531,6 +531,29 @@ namespace {
+ std::atomic<unsigned> duty_override{0}; // OverrideDuty (EDEN_UP_SHADER_SET_PREPASS); 0: none
+ } // namespace
+ 
++namespace {
++// 0833: the boot screen's hook (SetBootProgress). Called under the mutex, so a hook the front
++// clears is never called after SetBootProgress({}) returns.
++std::mutex boot_progress_mutex;
++OnProgress boot_progress;
++std::atomic<bool> boot_progress_set{false};
++
++bool BootProgressSet() {
++    return boot_progress_set.load(std::memory_order_acquire);
++}
++
++void CallBootProgress(Part part, u64 done, u64 total) {
++    std::scoped_lock lock{boot_progress_mutex};
++    if (boot_progress) boot_progress(part, done, total);
++}
++} // namespace
++
++void SetBootProgress(OnProgress hook) {
++    std::scoped_lock lock{boot_progress_mutex};
++    boot_progress_set.store(static_cast<bool>(hook), std::memory_order_release);
++    boot_progress = std::move(hook);
++}
++
+ unsigned DutyPercent() {
+     static const unsigned duty =
+         static_cast<unsigned>(std::clamp<size_t>(SwitchNumber("EDEN_UP_SHADER_SET_DUTY", 50), 1, 100));
+@@ -580,9 +603,51 @@ std::vector<u64> ReadPrograms(const std::filesystem::path& programs) {
+ 
+ Outputs Prepare(u64 title, const std::filesystem::path& title_dir,
+                 const std::filesystem::path& output_dir, const Identity& identity,
+-                const MapState& map_state, std::stop_token stop) {
++                const MapState& map_state, std::stop_token stop, const OnProgress& on_progress_arg) {
+     Outputs out;
+     if (!Common::PeSwitch("EDEN_UP_SHADER_SET")) return out;
++    // 0833: the parts' progress goes to `on_progress_arg` or, without one, to the boot screen's
++    // hook (SetBootProgress, set by the front only around the before-play pass), and a log line
++    // every 10 s in one format for every part. Neither: empty, everything as before 0832.
++    const bool boot_hook = BootProgressSet();
++    std::optional<Part> logged_part;
++    auto part_began = std::chrono::steady_clock::now(), part_logged = part_began;
++    const OnProgress on_progress =
++        !on_progress_arg && !boot_hook
++            ? OnProgress{}
++            : OnProgress{[&](Part part, u64 done, u64 total) {
++                  if (on_progress_arg) {
++                      on_progress_arg(part, done, total);
++                  } else {
++                      CallBootProgress(part, done, total);
++                  }
++                  const auto now = std::chrono::steady_clock::now();
++                  if (logged_part != part) {
++                      logged_part = part;
++                      part_began = part_logged = now;
++                      return;
++                  }
++                  if (now - part_logged < std::chrono::seconds{10}) return;
++                  part_logged = now;
++                  static constexpr const char* What[] = {"reading the game's shader files",
++                                                         "making the shader list",
++                                                         "saving the shader list"};
++                  static constexpr const char* Unit[] = {"files", "records", "MB of program code"};
++                  const auto index = std::min<size_t>(static_cast<size_t>(part), 2);
++                  const double seconds =
++                      std::chrono::duration<double>(now - part_began).count();
++                  const double per_second = seconds > 0 ? static_cast<double>(done) / seconds : 0.0;
++                  const double minutes =
++                      per_second > 0
++                          ? static_cast<double>(total - std::min(done, total)) / per_second / 60.0
++                          : 0.0;
++                  LOG_INFO(Render_Vulkan,
++                           "Shader set before play: {}: {} of {} {} ({}%), {:.1f} a second, about "
++                           "{:.0f} min left; {:.0f} s; {} MB free memory",
++                           What[index], done, total, Unit[index],
++                           total != 0 ? std::min(done, total) * 100 / total : 100, per_second,
++                           minutes, seconds, FreeMemoryBytes() >> 20);
++              }};
+     std::error_code ec;
+     // A temporary left by a kill is never a file to use.
+     for (const char* name : {RecordsName, ProgramsName, StampName}) {
+@@ -719,8 +784,13 @@ Outputs Prepare(u64 title, const std::filesystem::path& title_dir,
+             static_cast<unsigned>(std::clamp<size_t>(SwitchNumber("EDEN_UP_SHADER_SET_THREADS", 1), 1, 4));
+         FileSys::Nx2ShaderExtract::Progress progress;
+         progress.low_priority = true;
+-        progress.every = std::chrono::seconds{10};
++        // 0832/0833: with on_progress, twice a second for the boot screen; logged above.
++        progress.every = on_progress ? std::chrono::milliseconds{500} : std::chrono::milliseconds{10000};
+         progress.on_progress = [&](const FileSys::Nx2ShaderExtract::Progress& p) {
++            if (on_progress) {
++                on_progress(Part::Files, p.files_done.load(std::memory_order_relaxed), p.files_total);
++                return;
++            }
+             LOG_INFO(Render_Vulkan, "Shader set: extracting: {} of {} files scanned, {} of {} "
+                      "fingerprints found, {} MB read, {:.0f} s elapsed",
+                      p.files_done.load(std::memory_order_relaxed), p.files_total,
+@@ -854,8 +924,23 @@ Outputs Prepare(u64 title, const std::filesystem::path& title_dir,
+         size_t mesh_converted = 0;    // 0782
+         u64 next_report = u64{512} << 20;
+         std::vector<u8> used_fact(r.facts.size());
++        // 0832: the boot screen hears about the records twice a second.
++        auto told = std::chrono::steady_clock::now();
++        const auto tell = [&](Part part, u64 done, u64 total) {
++            if (!on_progress) return;
++            const auto now = std::chrono::steady_clock::now();
++            if (done != 0 && done < total && now - told < std::chrono::milliseconds{500}) return;
++            told = now;
++            on_progress(part, done, total);
++        };
++        u64 records_seen = 0;
++        if (on_progress) {
++            on_progress(Part::Files, progress.files_total, progress.files_total);
++            on_progress(Part::Records, 0, r.records.size());
++        }
+         for (const auto& p : r.records) {
+             if (stop.stop_requested()) return out; // the temporary is removed with `file`
++            if ((++records_seen & 255) == 0) tell(Part::Records, records_seen, r.records.size());
+             if (p.kind == 1) {
+                 if (!ComputeAsked()) { ++dropped["compute-predicted-unsupported"]; continue; }
+                 // 0780: one compute fact; the key is ComputePipelineCacheKey's bytes (unique
+@@ -967,6 +1052,7 @@ Outputs Prepare(u64 title, const std::filesystem::path& title_dir,
+             LOG_INFO(Render_Vulkan, "Shader set: EDEN_UP_SHADER_SET_MESH=1: {} of the converted records "
+                      "are task/mesh pipelines", mesh_converted);
+         }
++        tell(Part::Records, r.records.size(), r.records.size());
+         if (!converted || stop.stop_requested()) return out;
+         // The facts and the programs the records name, each once, and the trailer.
+         const u64 facts_at = file.Written();
+@@ -984,6 +1070,12 @@ Outputs Prepare(u64 title, const std::filesystem::path& title_dir,
+             ++fact_count;
+         }
+         const u64 programs_at = file.Written();
++        // 0832: the save's progress, in MB of program code (its size before 0830's packing).
++        u64 code_total = 0, code_done = 0;
++        for (u32 index = 0; index < r.programs.size(); ++index) {
++            if (used_program[index]) code_total += lowered[index]->code.size() * 8;
++        }
++        tell(Part::Save, 0, code_total >> 20);
+         // 0830: packed, each program's code is one zstd frame (level 1) and its memory is given
+         // back once written (nothing reads the lowered code after this loop).
+         std::unique_ptr<ZSTD_CCtx, FreeCContext> packer{pack ? ZSTD_createCCtx() : nullptr};
+@@ -1009,6 +1101,8 @@ Outputs Prepare(u64 title, const std::filesystem::path& title_dir,
+                 file.Write(Bytes{reinterpret_cast<const u8*>(code.data()), code.size() * 8});
+             }
+             ++program_count;
++            code_done = code_bytes >> 20;
++            if (code_done != code_total >> 20) tell(Part::Save, code_done, code_total >> 20);
+         }
+         if (pack) {
+             LOG_INFO(Render_Vulkan, "Shader set: EDEN_UP_SHADER_SET_PACK=1: {} MB of program code "
+@@ -1019,6 +1113,7 @@ Outputs Prepare(u64 title, const std::filesystem::path& title_dir,
+             file.Write(value);
+         }
+         file.Write(Bytes{reinterpret_cast<const u8*>(magic), 8});
++        tell(Part::Save, code_total >> 20, code_total >> 20);
+         LOG_INFO(Render_Vulkan, "Shader set: {} facts and {} programs stored once, {} MB in all; "
+                  "{:.1f} s", fact_count, program_count, file.Written() >> 20, seconds());
+         // The old stamp goes first (it must never sit beside the new files), then records, then
+diff --git a/src/video_core/shader_set.h b/src/video_core/shader_set.h
+index 8fea17e631..d8af7a6479 100644
+--- a/src/video_core/shader_set.h
++++ b/src/video_core/shader_set.h
+@@ -29,6 +29,7 @@
+ #include <fstream>
+ #include "common/common_types.h"
+ #include "video_core/shader_environment.h"
++#include "video_core/shader_set_progress.h"
+ 
+ namespace VideoCommon::ShaderSet {
+ 
+@@ -77,13 +78,17 @@ struct Identity {
+     std::string translation;
+ };
+ 
++// 0832/0833: Part, OnProgress and SetBootProgress are in shader_set_progress.h.
++
+ /// Reuses prep_shader_set.bin in `output_dir` when its stamp holds, else extracts, lowers and
+ /// converts (minutes on a base PS5), writes the file and its stamp. Empty `records` on
+ /// cancellation, failure, no recipe for this title and version, or nothing converted; a stale or
+-/// partial file is never returned.
++/// partial file is never returned. `on_progress` (0832, optional): see OnProgress and
++/// SetBootProgress; with either, the 10 s "extracting:" line becomes Prepare's own part line.
+ [[nodiscard]] Outputs Prepare(u64 title, const std::filesystem::path& title_dir,
+                               const std::filesystem::path& output_dir, const Identity& identity,
+-                              const MapState& map_state, std::stop_token stop);
++                              const MapState& map_state, std::stop_token stop,
++                              const OnProgress& on_progress = {});
+ 
+ /// The lowered program hashes a generated file was made from (its .programs sidecar).
+ [[nodiscard]] std::vector<u64> ReadPrograms(const std::filesystem::path& programs);
+diff --git a/src/video_core/shader_set_progress.h b/src/video_core/shader_set_progress.h
+new file mode 100644
+index 0000000000..2cbcd53e2a
+--- /dev/null
++++ b/src/video_core/shader_set_progress.h
+@@ -0,0 +1,30 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++// 0833: the shader set's progress while it is made, apart from shader_set.h so the PS5 front
++// (headless/main.cpp) can set the boot screen's hook without the video core's engine headers.
++
++#pragma once
++
++#include <functional>
++
++#include "common/common_types.h"
++
++namespace VideoCommon::ShaderSet {
++
++/// 0832: the parts of making the file that take more than a few seconds, for a boot screen.
++enum class Part : u32 {
++    Files,   ///< the game's files read: files done / total
++    Records, ///< records converted and written: records done / total
++    Save,    ///< the facts and the programs written: MB of program code done / total
++};
++/// 0832: called on Prepare's thread when a part begins, about twice a second while it runs, and
++/// once when it ends (done == total). Never called when the file is reused.
++using OnProgress = std::function<void(Part part, u64 done, u64 total)>;
++
++/// 0833: the boot screen's hook. While set, a Prepare called without `on_progress` sends its
++/// parts here (on Prepare's thread) and logs one line every 10 s per part. The front sets it only
++/// around the before-play pass (EDEN_UP_SHADER_SET_PREPASS=1) and clears it ({}) after; a cleared
++/// hook is never called again. Not set: Prepare is as before.
++void SetBootProgress(OnProgress hook);
++
++} // namespace VideoCommon::ShaderSet

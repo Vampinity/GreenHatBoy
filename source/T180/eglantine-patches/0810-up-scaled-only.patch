@@ -1,0 +1,285 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_SCALED_ONLY=1, below 1x a rescaled image's native-size copy is freed until something needs it
+
+What: Image::ScaleUp (vk_texture_cache.cpp) frees original_image after the blit that filled the
+scaled copy (Image::ReleaseNative; the VkImage goes to TextureCacheRuntime::RetireNativeImage and
+is destroyed in TickFrame once the GPU is past that tick). Image::ScaleDown makes it again
+(Image::BringNativeBack, the constructor's create info) and fills it from the scaled copy, also
+for UploadMemory's scale-down (ignore=true), so a partial upload never leaves the rest of the
+image undefined. Uploads, downloads, blacklist scale-downs and joins all go through ScaleDown, so
+every user of the native copy finds it. An image whose native copy had to be made again twice
+keeps it from then on (no alloc/free every frame for images that go up and down).
+Only below 1x (resolution.downscale), and only for plain 2D single-sample images the copy engine
+can blit (not MSAA, not the blit-helper formats, not ASTC/BCn, sparse, unbacked, trimmed,
+converted, or with storage views).
+Why: stock yuzu keeps the native copy for the image's whole life. At 0.75x on the console
+(13 Nov batch, mode-resolution walk) the render targets stayed at full size (census "target"
+1462-1695 MiB, the same as 1x) and the scaled copies came on top ("scaled" 743-895 MiB), so 0.75x
+used about 0.8 GB more than 1x and one docked start ran out of memory. The scaled/target ratio
+was 0.51-0.53 (0.5625 if every target were rescaled), so nearly all target bytes are rescaled
+images whose native copy this frees.
+Off: one cached test per scale-up that changes an image's scale; nothing else (the census and
+the collector count the image as before; 0811 makes them count what is really held).
+Test: EDEN_UP_SCALED_ONLY=1 with Resolution 0.75x (and 0.5x). Look at the RADV_PS5_MEMORY driver
+line and lowest free memory against 1x, the 0812 line, and the picture (edges of blurred or
+post-processed parts after uploads/downloads; a native copy made again is filled from the scaled
+one, the same blit a scale-down did before).
+
+---
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index 14ba8766b4..28b34413fd 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -84,6 +84,39 @@ constexpr bool ENABLE_MSAA_DEPTH_STENCIL_DISCARD = true;
+     return on;
+ }
+ 
++/// EDEN_UP_SCALED_ONLY=1 (exact "1", read once; off by default): below 1x resolution a rescaled
++/// image keeps only its scaled copy. The native-size copy (original_image) is what uploads,
++/// downloads and scale-downs go through, and stock yuzu keeps it for the image's whole life, so
++/// at 0.75x every scaled target held 1 + 0.5625 times its native size (the census's "scaled"
++/// field on top of "target"). With the switch the native copy is freed after the blit that made
++/// the scaled one, and made again (filled from the scaled copy) when something needs it. An image
++/// whose native copy had to be made again twice keeps it from then on (no churn). Off: one cached
++/// test per scale-up.
++[[nodiscard]] bool ScaledOnly() {
++    static const bool on = [] {
++        const bool enabled = Common::PeSwitch("EDEN_UP_SCALED_ONLY");
++        if (enabled) {
++            LOG_INFO(Render_Vulkan, "EDEN_UP_SCALED_ONLY=1: below 1x a rescaled image's native "
++                                    "copy is freed until something needs it");
++        }
++        return enabled;
++    }();
++    return on;
++}
++
++/// EDEN_UP_SCALED_ONLY's counts (GPU thread writes; relaxed atomics so a reader can't tear).
++struct ScaledOnlyStats {
++    std::atomic<u64> released{};
++    std::atomic<u64> released_bytes{};
++    std::atomic<u64> returned{};
++    std::atomic<u64> returned_bytes{};
++    std::atomic<u64> returned_unbacked{};
++    std::atomic<u64> kept{};
++    std::atomic<u64> held{};
++    std::atomic<u64> held_bytes{};
++};
++ScaledOnlyStats scaled_only_stats;
++
+ [[nodiscard]] VkAccessFlags TransferSrcReturnAccess() {
+     return UploadAllStages() ? VkAccessFlags{VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT}
+                              : VkAccessFlags{0};
+@@ -3504,6 +3537,13 @@ void TextureCacheRuntime::TickFrame() {
+     std::erase_if(pending_resolve_shadows, [this](const auto& pending) {
+         return scheduler.IsFree(pending.first);
+     });
++    std::erase_if(retired_native_images, [this](const auto& retired) {
++        return scheduler.IsFree(retired.first);
++    });
++}
++
++void TextureCacheRuntime::RetireNativeImage(vk::Image image) {
++    retired_native_images.emplace_back(scheduler.CurrentTick(), std::move(image));
+ }
+ 
+ namespace {
+@@ -3652,6 +3692,10 @@ void ReleaseTrim2dBytes(u64 bytes) noexcept {
+ }
+ 
+ Image::~Image() {
++    if (native_released) {
++        scaled_only_stats.held.fetch_sub(1, std::memory_order_relaxed);
++        scaled_only_stats.held_bytes.fetch_sub(native_released_bytes, std::memory_order_relaxed);
++    }
+     if (ENABLE_MSAA_RESOLVE_CONSUME && runtime != nullptr) {
+         if (original_image) {
+             runtime->EraseResolveShadow(*original_image);
+@@ -4720,6 +4764,11 @@ bool Image::ScaleUp(bool ignore) {
+     ASSERT(info.type != ImageType::Linear);
+     flags |= ImageFlagBits::Rescaled;
+     has_scaled = true;
++    if (native_released) {
++        // EDEN_UP_SCALED_ONLY: not reached (a scale-down brings the native copy back first);
++        // the scaled copy is the newest then, so there is nothing to blit.
++        ignore = true;
++    }
+     if (!scaled_image) {
+         const bool is_2d = info.type == ImageType::e2D;
+         const u32 scaled_width = resolution.ScaleUp(info.size.width);
+@@ -4733,6 +4782,7 @@ bool Image::ScaleUp(bool ignore) {
+     }
+     current_image = &Image::scaled_image;
+     if (ignore) {
++        ReleaseNative();
+         return true;
+     }
+     if (aspect_mask == 0) {
+@@ -4746,6 +4796,7 @@ bool Image::ScaleUp(bool ignore) {
+     } else {
+         BlitScale(*scheduler, *original_image, *scaled_image, info, aspect_mask, resolution);
+     }
++    ReleaseNative();
+     return true;
+ }
+ 
+@@ -4758,6 +4809,13 @@ bool Image::ScaleDown(bool ignore) {
+         return false;
+     }
+     ASSERT(info.type != ImageType::Linear);
++    if (native_released) {
++        // EDEN_UP_SCALED_ONLY: the native copy is made again and filled from the scaled one,
++        // also for an upload's scale-down (ignore): a partial upload must not leave the rest of
++        // the image undefined when it is scaled up again.
++        BringNativeBack();
++        ignore = false;
++    }
+     flags &= ~ImageFlagBits::Rescaled;
+     current_image = &Image::original_image;
+     if (ignore) {
+@@ -4778,6 +4836,82 @@ bool Image::ScaleDown(bool ignore) {
+     return true;
+ }
+ 
++bool Image::CanReleaseNative() const {
++    using VideoCommon::ImageFlagBits;
++    constexpr ImageFlagBits special = ImageFlagBits::Unbacked | ImageFlagBits::SparseLayers |
++                                      ImageFlagBits::SparseTiles | ImageFlagBits::UnwrittenSparse |
++                                      ImageFlagBits::Converted | ImageFlagBits::AcceleratedUpload |
++                                      ImageFlagBits::TrimmedLevels | ImageFlagBits::CostlyLoad;
++    if (info.type != ImageType::e2D || info.num_samples != 1 || host_level_offset != 0 ||
++        True(flags & special) || IsPixelFormatASTC(info.format) ||
++        VideoCore::Surface::IsPixelFormatBCn(info.format) || original_image.IsUnbacked()) {
++        return false;
++    }
++    const auto has_view = [](const vk::ImageView& view) { return static_cast<bool>(view); };
++    if (std::ranges::any_of(storage_image_views, has_view) ||
++        std::ranges::any_of(storage_layer_views, has_view)) {
++        return false;
++    }
++    // The helper's blit views are made once per image and would keep a view of the native copy.
++    return !NeedsScaleHelper();
++}
++
++bool Image::ReleaseNative() {
++    if (!ScaledOnly() || native_released || !original_image || !runtime->resolution.downscale) {
++        return false;
++    }
++    if (native_returns >= 2) {
++        return false;
++    }
++    if (!CanReleaseNative()) {
++        return false;
++    }
++    if (ENABLE_MSAA_RESOLVE_CONSUME) {
++        runtime->EraseResolveShadow(*original_image);
++    }
++    native_released_bytes = original_image.MemorySize();
++    runtime->RetireNativeImage(std::move(original_image));
++    // The moved-from wrapper keeps its allocation pointer (MemoryBlock would read it).
++    original_image = vk::Image{};
++    native_released = true;
++    scaled_only_stats.released.fetch_add(1, std::memory_order_relaxed);
++    scaled_only_stats.released_bytes.fetch_add(native_released_bytes, std::memory_order_relaxed);
++    scaled_only_stats.held.fetch_add(1, std::memory_order_relaxed);
++    scaled_only_stats.held_bytes.fetch_add(native_released_bytes, std::memory_order_relaxed);
++    return true;
++}
++
++void Image::BringNativeBack() {
++    if (!native_released) {
++        return;
++    }
++    // As the constructor's backed path: CanReleaseNative left out ASTC and BCn images (the only
++    // ones TrimmedHostInfo trims or AstcHostFormat gives another format), trimmed, sparse and
++    // converted ones, so the create info is `info` with the same view formats.
++    original_image = MakeImage(runtime->device, runtime->memory_allocator, info,
++                               runtime->ViewFormats(info.format));
++    if (runtime->device.HasDebuggingToolAttached()) {
++        original_image.SetObjectNameEXT(VideoCommon::Name(*this).c_str());
++    }
++    native_released = false;
++    if (native_returns < 2) {
++        ++native_returns;
++        if (native_returns == 2) {
++            scaled_only_stats.kept.fetch_add(1, std::memory_order_relaxed);
++        }
++    }
++    scaled_only_stats.held.fetch_sub(1, std::memory_order_relaxed);
++    scaled_only_stats.held_bytes.fetch_sub(native_released_bytes, std::memory_order_relaxed);
++    scaled_only_stats.returned.fetch_add(1, std::memory_order_relaxed);
++    scaled_only_stats.returned_bytes.fetch_add(native_released_bytes, std::memory_order_relaxed);
++    if (original_image.IsUnbacked()) {
++        // Out of device memory even after the host-memory fallback: the blit and the copies
++        // that follow go to an image with nothing bound, as for any new image then.
++        scaled_only_stats.returned_unbacked.fetch_add(1, std::memory_order_relaxed);
++    }
++    native_released_bytes = 0;
++}
++
+ bool Image::BlitScaleHelper(bool scale_up) {
+     using namespace VideoCommon;
+     static constexpr auto BLIT_OPERATION = Tegra::Engines::Fermi2D::Operation::SrcCopy;
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.h b/src/video_core/renderer_vulkan/vk_texture_cache.h
+index b887404b6b..1b8778d401 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.h
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.h
+@@ -106,6 +106,10 @@ public:
+ 
+     void TickFrame();
+ 
++    /// EDEN_UP_SCALED_ONLY=1: a rescaled image's native copy, freed once the GPU is past `tick`
++    /// (CurrentTick when it was handed over: the scale blit that read it is in that tick).
++    void RetireNativeImage(vk::Image image);
++
+     void FlushDeferredClear();
+ 
+     u64 GetDeviceLocalMemory() const;
+@@ -399,6 +403,7 @@ public:
+     std::vector<MsaaScratchImage> msaa_scratch_images;
+     ::Common::unordered_map<VkImage, ResolveShadow> resolve_shadows;
+     std::vector<std::pair<u64, ResolveShadow>> pending_resolve_shadows;
++    std::vector<std::pair<u64, vk::Image>> retired_native_images; ///< EDEN_UP_SCALED_ONLY
+ };
+ 
+ class Framebuffer {
+@@ -655,6 +660,11 @@ public:
+ 
+     bool ScaleDown(bool ignore = false);
+ 
++    /// EDEN_UP_SCALED_ONLY=1: the native copy was freed while the image is rescaled.
++    [[nodiscard]] bool NativeReleased() const noexcept {
++        return native_released;
++    }
++
+     u64 allocation_tick;
+ 
+     friend class BlockLinearUnswizzle3DPass;
+@@ -664,6 +674,17 @@ private:
+ 
+     bool NeedsScaleHelper() const;
+ 
++    /// EDEN_UP_SCALED_ONLY=1: below 1x, frees the native copy of a rescaled image until something
++    /// needs it (a scale down, an upload, a download). True when it was freed.
++    bool ReleaseNative();
++
++    /// Makes the native copy again (same create info as the constructor's backed path).
++    void BringNativeBack();
++
++    /// Images whose native copy may be freed: plain 2D single-sample images the copy engine can
++    /// blit, with no sparse, trimmed, converted or decoded backing.
++    [[nodiscard]] bool CanReleaseNative() const;
++
+     Scheduler* scheduler{};
+     TextureCacheRuntime* runtime{};
+ 
+@@ -772,6 +793,9 @@ private:
+     std::vector<vk::ImageView> storage_layer_views; ///< By host level * layers + layer
+     VkImageAspectFlags aspect_mask = 0;
+     bool initialized = false;
++    bool native_released = false; ///< EDEN_UP_SCALED_ONLY: original_image is freed
++    u8 native_returns = 0;        ///< times the native copy was made again (2: kept from then on)
++    u64 native_released_bytes = 0;
+     Trim2dHeld trim_2d_held; ///< EDEN_UP_TEX_TRIM_2D's saved host bytes for this image
+ 
+     std::optional<Framebuffer> scale_framebuffer;

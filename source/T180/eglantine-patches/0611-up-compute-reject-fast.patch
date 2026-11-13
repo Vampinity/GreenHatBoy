@@ -1,0 +1,125 @@
+From: EglantinePS5
+Subject: up: a rejected compute program is thrown again straight from its stored error (EDEN_UP_COMPUTE_REJECT_FAST), off by default
+
+What: once the lowering rejects a native compute program, every later dispatch of it went
+RethrowIfRejected (throw 1, under the rejection lock) -> catch -> RememberRejection (lock,
+std::current_exception, an emplace that keeps the old entry, two atomic stores) -> throw; (throw 2).
+Ocarina rejects some compute programs (texture gather mode, per-tap gather proof, tensor settings)
+and dispatches them again and again. With EDEN_UP_COMPUTE_REJECT_FAST=1 ComputeShader looks the
+address up once and std::rethrow_exception's the stored error: one throw, no catch, no new
+exception_ptr. RememberRejection returns at once for an address already recorded (the non-native
+graphics path still rethrows and remembers per draw).
+
+Not like #197: upstream returns nullptr and lets DispatchCompute throw a new "Native compute
+pipeline unavailable". In this tree KeplerCompute::DispatchNativeCompute reads the error's text
+("matrix multiply" sends it to the upscale stand-in), so that would change what is drawn. Here the
+same error object comes out of the same calls (CurrentComputePipeline, or CurrentComputeNativeKey
+with EDEN_NX2_OOT_SKIP_AA), so only the cost changes. Also one throw, like upstream. The OpenGL hunk
+of #197 is not needed for the same reason. One race-only difference: off, a write that drops the
+rejection between the rethrow and RememberRejection had it put back; on, it stays dropped and the
+next dispatch lowers the program again (as for any written program).
+
+Switch: EDEN_UP_COMPUTE_REJECT_FAST=1 (exact "1"), read once at the first compute dispatch that is
+not cached. Off: one static bool tested in ComputeShader and RememberRejection, code as before.
+Log (LOG_INFO, HW_GPU): "EDEN_UP_COMPUTE_REJECT_FAST on" once, then "EDEN_UP_COMPUTE_REJECT_FAST
+fast_rejections=N steady_ms= last=<address>" at the 1st, 10th, 100th, ... fast-path dispatch (two
+lines give the rate). No line after "on": the path is not reached (no rejected compute program).
+
+Origin and credit: zortos293/Lichii #197 (809fb3aa35, Andre Saddler), adapted as above. The
+draw-side twin (already ours) was "~1-2% of the GPU thread"; no fps number for compute.
+---
+diff --git a/src/video_core/shader_cache.cpp b/src/video_core/shader_cache.cpp
+index 638d465..fdad74b 100644
+--- a/src/video_core/shader_cache.cpp
++++ b/src/video_core/shader_cache.cpp
+@@ -5,6 +5,9 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include <algorithm>
++#include <atomic>
++#include <chrono>
++#include <exception>
+ #include <cstring>
+ #include <functional>
+ #include <string>
+@@ -35,6 +38,42 @@
+ 
+ namespace VideoCommon {
+ 
++namespace {
++// EDEN_UP_COMPUTE_REJECT_FAST=1 (zortos293/Lichii #197, Andre Saddler): a compute program the
++// lowering already rejected is thrown again straight from the stored error (one throw) instead
++// of rethrown, caught, remembered again and rethrown (two throws, a locked insert and a
++// current_exception per dispatch); RememberRejection keeps the first error for an address.
++// Read once; anything but exact "1" is off, and off runs the code as before.
++bool ComputeRejectFast() {
++    static const bool on = [] {
++        const bool value = Common::PeSwitch("EDEN_UP_COMPUTE_REJECT_FAST");
++        if (value) {
++            LOG_INFO(HW_GPU, "EDEN_UP_COMPUTE_REJECT_FAST on");
++        }
++        return value;
++    }();
++    return on;
++}
++
++/// EDEN_UP_COMPUTE_REJECT_FAST: counts dispatches that took the fast path and logs the 1st, 10th,
++/// 100th, ... (with the time, so a rate can be read off two lines).
++void CountFastComputeRejection(VAddr addr) {
++    static std::atomic<u64> count{};
++    const u64 n = count.fetch_add(1, std::memory_order_relaxed) + 1;
++    u64 mark = 1;
++    while (mark < n && mark <= (~u64{0}) / 10) {
++        mark *= 10;
++    }
++    if (mark == n) {
++        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
++                            std::chrono::steady_clock::now().time_since_epoch())
++                            .count();
++        LOG_INFO(HW_GPU, "EDEN_UP_COMPUTE_REJECT_FAST fast_rejections={} steady_ms={} last={:#x}",
++                 n, ms, addr);
++    }
++}
++} // Anonymous namespace
++
+ bool CanonicalKeys() {
+     static const bool enabled = Common::PeSwitch("EDEN_UP_CANONICAL_KEYS");
+     return enabled;
+@@ -236,6 +275,24 @@ const ShaderInfo* ShaderCache::ComputeShader() {
+     if (const ShaderInfo* const shader = TryGet(*cpu_shader_addr)) {
+         return shader;
+     }
++    if (ComputeRejectFast()) {
++        // The same error object the path below rethrows, along the same callers (KeplerCompute
++        // reads its text: "matrix multiply" picks the upscale stand-in), so only the cost changes.
++        // #197 returns nullptr here instead; in this tree that would turn the error's text into
++        // "Native compute pipeline unavailable" and lose the stand-in.
++        std::exception_ptr rejected;
++        {
++            std::scoped_lock lock{rejected_mutex};
++            if (const auto it = rejected_native.find(*cpu_shader_addr);
++                it != rejected_native.end()) {
++                rejected = it->second;
++            }
++        }
++        if (rejected) {
++            CountFastComputeRejection(*cpu_shader_addr);
++            std::rethrow_exception(rejected);
++        }
++    }
+     try {
+         RethrowIfRejected(*cpu_shader_addr);
+         ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start};
+@@ -260,6 +317,12 @@ bool ShaderCache::IsRejected(VAddr addr) {
+ 
+ void ShaderCache::RememberRejection(VAddr addr) {
+     std::scoped_lock lock{rejected_mutex};
++    if (ComputeRejectFast() && rejected_native.contains(addr)) {
++        // #197: called from a catch block; the first error stays (emplace would keep it too),
++        // without capturing a new exception_ptr. The bounds below never shrink, so they already
++        // hold addr.
++        return;
++    }
+     rejected_native.emplace(addr, std::current_exception());
+     rejected_lowest.store((std::min)(rejected_lowest.load(std::memory_order_relaxed), addr),
+                           std::memory_order_relaxed);

@@ -1,0 +1,77 @@
+From: EglantinePS5
+Subject: [PATCH] up: a log line for each storage binding the 8 MiB bare-pointer cap cuts (the log half of CheezerWheezer's CheezyEmu 6aaf9f243f + 5532ec295e: EDEN_UP_BARE_SSBO_LOG), off by default
+
+What: StorageBufferBinding binds a bare pointer (a native pointer, or a plain one whose size word
+is not a usable size) up to 8 MiB of its mapping. CheezyEmu found Ocarina's light/decal cluster
+list, which the water and the haze over it read, mapped 9.5 MiB past its pointer: capped at 8 MiB
+the far entries read zero and whole screen tiles went black around the player; the compute program
+that writes the list had the same cap (5532ec295e). Our native-pointer branch logs nothing, so our
+logs cannot say whether we cut that list (PORT-LIST item 5).
+
+With EDEN_UP_BARE_SSBO_LOG=1 (exact "1", read once) each binding the cap cuts (mapping larger than
+8 MiB) gives one HW_GPU line: address, which branch ("native pointer" or "no usable size word"),
+written or read-only, mapping size, bound size, size word, count. The first 24, then the 32nd,
+64th, 128th ... Bindings are cached per page-table serial, so a line is per new answer, not per
+draw. Count only: nothing that is bound changes.
+
+Step 2 (his EDEN_NX2_BARE_SSBO_MIB, 16 MiB reach) is left out on purpose: our comment at that spot
+says wider native binds slowed another game to a few fps. Port it only if this line names a cut
+binding near 9.5 MiB and the black tiles show in our clips.
+
+Not from his: compute or graphics is not known in StorageBufferBinding (no parameter for it), so
+the line does not say; his names it.
+
+Off: one static bool test per binding-cache miss (two sites), no line.
+
+Origin and credit: CheezerWheezer, CheezerWheezer/CheezyEmu commits 6aaf9f243f ("Water tiles: bind
+Ocarina's light/decal cluster list in full") and 5532ec295e ("Water tiles: the cluster list's
+writer reaches 16 MiB too"): his log line, here alone.
+---
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index 8bcde22..cb2cd03 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -5917,6 +5917,27 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
+                              count, layout_size >> 20, gpu_addr, static_cast<u32>(layout_size));
+                 }
+             }
++            // EDEN_UP_BARE_SSBO_LOG=1 (exact "1", read once; the log half of CheezerWheezer's
++            // CheezyEmu 6aaf9f243f + 5532ec295e): a line for each binding the 8 MiB bare-pointer
++            // cap below cuts (the first 24, then the 32nd, 64th ...), with its mapping size. His
++            // finding: Ocarina's light/decal cluster list, which the water and haze read, is mapped
++            // 9.5 MiB past its pointer, so at 8 MiB its far entries read zero (black tiles in the
++            // water and haze). Count only: nothing bound changes. Unset: no line.
++            static const bool bare_log = Common::PeSwitch("EDEN_UP_BARE_SSBO_LOG");
++            const auto log_bare_cut = [&](const char* kind) {
++                if (!bare_log || memory_layout_size <= static_cast<u32>(8_MiB)) {
++                    return;
++                }
++                static std::atomic<u64> bare_cuts{};
++                const u64 count = bare_cuts.fetch_add(1, std::memory_order_relaxed) + 1;
++                if (count <= 24 || (count & (count - 1)) == 0) {
++                    LOG_INFO(HW_GPU,
++                             "EDEN_UP_BARE_SSBO_LOG: bare storage binding at {:#x} ({}, {}): "
++                             "mapping {:#x} bytes, bound {:#x}, size word {:#x}, {} cut so far",
++                             gpu_addr, kind, is_written ? "written" : "read-only",
++                             memory_layout_size, static_cast<u32>(8_MiB), next_qword, count);
++                }
++            };
+             // A pointer read from a table in memory is the base of an object pool, read anywhere
+             // in it (Ocarina of Time's grass instances lie 12-18 MiB past theirs). With
+             // EDEN_NX2_TABLE_POOL_MIB=64 a read-only one is bound to the end of its mapping, up
+@@ -5932,6 +5953,7 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
+             // Only DLSS passes size from the mapping: doing it for every native dispatch binds up
+             // to 8 MiB per buffer and slows Hyrule Warriors' fights to a few fps, then hangs them.
+             if (native_pointer) {
++                log_bare_cut("native pointer");
+                 return (std::min)(memory_layout_size, static_cast<u32>(8_MiB));
+             }
+             const u32 packed_size = static_cast<u32>(next_qword);
+@@ -5950,6 +5972,7 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
+                                 packed_size, ssbo_addr + 8);
+                 }
+             }
++            log_bare_cut("no usable size word");
+             return (std::min)(memory_layout_size, static_cast<u32>(8_MiB));
+         }();
+         if (native_written_binding_mode != 0) {

@@ -1,0 +1,61 @@
+From: EglantinePS5
+Subject: [PATCH] up: with EDEN_UP_SCALED_ONLY=1, a 10 s line says how many native copies were freed and made again
+
+What: TextureCacheRuntime::TickFrame (vk_texture_cache.cpp) writes, at most once every 10 s and
+only when something changed:
+"EDEN_UP_SCALED_ONLY 10s: native copies freed <n> (<MiB> MiB), made again <n> (<MiB> MiB, <n>
+without memory); kept native after two returns <n> in all; freed now <n> (<MiB> MiB)".
+"freed now" is what the switch holds back at that moment: the census "target" is that much lower
+than it would be (0811), and the driver line should be too.
+Why: a test must see that the path is reached, how much it gives back at the moment of the
+census, and whether images go up and down so often that they end up kept native (the "kept"
+count) or come back without memory (out of device memory at the bring-back).
+Off: one cached test per frame end.
+
+---
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index 28b34413fd..44872cbd8e 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -117,6 +117,33 @@ struct ScaledOnlyStats {
+ };
+ ScaledOnlyStats scaled_only_stats;
+ 
++/// EDEN_UP_SCALED_ONLY=1: once every 10 s from TickFrame, when something changed.
++void LogScaledOnly() {
++    if (!ScaledOnly()) {
++        return;
++    }
++    static auto last = std::chrono::steady_clock::now();
++    const auto now = std::chrono::steady_clock::now();
++    if (now - last < std::chrono::seconds(10)) {
++        return;
++    }
++    last = now;
++    ScaledOnlyStats& s = scaled_only_stats;
++    const u64 released = s.released.exchange(0, std::memory_order_relaxed);
++    const u64 returned = s.returned.exchange(0, std::memory_order_relaxed);
++    if (released == 0 && returned == 0) {
++        return;
++    }
++    LOG_INFO(Render_Vulkan,
++             "EDEN_UP_SCALED_ONLY 10s: native copies freed {} ({} MiB), made again {} ({} MiB, {} "
++             "without memory); kept native after two returns {} in all; freed now {} ({} MiB)",
++             released, s.released_bytes.exchange(0, std::memory_order_relaxed) >> 20, returned,
++             s.returned_bytes.exchange(0, std::memory_order_relaxed) >> 20,
++             s.returned_unbacked.exchange(0, std::memory_order_relaxed),
++             s.kept.load(std::memory_order_relaxed), s.held.load(std::memory_order_relaxed),
++             s.held_bytes.load(std::memory_order_relaxed) >> 20);
++}
++
+ [[nodiscard]] VkAccessFlags TransferSrcReturnAccess() {
+     return UploadAllStages() ? VkAccessFlags{VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT}
+                              : VkAccessFlags{0};
+@@ -3540,6 +3567,7 @@ void TextureCacheRuntime::TickFrame() {
+     std::erase_if(retired_native_images, [this](const auto& retired) {
+         return scheduler.IsFree(retired.first);
+     });
++    LogScaledOnly();
+ }
+ 
+ void TextureCacheRuntime::RetireNativeImage(vk::Image image) {

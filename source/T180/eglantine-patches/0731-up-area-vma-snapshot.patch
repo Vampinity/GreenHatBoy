@@ -1,0 +1,98 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_AREA_VMA_SNAPSHOT=1: when the allocator holds over 512 MiB that no census field names, its detailed map is written (at most 3 a session); count only, off by default
+
+Switches: EDEN_UP_AREA_VMA_SNAPSHOT=1 (exact "1"), EDEN_UP_AREA_VMA_SNAPSHOT_MIB=<MiB> (unset or 0:
+512). Needs EDEN_UP_MEM_CENSUS=1 (it runs inside the census's GPU-thread step). Lines (stderr):
+"EDEN_UP_AREA_VMA_SNAPSHOT <n>: the allocator uses ... MiB, ... MiB of it in no census field ..."
+then the port's "MKW_VMA_MAP tag=90000<n> bytes=... written=1"; the map is
+/data/eglantineps5/logs/mkw-vma-<pid>-90000<n>.json (VMA's detailed JSON: every allocation's kind,
+size and usage flags).
+
+Why (READ): the allocator's use less everything the census names (images, decode images, copy
+buffers, staging, the buffer cache) is about 190 MiB in steady play (docked n=3..261: 186-262 MiB).
+At loads it is larger and drains within 3 s (626, 813, 894 MiB). At the two crash loads of
+13 Nov it was 1309 MiB (handheld n=51) and 1132 MiB (docked n=311) and did not drain: the graphics
+thread was stuck behind the memory. No log line names it. This writes the allocator's own list at
+that moment, on the GPU thread (which owns the allocator), so a decode image (storage use only), a
+render target and a texture can be told apart. The map is built on the heap (about 1 KB an
+allocation; ~3,100 allocations at the handheld refusal) and not written past 8 MiB
+(EdenVmaSnapshot). Off: one test of a static per census answer.
+
+diff --git a/src/video_core/memory_census.h b/src/video_core/memory_census.h
+index 67359b450f..698f7a2d1e 100644
+--- a/src/video_core/memory_census.h
++++ b/src/video_core/memory_census.h
+@@ -70,6 +70,10 @@ extern "C" void eden_guest_memory_report(void) __attribute__((weak));
+ // vulkan_memory_allocator.cpp as the port adapts it (EDEN_VMA_USAGE): blocks and use, all heaps.
+ extern "C" void eden_vma_usage(unsigned long long* blocks, unsigned long long* used)
+     __attribute__((weak));
++// The same file: the allocator's detailed map (every block and allocation, with its kind, size and
++// usage flags) into /data/eglantineps5/logs/mkw-vma-<pid>-<100000 + seconds>.json, and one
++// "MKW_VMA_MAP tag=... bytes=... written=..." line (EDEN_UP_AREA_VMA_SNAPSHOT).
++extern "C" void eden_vma_probe(unsigned seconds) __attribute__((weak));
+ // The console's RADV (tools/patch-radv-memory-report.py, as isolate-radv.py names it).
+ extern "C" void eden_radv_private_radv_ps5_memory_report_now(void) __attribute__((weak));
+ namespace Common {
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index a17273b97e..aa121fd74b 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -3279,6 +3279,58 @@ void TextureCacheRuntime::PublishMemoryCensus() {
+     Census::Set(Census::StagingStream, stream);
+     Census::Set(Census::VmaBlocks, blocks);
+     Census::Set(Census::VmaUsed, used);
++    // EDEN_UP_AREA_VMA_SNAPSHOT=1 (exactly "1"; off: one test of a static). What the allocator
++    // holds that no census field names: its use less the images (CensusTick set them just
++    // before this), the decode images, the copy buffers, the staging buffers and the buffer
++    // cache's last figure. About 190 MiB in steady play on the console; at the loads of
++    // crash-20261113-064906 and -063844 1309 and 1132 MiB, which nothing in the logs names. Past
++    // EDEN_UP_AREA_VMA_SNAPSHOT_MIB (unset: 512), at most 3 times a session, the allocator's
++    // detailed map goes to a file (eden_vma_probe, tag 900000 + n): every allocation with its kind
++    // (image or buffer), size and usage flags, so a decode image (storage only), a render target
++    // and a texture can be told apart. Here, on the GPU thread, which owns the allocator. The map
++    // is built on the heap (about 1 KB an allocation) and is not written past 8 MiB.
++    static const bool snapshot_on = [] {
++        const char* const value = std::getenv("EDEN_UP_AREA_VMA_SNAPSHOT");
++        return value != nullptr && value[0] == '1' && value[1] == '\0';
++    }();
++    if (snapshot_on) [[unlikely]] {
++        static const u64 snapshot_limit = [] {
++            const char* const value = std::getenv("EDEN_UP_AREA_VMA_SNAPSHOT_MIB");
++            const u64 mib = value != nullptr ? std::strtoull(value, nullptr, 10) : 0ULL;
++            return (mib != 0 ? mib : 512ULL) << 20;
++        }();
++        static u32 snapshots = 0;
++        const auto& values = Census::Get().values;
++        const u64 listed = values[Census::Images].load(std::memory_order_relaxed) + in_flight +
++                           kept + copy + held[0] + held[1] + held[2] + stream +
++                           values[Census::Buffers].load(std::memory_order_relaxed);
++        const u64 unlisted = used > listed ? used - listed : 0;
++        if (unlisted > snapshot_limit && snapshots < 3) {
++            ++snapshots;
++            bool can_map = false;
++#if VIDEO_CORE_CENSUS_FRONT
++            can_map = eden_vma_probe != nullptr;
++#endif
++            std::fprintf(stderr,
++                         "EDEN_UP_AREA_VMA_SNAPSHOT %u: the allocator uses %llu MiB, %llu MiB of "
++                         "it in no census field (images %llu, decode %llu, staging %llu, "
++                         "buffers %llu MiB)%s\n",
++                         snapshots, static_cast<unsigned long long>(used >> 20),
++                         static_cast<unsigned long long>(unlisted >> 20),
++                         static_cast<unsigned long long>(
++                             values[Census::Images].load(std::memory_order_relaxed) >> 20),
++                         static_cast<unsigned long long>((in_flight + kept) >> 20),
++                         static_cast<unsigned long long>((held[0] + held[1] + held[2] + stream) >> 20),
++                         static_cast<unsigned long long>(
++                             values[Census::Buffers].load(std::memory_order_relaxed) >> 20),
++                         can_map ? "; map: the MKW_VMA_MAP line below" : "; no map here");
++#if VIDEO_CORE_CENSUS_FRONT
++            if (can_map) {
++                eden_vma_probe(800000U + snapshots);
++            }
++#endif
++        }
++    }
+ }
+ 
+ bool TextureCacheRuntime::CanDownloadMsaa(const VideoCommon::ImageInfo& info) const {

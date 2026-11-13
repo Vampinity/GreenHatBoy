@@ -1,0 +1,190 @@
+From: EglantinePS5
+Subject: [PATCH] up: a draw, clear or DrawTexture whose render target got no memory is skipped (CheezerWheezer, CheezyEmu a08015f, EDEN_UP_RT_OOM_SKIP), off by default
+
+What: when memory refuses a render target (JoinImages gives no image, with or without
+EDEN_UP_FRITCHII_UNBACKED's "left out instead of unbacked"), FindRenderTargetView returns no
+attachment, as for address 0, and the draw runs with the targets it has: a depth-tested draw
+without its depth buffer, a pass with one colour target fewer than its pipeline was built for.
+CheezyEmu's log (RX 5700 XT, 8 GB): a 1536x1536 depth target could not be made and 0.2 s later the
+driver crashed on such a draw (a read of 0x0). Our cold-start deaths at the house door (PORT-LIST
+item 2: 5 of 12 were door SIGSEGVs with refusals) are the same kind of moment.
+
+With EDEN_UP_RT_OOM_SKIP=1 (exact "1", read once): FindRenderTargetView notes the refusal;
+UpdateRenderTargets then marks the set out of memory (RenderTargetsOutOfMemory) and sets the
+render-target dirty flags so every target is looked up again at the next draw, by when the
+collector (or EDEN_NX2_REFUSAL_EVICT, EDEN_NX2_IDLE_TEXTURE_PRESSURE) may have freed memory.
+GraphicsPipeline::ConfigureImpl and ConfigureDelta return false for such a set (the rasterizer's
+"Draw skipped (configure failed)" path, as for a pipeline not built yet), DrawTexture returns, and
+Clear returns after the slow-clear probe's TargetsEnd. A LOG_ERROR line at the 1st, 2nd, 4th ...
+skipped set. With EDEN_NX2_TC_SUPERSEDED (0701) a skipped clear records no whole write.
+
+Price: the frames until memory is back miss what those draws would have drawn (CheezyEmu: "a few
+frames of missing pixels"); a skipped clear leaves the target's old contents.
+
+To try with it (PORT-LIST item 2): EDEN_UP_FRITCHII_UNBACKED=1 and EDEN_NX2_REFUSAL_EVICT=1, both
+already in our tree (zortos293/Lichii #880 via Fritchii; our 0413). Our T151 env sets
+neither.
+
+Changed from his: his test is "a bound target is the null view", which our core never hands out
+for a refused target (it gives no attachment, ImageViewId{}, see FindRenderTargetView's comment),
+so ours records the refusal itself in FindRenderTargetView; the switch (his has none); the log
+thins by powers of two (his: first 8); Clear's return sits after our slow-clear probe.
+
+Off: one store of false per render-target lookup set, one static bool test per refused target (the
+refusal path only), one bool test per draw, clear and DrawTexture. Not in the kept-store stamp.
+
+Origin and credit: CheezerWheezer, CheezerWheezer/CheezyEmu commit a08015f ("texture_cache: skip
+draws and clears whose render target got no memory").
+---
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+index eaae004..4bdd0fd 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -1094,6 +1094,10 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
+             scheduler.RequestOutsideRenderPassOperationContext();
+         }
+     }
++    // EDEN_UP_RT_OOM_SKIP (CheezyEmu a08015f): a target got no memory; skip the draw.
++    if (texture_cache.RenderTargetsOutOfMemory()) {
++        return false;
++    }
+     if (IsBuilt() && !pipeline) {
+         return false;
+     }
+@@ -1307,6 +1311,10 @@ bool GraphicsPipeline::ConfigureDelta(bool is_indexed) {
+             scheduler.RequestOutsideRenderPassOperationContext();
+         }
+     }
++    // As ConfigureImpl (EDEN_UP_RT_OOM_SKIP).
++    if (textures.RenderTargetsOutOfMemory()) {
++        return false;
++    }
+     if (!pipeline && IsBuilt()) {
+         return false;
+     }
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 31488d5..e641ad5 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -1780,6 +1780,9 @@ void RasterizerVulkan::DrawTexture() {
+     std::scoped_lock l{texture_cache.mutex};
+     texture_cache.SynchronizeDescriptors(false);
+     texture_cache.UpdateRenderTargets(false);
++    if (texture_cache.RenderTargetsOutOfMemory()) { // EDEN_UP_RT_OOM_SKIP
++        return;
++    }
+     // EDEN_UP_DJ_FRAG_BARRIER: DrawTexture samples its source without the draw-side test, so a
+     // deferred fragment barrier ends the pass here as it did before (review fix, not upstream).
+     if (scheduler.HasFragmentBarrier()) {
+@@ -1865,6 +1868,11 @@ void RasterizerVulkan::Clear(u32 layer_count) {
+                                regs.zeta_enable != 0, static_cast<u32>(regs.zeta.format),
+                                regs.clear_surface.raw, layer_count);
+     }
++    // EDEN_UP_RT_OOM_SKIP (CheezyEmu a08015f): a target got no memory; skip the clear (after the
++    // slow-clear probe's TargetsEnd, so its begin and end stay paired).
++    if (texture_cache.RenderTargetsOutOfMemory()) {
++        return;
++    }
+     const VkExtent2D render_area = framebuffer->RenderArea();
+ 
+     constexpr bool ENABLE_DEFERRED_CLEAR = true;
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index a5a8eef..a89d5f9 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -581,6 +581,12 @@ extern "C" void eden_optional_allocation_scope(bool enter) noexcept __attribute_
+     return enabled;
+ }
+ 
++// EDEN_UP_RT_OOM_SKIP=1 (exact "1"): see UpdateRenderTargets' end.
++[[nodiscard]] inline bool RtOomSkip() noexcept {
++    static const bool enabled = Common::PeSwitch("EDEN_UP_RT_OOM_SKIP");
++    return enabled;
++}
++
+ template <class P>
+ void TextureCache<P>::RunGarbageCollector() {
+     bool high_priority_mode = false;
+@@ -3607,6 +3613,7 @@ void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
+     }
+ 
+     const VideoCommon::RenderTargets previous_render_targets = render_targets;
++    rt_lookup_refused = false; // EDEN_UP_RT_OOM_SKIP: set by FindRenderTargetView below
+     const bool rescaled = RescaleRenderTargets();
+     if (is_rescaling != rescaled) {
+         flags[Dirty::RescaleViewports] = true;
+@@ -3621,7 +3628,8 @@ void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
+     const ImageViewId depth_buffer_id = render_targets.depth_buffer_id;
+ 
+     PrepareImageView(depth_buffer_id, true, is_clear && IsFullClear(depth_buffer_id));
+-    if (is_clear && SupersededImagesEnabled()) {
++    // EDEN_UP_RT_OOM_SKIP: a clear whose set lost a target is skipped, so it writes nothing whole.
++    if (is_clear && SupersededImagesEnabled() && !rt_lookup_refused) {
+         NoteWholeClears();
+     }
+ 
+@@ -3659,6 +3667,23 @@ void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
+         ++render_targets_serial;
+     }
+ 
++    // EDEN_UP_RT_OOM_SKIP=1 (CheezerWheezer, CheezyEmu a08015f): a target that got no memory has
++    // no attachment, and draws, clears and DrawTexture into this set are skipped
++    // (RenderTargetsOutOfMemory); the targets are looked up again at the next one, by when the
++    // collector (or EDEN_NX2_REFUSAL_EVICT) may have freed some. Off: rt_lookup_refused stays false.
++    render_targets_out_of_memory = rt_lookup_refused;
++    if (render_targets_out_of_memory) {
++        flags[Dirty::RenderTargets] = true;
++        flags[Dirty::RenderTargetControl] = true; // forces every target's lookup
++        ++rt_oom_skipped_sets;
++        if (const u64 count = rt_oom_skipped_sets; (count & (count - 1)) == 0) {
++            LOG_ERROR(HW_GPU,
++                      "EDEN_UP_RT_OOM_SKIP: a render target has no memory: draws into it are "
++                      "skipped ({} times so far)",
++                      count);
++        }
++    }
++
+     flags[Dirty::DepthBiasGlobal] = true;
+ }
+ 
+@@ -7452,7 +7477,8 @@ ImageViewId TextureCache<P>::FindRenderTargetView(const ImageInfo& info, GPUVAdd
+     has_deleted_images = delete_state;
+     if (!image_id) {
+         // Refused (JoinImages): no attachment, as for address 0. The null view would be taken for
+-        // one, and it has no image to prepare.
++        // one, and it has no image to prepare. EDEN_UP_RT_OOM_SKIP: the set's draws are skipped.
++        rt_lookup_refused = RtOomSkip();
+         return ImageViewId{};
+     }
+     Image& image = slot_images[image_id];
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index 5c67548..ec8dd62 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -520,6 +520,15 @@ public:
+     /// Destroys the deleted images the GPU is done with, as TickFrame does. Mutex held.
+     void ReleaseFinished();
+ 
++    /// EDEN_UP_RT_OOM_SKIP=1 (CheezyEmu a08015f): a bound render target got no image because
++    /// memory refused it (FindRenderTargetView left it out). A draw or clear into the set must be
++    /// skipped: it would run without that attachment (a depth test with no depth buffer, a colour
++    /// pass of the wrong shape). The targets are looked up again at the next draw. Always false
++    /// with the switch off.
++    [[nodiscard]] bool RenderTargetsOutOfMemory() const noexcept {
++        return render_targets_out_of_memory;
++    }
++
+     /// Device memory of deleted images still waiting for the GPU (EDEN_NX2_TC_PENDING_MIB).
+     [[nodiscard]] u64 SentencedBytes() const noexcept {
+         return gpu_sentenced_bytes;
+@@ -1036,6 +1045,10 @@ private:
+     u64 superseded_rewritten_deletes{};
+     u64 superseded_unproven{}; ///< Candidates kept for lack of proof, summed over scans
+     u64 superseded_kept_needed{};
++    /// EDEN_UP_RT_OOM_SKIP: a lookup in this UpdateRenderTargets was refused; the set it made.
++    bool rt_lookup_refused = false;
++    bool render_targets_out_of_memory = false;
++    u64 rt_oom_skipped_sets{};
+     /// The images a queued download, an asynchronous decode or unswizzle, a bound render target or
+     /// one of the last presents still needs (stale_references), gathered once per pass that has a
+     /// candidate.

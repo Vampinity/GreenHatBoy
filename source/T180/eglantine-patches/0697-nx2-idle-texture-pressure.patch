@@ -1,0 +1,140 @@
+From: EglantinePS5
+Subject: [PATCH] nx2: while the pool is short, idle clean textures are freed before anything is refused (waveydude's 0912 part, EDEN_NX2_IDLE_TEXTURE_PRESSURE), off by default
+
+What: the texture cache counts its own images against fixed marks (2,560 / 3,328 MiB). On the
+console the pool is shared with the game's memory, the heap and the driver, so the cache can sit far
+under its marks while the pool has nothing left. In a hand-played T151 session (13 Nov, 15 min, crash
+in a new area) the largest free block was 1-14 MiB from minute 8 to the end while the cache held
+1.1-1.8 GiB, and at a refusal "538 images, 608 MiB, unused for 10 frames" were still there
+(EDEN_REFUSED_IMAGES). EDEN_NX2_REFUSAL_EVICT frees such images, but only after a refusal, and a
+refusal on the console is where things already break (driver pipeline builds, guest writes).
+
+With EDEN_NX2_IDLE_TEXTURE_PRESSURE=1 (exact "1", read once, PS5 only, and only when the wrapper
+gives the pool's largest free block): at the end of a frame, at most every 250 ms, when that block
+is known and under 1 GiB, RefusalEvict runs as for a 64 MiB refusal (up to 128 images or 128 MiB, at
+most 4,096 LRU entries looked at) with two differences: images must be unused for 10 frames and
+1 s (not 300 ms), and nothing the GPU wrote goes (GpuModified is passed over, so RefusalDownloadEvict
+is never asked for either). What goes is uploaded again from guest memory when it is used again,
+as after AreaEvict. The frame clock runs with the switch (as with REFUSAL_EVICT or CLEAN_BY_TIME).
+Its passes show in the EDEN_REFUSAL_EVICT lines as "idle pressure" (the first 16, then every 64th)
+and count in their totals.
+
+Price: images freed early come back as uploads (and ASTC decodes) if the area uses them again:
+hitches at a camera turn. Pairs with EDEN_NX2_REFUSAL_EVICT=1 (not needed).
+
+Changed from his: RefusalEvict's third parameter is `idle` (his idle_pressure); his per-pass
+LOG_INFO line is left out (every 250 ms at 0 MiB free would be four lines a second), the existing
+EDEN_REFUSAL_EVICT line says "idle pressure" instead; the switch helper sits in frame_clock.h next
+to RefusalEvictEnabled.
+
+Off: one static bool more in the frame-clock test and one at the frame's end; RefusalEvict's
+callers pass false (one more test per looked-at image, only when a refusal pass runs); a time
+point in TextureCache. Not in the kept-store stamp.
+
+Origin and credit: waveydude, ocarina-private patch 0912 ("T120: integrate Build O and add idle
+texture pressure cleanup"), commits dc8796d and 3db885a.
+---
+diff --git a/src/video_core/texture_cache/frame_clock.h b/src/video_core/texture_cache/frame_clock.h
+index 3f2594b..52e4305 100644
+--- a/src/video_core/texture_cache/frame_clock.h
++++ b/src/video_core/texture_cache/frame_clock.h
+@@ -35,6 +35,14 @@ namespace VideoCommon {
+     return enabled;
+ }
+ 
++/// EDEN_NX2_IDLE_TEXTURE_PRESSURE=1 (exact "1", PS5 only; waveydude's 0912): every 250 ms at a
++/// frame's end, while the pool's largest free block is known and under 1 GiB, RefusalEvict frees
++/// clean images unused for 10 frames and 1 s without waiting for a refusal (TextureCache::TickFrame).
++[[nodiscard]] inline bool IdleTexturePressureEnabled() noexcept {
++    static const bool enabled = Common::PeSwitch("EDEN_NX2_IDLE_TEXTURE_PRESSURE");
++    return enabled;
++}
++
+ /// A frame count read as time at the reference rate of 60 frames a second.
+ [[nodiscard]] constexpr std::chrono::microseconds FramesAsTime(u64 frames) noexcept {
+     return std::chrono::microseconds{static_cast<s64>((std::min)(frames, u64{1} << 40) * 1'000'000 / 60)};
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 7f9cc25..67ed95c 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -1607,9 +1607,10 @@ std::optional<u64> TextureCache<P>::OldCutoff(u64 frames, u64 floor) const {
+ // images already go again when one was deleted (has_deleted_images), as for JoinImages' own deletes.
+ // Lines in stderr: EDEN_REFUSAL_EVICT, the first 16 and then every 64th.
+ template <class P>
+-u64 TextureCache<P>::RefusalEvict(u64 wanted, bool in_join) {
++u64 TextureCache<P>::RefusalEvict(u64 wanted, bool in_join, bool idle) {
+     constexpr u64 MinFrames = 10;
+-    constexpr auto MinAge = std::chrono::milliseconds(300);
++    // EDEN_NX2_IDLE_TEXTURE_PRESSURE (idle): nothing was refused yet, so a longer age.
++    const auto MinAge = std::chrono::milliseconds(idle ? 1000 : 300);
+     constexpr size_t MaxImages = 128;
+     constexpr size_t MaxVisits = 4096;
+     if (frame_tick <= MinFrames) {
+@@ -1643,7 +1644,8 @@ u64 TextureCache<P>::RefusalEvict(u64 wanted, bool in_join) {
+         if (True(image.flags & ImageFlagBits::IsDecoding) ||
+             (KeepAsyncDecodedFrames() != 0 &&
+              True(image.flags & ImageFlagBits::AsynchronousDecode)) ||
+-            KeptRemade(image) || joining(image_id)) {
++            KeptRemade(image) || joining(image_id) ||
++            (idle && True(image.flags & ImageFlagBits::GpuModified))) {
+             return false;
+         }
+         if (IsDownloadable(image) && False(image.flags & ImageFlagBits::BadOverlap)) {
+@@ -1696,7 +1698,8 @@ u64 TextureCache<P>::RefusalEvict(u64 wanted, bool in_join) {
+                      "EDEN_REFUSAL_EVICT %s at frame %llu for %llu MiB: %zu images, %llu MiB "
+                      "deleted, %zu GPU-written left for the frame's end, %zu looked at; %llu "
+                      "passes, %llu images, %llu MiB so far, %llu retries, %llu fitted\n",
+-                     in_join ? "image" : "frame end", static_cast<unsigned long long>(frame_tick),
++                     in_join ? "image" : idle ? "idle pressure" : "frame end",
++                     static_cast<unsigned long long>(frame_tick),
+                      static_cast<unsigned long long>(wanted >> 20), doomed.size(),
+                      static_cast<unsigned long long>(bytes >> 20), dirty, (std::min)(visits, MaxVisits),
+                      static_cast<unsigned long long>(refusal_evict_passes),
+@@ -1826,7 +1829,7 @@ void TextureCache<P>::TickFrame() {
+     if (pe_busy) Eden::AstcPolicy::Frame();
+     // EDEN_UP_HITCH_TRACE: the frame that just ended, when it was long.
+     HitchTrace::EndFrame(frame_tick);
+-    if (CleanByTime() || RefusalEvictEnabled()) {
++    if (CleanByTime() || RefusalEvictEnabled() || IdleTexturePressureEnabled()) {
+         frame_clock.EndFrame(frame_tick, std::chrono::steady_clock::now());
+     }
+     // Upload buffers grown for one huge image (title 1's 341 MiB terrain layer pools) are freed
+@@ -2167,6 +2170,21 @@ void TextureCache<P>::TickFrame() {
+         }
+         refusal_evicts_this_frame = 0;
+     }
++#ifdef PS5_NATIVE
++    // EDEN_NX2_IDLE_TEXTURE_PRESSURE=1 (waveydude's 0912): the pool is short but nothing has been
++    // refused yet: clean images unused for 1 s go now, up to 128 MiB a pass, a pass every 250 ms.
++    // 0 from the pool is "unknown", not "empty": no pass on a guess.
++    if (IdleTexturePressureEnabled() && eden_pool_largest_free) {
++        const auto now = std::chrono::steady_clock::now();
++        if (now >= idle_pressure_next) {
++            idle_pressure_next = now + std::chrono::milliseconds(250);
++            const u64 largest_free = eden_pool_largest_free();
++            if (largest_free != 0 && largest_free < 1024_MiB) {
++                RefusalEvict(64_MiB, false, true);
++            }
++        }
++    }
++#endif
+     if (MemoryCensus::Enabled()) {
+         CensusTick();
+     }
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index 9b24c51..ae3a93e 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -533,7 +533,11 @@ public:
+     /// images wait for TickFrame) is back for the retry. "Need no copy back" = !IsDownloadable,
+     /// as in AreaEvict and the collector, so GPU-written images that cannot be copied back (MSAA
+     /// without CanDownloadMsaa, TrimmedLevels, unbacked) go without a copy. Returns bytes deleted.
+-    u64 RefusalEvict(u64 wanted, bool in_join);
++    /// `idle` (EDEN_NX2_IDLE_TEXTURE_PRESSURE, never with `in_join`): no refusal yet, so only
++    /// images unused for 1 s and never written by the GPU.
++    u64 RefusalEvict(u64 wanted, bool in_join, bool idle = false);
++    /// EDEN_NX2_IDLE_TEXTURE_PRESSURE: when the pool is looked at next (TickFrame).
++    std::chrono::steady_clock::time_point idle_pressure_next{};
+ 
+     /// EDEN_NX2_REFUSAL_EVICT=1, at the end of a frame after RefusalEvict passed GPU-written
+     /// images over: copies back and deletes up to 8 of them, each up to 32 MiB and 64 MiB in all,

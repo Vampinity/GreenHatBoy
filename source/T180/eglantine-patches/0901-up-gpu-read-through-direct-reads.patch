@@ -1,0 +1,210 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_GPU_READ_THROUGH covers the GPU side's direct
+ reads too: the frame-ahead guard's capture, descriptor table reads,
+ ReadPagedScalar (MemoryManager/DeviceMemoryManager Read<T>), the bank hash
+ and indirect snapshots, the uniform spans; inert unless the front sets the
+ hook
+
+Checker review of 0900 (T175c): these GPU-thread reads took a direct pointer into guest memory and
+so still faulted on a packed or swapped-out slot, waiting in the fault handler for a block as in T166:
+- ubo_ahead.cpp CapturePage touched the page before its lock (`touch = *guest`), then memcmp/memcpy.
+  Now a page whose slot is cold is copied through the guest memory service into a page on the stack;
+  if the slot is still cold under the lock (an Out slot cannot be written while Out) that copy is used,
+  otherwise the guest's page as before.
+- descriptor_table.h Read: the one-page memcpy goes through GuestReadThrough::Copy.
+- common/paged_scalar.h ReadPagedScalar (used only by MemoryManager::Read<T> and
+  DeviceMemoryManager::Read<T>): its memcpy goes through GuestReadThrough::Copy.
+- buffer_cache.h Nx2BankHashOf and the indirect page snapshots: a cold page is hashed/compared from a
+  copy.
+- uniform_stream_reuse.h: no direct span over a cold slot (the bind takes the ReadBlockUnsafe path,
+  which 0900 covers).
+Not covered: the verify mode's BackVerify (diagnostic only).
+
+Unset: copy_fn and readable_fn are null, Copy is the memcpy and SpanReadable is true; the code paths
+are the old ones. Files: common/paged_scalar.h, video_core/ubo_ahead.cpp,
+video_core/texture_cache/descriptor_table.h, video_core/buffer_cache/buffer_cache.h,
+video_core/buffer_cache/uniform_stream_reuse.h. None is a translation id input (not in SINGLE, not
+reached from src/shader_recompiler), no name in TranslationSwitches: KEEPS THE STORE.
+---
+ src/common/paged_scalar.h                     |  4 +++-
+ src/video_core/buffer_cache/buffer_cache.h    | 17 ++++++++++++--
+ .../buffer_cache/uniform_stream_reuse.h       | 11 +++++++++-
+ .../texture_cache/descriptor_table.h          |  4 +++-
+ src/video_core/ubo_ahead.cpp                  | 22 ++++++++++++++++---
+ 5 files changed, 50 insertions(+), 8 deletions(-)
+
+diff --git a/src/common/paged_scalar.h b/src/common/paged_scalar.h
+index 1898dfb2e5..777a10c013 100644
+--- a/src/common/paged_scalar.h
++++ b/src/common/paged_scalar.h
+@@ -8,6 +8,7 @@
+ #include <limits>
+ #include <type_traits>
+ #include "common/common_types.h"
++#include "common/guest_read_through.h" // 0901
+ 
+ namespace Common {
+ 
+@@ -23,7 +24,8 @@ template <typename T, typename Translate>
+     while (remaining != 0) {
+         const size_t count = (std::min)(remaining, size_t{page_size - (address & (page_size - 1))});
+         if (const auto* pointer = translate(address)) {
+-            std::memcpy(bytes, pointer, count);
++            // 0901 EDEN_UP_GPU_READ_THROUGH: a cold guest slot is read from its packed bytes.
++            Common::GuestReadThrough::Copy(bytes, pointer, count);
+         }
+         remaining -= count;
+         bytes += count;
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index cf7092a3e2..90dab42a72 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -7,6 +7,7 @@
+ #pragma once
+ 
+ #include "common/cityhash.h"
++#include "common/guest_read_through.h" // 0901
+ #include "common/live_switch.h"
+ #include "common/memory_detect.h"
+ #include "common/pe_switch.h"
+@@ -3586,11 +3587,17 @@ std::optional<u64> BufferCache<P>::Nx2BankHashOf(DAddr device_addr, u64 size) {
+         const DAddr at = device_addr + done;
+         const u64 piece =
+             (std::min<u64>)(Core::DEVICE_PAGESIZE - (at & Core::DEVICE_PAGEMASK), size - done);
+-        const u8* const bytes = device_memory.template GetPointer<u8>(at);
++        const u8* bytes = device_memory.template GetPointer<u8>(at);
+         if (bytes == nullptr) {
+             // Unmapped since the caller's walk: uploaded as before, no entry.
+             return std::nullopt;
+         }
++        // 0901 EDEN_UP_GPU_READ_THROUGH: a cold guest slot is hashed from a copy of its packed bytes.
++        std::array<u8, Core::DEVICE_PAGESIZE> cold;
++        if (!Common::GuestReadThrough::SpanReadable(bytes, piece)) {
++            Common::GuestReadThrough::Copy(cold.data(), bytes, piece);
++            bytes = cold.data();
++        }
+         hash = Common::CityHash64WithSeed(reinterpret_cast<const char*>(bytes), piece, hash);
+         done += piece;
+     }
+@@ -3879,10 +3886,16 @@ void BufferCache<P>::Nx2CheckBankPages(DAddr device_addr, u64 size, bool mark, b
+     const DAddr first_page = Common::AlignDown(device_addr, Core::DEVICE_PAGESIZE);
+     const DAddr end = device_addr + check_size;
+     for (DAddr page = first_page; page < end; page += Core::DEVICE_PAGESIZE) {
+-        const u8* const guest = device_memory.template GetPointer<u8>(page);
++        const u8* guest = device_memory.template GetPointer<u8>(page);
+         if (guest == nullptr) {
+             continue;
+         }
++        // 0901 EDEN_UP_GPU_READ_THROUGH: a cold guest slot is compared from a copy of its packed bytes.
++        std::array<u8, Core::DEVICE_PAGESIZE> cold;
++        if (!Common::GuestReadThrough::SpanReadable(guest, Core::DEVICE_PAGESIZE)) {
++            Common::GuestReadThrough::Copy(cold.data(), guest, Core::DEVICE_PAGESIZE);
++            guest = cold.data();
++        }
+         auto [it, inserted] = native_indirect_page_snapshots.try_emplace(page);
+         Nx2BankPage& snapshot = it->second;
+         const bool same =
+diff --git a/src/video_core/buffer_cache/uniform_stream_reuse.h b/src/video_core/buffer_cache/uniform_stream_reuse.h
+index 4752187c3f..52d9761bb5 100644
+--- a/src/video_core/buffer_cache/uniform_stream_reuse.h
++++ b/src/video_core/buffer_cache/uniform_stream_reuse.h
+@@ -13,6 +13,7 @@
+ #include <type_traits>
+ 
+ #include "common/common_types.h"
++#include "common/guest_read_through.h" // 0901
+ #include "common/live_switch.h"
+ #include "common/live_switch.h"
+ #include "common/logging.h"
+@@ -219,6 +220,10 @@ template <class Runtime, class DeviceMemory, class Reuse>
+     if constexpr (requires { device_memory.GetSpan(device_addr, size); }) {
+         guest = device_memory.GetSpan(device_addr, size);
+     }
++    // 0901 EDEN_UP_GPU_READ_THROUGH: no span over a cold guest slot (no share; the bind reads a copy).
++    if (guest != nullptr && !Common::GuestReadThrough::SpanReadable(guest, size)) {
++        guest = nullptr;
++    }
+     if (guest == nullptr) {
+         ++reuse.share_no_span;
+         return false;
+@@ -268,8 +273,12 @@ template <class Runtime, class DeviceMemory>
+     // and both stream from their own captured bytes; a flip needs no slot reset.
+     // Test memories have no GetSpan.
+     if constexpr (requires { device_memory.GetSpan(device_addr, size); }) {
+-        const u8* const guest =
++        const u8* guest =
+             UniformInPlaceCompareEnabled() ? device_memory.GetSpan(device_addr, size) : nullptr;
++        // 0901 EDEN_UP_GPU_READ_THROUGH: a cold guest slot is read below through ReadBlockUnsafe.
++        if (guest != nullptr && !Common::GuestReadThrough::SpanReadable(guest, size)) {
++            guest = nullptr;
++        }
+         if (guest != nullptr) {
+             const bool same = slot.size == size && std::memcmp(slot.bytes.data(), guest, size) == 0;
+             if (same && slot.tick == runtime.CurrentTick()) {
+diff --git a/src/video_core/texture_cache/descriptor_table.h b/src/video_core/texture_cache/descriptor_table.h
+index 88c1716314..f205001649 100644
+--- a/src/video_core/texture_cache/descriptor_table.h
++++ b/src/video_core/texture_cache/descriptor_table.h
+@@ -17,6 +17,7 @@
+ #include "common/alignment.h"
+ #include "common/common_types.h"
+ #include "common/div_ceil.h"
++#include "common/guest_read_through.h" // 0901
+ #include "common/assert.h"
+ #include "core/memory.h"
+ #include "common/logging.h"
+@@ -57,7 +58,8 @@ public:
+         const bool one_page =
+             (gpu_addr & Core::Memory::YUZU_PAGEMASK) + sizeof(T) <= Core::Memory::YUZU_PAGESIZE;
+         if (const u8* const host = one_page ? gpu_memory.GetPointer(gpu_addr) : nullptr) {
+-            std::memcpy(std::addressof(result.first), host, sizeof(T));
++            // 0901 EDEN_UP_GPU_READ_THROUGH: a cold guest slot is read from its packed bytes.
++            Common::GuestReadThrough::Copy(std::addressof(result.first), host, sizeof(T));
+         } else {
+             gpu_memory.ReadBlockUnsafe(gpu_addr, std::addressof(result.first), sizeof(T));
+         }
+diff --git a/src/video_core/ubo_ahead.cpp b/src/video_core/ubo_ahead.cpp
+index 3aa3211a6e..4e89ffb605 100644
+--- a/src/video_core/ubo_ahead.cpp
++++ b/src/video_core/ubo_ahead.cpp
+@@ -12,6 +12,7 @@
+ #include <unordered_map>
+ #include <vector>
+ 
++#include "common/guest_read_through.h" // 0901
+ #include "common/logging.h"
+ #include "video_core/gpu_split.h"
+ #include "video_core/ubo_ahead.h"
+@@ -207,14 +208,29 @@ void CapturePage(State& s, Tegra::MaxwellDeviceMemoryManager& memory, u64 page)
+     }
+     fp.epoch = s.epoch;
+     Count(s.stats.pages_checked);
+-    const u8* const guest = memory.GetPointer<u8>(page << PageBits);
++    const u8* guest = memory.GetPointer<u8>(page << PageBits);
+     if (guest == nullptr) {
+         Count(s.stats.unmapped);
+         return; // No update: the back's copy stays from an older epoch (Stale)
+     }
+-    // Touched before the lock: a page the guest memory service swapped out comes back here.
+-    [[maybe_unused]] const volatile u8 touch = *guest;
++    // 0901 EDEN_UP_GPU_READ_THROUGH: a page whose guest slot is packed or in the swap file is read
++    // from its packed bytes into `cold` instead of touched (the touch would want a block for the
++    // slot, and with the pool full its fault handler waited up to 10 s on this thread). An Out slot
++    // cannot be written while it stays Out, so if it is still cold under the lock the copy is exact;
++    // if it came back meanwhile, the guest's page is read as before. Off: SpanReadable is true.
++    std::array<u8, PageSize> cold;
++    const u8* const mapped = guest;
++    const bool was_cold = !Common::GuestReadThrough::SpanReadable(guest, PageSize);
++    if (was_cold) {
++        Common::GuestReadThrough::Copy(cold.data(), guest, PageSize);
++    } else {
++        // Touched before the lock: a page the guest memory service swapped out comes back here.
++        [[maybe_unused]] const volatile u8 touch = *guest;
++    }
+     std::scoped_lock lock{s.mutex};
++    if (was_cold && !Common::GuestReadThrough::SpanReadable(mapped, PageSize)) {
++        guest = cold.data();
++    }
+     // A GPU write lands in guest memory, then takes this lock to reach the copies: compared and
+     // copied under it, a copy either holds the write already or is written by it afterwards.
+     if (fp.slot != NoSlot && std::memcmp(SlotPointer(s, fp.slot), guest, PageSize) == 0) {

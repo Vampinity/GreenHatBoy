@@ -1,0 +1,220 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_LOAD_HOLD (the front's switch, off unless set): the over-limit Native zstd call that starts an area's load sleeps its guest thread while the front frees memory; the frame end deletes the old area's clean images and drains on request
+
+T178c. At the load from the field into the area past it the pool runs dry 6-9 s after the game's
+first Native zstd call over the host size limit (svc 0xf2, capacity 0x2029080, once per session on
+that route in all T175/T177 starts). Waiting in the field frees almost nothing; the front
+(headless/load_hold.inc) does the freeing work at the start of the load instead, while this call's
+guest thread waits.
+
+svc_nx2_zstd.cpp: after the game's decoder is set up (RunGuestFunction) for a call refused as "over
+the host size limit", the front's eden_load_hold_begin(svc, capacity) decides; when it says 1, the
+thread sleeps in 50 ms guest sleeps (SleepThread, as svcSleepThread and the poll backoff's sleep:
+the core runs the game's other threads) while eden_load_hold_poll() is 1, at most 400 sleeps (20 s)
+whatever the front says, and not past a termination request. Both are weak: without the front, or
+with EDEN_UP_LOAD_HOLD unset (begin returns 0), nothing changes.
+
+vk_rasterizer.cpp, texture_cache.h: eden_load_hold_gpu_request(bits) / eden_load_hold_gpu_stats for
+the front. With a request set, each frame end deletes up to 128 images unused for 40 frames with
+nothing to copy back (CollectForBuffer's test; TextureCache::LoadHoldEvict, reason gc-load-hold)
+and, with EDEN_UP_PRESSURE_DRAIN=1 or 2, marks the drain as after a refusal (its quarter gap) and
+counts what the allocator gave back. No request (the default): one relaxed atomic load per frame
+end. No file here is a translation id input and no name is added to TranslationSwitches: KEEPS THE
+STORE.
+
+---
+diff --git a/src/core/hle/kernel/svc/svc_nx2_zstd.cpp b/src/core/hle/kernel/svc/svc_nx2_zstd.cpp
+index 59f3d00483c825cabd84bf969ddb755315392b4f..264c3ae9a566586e17c6bbddcb29f4897d1eab37 100644
+--- a/src/core/hle/kernel/svc/svc_nx2_zstd.cpp
++++ b/src/core/hle/kernel/svc/svc_nx2_zstd.cpp
+@@ -27,10 +27,17 @@
+ #include "core/hle/kernel/k_process.h"
+ #include "core/hle/kernel/k_thread.h"
+ #include "core/hle/kernel/kernel.h"
++#include "core/hle/kernel/svc.h"
+ #include "core/hle/kernel/svc/svc_nx2_zstd.h"
+ #include "core/hle/kernel/svc_types.h"
+ #include "core/memory.h"
+ 
++// EDEN_UP_LOAD_HOLD=<ms> (headless/load_hold.inc; off unless set, and then these are not called
++// to any effect): the front decides whether the over-limit call that starts an area's load is
++// held, and for how long. Weak: a build without the front links without them.
++extern "C" int eden_load_hold_begin(unsigned svc, unsigned long long capacity) __attribute__((weak));
++extern "C" int eden_load_hold_poll(void) __attribute__((weak));
++
+ namespace Kernel::Svc {
+ namespace {
+ 
+@@ -1500,6 +1507,22 @@ bool CallNx2OotZstd(Core::System& system, u32 imm, std::span<uint64_t, 8> args)
+             }
+         }
+         RunGuestFunction(system, process, imm);
++        // EDEN_UP_LOAD_HOLD (patch 0930): the call over the host size limit is the new area's
++        // archive (one per area change on the field route, 6-9 s before the pool ran dry). The
++        // game's decoder is set up to run (above); before this SVC returns, the calling guest
++        // thread sleeps in 50 ms guest sleeps (as svcSleepThread, so its core runs other guest
++        // threads) while the front frees memory, until the front releases it. Hard cap here:
++        // 400 sleeps (20 s), whatever the front says. The thread holds no host lock here.
++        if (!live_off && std::strcmp(reason, "over the host size limit") == 0 &&
++            eden_load_hold_begin != nullptr && eden_load_hold_poll != nullptr &&
++            eden_load_hold_begin(imm, args[2]) != 0) {
++            for (int i = 0; i < 400 && eden_load_hold_poll() != 0; ++i) {
++                if (GetCurrentThread(system.Kernel()).IsTerminationRequested()) {
++                    break;
++                }
++                SleepThread(system, 50'000'000);
++            }
++        }
+     }
+     try {
+         MaybeLogCounters(now);
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index ed83ad177c9f5ea87cb049255851a3b529a15579..51d0b0fc554c59b18f13a2d2b003570bac314a3b 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -78,6 +78,37 @@
+ #include "video_core/query_dma.h"
+ #include "video_core/zpass_cut.h"
+ 
++// EDEN_UP_LOAD_HOLD (patch 0930; the front's headless/load_hold.inc, off unless set). While the
++// front holds the guest thread that starts an area's load, it asks the frame end for the old
++// area's images (Evict) and for a pressure drain (Drain) each frame; nothing here runs while no
++// request is set (one relaxed load per frame end). The counters are the front's log line.
++namespace Vulkan::LoadHold {
++constexpr u32 Evict = 1;
++constexpr u32 Drain = 2;
++constexpr u64 EvictAge = 40;        ///< Frames unused before an image may go
++constexpr size_t EvictPerFrame = 128;
++std::atomic<u32> request{0};
++std::atomic<u64> frames{0}, evicted_images{0}, evicted_bytes{0}, drained_bytes{0}, drain_frames{0};
++} // namespace Vulkan::LoadHold
++
++extern "C" void eden_load_hold_gpu_request(unsigned bits) noexcept {
++    Vulkan::LoadHold::request.store(bits, std::memory_order_release);
++}
++
++// In this order: frame ends seen with a request, images deleted, their bytes, allocator bytes a
++// drain on those frames gave back, those drains. At most `count` written.
++extern "C" void eden_load_hold_gpu_stats(unsigned long long* values, unsigned count) noexcept {
++    namespace LH = Vulkan::LoadHold;
++    const unsigned long long all[] = {
++        LH::frames.load(std::memory_order_relaxed),        LH::evicted_images.load(std::memory_order_relaxed),
++        LH::evicted_bytes.load(std::memory_order_relaxed), LH::drained_bytes.load(std::memory_order_relaxed),
++        LH::drain_frames.load(std::memory_order_relaxed),
++    };
++    for (unsigned i = 0; i < count && i < std::size(all); ++i) {
++        values[i] = all[i];
++    }
++}
++
+ namespace Vulkan {
+ 
+ using Maxwell = Tegra::Engines::Maxwell3D::Regs;
+@@ -3121,11 +3152,40 @@ void RasterizerVulkan::TickFrame() {
+         buffer_cache.CollectRefused();
+         ReleaseFinishedMemory();
+     }
++    // EDEN_UP_LOAD_HOLD (patch 0930): the old area's images go now, and the drain below is asked
++    // to run as after a refusal (its quarter gap), so what they and the deleted buffers held goes
++    // back while the load waits. Nothing is locked here, as for the refusal above.
++    const u32 hold = LoadHold::request.load(std::memory_order_acquire);
++    u64 hold_used = 0;
++    if (hold != 0) [[unlikely]] {
++        LoadHold::frames.fetch_add(1, std::memory_order_relaxed);
++        if ((hold & LoadHold::Evict) != 0) {
++            size_t count = 0;
++            u64 bytes = 0;
++            {
++                std::scoped_lock lock{texture_cache.mutex};
++                bytes = texture_cache.LoadHoldEvict(LoadHold::EvictAge, LoadHold::EvictPerFrame,
++                                                    count);
++            }
++            LoadHold::evicted_images.fetch_add(count, std::memory_order_relaxed);
++            LoadHold::evicted_bytes.fetch_add(bytes, std::memory_order_relaxed);
++        }
++        if ((hold & LoadHold::Drain) != 0 && PressureDrain::Drains()) {
++            PressureDrain::g_state.refusal_pending = true;
++            hold_used = memory_allocator.UsedBytes();
++        }
++    }
+     // EDEN_UP_PRESSURE_DRAIN (pressure_drain.h): the frame is over, nothing is locked.
+     static const bool pressure_drain = PressureDrain::On();
+     if (pressure_drain) [[unlikely]] {
+         PressureDrainLook(true);
+     }
++    if (hold_used != 0) [[unlikely]] {
++        const u64 used = memory_allocator.UsedBytes();
++        LoadHold::drain_frames.fetch_add(1, std::memory_order_relaxed);
++        LoadHold::drained_bytes.fetch_add(hold_used > used ? hold_used - used : 0,
++                                          std::memory_order_relaxed);
++    }
+ }
+ 
+ void RasterizerVulkan::ReportHang() {
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 3af6db892d696e60ca6dd34cfd652b466a872691..dceeaa136c25a1ef073db14641e4422a7781a318 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -1160,6 +1160,45 @@ void TextureCache<P>::CollectForBuffer(u64 wanted) {
+     }
+ }
+ 
++// EDEN_UP_LOAD_HOLD (patch 0930): the old area's images while the front holds the new area's load,
++// before its burst rather than during it. CollectForBuffer's test of what may go (nothing to copy
++// back, not decoding, not a kept remade frame), with an age floor instead of a byte target.
++template <class P>
++u64 TextureCache<P>::LoadHoldEvict(u64 min_age, size_t max_images, size_t& count) {
++    count = 0;
++    if (frame_tick < min_age || max_images == 0) {
++        return 0;
++    }
++    static constexpr size_t MAX_IMAGES = 256;
++    max_images = (std::min)(max_images, MAX_IMAGES);
++    boost::container::small_vector<ImageId, MAX_IMAGES> clean;
++    u64 total = 0;
++    lru_cache.ForEachItemBelow(frame_tick - min_age, [&](ImageId image_id) {
++        const Image& image = slot_images[image_id];
++        if (True(image.flags & ImageFlagBits::IsDecoding) ||
++            (KeepAsyncDecodedFrames() != 0 &&
++             True(image.flags & ImageFlagBits::AsynchronousDecode)) ||
++            KeptRemade(image) ||
++            (IsDownloadable(image) && False(image.flags & ImageFlagBits::BadOverlap))) {
++            return false;
++        }
++        total += ImageMemoryBytes(image);
++        clean.push_back(image_id);
++        return clean.size() >= max_images;
++    });
++    for (const ImageId image_id : clean) {
++        Image& image = slot_images[image_id];
++        if (True(image.flags & ImageFlagBits::Tracked)) {
++            UntrackImage(image, image_id);
++        }
++        UnregisterImage(image_id);
++        trace_delete_reason = "gc-load-hold";
++        DeleteImage(image_id, image.scale_tick > frame_tick + 5);
++    }
++    count = clean.size();
++    return total;
++}
++
+ // EDEN_UP_MEM_CENSUS=1 (video_core/memory_census.h). Every frame: starts the census thread once,
+ // and counts AreaEvict's burst on its own (at least EDEN_NX2_AREA_EVICT_BURST, 100, new images in
+ // 30 frames; one note per load, none again until 120 frames without a burst), so the census needs
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index f08b7ab96af8418a350328fc04d8a79dd77befc2..eb9f9c3b86090367dd67c0390500e705c9d59e1c 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -540,6 +540,12 @@ public:
+     /// collector's dirty images do, and the collector has already taken what is older.
+     void CollectForBuffer(u64 wanted);
+ 
++    /// EDEN_UP_LOAD_HOLD (patch 0930, RasterizerVulkan::TickFrame): while the front holds an area's
++    /// load, deletes up to `max_images` images unused for `min_age` frames or more, with nothing to
++    /// copy back (CollectForBuffer's test), the oldest first. At the end of a frame, with mutex
++    /// held. Returns their bytes (ImageMemoryBytes); `count` gets how many went.
++    u64 LoadHoldEvict(u64 min_age, size_t max_images, size_t& count);
++
+     /// EDEN_NX2_AREA_EVICT=<frames>: after a burst of new images (an area load), deletes images
+     /// unused for that many frames that need no copy back, 64 a frame for 120 frames. At the end
+     /// of a frame, with mutex held, before the collector.

@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: EglantinePS5
+Date: Fri, 13 Nov 2026 23:50:00 +0100
+Subject: [PATCH] util/mesa_cache_db_multipart: RADV_PS5_DISK_CACHE_ONE_COPY=1 is RADV_PS5_DISK_CACHE_SKIP_KNOWN=1
+
+T172 integration. t168d's lead-mesh-40 (RADV_PS5_DISK_CACHE_ONE_COPY: ask every
+database part before compressing a put, drop a key any part holds) and
+lead-mesh-30 (RADV_PS5_DISK_CACHE_SKIP_KNOWN) do the same job. One is kept:
+lead-mesh-30's, because it also
+- makes the room check and the write one step under the part's lock (writers
+  racing near a part's cap no longer compact it; a full part is passed over),
+- looks a key up again under the lock before writing (a key written by another
+  thread since the first look is not written twice),
+- remembers absent parts (a miss no longer stats every absent part's folder),
+- covers the multi-file cache too (one access() before compressing).
+t168d's lead-mesh-40 asked only parts that were open (it opened the existing
+ones once) and only exclusive caches; its count (skipped=, skipped_mib=) is the
+RADV_PS5_CACHE line's known= / known_mib= (lead-mesh-34 as rebased).
+
+So this only makes RADV_PS5_DISK_CACHE_ONE_COPY=1 (exactly "1") switch on the
+same code as RADV_PS5_DISK_CACHE_SKIP_KNOWN=1; either name, or both, gives the
+same behaviour. The stderr line says which name turned it on. Nothing about
+keys, entries, files or the cache UUID changes. Ours.
+
+Compiled with the driver's flags, syntax only. Not linked, not run on the console.
+
+Co-Authored-By: Claude Opus 5.5
+---
+diff --git a/src/util/mesa_cache_db_multipart.c b/src/util/mesa_cache_db_multipart.c
+index 68053c7..04e46d0 100644
+--- a/src/util/mesa_cache_db_multipart.c
++++ b/src/util/mesa_cache_db_multipart.c
+@@ -22,8 +22,8 @@
+ #define EXCLUSIVE_DEFAULT false
+ #endif
+ 
+-/* EglantinePS5: RADV_PS5_DISK_CACHE_SKIP_KNOWN=1 (exactly "1", read once per process; off
+- * otherwise). Upstream writes every put it is handed, and compresses it first (zlib at level 9
++/* EglantinePS5: RADV_PS5_DISK_CACHE_SKIP_KNOWN=1, or its alias RADV_PS5_DISK_CACHE_ONE_COPY=1
++ * (exactly "1", read once per process; off otherwise). Upstream writes every put it is handed, and compresses it first (zlib at level 9
+  * on the PS5 build, which has no zstd): the multi-file cache then evicts for room before it
+  * finds that the file is there already, and the database looks only in the part it writes to,
+  * after making room, so a key held by another part is stored again. With the switch:
+@@ -49,9 +49,15 @@ mesa_cache_db_multipart_skip_known(void)
+    int on = p_atomic_read(&multipart_skip_known);
+    if (on < 0) {
+       const char *value = getenv("RADV_PS5_DISK_CACHE_SKIP_KNOWN");
+-      on = value && value[0] == '1' && value[1] == '\0';
++      /* lead-mesh-40 (T172): RADV_PS5_DISK_CACHE_ONE_COPY=1 is the same switch (t168d's
++       * lead-mesh-40 asked every part before compressing too; this implementation is kept). */
++      const char *alias = getenv("RADV_PS5_DISK_CACHE_ONE_COPY");
++      const bool by_name = value && value[0] == '1' && value[1] == '\0';
++      const bool by_alias = alias && alias[0] == '1' && alias[1] == '\0';
++      on = by_name || by_alias;
+       if (p_atomic_cmpxchg(&multipart_skip_known, -1, on) == -1 && on)
+-         fprintf(stderr, "RADV_PS5_DISK_CACHE_SKIP_KNOWN=1 on\n");
++         fprintf(stderr, "RADV_PS5_DISK_CACHE_SKIP_KNOWN=1 on%s\n",
++                 by_name ? "" : " (as RADV_PS5_DISK_CACHE_ONE_COPY=1)");
+    }
+    return on != 0;
+ }
+diff --git a/src/util/mesa_cache_db_multipart.h b/src/util/mesa_cache_db_multipart.h
+index 9ec0c65..39e00e4 100644
+--- a/src/util/mesa_cache_db_multipart.h
++++ b/src/util/mesa_cache_db_multipart.h
+@@ -29,7 +29,8 @@ struct mesa_cache_db_multipart {
+    bool fast;
+ };
+ 
+-/* EglantinePS5: RADV_PS5_DISK_CACHE_SKIP_KNOWN=1 (exactly "1", read once per process). */
++/* EglantinePS5: RADV_PS5_DISK_CACHE_SKIP_KNOWN=1 or RADV_PS5_DISK_CACHE_ONE_COPY=1 (exactly "1",
++ * read once per process). */
+ bool
+ mesa_cache_db_multipart_skip_known(void);
+ 

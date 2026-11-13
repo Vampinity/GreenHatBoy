@@ -1,0 +1,213 @@
+From: EglantinePS5
+Subject: [PATCH] up: the boot also builds the records made with the other EDEN_NX2_MASK_COMPONENTS mode, keyed for this mode (EDEN_UP_BOOT_ALL_STATES=1), off by default
+
+Switch: EDEN_UP_BOOT_ALL_STATES=1 (exact "1", read once at boot).
+
+Why: the boot's load_graphics leaves out every record whose dynamic-state bits differ from this
+device's. In the T151 play session of 13 Nov that was 3,127 of the 5,433 graphics records of
+vulkan.bin and vulkan_mesh.bin ("3127 not taken by the boot (3127 for another dynamic state ...);
+recorded otherwise: ... mask components 3127", every other bit 0): records written while
+EDEN_NX2_MASK_COMPONENTS was off. The play env has it on now (env-play-v31). Those states are
+never built at boot, and a draw that needs one makes it as "new" (506 "new" builds in that session,
+the slowest ones: 14.7 ms each on the GPU thread on average plus a driver compile without a driver
+cache entry). INFERRED, not checked: how many of the 506 are such records (the console's files
+were not read for this; the line below tells it on the next boot).
+
+What: the mask mode is one bit of the key (FixedPipelineState::mask_components, set from the
+switch alone in Refresh; no other field depends on it). It only changes the colour write mask the
+pipeline is built with (vk_graphics_pipeline.cpp: write_mask &= fragment_color_components); the
+translation does not read it. So such a record, with the bit set to this mode, is exactly the key a
+draw here makes for the same state. With the switch, after the boot's own pass (and after the
+EDEN_UP_CANONICAL_KEYS legacy pass), a second pass reads vulkan.bin and vulkan_mesh.bin again with
+VideoCommon::ReadPipelines (the reader that never cuts a file back) and, for records that differ
+ONLY in the mask bit and have this driver id and version: sets the bit, skips the key if
+disk_pipelines has it (the same state was recorded in this mode too) or the pass met it already,
+then goes the same way as a record of the first pass (used-list filter unless
+EDEN_NX2_PRELOAD_ALL_PIPELINES=1, then queued on the builders, NotePrepared for
+EDEN_UP_SHADER_PREP). Records that differ in any other bit stay out (those bits change what the
+key's other fields mean). The rekeyed keys are NOT put in disk_pipelines: if a draw makes one at run
+time (after an eviction), it is reported as "new" and its record is written in this mode, exactly
+as with the switch off, so the files converge and turning the switch off later loses nothing.
+One line: "EDEN_UP_BOOT_ALL_STATES=1: <r> records of the other mask components mode read, <t> taken
+under this mode's key and built now, <w> already on disk in this mode, <o> for another dynamic
+state or driver, <n> not in the used list". The condition of the first pass moved into a lambda
+(other_state), same expression, same order.
+
+Cost: the boot reads the two files again (122 + 62 MB in the 13 Nov backup) and builds <t> more
+pipelines on the builders. T151's boot built 2,571 in about 14.6 s (8.1 to 22.7 s); if all 3,127
+are taken that is up to about 18 s more, if half are twins about 9 s (INFERRED from that rate; a
+driver compile without a driver-cache entry is slower than the boot's mostly cached ones). Driver
+memory for the extra pipelines (about 0.45 MB each by the code's own estimate) until the first
+eviction check after 9000 frames frees the unused ones; with 0685's EDEN_UP_KEEP_BOOT_PIPELINES=1
+they stay. The driver cache file grows by their entries. PrepareKept's stats still count these
+records as "not taken by the boot (... for another dynamic state)" (it looks up the recorded key).
+
+Off: the first pass's condition is the same expression (now a lambda); one bool test per record
+and one load of a static per boot. Not in the kept-store stamp (no translation changes).
+---
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 246a788..6559efb 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -1335,6 +1335,20 @@ KeepBoot KeepBootPipelines() {
+     }();
+     return mode;
+ }
++// EDEN_UP_BOOT_ALL_STATES=1 (exact "1"): the boot also takes the records of vulkan.bin and
++// vulkan_mesh.bin that were made with the other EDEN_NX2_MASK_COMPONENTS mode, keyed as a draw
++// here keys them now. That mode is one bit of the key (FixedPipelineState::mask_components, set
++// from the switch alone in Refresh); the rest of the key is the same, and the bit changes only the
++// colour write mask the pipeline is built with (the translation does not read it). Records that
++// differ in any other dynamic state bit, or were made for another driver, are left as before.
++// Read in a pass of its own after the boot's (so a record kept in both modes is built once, from
++// the one already in this mode), with the reader that never changes a file. The rekeyed keys are
++// not put in disk_pipelines: a draw that makes one at run time writes its record in this mode,
++// as with the switch off. Unset: as before (one load of a static per boot).
++bool BootAllStates() {
++    static const bool on = Common::PeSwitch("EDEN_UP_BOOT_ALL_STATES");
++    return on;
++}
+ u64 KeepBootFloorBytes() {
+     static const u64 floor = [] {
+         const char* const value = std::getenv("EDEN_UP_KEEP_BOOT_PIPELINES_FLOOR_MIB");
+@@ -2206,6 +2220,36 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
+         ++state.total;
+     }};
+     bool loading_mesh_file = false;
++    // EDEN_UP_BOOT_ALL_STATES: true during its own pass (records of the other mask mode only).
++    bool other_mask_pass = false;
++    struct {
++        size_t read{};        // records of the other mask mode read in the pass
++        size_t taken{};       // ... queued at boot under this mode's key
++        size_t twins{};       // ... whose key in this mode the disk cache has already
++        size_t other{};       // ... that differ in another dynamic state bit or the driver
++        size_t not_listed{};  // ... left out by the used list (without PRELOAD_ALL_PIPELINES)
++    } other_mask;
++    std::unordered_set<u64> other_mask_keys;
++    const auto other_state = [this](const GraphicsPipelineCacheKey& k) {
++        return (k.state.mask_components != 0) !=
++                   (MaskComponentsEnabled() && !dynamic_features.has_extended_dynamic_state_3_blend) ||
++               (k.state.extended_dynamic_state != 0) !=
++                   dynamic_features.has_extended_dynamic_state ||
++               (k.state.extended_dynamic_state_2 != 0) !=
++                   dynamic_features.has_extended_dynamic_state_2 ||
++               (k.state.extended_dynamic_state_2_logic_op != 0) !=
++                   dynamic_features.has_extended_dynamic_state_2_logic_op ||
++               (k.state.extended_dynamic_state_3_blend != 0) !=
++                   dynamic_features.has_extended_dynamic_state_3_blend ||
++               (k.state.extended_dynamic_state_3_enables != 0) !=
++                   dynamic_features.has_extended_dynamic_state_3_enables ||
++               (k.state.color_write_enable_dynamic != 0) !=
++                   dynamic_features.has_color_write_enable ||
++               ((k.state.dynamic_vertex_input != 0) !=
++                    dynamic_features.has_dynamic_vertex_input &&
++                !(StaticVertexInputEnabled() && dynamic_features.has_dynamic_vertex_input &&
++                  EdenAttributelessStaticKey(k.state)));
++    };
+     const auto load_graphics{[&](std::ifstream& file, std::vector<FileEnvironment> envs) {
+         GraphicsPipelineCacheKey key;
+         file.read(reinterpret_cast<char*>(&key), sizeof(key));
+@@ -2219,25 +2263,24 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
+             return;
+         }
+ 
+-        if ((key.state.mask_components != 0) !=
+-                (MaskComponentsEnabled() && !dynamic_features.has_extended_dynamic_state_3_blend) ||
+-            (key.state.extended_dynamic_state != 0) !=
+-                dynamic_features.has_extended_dynamic_state ||
+-            (key.state.extended_dynamic_state_2 != 0) !=
+-                dynamic_features.has_extended_dynamic_state_2 ||
+-            (key.state.extended_dynamic_state_2_logic_op != 0) !=
+-                dynamic_features.has_extended_dynamic_state_2_logic_op ||
+-            (key.state.extended_dynamic_state_3_blend != 0) !=
+-                dynamic_features.has_extended_dynamic_state_3_blend ||
+-            (key.state.extended_dynamic_state_3_enables != 0) !=
+-                dynamic_features.has_extended_dynamic_state_3_enables ||
+-            (key.state.color_write_enable_dynamic != 0) !=
+-                dynamic_features.has_color_write_enable ||
+-            ((key.state.dynamic_vertex_input != 0) !=
+-                 dynamic_features.has_dynamic_vertex_input &&
+-             !(StaticVertexInputEnabled() && dynamic_features.has_dynamic_vertex_input &&
+-               EdenAttributelessStaticKey(key.state)))) {
+-            return;
++        if (other_state(key)) {
++            if (!other_mask_pass) {
++                return;
++            }
++            // EDEN_UP_BOOT_ALL_STATES: only the mask bit may differ, and the driver must match.
++            ++other_mask.read;
++            const bool mask_here =
++                MaskComponentsEnabled() && !dynamic_features.has_extended_dynamic_state_3_blend;
++            GraphicsPipelineCacheKey here = key;
++            here.state.mask_components.Assign(mask_here ? 1 : 0);
++            if (other_state(here) || here.state.driver_id != dynamic_features.driver_id ||
++                here.state.driver_version != dynamic_features.driver_version) {
++                ++other_mask.other;
++                return;
++            }
++            key = here;
++        } else if (other_mask_pass) {
++            return; // the boot's own pass took it (or left it out for its own reasons)
+         }
+ 
+         const bool key_requests_provoking_last = key.state.provoking_vertex_last != 0;
+@@ -2270,7 +2313,13 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
+             }
+         }
+         const u64 hash = key.Hash();
+-        if (!disk_pipelines.insert(hash).second && canonical_keys) {
++        if (other_mask_pass) {
++            // A record kept in both modes is built once, from the one in this mode.
++            if (disk_pipelines.contains(hash) || !other_mask_keys.insert(hash).second) {
++                ++other_mask.twins;
++                return;
++            }
++        } else if (!disk_pipelines.insert(hash).second && canonical_keys) {
+             // Records that merge into one canonical key (Ocarina of Time: up to 20 legacy keys
+             // for the same shaders) are built once; the canonical file is read first, so its
+             // record wins, as Fritchii keeps one record list per key.
+@@ -2288,10 +2337,13 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
+             (PipelineColdBoot() ||
+              (!have_used_list ? queued_graphics >= MaxPipelinesWithoutUsedList
+                               : !used_pipelines.contains(hash)))) {
+-            ++skipped_pipelines;
++            ++(other_mask_pass ? other_mask.not_listed : skipped_pipelines);
+             return;
+         }
+         ++queued_graphics;
++        if (other_mask_pass) {
++            ++other_mask.taken;
++        }
+         if (mesh_always) {
+             ++mesh_queued;
+             if (!used_pipelines.contains(hash)) {
+@@ -2365,6 +2417,29 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
+                  canonical_rekeyed);
+     }
+ 
++    if (BootAllStates() && !stop_loading.stop_requested()) {
++        // EDEN_UP_BOOT_ALL_STATES: the records of the other mask mode, after the boot's pass.
++        const auto skip_compute = [](std::ifstream& file, FileEnvironment) {
++            ComputePipelineCacheKey key;
++            file.read(reinterpret_cast<char*>(&key), sizeof(key));
++        };
++        other_mask_pass = true;
++        loading_mesh_file = false;
++        (void)VideoCommon::ReadPipelines(pipeline_cache_filename, CACHE_VERSION, skip_compute,
++                                         load_graphics, false);
++        if (device.IsExtMeshShaderSupported() && !stop_loading.stop_requested()) {
++            loading_mesh_file = true;
++            (void)VideoCommon::ReadPipelines(mesh_pipeline_cache_filename, CACHE_VERSION,
++                                             skip_compute, load_graphics, true);
++        }
++        other_mask_pass = false;
++        LOG_INFO(Render_Vulkan,
++                 "EDEN_UP_BOOT_ALL_STATES=1: {} records of the other mask components mode read, "
++                 "{} taken under this mode's key and built now, {} already on disk in this mode, "
++                 "{} for another dynamic state or driver, {} not in the used list",
++                 other_mask.read, other_mask.taken, other_mask.twins, other_mask.other,
++                 other_mask.not_listed);
++    }
+     LOG_INFO(Render_Vulkan, "Total Pipeline Count: {}", state.total);
+     if (skipped_pipelines != 0) {
+         LOG_INFO(Render_Vulkan,

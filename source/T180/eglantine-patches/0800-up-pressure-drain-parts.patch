@@ -1,0 +1,180 @@
+From: EglantinePS5
+Subject: [PATCH] up: parts for EDEN_UP_PRESSURE_DRAIN (a bounded GPU wait, the allocator's use, a read-only walk of the deleted buffers); nothing calls them without the switch
+
+What: four small parts 0801 and 0802 use, with no caller of their own.
+- MasterSemaphore::WaitFor(tick, timeout_ns): MasterSemaphore::Wait with a time limit, true when
+  the GPU reached the tick. Timeline path: one vkWaitSemaphores with the timeout, then Refresh.
+  Fence path: looks at the tick every 200 us until the deadline. No stall report (the hang watch's
+  on_stall stays with Wait).
+- MemoryAllocator::UsedBytes(): VMA's allocationBytes over all heaps (vmaGetHeapBudgets, as the
+  port's eden_vma_usage reads it), to say what a drain freed.
+- DelayedDestructionRing::ForEach(f): calls f for each object still in the ring, reads only.
+- BufferCache::DeletedWaiting() (count and bytes of the deleted buffers in the ring, a walk) and
+  BufferCache::RetryRefusedNow() (buffer_refused_size back to ~0, so the next request of any size
+  asks the allocator again instead of waiting out the 250 ms refusal window).
+
+Off: nothing changes; the new functions are not called.
+Merge note: T153's 0698 (EDEN_NX2_BC_PENDING_MIB) keeps a byte ring next to the same
+delayed_destruction_ring; DeletedWaiting walks the ring instead, so the two do not touch each
+other's code. ReleaseFinished (which 0698 extends with pending_destroy.Clear()) is what 0801 calls.
+
+---
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index 9aa1383e67..96b1a9710a 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -270,6 +270,17 @@ void BufferCache<P>::ReleasePendingBuffers() {
+     }
+ }
+ 
++template <class P>
++std::pair<size_t, u64> BufferCache<P>::DeletedWaiting() const {
++    size_t buffers = 0;
++    u64 bytes = 0;
++    delayed_destruction_ring.ForEach([&](const Buffer& buffer) {
++        ++buffers;
++        bytes += buffer.SizeBytes();
++    });
++    return {buffers, bytes};
++}
++
+ template <class P>
+ void BufferCache<P>::TickFrame() {
+     if (VideoCommon::HotPagesEnabled()) {
+diff --git a/src/video_core/buffer_cache/buffer_cache_base.h b/src/video_core/buffer_cache/buffer_cache_base.h
+index 67bfe8fd52..8ec80e2925 100644
+--- a/src/video_core/buffer_cache/buffer_cache_base.h
++++ b/src/video_core/buffer_cache/buffer_cache_base.h
+@@ -276,6 +276,16 @@ public:
+     /// EDEN_NX2_BC_PENDING_MIB / EDEN_NX2_TC_PENDING_MIB (CreateBuffer): see buffer_cache.h.
+     void ReleasePendingBuffers();
+ 
++    /// EDEN_UP_PRESSURE_DRAIN: the deleted buffers waiting for their frames, and their bytes
++    /// (a walk of the ring). The caller holds mutex.
++    [[nodiscard]] std::pair<size_t, u64> DeletedWaiting() const;
++
++    /// EDEN_UP_PRESSURE_DRAIN, after a drain: a buffer of any size memory refused is asked for
++    /// again at the next request. The caller holds mutex.
++    void RetryRefusedNow() noexcept {
++        buffer_refused_size = ~u64{0};
++    }
++
+     /// write_mark_limit: EDEN_UP_FRITCHII_WRITEMARK's mark, spread over the segments in order.
+     bool BindMultiRangeStorage(const Binding& binding, bool is_written,
+                                std::span<const MultiRangeSegment> pool,
+diff --git a/src/video_core/delayed_destruction_ring.h b/src/video_core/delayed_destruction_ring.h
+index 56350eb059..7da7d3658c 100644
+--- a/src/video_core/delayed_destruction_ring.h
++++ b/src/video_core/delayed_destruction_ring.h
+@@ -33,6 +33,16 @@ public:
+         }
+     }
+ 
++    /// Calls f for each object still waiting (reads only; EDEN_UP_PRESSURE_DRAIN counts them).
++    template <typename F>
++    void ForEach(F&& f) const {
++        for (const auto& element : elements) {
++            for (const T& object : element) {
++                f(object);
++            }
++        }
++    }
++
+ private:
+     size_t index = 0;
+     std::array<std::vector<T>, TICKS_TO_DESTROY> elements;
+diff --git a/src/video_core/renderer_vulkan/vk_master_semaphore.cpp b/src/video_core/renderer_vulkan/vk_master_semaphore.cpp
+index a9e6609308..3a86cf2ae3 100644
+--- a/src/video_core/renderer_vulkan/vk_master_semaphore.cpp
++++ b/src/video_core/renderer_vulkan/vk_master_semaphore.cpp
+@@ -4,6 +4,7 @@
+ // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <chrono>
+ #include <thread>
+ #include "video_core/report_no_alloc.h"
+ 
+@@ -131,6 +132,32 @@ void MasterSemaphore::Wait(u64 tick) {
+     Refresh();
+ }
+ 
++bool MasterSemaphore::WaitFor(u64 tick, u64 timeout_ns) {
++    if (IsFree(tick)) {
++        return true;
++    }
++    Refresh();
++    if (IsFree(tick) || timeout_ns == 0) {
++        return IsFree(tick);
++    }
++    if (!semaphore) {
++        // The fence path: the wait thread moves gpu_tick; look every 200 us until the deadline.
++        const auto deadline =
++            std::chrono::steady_clock::now() + std::chrono::nanoseconds{timeout_ns};
++        while (!IsFree(tick)) {
++            if (std::chrono::steady_clock::now() >= deadline) {
++                return false;
++            }
++            std::this_thread::sleep_for(std::chrono::microseconds{200});
++        }
++        return true;
++    }
++    const VideoCommon::SubmitStats::WaitTimer stats_timer{tick};
++    const bool reached = semaphore.Wait(tick, timeout_ns);
++    Refresh();
++    return reached || IsFree(tick);
++}
++
+ VkResult MasterSemaphore::SubmitQueue(vk::CommandBuffer& cmdbuf, vk::CommandBuffer& upload_cmdbuf,
+                                       VkSemaphore signal_semaphore, VkSemaphore wait_semaphore,
+                                       u64 host_tick) {
+diff --git a/src/video_core/renderer_vulkan/vk_master_semaphore.h b/src/video_core/renderer_vulkan/vk_master_semaphore.h
+index bbba59fd2e..b1b934b898 100644
+--- a/src/video_core/renderer_vulkan/vk_master_semaphore.h
++++ b/src/video_core/renderer_vulkan/vk_master_semaphore.h
+@@ -55,6 +55,10 @@ public:
+     /// Waits for a tick to be hit on the GPU
+     void Wait(u64 tick);
+ 
++    /// Waits at most timeout_ns for a tick to be hit on the GPU; true when it was
++    /// (EDEN_UP_PRESSURE_DRAIN). The tick may still be on its way to the queue. No stall report.
++    bool WaitFor(u64 tick, u64 timeout_ns);
++
+     /// EDEN_NX2_HANG_WATCH=1: a wait for a GPU tick that lasts 3 s calls this once (waited tick,
+     /// tick the GPU reached, next tick to be submitted). Empty when the switch is off.
+     std::function<void(u64, u64, u64)> on_stall;
+diff --git a/src/video_core/vulkan_common/vulkan_memory_allocator.cpp b/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
+index 380a970263..eaf97491f2 100644
+--- a/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
++++ b/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
+@@ -984,6 +984,16 @@ MemoryCommit MemoryAllocator::Commit(const vk::Buffer &buffer, MemoryUsage usage
+     return MemoryCommit(allocator, a, info);
+ }
+ 
++u64 MemoryAllocator::UsedBytes() const {
++    VmaBudget budgets[VK_MAX_MEMORY_HEAPS]{};
++    vmaGetHeapBudgets(allocator, budgets);
++    u64 used = 0;
++    for (const VmaBudget& budget : budgets) {
++        used += budget.statistics.allocationBytes;
++    }
++    return used;
++}
++
+ void LogMemoryStatistics(const Device& device) {
+     const VmaAllocator allocator = device.GetAllocator();
+     const VkPhysicalDeviceMemoryProperties* properties{};
+diff --git a/src/video_core/vulkan_common/vulkan_memory_allocator.h b/src/video_core/vulkan_common/vulkan_memory_allocator.h
+index 5f8b8762e1..8848eb85e1 100644
+--- a/src/video_core/vulkan_common/vulkan_memory_allocator.h
++++ b/src/video_core/vulkan_common/vulkan_memory_allocator.h
+@@ -140,6 +140,9 @@ namespace Vulkan {
+             return refusal_events.load(std::memory_order_relaxed);
+         }
+ 
++        /// What VMA's allocations hold in all heaps (EDEN_UP_PRESSURE_DRAIN: what a drain freed).
++        u64 UsedBytes() const;
++
+         vk::Buffer CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsage usage) const;
+ 
+         /// A buffer in the space of the blocks held already: no new block, no budget, no report.

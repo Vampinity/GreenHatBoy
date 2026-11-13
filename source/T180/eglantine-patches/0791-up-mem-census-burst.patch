@@ -1,0 +1,155 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_MEM_CENSUS_BURST=1: when the heap grows by 256 MiB or more within about 4 s, a census, one line and the heap's own place and growth reports (count only), off by default
+
+Switches: EDEN_UP_MEM_CENSUS_BURST=1 (exact "1"; "2" also writes the arena-by-arena room report,
+which asks every arena), EDEN_UP_MEM_CENSUS_BURST_MIB=<MiB> (unset or 0: 256). Needs
+EDEN_UP_MEM_CENSUS=1: it runs on the census thread, which kept printing through every stall.
+
+Line (stderr): "EDEN_MEM_CENSUS_BURST n=<census number> t_s=<s> heap=<MiB> (+<MiB> within 4 s)
+largest=<MiB> (MiB); census, heap places and growth follow", then the census with why=burst and
+its detail lines (unless a census is due anyway), eden_heap_sites_report (the places the heap's
+live blocks come from: every block of 1 MiB or more, 1 in 128 below), eden_heap_growth_report
+(which request sizes made the heap grow). At most once in 30 s.
+
+Why (X49, our notes section 6): at the house door the heap grew by
+about 740 MiB in 2 s in four runs and no line named who asked. The heap reports existed but
+printed only at a refusal, after the burst. This is a slimmer line than section 6 drafted: the
+driver-build, IR, list-copy and decode counters it named are not in it (they need new counters
+in the core; the census's own grew_most and the build-burst log 0592 cover part of it). It is
+not replaced by 0731 (T155: the GPU allocator's map) or 0742 (big images): those see GPU memory,
+not the heap.
+
+Off: one test of a cached value each time the census thread wakes (every 250 ms); without
+EDEN_UP_MEM_CENSUS the thread does not run at all. Host check: the header compiles with the
+front branch on and off (clang++ -fsyntax-only, -Wall -Wextra). Not run on the console.
+
+diff --git a/src/video_core/memory_census.h b/src/video_core/memory_census.h
+index 67359b450f..a5ec5cedb3 100644
+--- a/src/video_core/memory_census.h
++++ b/src/video_core/memory_census.h
+@@ -82,6 +82,14 @@ void CodeRangeUsage(std::size_t* reserved, std::size_t* committed) noexcept __at
+ #define VIDEO_CORE_CENSUS_FRONT 0
+ #endif
+ 
++#if VIDEO_CORE_CENSUS_FRONT
++// EDEN_UP_MEM_CENSUS_BURST (headless/heap_arenas.inc): where the heap's live blocks come from, which
++// request sizes made it grow, and (=2) what every arena and space has left.
++extern "C" void eden_heap_sites_report(void) __attribute__((weak));
++extern "C" void eden_heap_growth_report(void) __attribute__((weak));
++extern "C" void eden_heap_arena_report(void) __attribute__((weak));
++#endif
++
+ namespace VideoCommon::MemoryCensus {
+ 
+ [[nodiscard]] inline bool Enabled() {
+@@ -418,6 +426,50 @@ inline void Write(unsigned number, const char* why, u64 largest, u64 low, double
+ #endif
+ }
+ 
++/// EDEN_UP_MEM_CENSUS_BURST=1 (needs EDEN_UP_MEM_CENSUS=1; off by default): when the heap holds
++/// EDEN_UP_MEM_CENSUS_BURST_MIB (256) more than 2 s before, once in 30 s at most, a census of its
++/// own (why=burst, with the detail lines), one line, and the heap's own reports: the places its
++/// live blocks come from and the request sizes that made it grow (=2: also every arena's and
++/// space's room, which asks each of them). The door-load deaths of 12 Nov grew the heap by about
++/// 740 MiB in 2 s, and no log named who asked (our notes section 6).
++/// Off: one test of a cached value each time the census thread wakes (every 250 ms).
++[[nodiscard]] inline int BurstMode() {
++    static const int mode = [] {
++        const char* const value = std::getenv("EDEN_UP_MEM_CENSUS_BURST");
++        if (value == nullptr || value[0] == '\0' || value[1] != '\0') {
++            return 0;
++        }
++        return value[0] == '1' ? 1 : value[0] == '2' ? 2 : 0;
++    }();
++    return mode;
++}
++
++[[nodiscard]] inline u64 BurstBytes() {
++    static const u64 bytes = [] {
++        const char* const value = std::getenv("EDEN_UP_MEM_CENSUS_BURST_MIB");
++        const u64 mib = value != nullptr ? std::strtoull(value, nullptr, 10) : 0ULL;
++        return (mib != 0 && mib < (u64{1} << 20) ? mib : u64{256}) << 20;
++    }();
++    return bytes;
++}
++
++/// What the heap holds now: its pieces and its large blocks (0 where the front has neither).
++[[nodiscard]] inline u64 HeapHeld() {
++#if VIDEO_CORE_CENSUS_FRONT
++    u64 held = 0;
++    if (eden_heap_committed != nullptr) {
++        held += eden_heap_committed();
++    }
++    if (eden_heap_large_held != nullptr) {
++        unsigned blocks = 0;
++        held += eden_heap_large_held(&blocks);
++    }
++    return held;
++#else
++    return 0;
++#endif
++}
++
+ inline void Run() {
+     ::Common::SetCurrentThreadName("MemCensus");
+     State& state = Get();
+@@ -438,6 +490,14 @@ inline void Run() {
+     Clock::time_point last_low{};
+     bool any_census = false, any_low = false;
+     u64 low = ~u64{0};
++    // EDEN_UP_MEM_CENSUS_BURST: the heap at the start of the current 2 s window, and the window
++    // before (a rise across a window's edge is still seen), and when the last burst was written.
++    const int burst_mode = BurstMode();
++    u64 heap_window = burst_mode != 0 ? HeapHeld() : 0;
++    u64 heap_before = heap_window;
++    Clock::time_point window_at = start;
++    Clock::time_point last_burst{};
++    bool any_burst = false;
+     for (;;) {
+         {
+             std::unique_lock lock{state.mutex};
+@@ -471,6 +531,44 @@ inline void Run() {
+             any_low = true;
+             last_low = now;
+         }
++        if (burst_mode != 0) [[unlikely]] {
++            const u64 heap = HeapHeld();
++            if (now - window_at >= std::chrono::seconds(2)) {
++                heap_before = heap_window;
++                heap_window = heap;
++                window_at = now;
++            }
++            const u64 base = (std::min)(heap_before, heap_window);
++            if (heap >= base + BurstBytes() &&
++                (!any_burst || now - last_burst >= std::chrono::seconds(30))) {
++                any_burst = true;
++                last_burst = now;
++                std::fprintf(stderr,
++                             "EDEN_MEM_CENSUS_BURST n=%u t_s=%.1f heap=%llu (+%llu within 4 s) "
++                             "largest=%llu (MiB); census, heap places and growth follow\n",
++                             number, std::chrono::duration<double>(now - start).count(),
++                             Mib(heap), Mib(heap - base), Mib(largest));
++                if (why == nullptr || !detail) {
++                    why = why == nullptr ? "burst" : why;
++                    detail = true;
++                }
++#if VIDEO_CORE_CENSUS_FRONT
++                if (eden_heap_sites_report != nullptr) {
++                    eden_heap_sites_report();
++                }
++                if (eden_heap_growth_report != nullptr) {
++                    eden_heap_growth_report();
++                }
++                if (burst_mode == 2 && eden_heap_arena_report != nullptr) {
++                    eden_heap_arena_report();
++                }
++#endif
++                // The next burst is counted from here.
++                heap_before = heap;
++                heap_window = heap;
++                window_at = now;
++            }
++        }
+         if (why == nullptr) {
+             continue;
+         }

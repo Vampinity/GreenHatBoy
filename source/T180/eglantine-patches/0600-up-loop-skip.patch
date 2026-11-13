@@ -1,0 +1,284 @@
+From: EglantinePS5
+Subject: up: the split front skips the instance-loop writes the back ignores (EDEN_UP_LOOP_SKIP), off by default
+
+What: with the GPU thread split and macros on the front (EDEN_NX2_SPLIT=2), the front no longer
+sends draw.end inside an instance loop (DrawEnd draws nothing in DrawMode::Instance) and
+vertex_buffer.first / vertex_buffer.count writes that keep their value (instance loop methods: they
+flush no deferred draw, and the draw manager only reads them at the draw). Each was a ring entry
+and a CallMethod on the back, the busy thread when walking. index_buffer writes are always sent
+(they mark the index buffer dirty). The front tracks the back's loop from draw.begin (instance id
+First leaves a loop, Subsequent enters one) and the inline index methods, for every word of a
+multi-method write and with the value the back acts on in Replay mode.
+#488's fix is in: the front tracks whether the back's method sink holds state writes (a plain
+Method entry of a state register leaves one there; a Regs or CbData block, a direct macro write, an
+executable method and a multi-method run consume it) and skips nothing while it does, since a
+changed write there ends a deferred draw that must issue before the next engine's work. #488's
+second half (a front copied in an earlier split start) is taken as a check, not a re-copy: our
+split stops only at shutdown, and a copy whose GpuSplit::SessionGeneration() differs skips nothing.
+Ours on top: a macro sent to the back (EDEN_UP_L1056_BACK_MACROS) resets the loop to "not in one"
+and the sink to "may hold writes", so a draw.end is sent until the next loop begins.
+Old port 0352 (lichii-gpu-0214, EDEN_NX2_LOOP_SKIP, left out at the v1.219.020 move) not revived:
+it tracked only the last word of a multi-method write (the bug upstream fixed in #178's last
+commit) and had no #488. Ported fresh from upstream.
+
+Switches (read once, when the split front is made): EDEN_UP_LOOP_SKIP=1 (exact "1"), only with
+the same-value skip on (EDEN_NX2_SKIP_SAME and EDEN_NX2_SPLIT_SKIP not 0); unset or anything else
+off. Off: no tracking, no counting; the same entries are sent as before. EDEN_NX2_SPLIT_VERIFY=1
+still works with it on (a skip leaves the registers equal: it finds a wrong value, not a lost draw).
+Log (HW_GPU): at start "EDEN_UP_LOOP_SKIP=1: the split front does not send ..." (Info), or
+"EDEN_UP_LOOP_SKIP=1 does nothing: ..." (Warning); at the first skip and then every 4 Mi skipped
+writes "EDEN_UP_LOOP_SKIP: N writes not sent (E draw.end in an instance loop, V
+vertex_buffer.first/count), K same-value ones sent because the back's sink held state writes; R a
+second since the last line". With EDEN_NX2_GPU_PROFILE the skips also count as SameValueWrites.
+
+Origin and credit: zortos293/Lichii 7e2a9fe20c (#178), Thibaut LÉAUX, and its fix 5ba52f7720
+(#488), Marc Stampfli. Upstream: Ocarina of Time, the village, 28.8 -> 30.6 fps on a PC with 0
+EDEN_NX2_SPLIT_VERIFY differences; ~520,000 draw.end and ~390,000 same-value vertex_buffer.count
+writes a second there. The console's rates are not known (the log line gives them).
+---
+diff --git a/src/video_core/engines/maxwell_3d.cpp b/src/video_core/engines/maxwell_3d.cpp
+index 9840b01..2e20f1f 100644
+--- a/src/video_core/engines/maxwell_3d.cpp
++++ b/src/video_core/engines/maxwell_3d.cpp
+@@ -1411,6 +1411,22 @@ struct Maxwell3D::FrontState {
+     /// belong to.
+     u64 read_ahead_generation{~u64{0}};
+     bool skip_same{}; ///< SkipSameValueWrites() && FrontSkipSame(), read once
++    /// EDEN_UP_LOOP_SKIP=1 (zortos293/Lichii #178 + #488), read once with skip_same: the front
++    /// does not send the instance loop writes the back ignores (FrontSkipsLoopWrite). With it
++    /// off nothing below is read or written.
++    bool loop_skip{};
++    /// The back's draw manager is in an instance loop (DrawMode::Instance): draw.end does nothing.
++    bool instance_loop{};
++    /// The back holds state writes in its method sink, which its next executable method consumes
++    /// (issuing a deferred draw a changed one ends): no skip while set (#488).
++    bool sink_pending{};
++    u64 loop_generation{}; ///< GpuSplit::SessionGeneration() when this copy was made
++    u64 loop_skipped_end{};  ///< draw.end writes not sent
++    u64 loop_skipped_vb{};   ///< vertex_buffer.first/count writes not sent
++    u64 loop_kept_sink{};    ///< same-value writes sent because the sink held writes
++    u64 loop_report_at{1};   ///< the skip count of the next "EDEN_UP_LOOP_SKIP:" line
++    u64 loop_reported{};     ///< the skip count at the last one
++    std::chrono::steady_clock::time_point loop_report_time{};
+     /// EDEN_NX2_DMA_SNAPSHOT: the current inline upload (LAUNCH_DMA), for the write notes.
+     bool upload_known{};
+     u64 upload_device{};
+@@ -1548,6 +1564,14 @@ bool FrontSkipSame() {
+     return skip;
+ }
+ 
++// EDEN_UP_LOOP_SKIP=1 (exact "1"): the split front does not send draw.end inside an instance
++// loop, nor vertex_buffer.first/count writes that keep their value (zortos293/Lichii #178,
++// Thibaut LÉAUX, with Marc Stampfli's fix #488). Off unless set. Read when the front is made.
++bool FrontLoopSkip() {
++    const char* const value = std::getenv("EDEN_UP_LOOP_SKIP");
++    return value != nullptr && value[0] == '1' && value[1] == '\0';
++}
++
+ // EDEN_UP_UBO_SNAPSHOT: a bind group write (`value`, shadow RAM applied) as ProcessCBBind will
+ // run it on the back, against the front's copy of the registers, for the present's copy of the
+ // frame's constant buffers (ubo_snapshot.h).
+@@ -1704,6 +1728,20 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
+         std::memcpy(front->shadow.data(), shadow_state.reg_array.data(), sizeof(front->shadow));
+         front->control = shadow_state.shadow_ram_control;
+         front->skip_same = SkipSameValueWrites() && FrontSkipSame();
++        if (FrontLoopSkip()) [[unlikely]] {
++            // EDEN_UP_LOOP_SKIP: only on top of the same-value skip (#178 needs it).
++            front->loop_skip = front->skip_same;
++            front->loop_generation = split.SessionGeneration();
++            front->loop_report_time = std::chrono::steady_clock::now();
++            if (front->loop_skip) {
++                LOG_INFO(HW_GPU, "EDEN_UP_LOOP_SKIP=1: the split front does not send draw.end in "
++                                 "an instance loop or vertex_buffer.first/count writes that keep "
++                                 "their value (zortos293/Lichii #178 + #488)");
++            } else {
++                LOG_WARNING(HW_GPU, "EDEN_UP_LOOP_SKIP=1 does nothing: EDEN_NX2_SKIP_SAME=0 or "
++                                    "EDEN_NX2_SPLIT_SKIP=0 turns the same-value skip off");
++            }
++        }
+         front->executing_macro = executing_macro;
+         front->parameters = std::move(macro_params);
+         if (VideoCommon::UboAhead::Capturing()) [[unlikely]] {
+@@ -1760,6 +1798,14 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
+         fs.control_writes[fs.control_count++ % fs.control_writes.size()] = {
+             argument, static_cast<u32>(fs.control), from_macro ? 2U : 1U};
+     }
++    // EDEN_UP_LOOP_SKIP (#178 + #488): an instance loop write the back would ignore.
++    if (fs.loop_skip && execution_mask[method] &&
++        FrontSkipsLoopWrite(split, fs, method, value, shadow_kept)) {
++        if (Profile::Enabled()) [[unlikely]] {
++            Profile::Add(Profile::Counter::SameValueWrites, 1);
++        }
++        return;
++    }
+     if (!execution_mask[method]) {
+         // Nothing would change on the back: CallMethod and ConsumeSinkImpl skip same-value state
+         // writes, and the shadow RAM (tracked by default) holds the value already.
+@@ -1850,6 +1896,10 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
+     // EDEN_UP_UBO_AHEAD / _VERIFY: the copies (and a new epoch) reach the back before the method.
+     VideoCommon::UboAhead::FrontFlush();
+     constexpr u32 cb_data_first = MAXWELL3D_REG_INDEX(const_buffer.buffer);
++    // EDEN_UP_LOOP_SKIP (#488): whether the back's method sink holds state writes after this
++    // entry. Only a plain Method entry of a state register leaves one there; a Regs or CbData
++    // block, a direct (macro) write and an executable method consume the sink when they run.
++    bool sink_left = false;
+     if (!execution_mask[method] && split.RegBlocks()) {
+         split.PlainWrite(this, method, argument);
+     } else if (method >= cb_data_first && method < cb_data_first + 16 && split.RegBlocks()) {
+@@ -1858,6 +1908,10 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
+         split.MacroWrite(this, method, argument);
+     } else {
+         split.Method(this, method, argument, is_last_call, nullptr);
++        sink_left = !execution_mask[method];
++    }
++    if (fs.loop_skip) {
++        fs.sink_pending = sink_left;
+     }
+     // Noted once sent, as NoteReport below: a note takes the split position, and only a position
+     // past the entry tells a snapshot taken right before it (a drained DMA read, SentPosition)
+@@ -1960,6 +2014,9 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
+                 method == MAXWELL3D_REG_INDEX(inline_index_2x16.even) ||
+                 method == MAXWELL3D_REG_INDEX(inline_index_4x8.index0)) &&
+                fs.control != Regs::ShadowRamControl::Replay) {
++        if (fs.loop_skip) {
++            FrontTrackInstanceLoop(fs, method, 0); // EDEN_UP_LOOP_SKIP: an inline index draw
++        }
+         if (amount != 0) {
+             const u32 last = base_start[amount - 1];
+             if (tracked()) {
+@@ -1987,6 +2044,9 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
+                 value = fs.shadow[method];
+             }
+             fs.regs[method] = value;
++            if (fs.loop_skip) {
++                FrontTrackInstanceLoop(fs, method, value); // DrawBegin runs for every word
++            }
+             if (!execution_mask[method]) {
+                 continue;
+             }
+@@ -2049,6 +2109,9 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
+     // EDEN_UP_UBO_AHEAD / _VERIFY: the copies (and a new epoch) reach the back before the words.
+     VideoCommon::UboAhead::FrontFlush();
+     split.MultiMethod(this, method, base_start, amount, methods_pending, nullptr);
++    if (fs.loop_skip) {
++        fs.sink_pending = false; // EDEN_UP_LOOP_SKIP: the back consumes the sink before a run
++    }
+     // Noted once sent (see FrontWrite).
+     if (FrontMemoryNotesEnabled() && amount != 0 && FrontWritesGuestMemory(method)) {
+         FrontNoteMemoryWrite(split, fs, method, base_start, amount);
+@@ -2497,6 +2560,14 @@ bool Maxwell3D::FrontRunOnBack(Core::System& system, VideoCommon::GpuSplit& spli
+         }
+         fs.back_owned[written] = true;
+     }
++    if (fs.loop_skip) {
++        // EDEN_UP_LOOP_SKIP: the front does not see what this macro does to the draw manager or
++        // the sink. Take the safe side until the front's own writes tell again: draw.end is sent
++        // until the next instance loop begins, and nothing is skipped until an executable method,
++        // a direct write or a run consumes the sink.
++        fs.instance_loop = false;
++        fs.sink_pending = true;
++    }
+     return true;
+ }
+ 
+@@ -3005,6 +3076,83 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
+     }
+ }
+ 
++// EDEN_UP_LOOP_SKIP (zortos293/Lichii #178, Thibaut LÉAUX): the draw manager's mode on the back,
++// as the methods that change it set it there (DrawBegin, SetInlineIndexBuffer). A loop the front
++// does not see (DrawArrayInstanced, a macro run on the back) only means no draw.end is skipped.
++void Maxwell3D::FrontTrackInstanceLoop(FrontState& fs, u32 method, u32 value) {
++    switch (method) {
++    case MAXWELL3D_REG_INDEX(draw.begin):
++        // Instance id, bits 27:26: First leaves an instance loop, Subsequent enters one.
++        if (((value >> 26) & 3) == 0) {
++            fs.instance_loop = false;
++        } else if (((value >> 26) & 3) == 1) {
++            fs.instance_loop = true;
++        }
++        break;
++    case MAXWELL3D_REG_INDEX(draw_inline_index):
++    case MAXWELL3D_REG_INDEX(inline_index_2x16.even):
++    case MAXWELL3D_REG_INDEX(inline_index_4x8.index0):
++        fs.instance_loop = false; // DrawMode::InlineIndex: draw.end draws
++        break;
++    default:
++        break;
++    }
++}
++
++// EDEN_UP_LOOP_SKIP: whether an executable write (`value` with the shadow RAM applied) is one the
++// back would ignore. Instance loop methods flush no deferred draw (ProcessDirtyRegisters), and
++// the draw manager ignores these: DrawEnd draws nothing in an instance loop, and it only reads
++// the vertex buffer first and count. index_buffer writes also mark the index buffer dirty, so
++// they are always sent. With Marc Stampfli's fix (#488): never while the back's sink holds state
++// writes (its next executable method consumes them, and a changed one ends a deferred draw that
++// must issue before the next engine's work), and never with a copy made in another split session.
++bool Maxwell3D::FrontSkipsLoopWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 method,
++                                    u32 value, bool shadow_kept) {
++    FrontTrackInstanceLoop(fs, method, value);
++    switch (method) {
++    case MAXWELL3D_REG_INDEX(draw.end):
++    case MAXWELL3D_REG_INDEX(vertex_buffer.first):
++    case MAXWELL3D_REG_INDEX(vertex_buffer.count):
++        break;
++    default:
++        return false;
++    }
++    if (!shadow_kept || fs.regs[method] != value) {
++        return false;
++    }
++    const bool end = method == MAXWELL3D_REG_INDEX(draw.end);
++    if (end && !fs.instance_loop) {
++        return false;
++    }
++    if (fs.sink_pending || fs.loop_generation != split.SessionGeneration()) {
++        ++fs.loop_kept_sink;
++        return false;
++    }
++    ++(end ? fs.loop_skipped_end : fs.loop_skipped_vb);
++    if (fs.loop_skipped_end + fs.loop_skipped_vb >= fs.loop_report_at) [[unlikely]] {
++        FrontReportLoopSkip(fs);
++    }
++    return true;
++}
++
++// EDEN_UP_LOOP_SKIP: at the first skip, then every 4 Mi skipped writes (a few seconds at the
++// rates upstream counted). Never on a write that is sent.
++void Maxwell3D::FrontReportLoopSkip(FrontState& fs) {
++    const auto now = std::chrono::steady_clock::now();
++    const double seconds = std::chrono::duration<double>(now - fs.loop_report_time).count();
++    const u64 skipped = fs.loop_skipped_end + fs.loop_skipped_vb;
++    const u64 since = skipped - fs.loop_reported;
++    LOG_INFO(HW_GPU,
++             "EDEN_UP_LOOP_SKIP: {} writes not sent ({} draw.end in an instance loop, {} "
++             "vertex_buffer.first/count), {} same-value ones sent because the back's sink held "
++             "state writes; {:.0f} a second since the last line",
++             skipped, fs.loop_skipped_end, fs.loop_skipped_vb, fs.loop_kept_sink,
++             seconds > 0.0 ? static_cast<double>(since) / seconds : 0.0);
++    fs.loop_reported = skipped;
++    fs.loop_report_at = skipped + (u64{1} << 22);
++    fs.loop_report_time = now;
++}
++
+ void Maxwell3D::FrontVerify(VideoCommon::GpuSplit& split, FrontState& fs) {
+     split.Drain(VideoCommon::DrainSite::FrontVerify);
+     static u64 checks{};
+diff --git a/src/video_core/engines/maxwell_3d.h b/src/video_core/engines/maxwell_3d.h
+index 64d996a..377c443 100644
+--- a/src/video_core/engines/maxwell_3d.h
++++ b/src/video_core/engines/maxwell_3d.h
+@@ -3450,6 +3450,12 @@ private:
+     // the front owns the macro code and bindings (the back thread then leaves them alone).
+     struct FrontState;
+     FrontState& Front(Core::System& system, VideoCommon::GpuSplit& split);
++    /// EDEN_UP_LOOP_SKIP (zortos293/Lichii #178 + #488): the front's view of the back's instance
++    /// loop, and whether a write is one the back would ignore (not sent then).
++    void FrontTrackInstanceLoop(FrontState& state, u32 method, u32 value);
++    bool FrontSkipsLoopWrite(VideoCommon::GpuSplit& split, FrontState& state, u32 method,
++                             u32 value, bool shadow_kept);
++    void FrontReportLoopSkip(FrontState& state);
+     void FrontWrite(VideoCommon::GpuSplit& split, FrontState& state, u32 method, u32 argument,
+                     bool is_last_call, bool from_macro);
+     void FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split, FrontState& state);

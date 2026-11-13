@@ -1,0 +1,495 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: EglantinePS5
+Date: Fri, 13 Nov 2026 20:20:00 +0100
+Subject: [PATCH] util/disk_cache: queue counts every 10 s (RADV_PS5_DISK_CACHE_STATS) and a bounded drain at exit (RADV_PS5_DISK_CACHE_DRAIN_EXIT)
+
+RADV_PS5_DISK_CACHE_STATS=1 (exactly "1", read once per process; counting and
+lines only): every 10 s while puts come or wait, one stderr line
+
+  radv/ps5 disk cache: <db|multi-file> queued <jobs> jobs <MiB> MiB, window <s> s:
+  added <n> (<MiB>), done <n> (<MiB>, <ms> ms, compressing <ms> ms), known <n>,
+  evictions <n> (<ms> ms), compactions <n> (<ms> ms), add waited <n> (<ms> ms);
+  total added <n> done <n>
+
+"done" counts puts the disk threads finished, written or dropped, with the time
+spent in them, of which "compressing" in zlib; "known" the puts dropped by
+RADV_PS5_DISK_CACHE_SKIP_KNOWN; "evictions" the multi-file evictions and their
+time; "compactions" database parts compacted (each evicts entries) and their
+time; "add waited" puts whose util_queue_add_job took 1 ms or more. That
+happens when the queue already holds 256 MiB (u_queue.c S_256MB): the thread
+that compiled the shader then waits for the disk threads. The first such wait
+in 10 s also prints "radv/ps5 disk cache: a put waited <ms> ms for room in the
+queue (queued <jobs> jobs <MiB> MiB ...)".
+
+RADV_PS5_DISK_CACHE_DRAIN_EXIT=<seconds> (1 to 600, read once per process):
+at exit() u_queue.c's exit handler stops the disk threads and the puts still
+queued are dropped without a word; disk_cache_destroy, which waits for them
+with no limit, runs only when the app destroys the Vulkan instance. With the
+switch an exit handler registered after u_queue.c's (so it runs first) waits up
+to that long for the queued puts and prints "RADV_PS5_DISK_CACHE_DRAIN_EXIT: <n>
+queued puts written in <ms> ms" or "...: <n> of <m> queued puts not written
+after <s> s; they are dropped". A killed process loses its queue either way.
+
+Off (both): one cached flag read per put; the only other cost is two atomic adds
+per database compaction (mesa_cache_db_stat_*). Applies after lead-mesh-30.
+Ours.
+
+Compiled with the driver's flags, syntax only. Not linked, not run.
+
+Co-Authored-By: Claude Opus 5.5
+---
+diff --git a/src/util/disk_cache.c b/src/util/disk_cache.c
+index 54684a4..c3eed58 100644
+--- a/src/util/disk_cache.c
++++ b/src/util/disk_cache.c
+@@ -66,6 +66,207 @@
+  */
+ #define CACHE_VERSION 1
+ 
++/* EglantinePS5: RADV_PS5_DISK_CACHE_STATS=1 (exactly "1", read once per process; counting and
++ * lines only, nothing is done differently). Every 10 s while puts come or wait, one stderr line:
++ *   radv/ps5 disk cache: <type> queued <jobs> jobs <MiB> MiB, window <s> s: added <n> (<MiB>),
++ *   done <n> (<MiB>, <ms> ms, compressing <ms> ms), known <n>, evictions <n> (<ms> ms), compactions <n> (<ms> ms),
++ *   add waited <n> (<ms> ms); total added <n> done <n>
++ * "done": puts the disk threads finished (written or dropped), with the time they took, of
++ * which "compressing" in zlib (level 9 unless RADV_PS5_DISK_CACHE_ZLIB_LEVEL says otherwise);
++ * "known": of those, puts dropped because the cache had the entry (RADV_PS5_DISK_CACHE_SKIP_KNOWN);
++ * "evictions": multi-file evictions made to keep under MESA_SHADER_CACHE_MAX_SIZE; "compactions":
++ * database parts compacted (each evicts entries); "add waited": puts whose util_queue_add_job
++ * took 1 ms or more, which happens when the queue holds 256 MiB (u_queue.c S_256MB): the thread
++ * that compiled the shader waits for the disk. The first such wait in 10 s also prints a line at
++ * once ("radv/ps5 disk cache: a put waited ...").
++ *
++ * EglantinePS5: RADV_PS5_DISK_CACHE_DRAIN_EXIT=<seconds> (1 to 600, read once per process; off
++ * otherwise). At exit(), puts still queued are dropped (u_queue.c's exit handler stops the
++ * threads; disk_cache_destroy, which waits for them, runs only when the app destroys the Vulkan
++ * instance). With the switch an exit handler, run before that one, waits up to that long for
++ * the queued puts and says how it went. A killed process loses its queue either way.
++ *
++ * Off (both): one cached flag read per put; nothing counted or printed. */
++static int dc_stats_on = -1;
++static int dc_drain_seconds = -1;
++uint64_t disk_cache_stat_compress_ns; /* disk_cache_os.h */
++static struct {
++   uint64_t added, added_bytes, done, done_bytes, done_ns, known, evictions, evict_ns;
++   uint64_t blocks, block_ns;
++   uint64_t total_added, total_done;
++   uint64_t pending;            /* queued or running puts (both switches) */
++   uint64_t window_start_ns;    /* 0: no window yet */
++   uint64_t last_block_line_ns;
++   uint64_t compactions_seen, compact_ns_seen, compress_ns_seen;
++} dc_stats;
++
++static bool
++dc_stats_enabled(void)
++{
++   int on = p_atomic_read(&dc_stats_on);
++   if (on < 0) {
++      const char *value = getenv("RADV_PS5_DISK_CACHE_STATS");
++      on = value && value[0] == '1' && value[1] == '\0';
++      if (p_atomic_cmpxchg(&dc_stats_on, -1, on) == -1 && on)
++         fprintf(stderr, "RADV_PS5_DISK_CACHE_STATS=1 on\n");
++   }
++   return on != 0;
++}
++
++static unsigned
++dc_drain_exit_seconds(void)
++{
++   int seconds = p_atomic_read(&dc_drain_seconds);
++   if (seconds < 0) {
++      const char *value = getenv("RADV_PS5_DISK_CACHE_DRAIN_EXIT");
++      char *end = NULL;
++      long asked = value ? strtol(value, &end, 10) : 0;
++      seconds = value && end != value && *end == '\0' && asked >= 1 && asked <= 600 ? (int)asked : 0;
++      if (p_atomic_cmpxchg(&dc_drain_seconds, -1, seconds) == -1 && seconds)
++         fprintf(stderr, "RADV_PS5_DISK_CACHE_DRAIN_EXIT=%d on\n", seconds);
++   }
++   return (unsigned)seconds;
++}
++
++static inline bool
++dc_counting(void)
++{
++   return dc_stats_enabled() || dc_drain_exit_seconds() != 0;
++}
++
++static void
++dc_stats_maybe_line(struct disk_cache *cache)
++{
++   if (!dc_stats_enabled())
++      return;
++
++   const uint64_t now = os_time_get_nano();
++   uint64_t start = p_atomic_read(&dc_stats.window_start_ns);
++   if (start == 0) {
++      p_atomic_cmpxchg(&dc_stats.window_start_ns, 0, now);
++      return;
++   }
++   if (now - start < 10ull * 1000000000ull ||
++       p_atomic_cmpxchg(&dc_stats.window_start_ns, start, now) != start)
++      return;
++
++   int jobs = 0;
++   size_t bytes = 0;
++   if (util_queue_is_initialized(&cache->cache_queue)) {
++      mtx_lock(&cache->cache_queue.lock);
++      jobs = cache->cache_queue.num_queued;
++      bytes = cache->cache_queue.total_jobs_size;
++      mtx_unlock(&cache->cache_queue.lock);
++   }
++
++   const uint64_t added = p_atomic_xchg(&dc_stats.added, 0);
++   const uint64_t added_bytes = p_atomic_xchg(&dc_stats.added_bytes, 0);
++   const uint64_t done = p_atomic_xchg(&dc_stats.done, 0);
++   const uint64_t done_bytes = p_atomic_xchg(&dc_stats.done_bytes, 0);
++   const uint64_t done_ns = p_atomic_xchg(&dc_stats.done_ns, 0);
++   const uint64_t known = p_atomic_xchg(&dc_stats.known, 0);
++   const uint64_t evictions = p_atomic_xchg(&dc_stats.evictions, 0);
++   const uint64_t evict_ns = p_atomic_xchg(&dc_stats.evict_ns, 0);
++   const uint64_t blocks = p_atomic_xchg(&dc_stats.blocks, 0);
++   const uint64_t block_ns = p_atomic_xchg(&dc_stats.block_ns, 0);
++   const uint64_t compactions_now = p_atomic_read(&mesa_cache_db_stat_compactions);
++   const uint64_t compact_ns_now = p_atomic_read(&mesa_cache_db_stat_compact_ns);
++   const uint64_t known_db_now = p_atomic_read(&mesa_cache_db_stat_known);
++   const uint64_t compactions = compactions_now - p_atomic_xchg(&dc_stats.compactions_seen, compactions_now);
++   const uint64_t compact_ns = compact_ns_now - p_atomic_xchg(&dc_stats.compact_ns_seen, compact_ns_now);
++   static uint64_t known_db_seen;
++   const uint64_t known_db = known_db_now - p_atomic_xchg(&known_db_seen, known_db_now);
++   const uint64_t compress_now = p_atomic_read(&disk_cache_stat_compress_ns);
++   const uint64_t compress_ns = compress_now - p_atomic_xchg(&dc_stats.compress_ns_seen, compress_now);
++
++   /* Quiet while nothing comes or waits. */
++   if (jobs == 0 && added == 0 && done == 0 && known + known_db == 0 && blocks == 0)
++      return;
++
++   const char *type = cache->type == DISK_CACHE_DATABASE     ? "db"
++                      : cache->type == DISK_CACHE_MULTI_FILE ? "multi-file"
++                      : cache->type == DISK_CACHE_SINGLE_FILE ? "single-file"
++                                                              : "none";
++   fprintf(stderr,
++           "radv/ps5 disk cache: %s queued %d jobs %.1f MiB, window %.1f s: added %" PRIu64
++           " (%.1f MiB), done %" PRIu64 " (%.1f MiB, %.0f ms, compressing %.0f ms), known %" PRIu64
++           ", evictions %" PRIu64 " (%.0f ms), compactions %" PRIu64 " (%.0f ms), add waited %" PRIu64
++           " (%.0f ms); total added %" PRIu64 " done %" PRIu64 "\n",
++           type, jobs, bytes / 1048576.0, (now - start) / 1e9, added, added_bytes / 1048576.0, done,
++           done_bytes / 1048576.0, done_ns / 1e6, compress_ns / 1e6, known + known_db, evictions, evict_ns / 1e6,
++           compactions, compact_ns / 1e6, blocks, block_ns / 1e6,
++           p_atomic_read(&dc_stats.total_added), p_atomic_read(&dc_stats.total_done));
++}
++
++/* After util_queue_add_job: a put that waited for room. */
++static void
++dc_note_add(struct disk_cache *cache, size_t size, uint64_t add_start)
++{
++   if (!dc_stats_enabled())
++      return;
++
++   const uint64_t now = os_time_get_nano();
++   p_atomic_inc(&dc_stats.added);
++   p_atomic_add(&dc_stats.added_bytes, size);
++   p_atomic_inc(&dc_stats.total_added);
++
++   const uint64_t waited = now - add_start;
++   if (waited >= 1000000) {
++      p_atomic_inc(&dc_stats.blocks);
++      p_atomic_add(&dc_stats.block_ns, waited);
++      const uint64_t last = p_atomic_read(&dc_stats.last_block_line_ns);
++      if ((last == 0 || now - last >= 10ull * 1000000000ull) &&
++          p_atomic_cmpxchg(&dc_stats.last_block_line_ns, last, now) == last) {
++         int jobs = 0;
++         size_t bytes = 0;
++         mtx_lock(&cache->cache_queue.lock);
++         jobs = cache->cache_queue.num_queued;
++         bytes = cache->cache_queue.total_jobs_size;
++         mtx_unlock(&cache->cache_queue.lock);
++         fprintf(stderr,
++                 "radv/ps5 disk cache: a put waited %.1f ms for room in the queue (queued %d jobs "
++                 "%.1f MiB; puts wait once it holds 256 MiB)\n",
++                 waited / 1e6, jobs, bytes / 1048576.0);
++      }
++   }
++
++   dc_stats_maybe_line(cache);
++}
++
++static void
++dc_drain_at_exit(void)
++{
++   const unsigned seconds = dc_drain_exit_seconds();
++   uint64_t pending = p_atomic_read(&dc_stats.pending);
++   if (!seconds || !pending)
++      return;
++
++   const uint64_t start = os_time_get_nano();
++   const uint64_t deadline = start + seconds * 1000000000ull;
++   const uint64_t at_start = pending;
++   while (pending && os_time_get_nano() < deadline) {
++      os_time_sleep(10000);
++      pending = p_atomic_read(&dc_stats.pending);
++   }
++   if (pending)
++      fprintf(stderr,
++              "RADV_PS5_DISK_CACHE_DRAIN_EXIT: %" PRIu64 " of %" PRIu64
++              " queued puts not written after %u s; they are dropped\n",
++              pending, at_start, seconds);
++   else
++      fprintf(stderr, "RADV_PS5_DISK_CACHE_DRAIN_EXIT: %" PRIu64 " queued puts written in %.0f ms\n",
++              at_start, (os_time_get_nano() - start) / 1e6);
++}
++
++static once_flag dc_drain_once = ONCE_FLAG_INIT;
++
++static void
++dc_drain_register(void)
++{
++   /* Registered after u_queue.c's exit handler (the queue exists by now), so it runs first. */
++   atexit(dc_drain_at_exit);
++}
++
+ #define DRV_KEY_CPY(_dst, _src, _src_size) \
+ do {                                       \
+    memcpy(_dst, _src, _src_size);          \
+@@ -88,10 +289,13 @@ disk_cache_init_queue(struct disk_cache *cache)
+     * The queue will resize automatically when it's full, so adding new jobs
+     * doesn't stall.
+     */
+-   return util_queue_init(&cache->cache_queue, "disk$", 32, 4,
+-                          UTIL_QUEUE_INIT_RESIZE_IF_FULL |
+-                          UTIL_QUEUE_INIT_USE_MINIMUM_PRIORITY |
+-                          UTIL_QUEUE_INIT_SET_FULL_THREAD_AFFINITY, NULL);
++   bool ok = util_queue_init(&cache->cache_queue, "disk$", 32, 4,
++                             UTIL_QUEUE_INIT_RESIZE_IF_FULL |
++                             UTIL_QUEUE_INIT_USE_MINIMUM_PRIORITY |
++                             UTIL_QUEUE_INIT_SET_FULL_THREAD_AFFINITY, NULL);
++   if (ok && dc_drain_exit_seconds() != 0)
++      call_once(&dc_drain_once, dc_drain_register); /* RADV_PS5_DISK_CACHE_DRAIN_EXIT */
++   return ok;
+ }
+ 
+ static struct disk_cache *
+@@ -391,6 +595,7 @@ create_put_job(struct disk_cache *cache, const cache_key key,
+          memcpy(dc_job->data, data, size);
+       }
+       dc_job->size = size;
++      dc_job->counted = false;
+ 
+       /* Copy the cache item metadata */
+       if (cache_item_metadata) {
+@@ -412,6 +617,11 @@ create_put_job(struct disk_cache *cache, const cache_key key,
+          dc_job->cache_item_metadata.type = CACHE_ITEM_TYPE_UNKNOWN;
+          dc_job->cache_item_metadata.keys = NULL;
+       }
++
++      /* RADV_PS5_DISK_CACHE_STATS / _DRAIN_EXIT: in flight until destroy_put_job. */
++      dc_job->counted = dc_counting();
++      if (dc_job->counted)
++         p_atomic_inc(&dc_stats.pending);
+    }
+ 
+    return dc_job;
+@@ -427,6 +637,9 @@ destroy_put_job(void *job, void *gdata, int thread_index)
+ {
+    if (job) {
+       struct disk_cache_put_job *dc_job = (struct disk_cache_put_job *) job;
++      /* RADV_PS5_DISK_CACHE_STATS / _DRAIN_EXIT: counted in at disk_cache_put. */
++      if (dc_job->counted)
++         p_atomic_dec(&dc_stats.pending);
+       free(dc_job->cache_item_metadata.keys);
+       free(job);
+    }
+@@ -452,6 +665,8 @@ cache_put(void *job, void *gdata, int thread_index)
+    unsigned i = 0;
+    char *filename = NULL;
+    struct disk_cache_put_job *dc_job = (struct disk_cache_put_job *) job;
++   const bool stats = dc_job->counted && dc_stats_enabled(); /* RADV_PS5_DISK_CACHE_STATS */
++   const uint64_t put_start = stats ? os_time_get_nano() : 0;
+ 
+    if (dc_job->cache->blob_put_cb) {
+       blob_put_compressed(dc_job->cache, dc_job->key, dc_job->data, dc_job->size);
+@@ -473,21 +688,37 @@ cache_put(void *job, void *gdata, int thread_index)
+        * of up to 8 evictions (each reads a whole folder), the compression and the five file
+        * calls below that end in the same finding. A file that appears after this look is still
+        * caught below. */
+-      if (mesa_cache_db_multipart_skip_known() && access(filename, F_OK) == 0)
++      if (mesa_cache_db_multipart_skip_known() && access(filename, F_OK) == 0) {
++         if (stats)
++            p_atomic_inc(&dc_stats.known);
+          goto done;
++      }
+ 
+       /* If the cache is too large, evict something else first. */
++      const uint64_t evict_start = stats ? os_time_get_nano() : 0;
+       while (p_atomic_read_relaxed(&dc_job->cache->size->value) + dc_job->size > dc_job->cache->max_size &&
+              i < 8) {
+          disk_cache_evict_lru_item(dc_job->cache);
+          i++;
+       }
++      if (stats && i) {
++         p_atomic_add(&dc_stats.evictions, i);
++         p_atomic_add(&dc_stats.evict_ns, os_time_get_nano() - evict_start);
++      }
+ 
+       disk_cache_write_item_to_disk(dc_job, filename);
+ 
+ done:
+       free(filename);
+    }
++
++   if (stats) {
++      p_atomic_inc(&dc_stats.done);
++      p_atomic_inc(&dc_stats.total_done);
++      p_atomic_add(&dc_stats.done_bytes, dc_job->size);
++      p_atomic_add(&dc_stats.done_ns, os_time_get_nano() - put_start);
++      dc_stats_maybe_line(dc_job->cache);
++   }
+ }
+ 
+ struct blob_cache_entry {
+@@ -586,8 +817,11 @@ disk_cache_put(struct disk_cache *cache, const cache_key key,
+ 
+    if (dc_job) {
+       util_queue_fence_init(&dc_job->fence);
++      const uint64_t add_start = dc_job->counted ? os_time_get_nano() : 0;
+       util_queue_add_job(&cache->cache_queue, dc_job, &dc_job->fence,
+-                         cache_put, destroy_put_job, dc_job->size);
++                         cache_put, destroy_put_job, size);
++      if (add_start)
++         dc_note_add(cache, size, add_start);
+    }
+ }
+ 
+@@ -606,8 +840,11 @@ disk_cache_put_nocopy(struct disk_cache *cache, const cache_key key,
+ 
+    if (dc_job) {
+       util_queue_fence_init(&dc_job->fence);
++      const uint64_t add_start = dc_job->counted ? os_time_get_nano() : 0;
+       util_queue_add_job(&cache->cache_queue, dc_job, &dc_job->fence,
+-                         cache_put, destroy_put_job_nocopy, dc_job->size);
++                         cache_put, destroy_put_job_nocopy, size);
++      if (add_start)
++         dc_note_add(cache, size, add_start);
+    }
+ }
+ 
+diff --git a/src/util/disk_cache_os.c b/src/util/disk_cache_os.c
+index eefa2d5..c4b8dc7 100644
+--- a/src/util/disk_cache_os.c
++++ b/src/util/disk_cache_os.c
+@@ -736,9 +736,12 @@ create_cache_item_header_and_blob(struct disk_cache_put_job *dc_job,
+       compressed_data = malloc(max_buf);
+       if (compressed_data == NULL)
+          return false;
++      const uint64_t compress_start = dc_job->counted ? os_time_get_nano() : 0;
+       compressed_size =
+          util_compress_deflate(dc_job->data, dc_job->size,
+                               compressed_data, max_buf);
++      if (compress_start) /* RADV_PS5_DISK_CACHE_STATS */
++         p_atomic_add(&disk_cache_stat_compress_ns, os_time_get_nano() - compress_start);
+       if (compressed_size == 0)
+          goto fail;
+    }
+diff --git a/src/util/disk_cache_os.h b/src/util/disk_cache_os.h
+index 8950839..9de16ce 100644
+--- a/src/util/disk_cache_os.h
++++ b/src/util/disk_cache_os.h
+@@ -126,8 +126,15 @@ struct disk_cache_put_job {
+    size_t size;
+ 
+    struct cache_item_metadata cache_item_metadata;
++
++   /* EglantinePS5: counted in dc_stats.pending (RADV_PS5_DISK_CACHE_STATS or _DRAIN_EXIT). */
++   bool counted;
+ };
+ 
++/* EglantinePS5 (RADV_PS5_DISK_CACHE_STATS): time the disk threads spent compressing counted puts
++ * (disk_cache_os.c adds, disk_cache.c holds and prints). */
++extern uint64_t disk_cache_stat_compress_ns;
++
+ const char *
+ disk_cache_generate_cache_dir(void *mem_ctx, const char *gpu_name,
+                               const char *driver_id,
+diff --git a/src/util/mesa_cache_db.c b/src/util/mesa_cache_db.c
+index e122681..16092ab 100644
+--- a/src/util/mesa_cache_db.c
++++ b/src/util/mesa_cache_db.c
+@@ -25,6 +25,7 @@
+ #include "mesa-blake3.h"
+ #include "mesa_cache_db.h"
+ #include "os_time.h"
++#include "u_atomic.h"
+ #include "ralloc.h"
+ #include "u_debug.h"
+ #include "u_qsort.h"
+@@ -615,6 +616,7 @@ mesa_db_compact(struct mesa_cache_db *db, int64_t blob_size,
+    bool success = false, compact = false;
+    void *buffer = NULL;
+    unsigned int i = 0;
++   const uint64_t compact_start = os_time_get_nano(); /* RADV_PS5_DISK_CACHE_STATS */
+ 
+    /* reload index to sync the last access times */
+    if (db->owned && !mesa_db_write_times(db))
+@@ -768,6 +770,9 @@ cleanup:
+    if (success && !mesa_db_reload(db))
+       success = false;
+ 
++   p_atomic_inc(&mesa_cache_db_stat_compactions);
++   p_atomic_add(&mesa_cache_db_stat_compact_ns, os_time_get_nano() - compact_start);
++
+    return success;
+ }
+ 
+diff --git a/src/util/mesa_cache_db.h b/src/util/mesa_cache_db.h
+index 1d55fcf..d7d3137 100644
+--- a/src/util/mesa_cache_db.h
++++ b/src/util/mesa_cache_db.h
+@@ -31,6 +31,13 @@ enum mesa_cache_db_write_result {
+    MESA_CACHE_DB_WRITE_NO_SPACE,
+ };
+ 
++/* EglantinePS5 (RADV_PS5_DISK_CACHE_STATS, disk_cache.c): process-wide counts, only added to
++ * (mesa_cache_db_multipart.c holds them): compactions (each evicts part of a database) and their
++ * time, and puts dropped because a part held the key (RADV_PS5_DISK_CACHE_SKIP_KNOWN). */
++extern uint64_t mesa_cache_db_stat_compactions;
++extern uint64_t mesa_cache_db_stat_compact_ns;
++extern uint64_t mesa_cache_db_stat_known;
++
+ struct mesa_cache_db_file {
+    FILE *file;
+    char *path;
+diff --git a/src/util/mesa_cache_db_multipart.c b/src/util/mesa_cache_db_multipart.c
+index 8cca42b..b655c8d 100644
+--- a/src/util/mesa_cache_db_multipart.c
++++ b/src/util/mesa_cache_db_multipart.c
+@@ -38,6 +38,11 @@
+  * Off: upstream behaviour, one cached flag read per put. */
+ static int multipart_skip_known = -1;
+ 
++/* mesa_cache_db.h: the counts RADV_PS5_DISK_CACHE_STATS prints. */
++uint64_t mesa_cache_db_stat_compactions;
++uint64_t mesa_cache_db_stat_compact_ns;
++uint64_t mesa_cache_db_stat_known;
++
+ bool
+ mesa_cache_db_multipart_skip_known(void)
+ {
+@@ -364,8 +369,10 @@ mesa_cache_db_multipart_has_entry(struct mesa_cache_db_multipart *db,
+          continue;
+       if (!mesa_cache_db_multipart_init_part(db, part))
+          continue;
+-      if (mesa_cache_db_has_entry(db->parts[part], cache_key_160bit))
++      if (mesa_cache_db_has_entry(db->parts[part], cache_key_160bit)) {
++         p_atomic_inc(&mesa_cache_db_stat_known);
+          return true;
++      }
+    }
+ 
+    return false;
+@@ -396,6 +403,7 @@ mesa_cache_db_multipart_entry_write_known(struct mesa_cache_db_multipart *db,
+          db->last_written_part = part;
+          return true;
+       case MESA_CACHE_DB_WRITE_EXISTS:
++         p_atomic_inc(&mesa_cache_db_stat_known);
+          return true;
+       case MESA_CACHE_DB_WRITE_NO_SPACE:
+          continue;

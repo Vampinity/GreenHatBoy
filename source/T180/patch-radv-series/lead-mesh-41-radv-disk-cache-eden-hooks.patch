@@ -1,0 +1,145 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: EglantinePS5
+Date: Fri, 13 Nov 2026 23:55:00 +0100
+Subject: [PATCH] util/disk_cache: the app's count of queued puts and its drain (eden_radv_disk_cache_queued, eden_radv_disk_cache_drain); one exit drain
+
+T172 integration of lead-mesh-31 (RADV_PS5_DISK_CACHE_STATS / _DRAIN_EXIT) and
+lead-mesh-35 (RADV_PS5_CACHE_FAST drain), and the hook EglantinePS5's 0844
+waits on.
+
+1. radv_ps5_disk_cache_queued(): puts handed to a disk cache and not yet
+   finished by its writer threads (queued, or being compressed and written),
+   lead-mesh-31's in-flight count. It now counts with RADV_PS5_CACHE_FAST=1
+   too (two atomic adds per put), not only with _STATS or _DRAIN_EXIT.
+
+2. The app's hooks, as lead-mesh-02 offers eden_radv_stall_dump: pointers the
+   app defines (weak here, so a program without them links). When a disk
+   cache is made, the driver sets eden_radv_disk_cache_queued to the count
+   (while it counts) and eden_radv_disk_cache_drain to
+   radv_ps5_disk_cache_drain (fast caches). tools/isolate-radv.py renames the
+   driver's defined symbols only; these two are undefined in the driver and
+   keep their names, as eden_radv_stall_dump does. Unset (all switches off):
+   both stay null, and 0844 says the driver gives no count.
+
+3. One exit drain. With RADV_PS5_CACHE_FAST=1 lead-mesh-35's exit handler
+   waits max(RADV_PS5_CACHE_EXIT_MS, RADV_PS5_DISK_CACHE_DRAIN_EXIT x 1000) ms
+   and then writes the held-back entries; lead-mesh-31's handler keeps out
+   (it ran after, so puts it waited for would have left held-back entries
+   unwritten). Without RADV_PS5_CACHE_FAST lead-mesh-31's handler is as it was.
+
+Nothing about keys, entries, files or the cache UUID changes. Ours.
+
+Compiled with the driver's flags, syntax only. Not linked, not run on the console.
+
+Co-Authored-By: Claude Opus 5.5
+---
+diff --git a/src/util/disk_cache.c b/src/util/disk_cache.c
+index 787be67..c92b671 100644
+--- a/src/util/disk_cache.c
++++ b/src/util/disk_cache.c
+@@ -134,9 +134,14 @@ dc_drain_exit_seconds(void)
+ static inline bool
+ dc_counting(void)
+ {
+-   return dc_stats_enabled() || dc_drain_exit_seconds() != 0;
++   /* lead-mesh-41: RADV_PS5_CACHE_FAST counts too, for the app's count of queued puts. */
++   return dc_stats_enabled() || dc_drain_exit_seconds() != 0 || mesa_cache_db_ps5_fast();
+ }
+ 
++/* lead-mesh-41: whether a RADV_PS5_CACHE_FAST cache is registered (lead-mesh-34); its exit
++ * handler (lead-mesh-35) then drains and writes the held-back entries, and this one keeps out. */
++static bool ps5_cache_any_registered(void);
++
+ static void
+ dc_stats_maybe_line(struct disk_cache *cache)
+ {
+@@ -243,7 +248,7 @@ dc_drain_at_exit(void)
+ {
+    const unsigned seconds = dc_drain_exit_seconds();
+    uint64_t pending = p_atomic_read(&dc_stats.pending);
+-   if (!seconds || !pending)
++   if (!seconds || !pending || ps5_cache_any_registered())
+       return;
+ 
+    const uint64_t start = os_time_get_nano();
+@@ -319,6 +324,12 @@ ps5_cache_atexit(void)
+    radv_ps5_disk_cache_drain(ps5_exit_ms);
+ }
+ 
++static bool
++ps5_cache_any_registered(void)
++{
++   return p_atomic_read(&ps5_next_ns) != 0;
++}
++
+ static void
+ ps5_cache_register(struct disk_cache *cache)
+ {
+@@ -331,6 +342,10 @@ ps5_cache_register(struct disk_cache *cache)
+    }
+    if (!ps5_start_ns) {
+       ps5_exit_ms = debug_get_num_option("RADV_PS5_CACHE_EXIT_MS", 2000);
++      /* lead-mesh-41: RADV_PS5_DISK_CACHE_DRAIN_EXIT=<s> (lead-mesh-31) raises the limit; that
++       * handler then keeps out, so the held-back entries are written after the last put. */
++      if (dc_drain_exit_seconds() * 1000u > ps5_exit_ms)
++         ps5_exit_ms = dc_drain_exit_seconds() * 1000u;
+       atexit(ps5_cache_atexit);
+       ps5_start_ns = os_time_get_nano();
+       p_atomic_set(&ps5_next_ns, ps5_start_ns + PS5_REPORT_NS);
+@@ -505,6 +520,32 @@ radv_ps5_disk_cache_drain(unsigned timeout_ms)
+    return left == 0;
+ }
+ 
++/* lead-mesh-41: puts handed to a disk cache and not yet finished by its writer threads (queued
++ * or being compressed and written), all caches of the process; counted while dc_counting()
++ * (RADV_PS5_CACHE_FAST, RADV_PS5_DISK_CACHE_STATS or _DRAIN_EXIT). */
++unsigned long long
++radv_ps5_disk_cache_queued(void)
++{
++   return p_atomic_read(&dc_stats.pending);
++}
++
++/* lead-mesh-41: the app's hooks, pointers the app defines (weak here, so a program without them
++ * links), set as lead-mesh-02 sets eden_radv_stall_dump. tools/isolate-radv.py renames the
++ * driver's defined symbols only; these stay undefined in the driver and keep their names.
++ * EglantinePS5's 0844 (headless/main.cpp, EDEN_UP_PREPASS_CACHE_WAIT_S) polls the count after its
++ * before-play pass, then calls the drain, which writes the held-back entries (lead-mesh-32). */
++extern unsigned long long (*eden_radv_disk_cache_queued)(void) __attribute__((weak));
++extern bool (*eden_radv_disk_cache_drain)(unsigned timeout_ms) __attribute__((weak));
++
++static void
++ps5_cache_offer_hooks(struct disk_cache *cache)
++{
++   if (dc_counting() && &eden_radv_disk_cache_queued)
++      p_atomic_set(&eden_radv_disk_cache_queued, radv_ps5_disk_cache_queued);
++   if (cache->ps5_fast && &eden_radv_disk_cache_drain)
++      p_atomic_set(&eden_radv_disk_cache_drain, radv_ps5_disk_cache_drain);
++}
++
+ void
+ disk_cache_ps5_note_write(size_t bytes, uint64_t ns, bool ok)
+ {
+@@ -628,6 +669,7 @@ disk_cache_type_create(const char *gpu_name,
+ 
+    if (cache->ps5_fast)
+       ps5_cache_register(cache);
++   ps5_cache_offer_hooks(cache); /* lead-mesh-41 */
+ 
+    cache->path_init_failed = false;
+ 
+diff --git a/src/util/disk_cache.h b/src/util/disk_cache.h
+index 96d85e5..801e767 100644
+--- a/src/util/disk_cache.h
++++ b/src/util/disk_cache.h
+@@ -188,6 +188,11 @@ disk_cache_wait_for_idle(struct disk_cache *cache);
+ bool
+ radv_ps5_disk_cache_drain(unsigned timeout_ms);
+ 
++/* lead-mesh-41: puts handed to the disk caches and not yet finished (queued or being written);
++ * counted with RADV_PS5_CACHE_FAST, RADV_PS5_DISK_CACHE_STATS or _DRAIN_EXIT, 0 otherwise. */
++unsigned long long
++radv_ps5_disk_cache_queued(void);
++
+ /**
+  * Remove the item in the cache under the name \key.
+  */

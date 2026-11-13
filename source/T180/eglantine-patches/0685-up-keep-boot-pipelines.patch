@@ -1,0 +1,129 @@
+From: EglantinePS5
+Subject: [PATCH] up: graphics pipelines the boot built are not evicted before a draw has used them (EDEN_UP_KEEP_BOOT_PIPELINES=1 or =mesh), off by default
+
+Switches: EDEN_UP_KEEP_BOOT_PIPELINES=1 (exact "1": every such pipeline) or =mesh (exact "mesh":
+only task/mesh pipelines); any other value is off. EDEN_UP_KEEP_BOOT_PIPELINES_FLOOR_MIB=<n>
+(optional): kept only while the pool's largest free block (PipelineMemoryGate::GateFree, the
+memory gate's own reading) is at least n MiB; unset, 0 or the block unknown: always kept.
+
+Why: EvictUnusedPipelines (every 600 frames) destroys a graphics pipeline unused for 9000 frames.
+A pipeline the boot built and no draw has asked for yet has never been "used", so the first check
+after frame 9000 destroys nearly all the boot's work. The T151 play session of 13 Nov
+(a hand-played session): "Evicted 2278 graphics pipelines unused for 9000 frames, 28 left" at 204.9 s,
+with the player still in the first area. From 227 s on, 1,490 graphics pipelines were made again at
+first sight ("on disk, not built at boot": the label is wrong for these, 0687 fixes it) and most of
+the 386 task/mesh pipelines made during play (those have no kept translation and are translated on
+the GPU thread, 18 ms each on average, up to 112 ms). The bursts line up with long frames: 248.7 s
+(364 made, worst frame 1,004 ms) and 595-607 s (592 made in two reports, 2.4 s on the GPU thread,
+worst frames 3,273 / 1,992 / 1,076 ms).
+
+What: in EvictUnusedPipelines, with the switch on, a pipeline that is not in used_this_session
+(no draw has used it since it was built) is skipped, for =mesh only when IsMeshPipeline(). Every
+draw's first use goes through CurrentGraphicsPipelineSlowPath, which puts the pipeline in
+used_this_session; from then on the 9000-frame rule applies as before. used_this_session and
+used_and_evicted (the used list the next boot reads) are not changed by the skip. One log line at
+the first eviction check and then at most once per 3600 frames: "EDEN_UP_KEEP_BOOT_PIPELINES=<1|
+mesh>: <k> pipelines built at boot and not used yet kept, <e> evicted" (plus "(the pool's largest
+free block is under the floor: none kept)" when the floor stopped it).
+
+Cost: memory. The code's own estimate is about 0.45 MB of driver memory per built pipeline, so =1
+holds up to about 1 GB that the old rule gave back at 205 s (INFERRED: not measured on the console;
+VMA usage did not move at that eviction, so it is host heap). By the end of T151 about 2,000
+pipelines were back in the cache anyway (log 773 s: "1994 left"); what =1 keeps on top is the boot
+pipelines a session never draws. =mesh keeps only the task/mesh ones (INFERRED: one to two hundred pipelines; 256
+task/mesh programs were translated at boot). The floor switch gives the old rule back when the pool is short.
+
+Off (unset or any other value): one load of a static per eviction check (every 600 frames); no
+line, nothing else changes. Not in the kept-store stamp (only TranslationSwitches are; this
+changes no translation).
+---
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 819c9da..246a788 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -1311,6 +1311,37 @@ bool MeshCacheBoot() {
+     static const bool on = Common::PeSwitch("EDEN_UP_MESH_CACHE");
+     return on;
+ }
++
++// EDEN_UP_KEEP_BOOT_PIPELINES: a graphics pipeline the boot built and no draw has used yet is not
++// evicted (EvictUnusedPipelines) while the pool has room. Its "last use" is the boot, so the
++// first check after 9000 frames destroyed nearly all of them: the T151 play session of 13 Nov
++// lost 2,278 of the boot's 2,306 graphics pipelines at 205 s, while the player was still in the
++// first area, and then made 1,490 again at first sight in the next areas (reported as "on disk,
++// not built at boot") plus most of its 386 task/mesh pipelines (no kept translation for those:
++// translated on the GPU thread). "1" (exact): every such pipeline; "mesh" (exact): only task/mesh
++// ones. Once a draw has used it, the 9000-frame rule applies as before. With
++// EDEN_UP_KEEP_BOOT_PIPELINES_FLOOR_MIB=<n> they are kept only while the pool's largest free
++// block (the pipeline memory gate's reading) is at least n MiB; unset, 0 or the block unknown:
++// kept. Unset: as before (one load of a static at each eviction check, every 600 frames).
++enum class KeepBoot : u8 { Off, All, Mesh };
++KeepBoot KeepBootPipelines() {
++    static const KeepBoot mode = [] {
++        const char* const value = std::getenv("EDEN_UP_KEEP_BOOT_PIPELINES");
++        if (value == nullptr) {
++            return KeepBoot::Off;
++        }
++        const std::string_view text{value};
++        return text == "1" ? KeepBoot::All : text == "mesh" ? KeepBoot::Mesh : KeepBoot::Off;
++    }();
++    return mode;
++}
++u64 KeepBootFloorBytes() {
++    static const u64 floor = [] {
++        const char* const value = std::getenv("EDEN_UP_KEEP_BOOT_PIPELINES_FLOOR_MIB");
++        return value != nullptr ? static_cast<u64>(std::strtoull(value, nullptr, 10)) << 20 : u64{0};
++    }();
++    return floor;
++}
+ } // Anonymous namespace
+ 
+ bool DropMeshDrawsBeforeBuild() {
+@@ -2578,6 +2609,15 @@ void PipelineCache::EvictUnusedPipelines() {
+     const u64 cutoff = frame_count - EvictAfterFrames;
+     const u64 tick = scheduler.CurrentTick();
+     size_t evicted = 0;
++    // EDEN_UP_KEEP_BOOT_PIPELINES: pipelines no draw has used yet stay while the pool has room.
++    const KeepBoot keep_boot = KeepBootPipelines();
++    bool keep_room = false;
++    if (keep_boot != KeepBoot::Off) {
++        const u64 floor = KeepBootFloorBytes();
++        const u64 free = floor != 0 ? PipelineMemoryGate::GateFree() : 0;
++        keep_room = free == 0 || free >= floor;
++    }
++    size_t kept_boot = 0;
+     for (auto it = graphics_cache.begin(); it != graphics_cache.end();) {
+         GraphicsPipeline* const pipeline = it->second.get();
+         if (pipeline == nullptr || pipeline == current_pipeline || !pipeline->IsBuilt() ||
+@@ -2585,6 +2625,12 @@ void PipelineCache::EvictUnusedPipelines() {
+             ++it;
+             continue;
+         }
++        if (keep_room && !used_this_session.contains(pipeline) &&
++            (keep_boot == KeepBoot::All || pipeline->IsMeshPipeline())) {
++            ++kept_boot;
++            ++it;
++            continue;
++        }
+         if (used_this_session.erase(pipeline) != 0) {
+             used_and_evicted.insert(it->first.Hash());
+         }
+@@ -2602,6 +2648,18 @@ void PipelineCache::EvictUnusedPipelines() {
+         it = graphics_cache.erase(it);
+         ++evicted;
+     }
++    if (keep_boot != KeepBoot::Off) {
++        // At the first check and then at most once per 3600 frames (this runs every 600).
++        static u64 last_frame = 0;
++        if (last_frame == 0 || frame_count - last_frame >= 3600) {
++            last_frame = frame_count;
++            LOG_INFO(Render_Vulkan,
++                     "EDEN_UP_KEEP_BOOT_PIPELINES={}: {} pipelines built at boot and not used yet "
++                     "kept, {} evicted{}",
++                     keep_boot == KeepBoot::All ? "1" : "mesh", kept_boot, evicted,
++                     keep_room ? "" : " (the pool's largest free block is under the floor: none kept)");
++        }
++    }
+     if (evicted == 0) {
+         return;
+     }

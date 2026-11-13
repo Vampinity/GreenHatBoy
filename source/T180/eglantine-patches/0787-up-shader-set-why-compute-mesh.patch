@@ -1,0 +1,274 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_SHADER_SET_WHY counts compute and task/mesh asks too (asked, served from the set, in the set but not prepared, refused, no record), on the timer
+
+Switch: none new. Acts with EDEN_UP_SHADER_SET_WHY=1; compute asks only with
+EDEN_UP_SHADER_SET_COMPUTE=1 (without it the set has no compute records). Off: nothing changes
+(the totals line is the same; the new line prints only when a mesh or compute ask was seen).
+
+Why: the WHY totals counted task/mesh asks only as "mesh=N" and compute asks not at all, so a
+start with 0780-0783 on could not tell how many of its 59 mesh and 94 compute pipelines (d4) the
+set served.
+
+What:
+- Mesh asks (the existing samples) are sorted like graphics ones besides the old count: served
+  from the set, made from an own kept record, in the set but not prepared, in the set but refused
+  (or the store closed), no record in the set. The catalogue already holds the mesh records' keys
+  when EDEN_UP_SHADER_SET_MESH=1.
+- Compute: the catalogue also reads the compute records' keys (keys only, as the store's
+  KeptComputeHash), sorted. A dispatch that makes a new compute pipeline with the compute switch
+  on notes one sample (key, what CreateKeptComputePipeline found in the store, made from it or
+  not), at most 4,096 waiting; they are sorted with the graphics samples when the catalogue is
+  ready.
+- One more line beside the totals, from the same timer (EDEN_UP_SHADER_SET_WHY_EVERY_S, 0771),
+  the minute line and the shutdown line: "EDEN_UP_SHADER_SET_WHY mesh and compute: mesh asked=
+  served_from_set= own= in_set_not_prepared= in_set_refused= no_record=; compute asked= ... waiting=
+  dropped=". Compute asks also move the "a count changed" test of the timer.
+- The catalogue line names the compute records.
+
+Needs 0771 and 0781. Checked: apply in name order, PS5-target syntax check. Not checked on the
+console.
+---
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 3968c3f..96b7f26 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -3878,7 +3878,11 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
+     // dispatch's state still gives its answers (never for a rebuild: that one wants this state).
+     std::unique_ptr<ComputePipeline> pipeline;
+     if (previous == nullptr && shader_set_enabled && VideoCommon::ShaderSet::ComputeAsked()) {
++        set_why_compute_found = SetWhyFound::StoreClosed; // 0787 (read only with WHY on)
+         pipeline = CreateKeptComputePipeline(key, env);
++        if (shader_set_why) {
++            NoteShaderSetWhyCompute(KeptComputeHash(key), pipeline != nullptr);
++        }
+     }
+     if (!pipeline) {
+         main_pools.ReleaseContents();
+@@ -5270,8 +5274,15 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateKeptComputePipeline(
+     ShaderPrep::KeptStore::Record record;
+     if (prep_rejected.contains(hash) || !prep_store.Find(hash, record) ||
+         (record.flags & ShaderPrep::KeptStore::FlagNotKeepable) != 0) {
++        // 0787: what the store said, for EDEN_UP_SHADER_SET_WHY.
++        set_why_compute_found = prep_rejected.contains(hash) ? SetWhyFound::Rejected
++                                : !prep_store.Contains(hash) ? SetWhyFound::NotStored
++                                                              : SetWhyFound::NotKeepable;
+         return nullptr;
+     }
++    set_why_compute_found = (record.flags & ShaderPrep::KeptStore::FlagShaderSet) != 0
++                                ? SetWhyFound::Set
++                                : SetWhyFound::Own;
+     // GPU thread only: what the kept compute translations did since the last line.
+     static u32 used{}, refused{};
+     static std::map<std::string, u32> reasons;
+@@ -7218,6 +7229,23 @@ void PipelineCache::IndexShaderSetWhy(const std::filesystem::path& file,
+             catalogue->tuples.emplace_back(SetWhyTuple(key.unique_hashes), entry);
+             catalogue->fields.push_back(SetWhyDigests(key.state));
+             return false; // keys only: no record's environments are built
++        },
++        // 0787, EDEN_UP_SHADER_SET_COMPUTE=1: the compute records' store hashes, keys only.
++        VideoCommon::ShaderSet::ComputeAsked()
++            ? std::function<void(std::ifstream&, VideoCommon::FileEnvironment)>{
++                  [](std::ifstream&, VideoCommon::FileEnvironment) {}}
++            : std::function<void(std::ifstream&, VideoCommon::FileEnvironment)>{},
++        [&](std::span<const u8> bytes) {
++            if (stop.stop_requested()) {
++                throw std::runtime_error("stopped at shutdown");
++            }
++            if (bytes.size() != sizeof(ComputePipelineCacheKey)) {
++                throw std::runtime_error("a compute record's key has another size");
++            }
++            ComputePipelineCacheKey key;
++            std::memcpy(static_cast<void*>(&key), bytes.data(), sizeof(key));
++            catalogue->compute_keys.push_back(KeptComputeHash(key));
++            return false;
+         });
+     if (!complete || catalogue->keys.empty()) {
+         LOG_WARNING(Render_Vulkan, "EDEN_UP_SHADER_SET_WHY: the catalogue is incomplete ({} "
+@@ -7228,16 +7256,20 @@ void PipelineCache::IndexShaderSetWhy(const std::filesystem::path& file,
+     }
+     std::ranges::sort(catalogue->keys);
+     std::ranges::sort(catalogue->tuples);
++    std::ranges::sort(catalogue->compute_keys);
+     catalogue->keys.shrink_to_fit();
+     catalogue->tuples.shrink_to_fit();
+     catalogue->fields.shrink_to_fit();
++    catalogue->compute_keys.shrink_to_fit();
+     const size_t bytes = catalogue->keys.size() * sizeof(u64) +
++                         catalogue->compute_keys.size() * sizeof(u64) +
+                          catalogue->tuples.size() * sizeof(std::pair<u64, u32>) +
+                          catalogue->fields.size() * sizeof(std::array<u16, SetWhyFieldCount>);
+     LOG_INFO(Render_Vulkan,
+-             "EDEN_UP_SHADER_SET_WHY: catalogue of {} records ({} KiB) in {:.1f} s; mesh records "
+-             "are not in the set, so mesh keys are counted apart",
+-             catalogue->keys.size(), bytes >> 10,
++             "EDEN_UP_SHADER_SET_WHY: catalogue of {} records and {} compute records ({} KiB) in "
++             "{:.1f} s; mesh keys are counted apart (in the set with EDEN_UP_SHADER_SET_MESH=1), "
++             "compute keys with EDEN_UP_SHADER_SET_COMPUTE=1 (0787)",
++             catalogue->keys.size(), catalogue->compute_keys.size(), bytes >> 10,
+              std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count());
+     std::scoped_lock lock{shader_set_mutex};
+     set_why_catalogue = std::move(catalogue);
+@@ -7255,6 +7287,8 @@ void PipelineCache::StopShaderSetWhyIfFailed() {
+     set_why_valid = false;
+     set_why.dropped += set_why_pending.size();
+     std::vector<SetWhySample>{}.swap(set_why_pending);
++    set_why.compute_dropped += set_why_compute_pending.size();
++    std::vector<SetWhyComputeSample>{}.swap(set_why_compute_pending);
+ }
+ 
+ void PipelineCache::NoteShaderSetWhy(const GraphicsEnvironments& environments) {
+@@ -7284,6 +7318,26 @@ void PipelineCache::NoteShaderSetWhy(const GraphicsEnvironments& environments) {
+     DrainShaderSetWhyLocked(false, false);
+ }
+ 
++void PipelineCache::NoteShaderSetWhyCompute(u64 kept_hash, bool accepted) {
++    std::scoped_lock why_lock{set_why_mutex};
++    ++set_why.compute_asked;
++    StopShaderSetWhyIfFailed();
++    if (!set_why_valid) {
++        return;
++    }
++    if (set_why_compute_pending.size() >= 4096) {
++        ++set_why.compute_dropped;
++        return;
++    }
++    try {
++        set_why_compute_pending.push_back({kept_hash, set_why_compute_found, accepted});
++    } catch (const std::bad_alloc&) {
++        set_why_valid = false;
++        return;
++    }
++    DrainShaderSetWhyLocked(false, false);
++}
++
+ void PipelineCache::DrainShaderSetWhy(bool final, bool print) {
+     std::scoped_lock why_lock{set_why_mutex};
+     DrainShaderSetWhyLocked(final, print);
+@@ -7307,11 +7361,20 @@ void PipelineCache::DrainShaderSetWhyLocked(bool final, bool print) try {
+     }
+     for (size_t index = 0; catalogue && index < set_why_pending.size(); ++index) {
+         const SetWhySample& sample = set_why_pending[index];
++        const bool exact = std::ranges::binary_search(catalogue->keys, sample.key_hash);
+         if (sample.mesh) {
+             ++set_why.mesh;
++            // 0787: sorted too (the set holds task/mesh records with EDEN_UP_SHADER_SET_MESH=1).
++            if (sample.accepted) {
++                ++(sample.found == SetWhyFound::Set ? set_why.mesh_served : set_why.mesh_own);
++            } else if (exact) {
++                ++(sample.found == SetWhyFound::NotStored ? set_why.mesh_not_prepared
++                                                          : set_why.mesh_refused);
++            } else {
++                ++set_why.mesh_no_record;
++            }
+             continue;
+         }
+-        const bool exact = std::ranges::binary_search(catalogue->keys, sample.key_hash);
+         if (sample.accepted) {
+             if (sample.found == SetWhyFound::Set) {
+                 ++(exact ? set_why.hit_fair : set_why.hit_set_unlisted);
+@@ -7388,17 +7451,35 @@ void PipelineCache::DrainShaderSetWhyLocked(bool final, bool print) try {
+     }
+     if (catalogue) {
+         set_why_pending.clear();
++        // 0787: the compute asks.
++        for (const SetWhyComputeSample& sample : set_why_compute_pending) {
++            const bool exact = std::ranges::binary_search(catalogue->compute_keys, sample.key_hash);
++            if (sample.accepted) {
++                ++(sample.found == SetWhyFound::Set ? set_why.compute_served : set_why.compute_own);
++            } else if (exact) {
++                ++(sample.found == SetWhyFound::NotStored ? set_why.compute_not_prepared
++                                                          : set_why.compute_refused);
++            } else {
++                ++set_why.compute_no_record;
++            }
++        }
++        set_why_compute_pending.clear();
+     }
++    const u64 compute_resolved = set_why.compute_served + set_why.compute_own +
++                                 set_why.compute_not_prepared + set_why.compute_refused +
++                                 set_why.compute_no_record;
+     const u64 resolved = set_why.mesh + set_why.hit_fair + set_why.hit_own + set_why.hit_set_unlisted +
+                          set_why.exact_refused + set_why.exact_not_prepared +
+                          set_why.exact_no_store + set_why.near + set_why.no_record_known +
+-                         set_why.no_record_unknown;
++                         set_why.no_record_unknown + compute_resolved;
+     // A line when a count moved: a new ask, or waiting samples sorted once the catalogue came.
+-    if (!print || (!final && set_why.asked == set_why_printed &&
++    // (0787: compute asks move it too.)
++    const u64 asked_all = set_why.asked + set_why.compute_asked;
++    if (!print || (!final && asked_all == set_why_printed &&
+                    resolved == set_why_printed_resolved)) {
+         return;
+     }
+-    set_why_printed = set_why.asked;
++    set_why_printed = asked_all;
+     set_why_printed_resolved = resolved;
+     std::string fields;
+     for (const auto& [field, count] : set_why_fields) {
+@@ -7418,6 +7499,20 @@ void PipelineCache::DrainShaderSetWhyLocked(bool final, bool print) try {
+              set_why.no_record_known, set_why.no_record_unknown,
+              audit_keys_hit.load(std::memory_order_relaxed), catalogue ? "ready" : "not yet",
+              set_why_valid, fields.empty() ? std::string{" none"} : fields);
++    if (set_why.mesh != 0 || set_why.compute_asked != 0) {
++        // 0787: a line of its own, so the totals line above reads as before.
++        LOG_INFO(Render_Vulkan,
++                 "EDEN_UP_SHADER_SET_WHY mesh and compute{}: mesh asked={} served_from_set={} "
++                 "own={} in_set_not_prepared={} in_set_refused={} no_record={}; compute asked={} "
++                 "served_from_set={} own={} in_set_not_prepared={} in_set_refused={} "
++                 "no_record={} waiting={} dropped={}",
++                 final ? " (shutdown)" : "", set_why.mesh, set_why.mesh_served, set_why.mesh_own,
++                 set_why.mesh_not_prepared, set_why.mesh_refused, set_why.mesh_no_record,
++                 set_why.compute_asked, set_why.compute_served, set_why.compute_own,
++                 set_why.compute_not_prepared, set_why.compute_refused,
++                 set_why.compute_no_record, set_why_compute_pending.size(),
++                 set_why.compute_dropped);
++    }
+ } catch (const std::exception&) {
+     set_why_valid = false;
+     LOG_WARNING(Render_Vulkan, "EDEN_UP_SHADER_SET_WHY: bookkeeping failed; counts stop here");
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.h b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+index 3d8b385..83d914d 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.h
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+@@ -565,6 +565,9 @@ private:
+         std::vector<u64> keys;                                  ///< sorted key hashes
+         std::vector<std::pair<u64, u32>> tuples;                ///< (program tuple hash, entry)
+         std::vector<std::array<u16, SetWhyFieldCount>> fields;  ///< per entry
++        /// 0787, EDEN_UP_SHADER_SET_COMPUTE=1: the compute records' store hashes
++        /// (KeptComputeHash), sorted.
++        std::vector<u64> compute_keys;
+     };
+     /// What CreateKeptGraphicsPipeline found in the kept store for the key being made.
+     enum class SetWhyFound : u8 { StoreClosed, NotStored, Rejected, NotKeepable, Own, Set };
+@@ -593,7 +596,22 @@ private:
+         u64 asked{}, mesh{}, hit_fair{}, hit_own{}, hit_own_in_set{}, hit_set_unlisted{};
+         u64 exact_refused{}, exact_not_prepared{}, exact_no_store{}, near{}, near_capped{};
+         u64 no_record_known{}, no_record_unknown{}, dropped{}, lines{};
++        /// 0787: task/mesh asks (counted in `mesh` as before) and compute asks (with
++        /// EDEN_UP_SHADER_SET_COMPUTE=1), sorted as the graphics ones: served from the set, made
++        /// from an own kept record, in the set but not prepared, in the set but refused (or the
++        /// store closed), no record in the set.
++        u64 mesh_served{}, mesh_own{}, mesh_not_prepared{}, mesh_refused{}, mesh_no_record{};
++        u64 compute_asked{}, compute_served{}, compute_own{}, compute_not_prepared{};
++        u64 compute_refused{}, compute_no_record{}, compute_dropped{};
+     } set_why;
++    /// 0787: a compute ask waiting for the catalogue (its store hash, what the store said).
++    struct SetWhyComputeSample {
++        u64 key_hash;
++        SetWhyFound found;
++        bool accepted;
++    };
++    std::vector<SetWhyComputeSample> set_why_compute_pending; ///< capped at 4,096
++    SetWhyFound set_why_compute_found{};
+     u64 set_why_printed{};
+     /// EDEN_UP_SHADER_SET_WHY_EVERY_S (0771): the totals also print from a timer thread (every
+     /// 10 s by default), so a start whose frames stall or that dies still leaves them. The
+@@ -603,6 +621,8 @@ private:
+     std::jthread set_why_timer;
+     void IndexShaderSetWhy(const std::filesystem::path& file, std::stop_token stop);
+     void NoteShaderSetWhy(const GraphicsEnvironments& environments);
++    /// 0787: a compute pipeline asked by a dispatch (`accepted`: made from a kept record).
++    void NoteShaderSetWhyCompute(u64 kept_hash, bool accepted);
+     /// GPU thread: once set_why_failed is set, stops the counts and frees the waiting samples.
+     void StopShaderSetWhyIfFailed();
+     /// Sorts the waiting samples once the catalogue is ready; `print`: the totals line too (with

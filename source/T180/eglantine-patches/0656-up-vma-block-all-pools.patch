@@ -1,0 +1,158 @@
+From: EglantinePS5
+Subject: [PATCH] up: one VMA block size for the default blocks and the separate pools (lethevimlet, oot-bc250 9cc177c + c8594b8), off by default
+
+Switch: EDEN_UP_VMA_BLOCK_MIB=<n> (digits only, 2 to 64, read once). Unset, or anything else (1, 65,
+"8x", " 8", empty): exactly T146, with a warning line for a set but refused value.
+
+What: VMA takes device memory from the driver in blocks and places allocations inside them;
+anything over half a block gets memory of its own. Today our default blocks (images) are 16 MiB or
+EDEN_VMA_BLOCK_MIB's size (0158, 2 to 64), while the separate pools (sparse pages and the buffer
+cache's buffers, Device::SeparatePool) stay at a fixed 16 MiB, and their half-block rule with them.
+lethevimlet's EDEN_NX2_VMA_BLOCK_MIB sets one size for all of them. EDEN_UP_VMA_BLOCK_MIB does the
+same here: n MiB for the default blocks (it wins over EDEN_VMA_BLOCK_MIB, the start line says so),
+for the SparsePages and DeviceBuffers pools, for the over-half-a-block rules of
+AllocateSparseMemory and CreateBufferInSeparatePool, and for 0521's TrimDefaultHalfBlock. 0521's own
+trim blocks (EDEN_UP_VMA_TRIM_BLOCK_MIB) keep their own size. A start line names the size:
+"EDEN_UP_VMA_BLOCK_MIB: n MiB device memory blocks (default blocks and separate pools; over n/2 MiB:
+memory of its own)".
+
+His numbers (BC-250, the same chip family and RADV driver, a later town): free space inside pooled
+blocks 464 -> 22 MiB, device memory at the peak 5453 -> 5056 MiB, fps 54.4 -> 55.0 at 8 MiB; 4 MiB
+saved nothing more and was slower. His c8594b8 also makes 8 the default; that half is NOT taken:
+another tester's base-PS5 A/B (sbihaiko) gave 20-25 fps at 8 MiB against 60 at 16 (he called it
+noise or worse), and run275 (T59) with EDEN_VMA_BLOCK_MIB=8 (default blocks only) still showed
+333-389 MiB slack in its heavy scenes (0521's header, which names slack in the DeviceBuffers and
+SparsePages pools as the next step: this is it). So this is a switch for an A/B on memory slack
+("vma_slack" in EDEN_MEM_CENSUS_TOP was 265 MiB in the 13 Nov crash logs) and fps, not a default.
+
+Cost when off: one function-local static read per separate-pool allocation and per pool creation
+(the old constant), nothing else. Not in the shader-prep TranslationSwitches: it changes no
+translation, so both arms keep one store. Risk when on: more blocks and more allocations of their
+own (each two system calls), and a dedicated image of 2 MiB or more starts on a 2 MiB boundary in
+the PS5 driver, so smaller blocks can move holes rather than remove them (0158's note).
+
+Origin and credit: lethevimlet, lethevimlet/oot-bc250 (and lichii-bc250) v7, commits 9cc177c
+(the switch) and c8594b8 (his 8 MiB default, not taken). Our switch name and range are ours.
+---
+diff --git a/src/video_core/vulkan_common/vulkan_device.cpp b/src/video_core/vulkan_common/vulkan_device.cpp
+index 31d08b6..0e2799f 100644
+--- a/src/video_core/vulkan_common/vulkan_device.cpp
++++ b/src/video_core/vulkan_common/vulkan_device.cpp
+@@ -817,6 +817,18 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR
+             vma_block_bytes = VkDeviceSize{mib} << 20;
+         }
+     }
++    // EDEN_UP_VMA_BLOCK_MIB (0656): the default blocks and the separate pools together.
++    if (const VkDeviceSize up_block_bytes = UpVmaBlockBytes(); up_block_bytes != 0) {
++        vma_block_bytes = up_block_bytes;
++        LOG_INFO(Render_Vulkan,
++                 "EDEN_UP_VMA_BLOCK_MIB: {} MiB device memory blocks (default blocks and separate "
++                 "pools; over {} MiB: memory of its own){}",
++                 up_block_bytes >> 20, up_block_bytes >> 21,
++                 std::getenv("EDEN_VMA_BLOCK_MIB") != nullptr ? ", EDEN_VMA_BLOCK_MIB ignored" : "");
++    } else if (const char* const up_value = std::getenv("EDEN_UP_VMA_BLOCK_MIB")) {
++        LOG_WARNING(Render_Vulkan, "EDEN_UP_VMA_BLOCK_MIB={} ignored (digits only, 2 to 64)",
++                    up_value);
++    }
+     // EDEN_UP_FRITCHII_CHURN=1 (Fritchii dcbd696438): counts the allocator's vkAllocateMemory /
+     // vkFreeMemory calls (blocks and dedicated memory) for the "Churn (600 frames)" line.
+     static const VmaDeviceMemoryCallbacks churn_callbacks{
+@@ -896,6 +908,32 @@ Device::~Device() {
+     vmaDestroyAllocator(allocator);
+ }
+ 
++VkDeviceSize Device::UpVmaBlockBytes() {
++    static const VkDeviceSize bytes = [] {
++        const char* const value = std::getenv("EDEN_UP_VMA_BLOCK_MIB");
++        if (value == nullptr || value[0] == '\0') {
++            return VkDeviceSize{0};
++        }
++        u64 mib = 0;
++        for (const char* digit = value; *digit != '\0'; ++digit) {
++            if (*digit < '0' || *digit > '9' || mib > 64) {
++                return VkDeviceSize{0};
++            }
++            mib = mib * 10 + static_cast<u64>(*digit - '0');
++        }
++        return mib >= 2 && mib <= 64 ? VkDeviceSize{mib} << 20 : VkDeviceSize{0};
++    }();
++    return bytes;
++}
++
++VkDeviceSize Device::SeparatePoolBlockSize() {
++    static const VkDeviceSize bytes = [] {
++        const VkDeviceSize up = UpVmaBlockBytes();
++        return up != 0 ? up : VkDeviceSize{16} << 20;
++    }();
++    return bytes;
++}
++
+ VmaPool Device::GetSeparatePool(SeparatePool kind, u32 memory_type,
+                                 VkDeviceSize block_size) const {
+     std::scoped_lock lk{separate_pools_mutex};
+diff --git a/src/video_core/vulkan_common/vulkan_device.h b/src/video_core/vulkan_common/vulkan_device.h
+index 52239e5..4f7db1b 100644
+--- a/src/video_core/vulkan_common/vulkan_device.h
++++ b/src/video_core/vulkan_common/vulkan_device.h
+@@ -275,12 +275,20 @@ public:
+         DeviceBuffers,
+         TrimmedImages, ///< EDEN_UP_VMA_TRIM's small blocks for images (vma_trim.h)
+     };
+-    static constexpr VkDeviceSize SeparatePoolBlockSize = 16ULL << 20;
++    /// The block size of the separate pools: 16 MiB, or EDEN_UP_VMA_BLOCK_MIB's (0656). Read once.
++    static VkDeviceSize SeparatePoolBlockSize();
++
++    /// EDEN_UP_VMA_BLOCK_MIB=<n> (0656; lethevimlet's EDEN_NX2_VMA_BLOCK_MIB, oot-bc250 9cc177c +
++    /// c8594b8): n MiB for the default blocks AND the separate pools, and half of it as the size
++    /// over which an allocation takes memory of its own. Digits only, 2 to 64; anything else, or
++    /// unset: 0 (today's sizes: EDEN_VMA_BLOCK_MIB or 16 for the default blocks, 16 for the pools).
++    /// Read once.
++    static VkDeviceSize UpVmaBlockBytes();
+ 
+     /// The pool of that kind for a memory type, created on first use (null if that failed).
+     /// `block_size` counts only when the call creates it.
+     VmaPool GetSeparatePool(SeparatePool kind, u32 memory_type,
+-                            VkDeviceSize block_size = SeparatePoolBlockSize) const;
++                            VkDeviceSize block_size = SeparatePoolBlockSize()) const;
+ 
+     /// Adds the blocks and the use of the pools of that kind made so far, all memory types
+     /// (vmaGetPoolStatistics: one step per block, no walk of the allocations). For the
+diff --git a/src/video_core/vulkan_common/vulkan_memory_allocator.cpp b/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
+index d21cb41..380a970 100644
+--- a/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
++++ b/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
+@@ -122,11 +122,14 @@ namespace {
+     return mark;
+ }
+ 
+-/// Half of VMA's own blocks (EDEN_VMA_BLOCK_MIB, 16 MiB, read as vulkan_device.cpp reads it):
+-/// what VMA gives memory of its own anyway.
++/// Half of VMA's own blocks (EDEN_VMA_BLOCK_MIB, 16 MiB, read as vulkan_device.cpp reads it;
++/// EDEN_UP_VMA_BLOCK_MIB over both, 0656): what VMA gives memory of its own anyway.
+ [[nodiscard]] VkDeviceSize TrimDefaultHalfBlock() {
+     static const VkDeviceSize half = [] {
+         VkDeviceSize bytes = 16ULL << 20;
++        if (const VkDeviceSize up = Device::UpVmaBlockBytes(); up != 0) {
++            return up / 2;
++        }
+         if (const char* value = std::getenv("EDEN_VMA_BLOCK_MIB")) {
+             const unsigned long mib = std::strtoul(value, nullptr, 10);
+             if (mib >= 2 && mib <= 64) {
+@@ -715,7 +718,7 @@ VmaAllocation MemoryAllocator::AllocateSparseMemory(const VkMemoryRequirements &
+     // In a pool of their own (see Device::SeparatePool); anything over half a block, or a pool
+     // allocation that fails, takes the default blocks.
+     u32 memory_type{};
+-    if (requirements.size <= Device::SeparatePoolBlockSize / 2 &&
++    if (requirements.size <= Device::SeparatePoolBlockSize() / 2 &&
+         vmaFindMemoryTypeIndex(allocator, requirements.memoryTypeBits, &alloc_ci, &memory_type) ==
+             VK_SUCCESS) {
+         if (const VmaPool pool =
+@@ -750,7 +753,7 @@ bool MemoryAllocator::CreateBufferInSeparatePool(const VkBufferCreateInfo& ci, M
+                                                  VmaAllocationInfo& alloc_info) const {
+     // The buffer cache's buffers, churned by its collector: in a pool of their own (see
+     // Device::SeparatePool). Anything over half a block takes the default blocks (dedicated).
+-    if (usage != MemoryUsage::DeviceLocal || ci.size > Device::SeparatePoolBlockSize / 2) {
++    if (usage != MemoryUsage::DeviceLocal || ci.size > Device::SeparatePoolBlockSize() / 2) {
+         return false;
+     }
+     u32 memory_type{};

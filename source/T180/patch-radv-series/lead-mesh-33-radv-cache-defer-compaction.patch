@@ -1,0 +1,277 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: EglantinePS5
+Date: Fri, 13 Nov 2026 18:00:00 +0100
+Subject: [PATCH] util/mesa_cache_db: no compaction during a burst of puts (RADV_PS5_CACHE_FAST)
+
+A database part at its cap (MESA_SHADER_CACHE_MAX_SIZE / 50) is compacted by
+the put that finds it full: the oldest half is evicted and every kept entry
+after the first evicted one is read and written again, under the part's lock,
+which every disk_cache_get miss also takes (it asks all 50 parts). When every
+part is full, each part that fills also makes the writer score all 50 parts
+(a sort of each part's entries) to pick a victim.
+
+With RADV_PS5_CACHE_FAST=1 a part takes entries up to a quarter over its cap
+(defer_limit), marks itself, and is compacted later by
+mesa_cache_db_multipart_maintain, which the writer thread calls after a put
+when nothing else is queued (lead-mesh-34): one part per idle put, down to half
+the cap as upstream. Past the quarter a part is compacted at once, as
+upstream. When every part is full, a part with deferral room takes the entry
+instead of the 50-part scoring.
+
+Disk use can therefore reach 1.25 times the cap during a burst. Same files and
+format; compaction itself is upstream's. Off: unchanged. Ours. Applies after
+lead-mesh-32.
+
+T172 rebase onto lead-mesh-29..31: the deferral sits in the fast path of
+mesa_cache_db_entry_write_ex (lead-mesh-30). The "every part full: take a part
+with deferral room" step is added to both multipart write paths: upstream's
+and lead-mesh-30's (RADV_PS5_DISK_CACHE_SKIP_KNOWN), before the victim scoring.
+The fast flag in struct mesa_cache_db_multipart sits after lead-mesh-30's
+absent[].
+
+Co-Authored-By: Claude Opus 5.5
+---
+diff --git a/src/util/mesa_cache_db.c b/src/util/mesa_cache_db.c
+index ce1fcd8..fbd3b02 100644
+--- a/src/util/mesa_cache_db.c
++++ b/src/util/mesa_cache_db.c
+@@ -1030,6 +1030,8 @@ mesa_cache_db_set_size_limit(struct mesa_cache_db *db,
+                              uint64_t max_cache_size)
+ {
+    db->max_cache_size = max_cache_size;
++   /* lead-mesh-33: a fast database defers compaction up to a quarter over. */
++   db->defer_limit = db->fast ? max_cache_size + max_cache_size / 4 : 0;
+ }
+ 
+ unsigned int
+@@ -1261,11 +1263,23 @@ fast:
+          result = MESA_CACHE_DB_WRITE_NO_SPACE;
+          goto fail;
+       }
+-      if (!mesa_db_compact(db, MAX2(blob_size, mesa_cache_db_eviction_size(db)),
+-                           NULL))
+-         goto fail_fatal;
+-      if (!mesa_db_fast_seek_end(db))
+-         goto fail_fatal;
++      /* lead-mesh-33: compacting rewrites half the part under this lock,
++       * which every reader of the part waits on; during a burst of puts the
++       * part takes up to a quarter over its cap instead and is compacted
++       * when the writers are idle. */
++      if (db->cache_end + blob_file_size(blob_size) -
++          sizeof(struct mesa_db_file_header) <= db->defer_limit) {
++         if (!db->needs_compaction)
++            p_atomic_inc(&mesa_db_ps5_counts.deferred);
++         db->needs_compaction = true;
++      } else {
++         if (!mesa_db_compact(db, MAX2(blob_size, mesa_cache_db_eviction_size(db)),
++                              NULL))
++            goto fail_fatal;
++         db->needs_compaction = false;
++         if (!mesa_db_fast_seek_end(db))
++            goto fail_fatal;
++      }
+    }
+ 
+    memcpy(cache_entry.key, cache_key_160bit, sizeof(cache_entry.key));
+@@ -1351,6 +1365,50 @@ mesa_cache_db_has_entry(struct mesa_cache_db *db,
+    return found;
+ }
+ 
++bool
++mesa_cache_db_has_deferred_room(struct mesa_cache_db *db, size_t blob_size)
++{
++   bool room;
++
++   if (!db->fast || !db->defer_limit)
++      return false;
++
++   simple_mtx_lock(&db->flock_mtx);
++   room = db->alive && db->cache_end >= 0 &&
++          db->cache_end + blob_file_size(blob_size) -
++          sizeof(struct mesa_db_file_header) <= db->defer_limit;
++   simple_mtx_unlock(&db->flock_mtx);
++
++   return room;
++}
++
++bool
++mesa_cache_db_compact_deferred(struct mesa_cache_db *db)
++{
++   bool done = false;
++
++   if (!db->fast || !db->needs_compaction)
++      return false;
++
++   simple_mtx_lock(&db->flock_mtx);
++   if (db->alive && db->needs_compaction) {
++      int64_t over = db->cache_end - (int64_t)sizeof(struct mesa_db_file_header) -
++                     (int64_t)db->max_cache_size;
++      /* Down to half the cap, as upstream's compaction at the cap. */
++      int64_t evict = MAX2(over, 0) + (int64_t)mesa_cache_db_eviction_size(db);
++
++      db->needs_compaction = false;
++      if (db->cache_end >= 0 && over > 0) {
++         if (!mesa_db_compact(db, evict, NULL))
++            mesa_db_zap(db);
++         done = true;
++      }
++   }
++   simple_mtx_unlock(&db->flock_mtx);
++
++   return done;
++}
++
+ bool
+ mesa_cache_db_flush(struct mesa_cache_db *db)
+ {
+diff --git a/src/util/mesa_cache_db.h b/src/util/mesa_cache_db.h
+index 03fcd12..bc1726f 100644
+--- a/src/util/mesa_cache_db.h
++++ b/src/util/mesa_cache_db.h
+@@ -74,6 +74,11 @@ struct mesa_cache_db {
+    void *pending_index;
+    unsigned pending;
+    uint64_t pending_bytes;
++   /* RADV_PS5_CACHE_FAST: a full part takes entries up to this size (its cap
++    * and a quarter) and is compacted later, when the writers are idle
++    * (mesa_cache_db_compact_deferred); 0: compacted at once, as upstream. */
++   uint64_t defer_limit;
++   bool needs_compaction;
+ };
+ 
+ /* Counts since the process started, for the RADV_PS5_CACHE line. */
+@@ -146,6 +151,16 @@ mesa_cache_db_eviction_score(struct mesa_cache_db *db);
+ bool
+ mesa_cache_db_ps5_fast(void);
+ 
++/* Whether a fast database takes blob_size more bytes within its deferral
++ * limit (false otherwise). */
++bool
++mesa_cache_db_has_deferred_room(struct mesa_cache_db *db, size_t blob_size);
++
++/* Compacts a fast database whose writes went over its cap; false when it
++ * had nothing to do. */
++bool
++mesa_cache_db_compact_deferred(struct mesa_cache_db *db);
++
+ /* Writes what a fast database holds back (no-op otherwise). */
+ bool
+ mesa_cache_db_flush(struct mesa_cache_db *db);
+diff --git a/src/util/mesa_cache_db_multipart.c b/src/util/mesa_cache_db_multipart.c
+index b655c8d..68053c7 100644
+--- a/src/util/mesa_cache_db_multipart.c
++++ b/src/util/mesa_cache_db_multipart.c
+@@ -135,6 +135,8 @@ mesa_cache_db_multipart_open(struct mesa_cache_db_multipart *db,
+ #else
+    db->num_parts = debug_get_num_option("MESA_DISK_CACHE_DATABASE_NUM_PARTS", 50);
+    db->exclusive = debug_get_bool_option("MESA_DISK_CACHE_DATABASE_EXCLUSIVE", EXCLUSIVE_DEFAULT);
++   /* Fast parts are owned ones (mesa_cache_db.c). */
++   db->fast = db->exclusive && mesa_cache_db_ps5_fast();
+    db->cache_path = cache_path;
+    db->parts = calloc(db->num_parts, sizeof(*db->parts));
+    if (!db->parts)
+@@ -432,8 +434,19 @@ mesa_cache_db_multipart_entry_write(struct mesa_cache_db_multipart *db,
+          return true;
+       if (!all_full)
+          return false;
++      /* lead-mesh-33 (RADV_PS5_CACHE_FAST): every part is at its cap; a part
++       * within its deferral limit takes the entry and is compacted when the
++       * writers are idle, instead of scoring all parts and compacting now. */
++      for (unsigned int i = 0; wpart < 0 && db->fast && i < db->num_parts; i++) {
++         unsigned int part = (last_written_part + i) % db->num_parts;
++
++         if (db->parts[part] &&
++             mesa_cache_db_has_deferred_room(db->parts[part], blob_size))
++            wpart = part;
++      }
+       /* Every part is full: the victim part is compacted, as upstream. */
+-      wpart = mesa_cache_db_multipart_select_victim_part(db);
++      if (wpart < 0)
++         wpart = mesa_cache_db_multipart_select_victim_part(db);
+       if (!mesa_cache_db_multipart_init_part(db, wpart))
+          return false;
+       db->last_written_part = wpart;
+@@ -453,6 +466,17 @@ mesa_cache_db_multipart_entry_write(struct mesa_cache_db_multipart *db,
+       }
+    }
+ 
++   /* RADV_PS5_CACHE_FAST: all parts are at their cap. A part within its
++    * deferral limit takes the entry and is compacted when the writers are
++    * idle, instead of scoring all 50 parts and compacting one now. */
++   for (unsigned int i = 0; wpart < 0 && db->fast && i < db->num_parts; i++) {
++      unsigned int part = (last_written_part + i) % db->num_parts;
++
++      if (db->parts[part] &&
++          mesa_cache_db_has_deferred_room(db->parts[part], blob_size))
++         wpart = part;
++   }
++
+    /* All DB parts are full. Writing to a full DB part will auto-trigger
+     * eviction of LRU cache entries from the part. Select DB part that
+     * contains majority of LRU cache entries.
+@@ -469,6 +493,36 @@ mesa_cache_db_multipart_entry_write(struct mesa_cache_db_multipart *db,
+                                     blob, blob_size);
+ }
+ 
++bool
++mesa_cache_db_multipart_maintain(struct mesa_cache_db_multipart *db)
++{
++   if (!db->fast)
++      return false;
++
++   for (unsigned int part = 0; part < db->num_parts; part++) {
++      if (db->parts[part] && mesa_cache_db_compact_deferred(db->parts[part]))
++         return true;
++   }
++
++   return false;
++}
++
++bool
++mesa_cache_db_multipart_flush(struct mesa_cache_db_multipart *db)
++{
++   bool ok = true;
++
++   if (!db->fast)
++      return true;
++
++   for (unsigned int part = 0; part < db->num_parts; part++) {
++      if (db->parts[part] && !mesa_cache_db_flush(db->parts[part]))
++         ok = false;
++   }
++
++   return ok;
++}
++
+ void
+ mesa_cache_db_multipart_entry_remove(struct mesa_cache_db_multipart *db,
+                                      const uint8_t *cache_key_160bit)
+diff --git a/src/util/mesa_cache_db_multipart.h b/src/util/mesa_cache_db_multipart.h
+index de6d766..9ec0c65 100644
+--- a/src/util/mesa_cache_db_multipart.h
++++ b/src/util/mesa_cache_db_multipart.h
+@@ -25,6 +25,8 @@ struct mesa_cache_db_multipart {
+     * Only this process makes parts, and a part it makes is in parts[] first, so an absent part
+     * need not be looked for again. */
+    bool *absent;
++   /* RADV_PS5_CACHE_FAST=1 (lead-mesh-33): full parts defer compaction. */
++   bool fast;
+ };
+ 
+ /* EglantinePS5: RADV_PS5_DISK_CACHE_SKIP_KNOWN=1 (exactly "1", read once per process). */
+@@ -57,6 +59,15 @@ mesa_cache_db_multipart_entry_write(struct mesa_cache_db_multipart *db,
+                                     const uint8_t *cache_key_160bit,
+                                     const void *blob, size_t blob_size);
+ 
++/* RADV_PS5_CACHE_FAST: compacts one part whose writes went over its cap,
++ * when the writers are idle; false when none had to be. */
++bool
++mesa_cache_db_multipart_maintain(struct mesa_cache_db_multipart *db);
++
++/* RADV_PS5_CACHE_FAST: writes what every opened part holds back. */
++bool
++mesa_cache_db_multipart_flush(struct mesa_cache_db_multipart *db);
++
+ void
+ mesa_cache_db_multipart_entry_remove(struct mesa_cache_db_multipart *db,
+                                      const uint8_t *cache_key_160bit);

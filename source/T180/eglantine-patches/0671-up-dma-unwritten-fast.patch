@@ -1,0 +1,328 @@
+From: EglantinePS5
+Subject: [PATCH] up: plain macro DMA reads on pages the GPU never wrote skip the drain (d3zessete, Frizti/Fritchii PR #35), off by default; EDEN_UP_DMA_UNWRITTEN counter line
+
+Switches: EDEN_UP_DMA_UNWRITTEN_FAST=1 (exact 1, a live switch, Id DmaUnwrittenFast, not armed).
+EDEN_UP_DMA_UNWRITTEN_FAST_VERIFY=1 (exact 1, read once at the first fast read). Counter line:
+with EDEN_UP_DMA_MISS_STATS=1 (0573) or EDEN_UP_DMA_UNWRITTEN_FAST=1.
+
+What: PR #35 lets the split front's FrontDmaRead skip its drain, the buffer flush and the query
+flush when no page it reads may be GPU-written and no 3D report write to it is still queued. In
+our tree that idea already exists for DMA snapshot misses: EDEN_UP_L1028_DMA_WAIT (0485, zortos293
+Lichii #1028) waits for the queued work that may write the pages, then reads guest memory when the
+pages hold no GPU writes and the query cache lists no report. So this port covers only what
+neither the snapshot nor L1028 reaches: the plain drained path at the end of FrontDmaRead (no DMA
+snapshot or its off phase, reads into the MME data RAM, reads of listed reports, reads the snapshot
+cannot take). There, with the switch on: mapped in one piece (every page, IsContinuousRange),
+no query DMA trace, no EDEN_NX2_QUERY_DMA_SYNC, no page ever GPU-written
+(VideoCore::MayHoldGpuWrites: Switch 2 titles only, ranges past the page bitmap count as written),
+then GpuSplit::WaitForNotedWriters over the
+pages (compute, copies, unranged writers, noted writes such as the 3D reports), then the same page
+check again and no listed report (HasCachedReports, 12 bytes back as the snapshot does): the read
+takes guest memory without the Defer and the drain. Otherwise the old path, counted as a fall-back.
+Differences from the PR, all to the safe side: the wait is L1028's (it also covers unranged writers
+and every noted write, the PR waited for compute and copies only and then looked up its own report
+slot map); listed reports keep the drain (the PR's own open point: "not verified that reports held
+in the query cache always land on pages marked GPU-written"); not on other titles (the bitmap is
+only filled for Switch 2 titles; the PR did not check); no report slot map (it was never pruned).
+
+EDEN_UP_DMA_UNWRITTEN (the counter line, about every 10 s while reads come, front thread only):
+"EDEN_UP_DMA_UNWRITTEN: <s> s of front DMA reads, on pages the GPU never wrote with no listed
+report / all: snapshot hit a/A, L1028 narrowed b/B, snapshot miss drained c/C, plain drained d/D,
+read ahead e/E; EDEN_UP_DMA_UNWRITTEN_FAST skipped the drain of f (g fell back after its wait),
+verify h checked i differed". d of D is an upper estimate of what EDEN_UP_DMA_UNWRITTEN_FAST
+could take (counted before its wait and its second check). c of C is the snapshot misses on
+never-written pages; EDEN_UP_L1028_DMA_WAIT may take more than c (it also narrows marked pages
+the buffer cache holds no GPU writes for), so c is no bound on what it can win. With _VERIFY=1 the
+f fast reads drained anyway. With only EDEN_UP_DMA_UNWRITTEN_FAST on, only the plain path is
+counted.
+
+Off (both unset): one live-switch load in the plain drained path; snapshot hits, misses and the
+read-ahead path never look at it. With EDEN_UP_DMA_MISS_STATS off, nothing is counted. Changes no
+shader translation and no shader-store stamp: the names are in common/live_switch.h and
+video_core/engines/maxwell_3d.cpp only, outside the sources TranslationSwitches is made from.
+
+Risk when on: a page the GPU writes without a mark, or a draw that writes it while still queued
+(the snapshot and L1028 trust the same notes), gives the macro old words: a wrong occlusion or
+draw count, seen as a flash, a missing or extra object for a frame. EDEN_UP_DMA_UNWRITTEN_FAST_VERIFY=1
+drains anyway, compares, logs the first 32 differences and gives the macro the drained words.
+
+Review (T150): the fast path's read now needs every page mapped in one run
+(MemoryManager::IsContinuousRange), not only matching first and last bytes: the page check is on
+device addresses, the read on GPU addresses. The one case the wait cannot see: draws are no noted
+writers, so a draw still queued that is the first GPU write ever to a page (shader stores, transform
+feedback) is not waited for; its page is marked only when the back records it. Marks never clear, so
+this is the first write of a page only, and the snapshot hits and L1028 trust the same notes. The
+MME data RAM is the front's alone in split mode (macro.cpp: a call the back runs gets its own), so
+skipping the drain for data RAM reads changes no order there.
+
+Origin and credit: d3zessete, Frizti/Fritchii PR #35 "Fast-path DMA reads on pages not written by
+the GPU" (open, not merged; head 23b88f1c2b), on Fritchii's split front. The page bitmap is
+zortos293/Lichii #463's, the wait zortos293/Lichii #1028's (0485). Port, names and counter ours.
+---
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+index 1cce34c..156b0a3 100644
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -221,6 +221,10 @@ enum class Id : u8 {
+     /// and each run of the method sink: a state register write takes the inlined path or the full
+     /// one, and both leave the same registers, shadow registers and dirty flags.
+     RegWriteOneCall,
++    /// EDEN_UP_DMA_UNWRITTEN_FAST (0671, Frizti/Fritchii PR #35). Read by each plain drained
++    /// macro DMA read (Maxwell3D::FrontDmaRead); each read chooses on its own, both ways give the
++    /// words guest memory holds after the work that may write them.
++    DmaUnwrittenFast,
+     Count,
+ };
+ 
+@@ -362,6 +366,7 @@ inline constexpr std::array<Def, NumSwitches> kDefs{{
+     {"EDEN_UP_EMPTY_DRAW_STATS", ParseExactOne, false, -1},
+     {"EDEN_NX2_UBO_INPLACE", ParseLeadingOne, false, -1},
+     {"EDEN_UP_REG_WRITE_ONE_CALL", ParseExactOne, false, -1},
++    {"EDEN_UP_DMA_UNWRITTEN_FAST", ParseExactOne, false, -1},
+ }};
+ 
+ static_assert(kDefs[static_cast<size_t>(Id::PollBackoffUs)].needs ==
+diff --git a/src/video_core/engines/maxwell_3d.cpp b/src/video_core/engines/maxwell_3d.cpp
+index 9ca74bd..87b2878 100644
+--- a/src/video_core/engines/maxwell_3d.cpp
++++ b/src/video_core/engines/maxwell_3d.cpp
+@@ -36,6 +36,7 @@
+ #include "video_core/nx2_profile.h"
+ #include "video_core/nx2_query_light.h"
+ #include "video_core/query_dma.h"
++#include "video_core/rasterizer_download_area.h"
+ #include "video_core/rasterizer_interface.h"
+ #include "video_core/readback_wait.h"
+ #include "video_core/submit_stats.h"
+@@ -2925,6 +2926,66 @@ void Maxwell3D::FrontDmaReadAhead(VideoCommon::GpuSplit& split, FrontState& fs,
+     }
+ }
+ 
++namespace {
++
++// EDEN_UP_DMA_UNWRITTEN (0671): the front's DMA reads by the way they went, and how many of each
++// were on pages the GPU never wrote (VideoCore::MayHoldGpuWrites, Switch 2 titles only) with no
++// report listed there: the reads a drain-free read could answer from guest memory
++// (EDEN_UP_DMA_UNWRITTEN_FAST for the plain drained path below, EDEN_UP_L1028_DMA_WAIT for
++// snapshot misses). Counted with EDEN_UP_DMA_MISS_STATS=1 or EDEN_UP_DMA_UNWRITTEN_FAST=1, one
++// line about every 10 s while reads come. Front thread only. Never consulted by a wait.
++enum class DmaUnwrittenPath : u8 { Hit, Narrowed, Drained, Plain, Ahead, Fast, Count };
++
++struct DmaUnwrittenCounts {
++    static constexpr size_t Paths = static_cast<size_t>(DmaUnwrittenPath::Count);
++    std::array<u64, Paths> reads{};
++    std::array<u64, Paths> unwritten{};
++    u64 fallbacks{}; // EDEN_UP_DMA_UNWRITTEN_FAST: unwritten before its wait, not after it
++    u64 checked{};   // EDEN_UP_DMA_UNWRITTEN_FAST_VERIFY, since boot
++    u64 differed{};
++    std::chrono::steady_clock::time_point start{};
++};
++
++DmaUnwrittenCounts& DmaUnwritten() {
++    static DmaUnwrittenCounts counts;
++    return counts;
++}
++
++void NoteDmaUnwritten(DmaUnwrittenPath path, bool unwritten) {
++    auto& c = DmaUnwritten();
++    const auto now = std::chrono::steady_clock::now();
++    if (c.start == std::chrono::steady_clock::time_point{}) {
++        c.start = now;
++    } else if (now - c.start >= std::chrono::seconds{10}) {
++        const auto r = [&](DmaUnwrittenPath p) { return c.reads[static_cast<size_t>(p)]; };
++        const auto u = [&](DmaUnwrittenPath p) { return c.unwritten[static_cast<size_t>(p)]; };
++        LOG_INFO(HW_GPU,
++                 "EDEN_UP_DMA_UNWRITTEN: {:.1f} s of front DMA reads, on pages the GPU never wrote "
++                 "with no listed report / all: snapshot hit {}/{}, L1028 narrowed {}/{}, snapshot "
++                 "miss drained {}/{}, plain drained {}/{}, read ahead {}/{}; "
++                 "EDEN_UP_DMA_UNWRITTEN_FAST skipped the drain of {} ({} fell back after its "
++                 "wait), verify {} checked {} differed{}",
++                 std::chrono::duration<double>(now - c.start).count(), u(DmaUnwrittenPath::Hit),
++                 r(DmaUnwrittenPath::Hit), u(DmaUnwrittenPath::Narrowed),
++                 r(DmaUnwrittenPath::Narrowed), u(DmaUnwrittenPath::Drained),
++                 r(DmaUnwrittenPath::Drained), u(DmaUnwrittenPath::Plain),
++                 r(DmaUnwrittenPath::Plain), u(DmaUnwrittenPath::Ahead),
++                 r(DmaUnwrittenPath::Ahead), r(DmaUnwrittenPath::Fast), c.fallbacks, c.checked,
++                 c.differed,
++                 Tegra::g_nx2_ampere.load(std::memory_order_relaxed)
++                     ? ""
++                     : " (not a Switch 2 title: no page counts as unwritten)");
++        c.reads = {};
++        c.unwritten = {};
++        c.fallbacks = 0;
++        c.start = now;
++    }
++    ++c.reads[static_cast<size_t>(path)];
++    c.unwritten[static_cast<size_t>(path)] += unwritten ? 1 : 0;
++}
++
++} // Anonymous namespace
++
+ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 macro, u32 method,
+                              u32 count) {
+     // The words may be written by methods still queued for the back (indirect draw arguments
+@@ -2967,6 +3028,13 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
+     // snapshot from before the phase is judged by everything sent since, as always.
+     using DmaCause = VideoCommon::GpuSplit::DmaCause;
+     const bool dma_stats = split.DmaMissStatsEnabled();
++    // EDEN_UP_DMA_UNWRITTEN (0671): whether the bytes read are on pages the GPU never wrote and
++    // the query cache lists no report there (a report's value is up to 8 bytes, listed by its
++    // first 4: 12 bytes back, as below). Called only while counting or with the fast switch on.
++    const auto unwritten_at = [&](u64 device_address) {
++        return !VideoCore::MayHoldGpuWrites(device_address, read_bytes) &&
++               !rasterizer->HasCachedReports(device_address - 12, u64{read_bytes} + 12);
++    };
+     DmaCause dma_cause = DmaCause::Ineligible;
+     const int snapshot_mode =
+         Common::LiveSwitch::Value<Common::LiveSwitch::Id::DmaSnapshot>() != 0 ? DmaSnapshotMode()
+@@ -3062,6 +3130,7 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
+                 if (hit) {
+                     ++hits;
+                     if (dma_stats) dma_cause = DmaCause::Hit;
++                    if (dma_stats) NoteDmaUnwritten(DmaUnwrittenPath::Hit, unwritten_at(*device));
+                     VideoCommon::SubmitStats::NoteDma(VideoCommon::SubmitStats::Dma::Hit);
+                     memory_manager.ReadBlockUnsafe(source, snap_words.data(), read_bytes);
+                     if (snapshot_mode == 2) {
+@@ -3110,6 +3179,9 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
+                             !rasterizer->HasCachedReports(*device - 12, u64{read_bytes} + 12);
+                     }
+                     if (narrowed) {
++                        if (dma_stats) {
++                            NoteDmaUnwritten(DmaUnwrittenPath::Narrowed, unwritten_at(*device));
++                        }
+                         VideoCommon::SubmitStats::NoteDma(VideoCommon::SubmitStats::Dma::Narrowed);
+                         memory_manager.ReadBlockUnsafe(source, snap_words.data(), read_bytes);
+                         AsyncReadback::Add(AsyncReadback::g_counters.dma_narrow, 1);
+@@ -3143,6 +3215,11 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
+                         // With EDEN_NX2_READBACK_WAIT the hook also waits for downloads to land
+                         // before going quiet: there every miss keeps the full drain. Read here, so
+                         // hits and narrowed reads never look at the switch.
++                        if (dma_stats) {
++                            // EDEN_UP_DMA_UNWRITTEN: before the drain, what a drain-free read
++                            // (EDEN_UP_L1028_DMA_WAIT) would have seen without its wait.
++                            NoteDmaUnwritten(DmaUnwrittenPath::Drained, unwritten_at(*device));
++                        }
+                         const bool miss_wait_asked =
+                             Common::LiveSwitch::Value<Common::LiveSwitch::Id::DmaMissWait>() != 0;
+                         miss_wait = miss_wait_asked && VideoCore::Readback::Mode() == 0;
+@@ -3237,22 +3314,107 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
+     }
+     if (dma_stats) split.CountDmaRead(dma_cause);
+     if (!split.DmaReadAhead() || words > 64) {
+-        split.Defer([this, memory = &memory_manager, macro, method, source, read_bytes, neutral] {
+-            // EDEN_NX2_QUERY_DMA_TRACE / EDEN_NX2_QUERY_DMA_SYNC: below High accuracy, counter
+-            // reports reach guest memory when a later fence pops, and nothing here waits for them.
+-            VideoCommon::QueryDma::BeforeRead(*memory, *rasterizer, macro, method, source, read_bytes);
+-            if (memory->IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache)) {
+-                if (neutral) {
+-                    VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Call);
++        // EDEN_UP_DMA_UNWRITTEN_FAST (live, exact "1"; d3zessete's Frizti/Fritchii PR #35, "fast-
++        // path DMA reads on pages not written by the GPU"): a read that comes here (no DMA
++        // snapshot or its off phase, a read into the MME data RAM, a listed report, a read the
++        // snapshot cannot take) skips the drain and the flush when, once the queued work that may
++        // write its pages has run (GpuSplit::WaitForNotedWriters: compute, copies, unranged
++        // writers and noted writes over the pages, the 3D reports among them), no page of it was
++        // ever GPU-written and the query cache lists no report there. Guest memory then holds
++        // the words, as for EDEN_UP_L1028_DMA_WAIT's narrowed snapshot misses. Not with the query
++        // DMA traces or EDEN_NX2_QUERY_DMA_SYNC (their Defer below must run). Read here only, so
++        // snapshot hits and misses never look at the switch.
++        // EDEN_UP_DMA_UNWRITTEN_FAST_VERIFY=1 (boot): drain anyway, compare, the macro gets the
++        // drained words.
++        bool unwritten_fast = false;
++        bool unwritten_verify = false;
++        bool unwritten_counted = dma_stats;
++        if (Common::LiveSwitch::Value<Common::LiveSwitch::Id::DmaUnwrittenFast>() != 0)
++            [[unlikely]] {
++            static const bool verify = Common::PeSwitch("EDEN_UP_DMA_UNWRITTEN_FAST_VERIFY");
++            unwritten_verify = verify;
++            unwritten_counted = true;
++            const auto device = memory_manager.GpuToCpuAddress(source);
++            if (words != 0 && device && !VideoCommon::QueryDma::TraceEnabled() &&
++                !VideoCommon::QueryDma::FlipTraceEnabled() &&
++                VideoCommon::QueryDma::SyncMode() == 0 &&
++                // Every page, not only the first and last byte: the page check below is on
++                // device addresses, the read on GPU addresses (up to 16 KiB here).
++                memory_manager.IsContinuousRange(source, read_bytes) &&
++                memory_manager.GpuToCpuAddress(source + read_bytes - 1) ==
++                    *device + read_bytes - 1 &&
++                !VideoCore::MayHoldGpuWrites(*device, read_bytes)) {
++                const u64 page_begin = *device & ~u64{0xfff};
++                const u64 page_end = (*device + read_bytes + 0xfff) & ~u64{0xfff};
++                split.WaitForNotedWriters(page_begin, page_end - page_begin);
++                // The pages' marks only grow: check again after the wait, then the reports.
++                unwritten_fast = unwritten_at(*device);
++                if (!unwritten_fast) {
++                    ++DmaUnwritten().fallbacks;
++                }
++            }
++        }
++        if (unwritten_counted) {
++            if (unwritten_fast) {
++                NoteDmaUnwritten(DmaUnwrittenPath::Fast, true);
++            } else {
++                const auto device = memory_manager.GpuToCpuAddress(source);
++                NoteDmaUnwritten(DmaUnwrittenPath::Plain,
++                                 words != 0 && device &&
++                                     memory_manager.GpuToCpuAddress(source + read_bytes - 1) ==
++                                         *device + read_bytes - 1 &&
++                                     unwritten_at(*device));
++            }
++        }
++        std::vector<u32> unwritten_words; // EDEN_UP_DMA_UNWRITTEN_FAST_VERIFY only
++        if (unwritten_fast && unwritten_verify) {
++            unwritten_words.resize(words);
++            memory_manager.ReadBlockUnsafe(source, unwritten_words.data(), read_bytes);
++        }
++        if (!unwritten_fast || unwritten_verify) {
++            split.Defer([this, memory = &memory_manager, macro, method, source, read_bytes,
++                         neutral] {
++                // EDEN_NX2_QUERY_DMA_TRACE / EDEN_NX2_QUERY_DMA_SYNC: below High accuracy,
++                // counter reports reach guest memory when a later fence pops, and nothing here
++                // waits for them.
++                VideoCommon::QueryDma::BeforeRead(*memory, *rasterizer, macro, method, source,
++                                                  read_bytes);
++                if (memory->IsMemoryDirty(source, read_bytes,
++                                          VideoCommon::CacheType::BufferCache)) {
++                    if (neutral) {
++                        VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Call);
++                    }
++                    memory->FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
+                 }
+-                memory->FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
++                VideoCommon::QueryDma::AfterBufferFlush(*memory, *rasterizer, source, read_bytes);
++            }, neutral ? VideoCommon::GpuSplit::FastDrawNeutral : 0);
++            VideoCommon::SubmitStats::NoteDma(VideoCommon::SubmitStats::Dma::Plain);
++            split.Drain(method == 0x158 ? VideoCommon::DrainSite::MacroDmaRead
++                                        : VideoCommon::DrainSite::MacroDmaReadRam);
++        }
++        if (unwritten_fast && unwritten_verify) {
++            // EDEN_UP_DMA_UNWRITTEN_FAST_VERIFY: the words below are the drained ones.
++            std::vector<u32> exact(words);
++            memory_manager.ReadBlockUnsafe(source, exact.data(), read_bytes);
++            auto& counts = DmaUnwritten();
++            ++counts.checked;
++            if (exact != unwritten_words && counts.differed++ < 32) {
++                LOG_WARNING(HW_GPU,
++                            "EDEN_UP_DMA_UNWRITTEN_FAST check: macro {:#x} read of {} words at "
++                            "{:#x} without the drain differs from the drained read ({:#x} vs "
++                            "{:#x})",
++                            macro, words, source, unwritten_words[0], exact[0]);
+             }
+-            VideoCommon::QueryDma::AfterBufferFlush(*memory, *rasterizer, source, read_bytes);
+-        }, neutral ? VideoCommon::GpuSplit::FastDrawNeutral : 0);
+-        VideoCommon::SubmitStats::NoteDma(VideoCommon::SubmitStats::Dma::Plain);
+-        split.Drain(method == 0x158 ? VideoCommon::DrainSite::MacroDmaRead
+-                                    : VideoCommon::DrainSite::MacroDmaReadRam);
++        }
+     } else {
++        if (dma_stats) {
++            const auto device = memory_manager.GpuToCpuAddress(source);
++            NoteDmaUnwritten(DmaUnwrittenPath::Ahead,
++                             words != 0 && device &&
++                                 memory_manager.GpuToCpuAddress(source + read_bytes - 1) ==
++                                     *device + read_bytes - 1 &&
++                                 unwritten_at(*device));
++        }
+         VideoCommon::SubmitStats::NoteDma(VideoCommon::SubmitStats::Dma::Ahead);
+         FrontDmaReadAhead(split, fs, macro, method, source, words);
+     }

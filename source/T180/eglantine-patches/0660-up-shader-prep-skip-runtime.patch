@@ -1,0 +1,111 @@
+From: EglantinePS5
+Subject: [PATCH] up: the kept-store stamp can leave out the two switches that only decide when work happens (waveydude's 0926, EDEN_UP_SHADER_PREP_SKIP_RUNTIME), off by default
+
+What: the kept translations (EDEN_UP_SHADER_PREP) are stamped with NAME=VALUE of every set switch
+in TranslationSwitches. EDEN_NX2_TRANSCODE_WAIT (a refused ASTC decode waits for its image's next
+use, vk_texture_cache.cpp) and EDEN_NX2_PRELOAD_ALL_PIPELINES (which kept pipelines the boot builds,
+vk_pipeline_cache.cpp) are in that list but change no translation: setting, clearing or changing
+either one starts an empty store and a long first boot (his: 635 s for 4,681 pipelines).
+
+With EDEN_UP_SHADER_PREP_SKIP_RUNTIME=1 (exact "1") the stamp's switch part is made again without
+those two names (SwitchHashWithoutRuntime, the same FNV-1a loop with a skip), so flipping either
+keeps the store, and one INFO line says so once. The two names stay in the list (the switch-list
+check wants every name the video core reads there); the new switch is an EDEN_UP_SHADER_PREP_ name,
+which the list never holds. It applies to both stamps (the kept store and the shader set).
+
+Off (unset or anything but "1"): MakeStamp's loop and string are untouched, so the stamp is byte
+for byte T147's; the recount is not made and nothing is logged. Our play settings set
+EDEN_NX2_TRANSCODE_WAIT=1, so an unconditional 0926 would have moved his stamp (switches 42 ->
+41); off it stays 42:6af20c62bf018ae2 (t149/check/host149). Turning the switch on is one stamp
+change, so one cold boot; doing it with a new install costs nothing extra (the eboot field of the
+stamp changes on every install anyway).
+
+Placement: the recount is a helper after SwitchNumber and a block after MakeStamp's loop, away from
+the lines T138's EDEN_UP_SHADER_PREP_SOURCE_STAMP (0596) changes: T138's 0594-0596 still apply on
+top of this unchanged. With both on they skip the same two names.
+
+Origin and credit: waveydude, patch 0926 ("Keep switches that do not change a translation out of
+the kept-store stamp"), commit 07a1fb0; his skip list and comments, put behind a switch here.
+---
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp b/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp
+index 663bac2..78a0485 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp
+@@ -16,7 +16,9 @@
+ #include <stdexcept>
+ #include <string_view>
+ #include <system_error>
++#include <tuple>
+ #include <type_traits>
++#include <utility>
+ 
+ #include <fmt/format.h>
+ 
+@@ -193,6 +195,48 @@ constexpr const char* TranslationSwitches[] = {
+     return end == value || number == 0 ? fallback : static_cast<size_t>(number);
+ }
+ 
++// EDEN_UP_SHADER_PREP_SKIP_RUNTIME=1 (exact "1"; waveydude's 0926): switches the list above names
++// (it holds every switch the video core reads) that decide when work happens and never what a
++// shader is translated to. With the switch on they stay out of the stamp, set or not, so turning
++// one on or off keeps the store. Off (unset or anything but "1"): the stamp is as before. The
++// switch itself is not in the list (EDEN_UP_SHADER_PREP_ names never are).
++constexpr std::string_view NotTranslation[]{
++    "EDEN_NX2_TRANSCODE_WAIT",        // a refused ASTC decode waits for its image's next use
++    "EDEN_NX2_PRELOAD_ALL_PIPELINES", // which kept pipelines the boot builds
++};
++
++[[nodiscard]] bool SkipRuntimeSwitches() {
++    static const bool skip = SwitchIs("EDEN_UP_SHADER_PREP_SKIP_RUNTIME", '1');
++    return skip;
++}
++
++/// The stamp's switch part (how many are set, FNV-1a over NAME=VALUE\n of each, in list order)
++/// without the NotTranslation names: the same loop as MakeStamp's, which it replaces when
++/// SkipRuntimeSwitches() is on.
++[[nodiscard]] std::pair<u32, u64> SwitchHashWithoutRuntime() {
++    u64 hash = 0xcbf29ce484222325ULL;
++    const auto mix = [&hash](std::string_view text) {
++        for (const char c : text) {
++            hash = (hash ^ static_cast<u8>(c)) * 0x100000001b3ULL;
++        }
++    };
++    u32 set = 0;
++    for (const char* const name : TranslationSwitches) {
++        if (std::ranges::find(NotTranslation, std::string_view{name}) !=
++            std::end(NotTranslation)) {
++            continue;
++        }
++        if (const char* const value = std::getenv(name)) {
++            mix(name);
++            mix("=");
++            mix(value);
++            mix("\n");
++            ++set;
++        }
++    }
++    return {set, hash};
++}
++
+ /// Which build runs: the size and write time of the app's eboot (the folders the PS5 app looks
+ /// for itself in, headless/storage_paths.h; EDEN_UP_SHADER_PREP_EXE names another file). A build
+ /// that is installed again gets a new store even when it translates the same: it costs one
+@@ -893,6 +937,18 @@ std::string MakeStamp(u32 cache_version, u32 driver_id, u32 driver_version,
+             ++set;
+         }
+     }
++    // EDEN_UP_SHADER_PREP_SKIP_RUNTIME=1: the switch part again without the switches that only
++    // decide when work happens (kept apart from the loop above so it stays as it was when off).
++    if (SkipRuntimeSwitches()) {
++        std::tie(set, hash) = SwitchHashWithoutRuntime();
++        static const bool said = [] {
++            LOG_INFO(Render_Vulkan,
++                     "EDEN_UP_SHADER_PREP_SKIP_RUNTIME: EDEN_NX2_TRANSCODE_WAIT and "
++                     "EDEN_NX2_PRELOAD_ALL_PIPELINES are left out of the kept-store stamp");
++            return true;
++        }();
++        static_cast<void>(said);
++    }
+     // The settings the translation reads (shader_recompiler: rescaling_pass.cpp,
+     // translate_program.cpp, emit_spirv.cpp, emit_spirv_image.cpp). A switch or setting that is
+     // missed here is still noticed by the comparison at boot when it changes a compared pipeline.

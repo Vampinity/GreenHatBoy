@@ -1,0 +1,36 @@
+From: EglantinePS5
+Subject: [PATCH] up: the before-play pass reads EDEN_UP_PIPELINE_LIST_IMPORT as 0720 does ("0" is off, not a file named 0)
+
+Switch: none of its own. EDEN_UP_PIPELINE_LIST_IMPORT keeps 0720's meaning: unset, "" or "0" off,
+"1" pipeline_import.list in the shader folder, anything else the path of a list.
+
+Why (T162 integration review): 0720 and 0770 both read EDEN_UP_PIPELINE_LIST_IMPORT. 0720 takes
+"0" as off; 0770's list gathering took every value other than "" and "1" as a path, so with
+EDEN_UP_PIPELINE_LIST_IMPORT=0 the prepass looked for a list file named "0" (one "not read" in its
+lists report, nothing else). One name, one meaning.
+
+What: the prepass also leaves "0" out. "1" stays left out there as before (pipeline_import.list is
+already among the shader folder's *.list files the prepass reads).
+
+Needs 0720 (the switch) and 0770 (the prepass). Prepass off: nothing changes. vk_pipeline_cache.cpp
+is among the translation id's files, so the id moves (it only matters with
+EDEN_UP_SHADER_PREP_SOURCE_STAMP=1). Not checked: a run.
+---
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index b7c9d85..cc3eec2 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -7937,8 +7937,12 @@ void PipelineCache::RunShaderSetPrepass(const std::filesystem::path& title_dir,
+             });
+             list_files.insert(list_files.end(), found.begin(), found.end());
+         }
++        // The same reading as 0720's import (PipelineListImportPath): unset, "" or "0" is off,
++        // "1" is pipeline_import.list in the shader folder (already among its *.list files),
++        // anything else is the path of a list.
+         if (const char* const value = std::getenv("EDEN_UP_PIPELINE_LIST_IMPORT");
+-            value != nullptr && value[0] != '\0' && std::string_view{value} != "1") {
++            value != nullptr && value[0] != '\0' && std::string_view{value} != "1" &&
++            std::string_view{value} != "0") {
+             list_files.emplace_back(value);
+         }
+     }

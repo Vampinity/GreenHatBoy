@@ -1,0 +1,137 @@
+From: EglantinePS5
+Subject: up: EDEN_UP_SHADER_SET_PREPASS review fixes (T157): memory wait counted over the whole prepass, a fully known set skips the prepass, disk estimate counts the driver cache
+
+Why (hostile review of 0770, 13 Nov 2026):
+1. The prepass waited up to EDEN_UP_SHADER_SET_PREPASS_MEMORY_WAIT_S (300 s) under the memory floor
+   per record: the wait started again from zero for every record, so memory that hovered at the
+   floor could hold the boot for 300 s many times over. The wait is now counted over all records
+   and passes of one prepass (ShaderSetPass::memory_waited); at 300 s in all the prepass ends and
+   the game starts.
+2. A start after a full pass read the whole set file again (one key-only read, about 6.5 s) and
+   queued again every key whose build had thrown (a throw is not remembered as not keepable), at
+   every start. The prepass now reads the "every record is known" marker first (the same test as
+   PrepareShaderSet's) and ends at once when it holds.
+3. The "Needs about N MB of disk" line counted the kept store only (21 KiB a key); it now adds
+   about 7 KiB a key for the driver's own disk cache (estimate from 0484), which the disk floor
+   only sees when it shares the file system.
+Off: nothing changes (all three are inside the prepass, EDEN_UP_SHADER_SET_PREPASS=1).
+Needs 0770 (and applies after 0771).
+---
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 2411370..bc05811 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -5767,14 +5767,19 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+             // by gigabytes over a full pass, and a full disk ends keeping for the session).
+             if (pass != nullptr) {
+                 // The prepass waits under the memory floor (the jobs in flight give theirs
+-                // back); it gives up only after `memory_wait` with no change for the better.
++                // back); it gives up once it has waited `memory_wait` in all over the prepass
++                // (0772: counted across records and passes, so memory that hovers at the floor
++                // cannot hold the boot for `memory_wait` per record).
+                 std::chrono::steady_clock::time_point waiting_since{};
+                 for (;;) {
+                     const u64 free = VideoCommon::ShaderSet::FreeMemoryBytes();
++                    const auto now = std::chrono::steady_clock::now();
+                     if (free == 0 || free >= floor) {
++                        if (waiting_since != std::chrono::steady_clock::time_point{}) {
++                            pass->memory_waited += now - waiting_since;
++                        }
+                         break;
+                     }
+-                    const auto now = std::chrono::steady_clock::now();
+                     if (waiting_since == std::chrono::steady_clock::time_point{}) {
+                         waiting_since = now;
+                         LOG_INFO(Render_Vulkan,
+@@ -5782,16 +5787,17 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+                                  "(EDEN_UP_SHADER_SET_MIN_FREE_MB); waiting",
+                                  free >> 20, floor >> 20);
+                     }
+-                    if (now - waiting_since >= pass->memory_wait ||
++                    const auto waited = pass->memory_waited + (now - waiting_since);
++                    if (waited >= pass->memory_wait ||
+                         (pass->deadline != std::chrono::steady_clock::time_point{} &&
+                          now >= pass->deadline)) {
++                        pass->memory_waited = waited;
+                         hand_back();
+                         paused = true;
+-                        stopped = fmt::format("{} MB free, under the {} MB memory floor for {} s",
+-                                              free >> 20, floor >> 20,
+-                                              std::chrono::duration_cast<std::chrono::seconds>(
+-                                                  now - waiting_since)
+-                                                  .count());
++                        stopped = fmt::format(
++                            "{} MB free, under the {} MB memory floor ({} s waited in all)",
++                            free >> 20, floor >> 20,
++                            std::chrono::duration_cast<std::chrono::seconds>(waited).count());
+                         throw StopReading{stopped};
+                     }
+                     if (!Common::StoppableTimedWait(stop, std::chrono::milliseconds{250})) {
+@@ -6246,6 +6252,34 @@ void PipelineCache::RunShaderSetPrepass(const std::filesystem::path& title_dir,
+     }
+     const double set_seconds = since(begin);
+ 
++    // 0772: a pass that read the whole file wrote the "every record is known" marker (the same
++    // test as PrepareShaderSet's): nothing is counted or built. Without this a start after a
++    // full pass read the file again and rebuilt, every start, the keys whose build threw (those
++    // are not remembered as not keepable).
++    {
++        const auto done_filename = prep_store.Sidecar(".shader_set_done");
++        std::error_code done_error;
++        const auto file_bytes = std::filesystem::file_size(outputs.records, done_error);
++        const auto file_written = done_error
++                                      ? std::filesystem::file_time_type{}
++                                      : std::filesystem::last_write_time(outputs.records, done_error);
++        const auto file_identity = fmt::format(
++            "records {} {}", file_bytes,
++            static_cast<long long>(file_written.time_since_epoch().count()));
++        std::ifstream in{done_filename};
++        const std::string text{std::istreambuf_iterator<char>(in), {}};
++        unsigned long long done_store = 0;
++        if (!done_error && text.rfind(file_identity, 0) == 0 &&
++            std::sscanf(text.c_str() + file_identity.size(), " store %llu", &done_store) == 1 &&
++            prep_store.Size() >= done_store) {
++            LOG_INFO(Render_Vulkan,
++                     "Shader set prepass: every record of {} is known to the prepared store "
++                     "already ({} kept); nothing to prepare ({:.1f} s)",
++                     outputs.records.filename().string(), prep_store.Size(), since(begin));
++            return;
++        }
++    }
++
+     // 2. What is left: every usable key of the set not in the kept store, once.
+     std::unordered_set<u64> left;
+     size_t records = 0, known = 0, repeats = 0, unusable = 0;
+@@ -6338,13 +6372,17 @@ void PipelineCache::RunShaderSetPrepass(const std::filesystem::path& title_dir,
+         }
+     }
+     // About 21 KiB a kept record (d4: 820 kept in 17 MiB; own stores 18-20.5 KiB).
+-    const u64 disk_needed_mb = (u64{total} * 21) >> 10;
++    // 0772: plus about 7 KiB a pipeline in the driver's own disk cache (radv; estimate from 0484:
++    // about 13 MB for about 1,900 pipelines), which the floor check sees only if it shares the
++    // file system.
++    const u64 disk_needed_mb = (u64{total} * (21 + 7)) >> 10;
+     const u64 disk_free_mb = FreeDiskMegabytes(output_dir);
+     LOG_INFO(Render_Vulkan,
+              "Shader set prepass: set file ready in {:.0f} s; {} records: {} keys to prepare, {} "
+              "known already, {} repeats of a key, {} not for this device ({:.1f} s to count). "
+              "Lists: {} keys from {} files, {} of them to prepare first, {} known already, {} not "
+-             "in the set;{} Needs about {} MB of disk, {} MB free (floor {} MB)",
++             "in the set;{} Needs about {} MB of disk (kept store and driver cache), {} MB free "
++             "(floor {} MB)",
+              set_seconds, records, total, known, repeats, unusable, since(count_begin),
+              lists.keys.size(), list_files.size(), listed.size(), listed_known, listed_missing,
+              lists.report, disk_needed_mb, disk_free_mb,
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.h b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+index 1b2eaea..73966e3 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.h
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+@@ -493,6 +493,8 @@ private:
+         size_t jobs{1};
+         std::chrono::steady_clock::time_point deadline{}; ///< epoch: no time limit
+         std::chrono::seconds memory_wait{300};
++        /// 0772: time spent under the memory floor so far, over all records and passes.
++        std::chrono::steady_clock::duration memory_waited{};
+         std::atomic<size_t> processed{}; ///< keys taken: built, failed or left out
+         std::atomic<size_t> kept{};
+         std::atomic<size_t> failed{};

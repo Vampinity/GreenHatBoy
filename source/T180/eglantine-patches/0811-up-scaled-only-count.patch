@@ -1,0 +1,83 @@
+From: EglantinePS5
+Subject: [PATCH] up: with EDEN_UP_SCALED_ONLY=1, the census and the collector count a freed native copy as freed
+
+What: Image::HostMemoryBytes (vk_texture_cache.h) gives 0 while 0810 has freed the native copy
+(only the scaled copy is held, which GetScaledImageSizeBytes counts apart), so
+TextureCache::ImageMemoryBytes, the census ("target", "astc", "other", stale and unmapped
+fields) and EDEN_UP_MEM_CENSUS's "images" show what is really held. TextureCache::ScaleUp and
+ScaleDown add the change of a registered image's ImageMemoryBytes to total_used_memory, as
+BindSparseTiles does for later binds, so RegisterImage's and DeleteImage's counts stay paired.
+Why: without it the census keeps showing the full native size of a rescaled target (the cache's
+own guess from the guest size, since original_image is empty), so a test could not see 0810's
+gain in the census, only in the driver line; and the collector would think the cache holds more
+than it does and evict sooner than needed.
+Off: one cached test per scale change; HostMemoryBytes's new test reads a bool that is never set
+without the switch.
+Where the runtime reports device memory (CanReportMemoryUsage), TickFrame sets the total from the
+driver every frame anyway, so the pairing matters only within a frame. Not covered: a native copy
+made again inside UploadMemory/DownloadMemory and kept there (an image's second return) is not
+added to total_used_memory until that frame end; DeleteImage subtracts at most what is counted
+(it clamps at 0).
+
+---
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.h b/src/video_core/renderer_vulkan/vk_texture_cache.h
+index 1b8778d401..6ad558c09a 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.h
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.h
+@@ -616,6 +616,9 @@ public:
+     /// Host memory the image takes, for the texture cache's total (none while unbacked): a
+     /// trimmed or converted image takes nothing like its guest size.
+     [[nodiscard]] std::optional<u64> HostMemoryBytes() const noexcept {
++        if (native_released) {
++            return 0; // EDEN_UP_SCALED_ONLY: only the scaled copy (counted apart) is held
++        }
+         if (!original_image) {
+             return std::nullopt;
+         }
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index abc7a7fd84..dc0c9b0a39 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -6380,13 +6380,29 @@ void TextureCache<P>::TickAsyncUnswizzle() {
+     }
+ }
+ 
++// EDEN_UP_SCALED_ONLY=1 (vk_texture_cache.cpp, 0810): a scale can free or make again an image's
++// native copy. RegisterImage counted what the image held then; the change is added here, as
++// BindSparseTiles does for later binds. Off: one cached test.
++[[nodiscard]] inline bool ScaledOnlyCounts() {
++    static const bool on = Common::PeSwitch("EDEN_UP_SCALED_ONLY");
++    return on;
++}
++
+ template <class P>
+ bool TextureCache<P>::ScaleUp(Image& image) {
+     const bool has_copy = image.HasScaled();
++    const bool count_native = ScaledOnlyCounts() && True(image.flags & ImageFlagBits::Registered);
++    const u64 held_before = count_native ? ImageMemoryBytes(image) : 0;
+     const bool rescaled = image.ScaleUp();
+     if (!has_copy && image.HasScaled()) {
+         total_used_memory += GetScaledImageSizeBytes(image);
+     }
++    if (count_native) {
++        const u64 held_after = ImageMemoryBytes(image);
++        total_used_memory = total_used_memory + held_after >= held_before
++                                ? total_used_memory + held_after - held_before
++                                : 0;
++    }
+     if (!rescaled) {
+         return false;
+     }
+@@ -6396,7 +6412,12 @@ bool TextureCache<P>::ScaleUp(Image& image) {
+ 
+ template <class P>
+ bool TextureCache<P>::ScaleDown(Image& image) {
++    const bool count_native = ScaledOnlyCounts() && True(image.flags & ImageFlagBits::Registered);
++    const u64 held_before = count_native ? ImageMemoryBytes(image) : 0;
+     const bool rescaled = image.ScaleDown();
++    if (count_native) {
++        total_used_memory += ImageMemoryBytes(image) - (std::min)(held_before, ImageMemoryBytes(image));
++    }
+     if (!rescaled) {
+         return false;
+     }
