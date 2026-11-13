@@ -1,0 +1,265 @@
+From: EglantinePS5
+Subject: [PATCH] up: guest writes change page protection after the buffer cache lock (zortos293/Lichii #1518 2dad3db, lucastaonline's f5902c6c68 from #1161), off by default
+
+Switch: EDEN_UP_DEFER_PROTECT=1 (exact "1", read once, at the first guest write). Off, or any other
+value: exactly T146. On, the first guest write logs "EDEN_UP_DEFER_PROTECT: guest writes change page
+protection after the buffer cache lock" (LOG_INFO).
+
+What: RasterizerVulkan::OnCPUWrite holds buffer_cache.mutex while the pages a guest write untracks
+change their host protection (UpdatePagesCachedBatch -> MarkRegionCaching, a system call per run).
+Every other thread that wants the lock, the GPU back thread before its draws among them, waits for
+those calls; upstream counts thousands a second at the water. With the switch on, a guest thread
+that does not own the Vulkan scheduler collects its page untracking (-1) while it holds the lock
+and applies it, in the order made, right after it drops the lock. The word state still changes
+under the lock as before. Tracking (+1) is never deferred: applied at once, so a page is never
+tracked later than its words say. Off the owner a write only untracks pages
+(BufferCache::WriteMemory uploads only on the owner, keep_page_gpu_data && OwnsScheduler()).
+
+Unmap: the first deferred batch raises DeviceMemoryManager's in-flight count while the lock is still
+held, the apply lowers it; Unmap waits for 0 after InvalidateRegion (which takes the buffer cache
+lock, so it orders after any write that deferred under it). A -1 applied after the page lost its
+backing would be dropped, the page would keep its count and a remap's upload would never protect
+the new backing.
+
+Why a switch and not unconditional: it is not a pure bug fix. It moves system calls out of a lock
+and adds a wait to Unmap: a speed change with new interleavings (a page stays protected a little
+longer after its words are untracked: a write that traps there finds nothing to do, upstream's
+argument; a writer that retries on our guest memory service may trap more than once in that
+window). Unmeasured by upstream (no fps number in the PR). Off cost: one cached bool test per guest
+write in OnCPUWrite, one thread-local pointer test per ApplyCollectedRanges (the pointer is only
+set with the switch on), one load of a counter that is always 0 in Unmap.
+
+Frame-ahead guard: the guard arms and lifts its pages with its own UpdatePagesCachedBatch(+1/-1)
+calls on the device memory (ahead_guard.h), not through WordManager, so none of its calls is
+deferred. Page counts add up in any order; a deferred -1 only holds a count higher than the words
+for a moment, never lower, so a page the guard armed stays protected exactly as before. No guard
+patch (0491, 0492, 0504, 0630, 0631) touches ApplyCollectedRanges or OnCPUWrite; 0229 made the
+batch path this branch sits in. The code sits beside 0317 (EDEN_PE_CPU_WRITE_AHEAD) and 0421
+(EDEN_UP_HELD_VS_DOWNLOAD) in OnCPUWrite: both run inside the deferral scope (their untracking is
+deferred too), the held path's texture cache write runs after the apply. prepare-vulkan-port.py's
+two anchors in OnCPUWrite (the timer after the signature, the GuestCacheLock spin on the buffer
+cache lock) still match: the scope object is made on the line before the lock, so it ends after the
+lock is dropped on every way out, the early return included.
+
+Not taken from upstream: its unit tests (our core has no src/tests), its ASSERT on a +1 (here a +1
+is just applied at once, as its release path does), its Nx2Perf::Verify branch (not in ours).
+Not in the shader-prep TranslationSwitches: it changes no translation, so both arms keep one store.
+
+Origin and credit: lucastaonline, commit f5902c6c68 in zortos293/Lichii PR #1161; ported to Lichii
+nx2 by zortos293 as 2dad3db (PR #1518, merged 12 Nov), whose Unmap wait and owner-only rule are
+taken here.
+---
+diff --git a/src/core/device_memory_manager.h b/src/core/device_memory_manager.h
+index 95ebfb5..0440573 100644
+--- a/src/core/device_memory_manager.h
++++ b/src/core/device_memory_manager.h
+@@ -137,6 +137,18 @@ public:
+     // New batch API to update multiple ranges with a single lock acquisition.
+     void UpdatePagesCachedBatch(std::span<const std::pair<DAddr, size_t>> ranges, s32 delta);
+ 
++    /// EDEN_UP_DEFER_PROTECT (0655, Lichii #1518 2dad3db): held by a thread from before it drops
++    /// the buffer cache lock it untracked pages under until it has applied their count changes
++    /// (RasterizerVulkan::OnCPUWrite). Unmap waits for every holder after invalidating the range:
++    /// a change applied once the page has no backing is lost, and the page would keep its count
++    /// and never be protected again. Never taken with the switch off.
++    void BeginDeferredCachedUpdates() {
++        deferred_cached_updates.fetch_add(1, std::memory_order_relaxed);
++    }
++    void EndDeferredCachedUpdates() {
++        deferred_cached_updates.fetch_sub(1, std::memory_order_release);
++    }
++
+     /// Traps the next guest CPU read of these pages, to learn which GPU writes the CPU reads.
+     void ArmReadTraps(DAddr addr, size_t size);
+ 
+@@ -274,6 +286,7 @@ private:
+     std::unique_ptr<CachedPages> cached_pages;
+     Common::RangeMutex counter_guard;
+     std::mutex mapping_guard;
++    std::atomic<u32> deferred_cached_updates{}; ///< 0655: always 0 with EDEN_UP_DEFER_PROTECT off
+ 
+ 
+ };
+diff --git a/src/core/device_memory_manager.inc b/src/core/device_memory_manager.inc
+index 265f11e..a370858 100644
+--- a/src/core/device_memory_manager.inc
++++ b/src/core/device_memory_manager.inc
+@@ -7,6 +7,7 @@
+ #include <atomic>
+ #include <limits>
+ #include <memory>
++#include <thread>
+ #include <type_traits>
+ #include <algorithm>
+ #include <vector>
+@@ -303,6 +304,12 @@ void DeviceMemoryManager<Traits>::Unmap(DAddr address, size_t size) {
+     size_t start_page_d = address >> Memory::YUZU_PAGEBITS;
+     size_t num_pages = Common::AlignUp(size, Memory::YUZU_PAGESIZE) >> Memory::YUZU_PAGEBITS;
+     device_inter->InvalidateRegion(address, size);
++    // 0655 (EDEN_UP_DEFER_PROTECT): page count changes a guest write took out of the buffer
++    // cache's lock land before the backing goes. With the switch off the count is never raised:
++    // one load of 0.
++    while (deferred_cached_updates.load(std::memory_order_acquire) != 0) {
++        std::this_thread::yield();
++    }
+     std::scoped_lock lk(mapping_guard);
+ 
+     tracked_entries.CommitRegion(start_page_d, start_page_d + num_pages); // should already be committed, but just in case
+diff --git a/src/video_core/buffer_cache/word_manager.h b/src/video_core/buffer_cache/word_manager.h
+index 0a132ed..b3d448a 100644
+--- a/src/video_core/buffer_cache/word_manager.h
++++ b/src/video_core/buffer_cache/word_manager.h
+@@ -13,6 +13,7 @@
+ #include <memory>
+ #include <limits>
+ #include <span>
++#include <cstddef>
+ #include <utility>
+ #include <vector>
+ 
+@@ -39,6 +40,68 @@ enum class Type {
+     Max
+ };
+ 
++/// EDEN_UP_DEFER_PROTECT=1 (0655; Lichii #1518 2dad3db, lucastaonline's f5902c6c68 from #1161):
++/// page untracking a guest thread applies itself once it drops the buffer cache's lock
++/// (RasterizerVulkan::OnCPUWrite). Changing a page's host protection is a system call, and every
++/// other thread drawing or reading waited for it. Only untracking waits: a page protected a little
++/// longer traps a write that then finds it untracked, but a page tracked late lets a write through
++/// unseen. The first deferred batch raises the tracker's in-flight count (under the lock), the
++/// apply lowers it again; DeviceMemoryManager::Unmap waits for it.
++class DeferredPageCaching {
++public:
++    using Ranges = std::vector<std::pair<VAddr, size_t>>;
++    using Apply = void (*)(void* tracker, std::span<const std::pair<VAddr, size_t>>, s32 delta);
++    using End = void (*)(void* tracker);
++
++    void Add(void* tracker, Apply apply, End end, const Ranges& ranges, s32 delta) {
++        if (batches.empty()) {
++            end_tracker = tracker;
++            end_call = end;
++        }
++        batches.push_back(Batch{tracker, apply, delta, collected.size(), ranges.size()});
++        collected.insert(collected.end(), ranges.begin(), ranges.end());
++    }
++
++    /// In the order they were made: one page can be untracked and tracked again in between.
++    void ApplyAll() {
++        for (const Batch& batch : batches) {
++            batch.apply(batch.tracker,
++                        std::span<const std::pair<VAddr, size_t>>(collected).subspan(batch.begin,
++                                                                                    batch.count),
++                        batch.delta);
++        }
++        const bool had = !batches.empty();
++        batches.clear();
++        collected.clear();
++        if (had && end_call != nullptr) {
++            end_call(end_tracker);
++        }
++        end_tracker = nullptr;
++        end_call = nullptr;
++    }
++
++    [[nodiscard]] bool Empty() const {
++        return batches.empty();
++    }
++
++private:
++    struct Batch {
++        void* tracker;
++        Apply apply;
++        s32 delta;
++        size_t begin;
++        size_t count;
++    };
++    std::vector<Batch> batches;
++    Ranges collected;
++    void* end_tracker{};
++    End end_call{};
++};
++
++/// Set while the calling thread collects its page untracking instead of applying it (0655; only
++/// RasterizerVulkan::OnCPUWrite sets it, and only with EDEN_UP_DEFER_PROTECT=1).
++inline thread_local DeferredPageCaching* t_deferred_page_caching{};
++
+ // EDEN_UP_HOT_PAGES=1 (exact "1", off without it; Frizti/Fritchii d20c32704c, there
+ // EDEN_NX2_EXP48, a port of Eglantine f27522bfb9 by kraibse): a page the CPU rewrites again and
+ // again is no longer write-trapped after each upload. It uploads once a frame instead, whether it
+@@ -424,6 +487,27 @@ struct WordManager {
+             }
+         }
+         coalesced.emplace_back(cur_addr, cur_size);
++        // 0655 (EDEN_UP_DEFER_PROTECT): untracking waits until the write drops the lock. Tracking
++        // (+1) is applied at once, so a page is never tracked later than its words say.
++        if (DeferredPageCaching* const deferred = t_deferred_page_caching;
++            deferred != nullptr && delta < 0) {
++            if (deferred->Empty()) {
++                tracker->BeginDeferredCachedUpdates();
++            }
++            deferred->Add(
++                tracker,
++                [](void* deferred_tracker, std::span<const std::pair<VAddr, size_t>> runs,
++                   s32 run_delta) {
++                    static_cast<DeviceTracker*>(deferred_tracker)
++                        ->UpdatePagesCachedBatch(runs, run_delta);
++                },
++                [](void* deferred_tracker) {
++                    static_cast<DeviceTracker*>(deferred_tracker)->EndDeferredCachedUpdates();
++                },
++                coalesced, delta);
++            ranges.clear();
++            return;
++        }
+         // Use batch API to reduce lock acquisitions and contention.
+         tracker->UpdatePagesCachedBatch(coalesced, delta);
+         ranges.clear();
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 85b401e..fb0a426 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -2684,8 +2684,44 @@ bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
+     // texture cache, so the images over it don't download their older bytes over it before it
+     // is applied. Only the pipeline cache waits for the apply.
+     static const bool held_vs_download = Common::PeSwitch("EDEN_UP_HELD_VS_DOWNLOAD");
++    // EDEN_UP_DEFER_PROTECT=1 (0655; Lichii #1518 2dad3db, lucastaonline's f5902c6c68 from #1161):
++    // the pages this write untracks change their host protection after the buffer cache's lock is
++    // dropped, not under it: drawing waited for those system calls (~1 us each, thousands a second
++    // at the water). A write trapping on a page still protected until then finds it already
++    // untracked and changes nothing. Off the scheduler's owner a write only untracks pages
++    // (BufferCache::WriteMemory uploads only on the owner), which is all that waits. Device
++    // unmaps wait for these changes (DeviceMemoryManager::BeginDeferredCachedUpdates). The scope
++    // is made before the lock, so it ends after the lock is dropped, on every way out.
++    static const bool defer_protect = [] {
++        const bool on = Common::PeSwitch("EDEN_UP_DEFER_PROTECT");
++        if (on) {
++            LOG_INFO(Render_Vulkan, "EDEN_UP_DEFER_PROTECT: guest writes change page protection "
++                                    "after the buffer cache lock");
++        }
++        return on;
++    }();
++    struct DeferProtectScope {
++        VideoCommon::DeferredPageCaching* deferred{};
++        explicit DeferProtectScope(bool on) {
++            if (on && VideoCommon::t_deferred_page_caching == nullptr &&
++                !VideoCommon::GpuSplit::OwnsScheduler()) {
++                static thread_local VideoCommon::DeferredPageCaching thread_deferred;
++                deferred = &thread_deferred;
++                VideoCommon::t_deferred_page_caching = deferred;
++            }
++        }
++        ~DeferProtectScope() {
++            if (deferred != nullptr) {
++                VideoCommon::t_deferred_page_caching = nullptr;
++                deferred->ApplyAll();
++            }
++        }
++        DeferProtectScope(const DeferProtectScope&) = delete;
++        DeferProtectScope& operator=(const DeferProtectScope&) = delete;
++    };
+     bool held = false;
+     {
++        DeferProtectScope defer_scope{defer_protect};
+         std::scoped_lock lock{buffer_cache.mutex};
+         if (buffer_cache.OnCPUWrite(addr, size)) {
+             if (!held_vs_download) {

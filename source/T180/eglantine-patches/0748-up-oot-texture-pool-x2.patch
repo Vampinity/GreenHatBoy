@@ -1,0 +1,112 @@
+From: EglantinePS5
+Subject: [PATCH] up: built-in Texture Pool x2 game patch for the later-area freeze with Max Resolution on (Lichii #1313, RsMan-Dev's patch), EDEN_UP_OOT_TEXTURE_POOL_X2=1, off by default
+
+What: with Max Resolution (EDEN_NX2_OOT_MAX_RESOLUTION=1, on in our play settings) the
+render targets outgrow the first pool of the game's own graphics allocator. In one building of a
+later area the game then reads through a null allocation and freezes (endless unmapped reads).
+Upstream: 3 of 3 freezes before, none in 2 runs after (Linux PC, 2x, Max Resolution on).
+
+The game patch: main+0xC2A36C (stp x8, x9, [sp, #0x10]) stores the first pool size (x8) and the
+growth block size (x9) into the allocator's init descriptor. It becomes `bl` to a cave at
+main+0x3C462C0 (zero padding after .text) that runs `lsl x8, x8, #1; stp x8, x9, [sp, #0x10];
+ret`. So the first pool is twice as big. Same bytes as upstream, added to our group-patch table
+(applied all or none: the original word and an all-zero cave are checked, and a user mod at either
+place wins). Our table gets upstream's test that a cave lies in the padding after .text, inside
+.text's last page and before .rodata (a new field, false for the existing records).
+
+Price: the game's first graphics pool is twice as big. How many MiB is not in the code (it is the
+game's own number in x8; not checked). On a base PS5 that is guest memory taken at start, in a
+memory that already runs out at area loads. So off by default; only worth it with Max Resolution on
+and only for that later area, or to test whether a pool that is too small plays a part in our
+area-load crashes.
+
+Switch: EDEN_UP_OOT_TEXTURE_POOL_X2=1 (exact "1"), read once at game load. Off: nothing changes.
+Only for the Ocarina build id E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348.
+
+Test: the boot log says `Applying built-in patch "Texture Pool x2 (built-in)" (2 sites in main)`.
+Compare the memory lines at start and at the first area load with and without it. Not checked:
+compile and run; whether the game saves x30 before main+0xC2A36C (the `bl` overwrites x30;
+upstream ran it without trouble, so most likely yes).
+
+Origin and credit: RsMan-Dev's Texture Pool x2 patch (described in zortos293/Lichii #247), built in
+by William RICHER (RsMan-Dev) in zortos293/Lichii 12062785e3 (#1313, co-author Devin Alsup).
+---
+diff --git a/src/core/file_sys/patch_manager.cpp b/src/core/file_sys/patch_manager.cpp
+index 18b6498..86bddfb 100644
+--- a/src/core/file_sys/patch_manager.cpp
++++ b/src/core/file_sys/patch_manager.cpp
+@@ -128,6 +128,9 @@ struct BuiltinPatchRecord {
+     size_t module_offset;
+     std::span<const u8> bytes;
+     std::span<const u8> original;
++    /// 0748: a code cave that must lie in the zero padding after .text, inside its last page
++    /// and before .rodata (upstream's test, zortos293/Lichii 12062785e3).
++    bool executable_padding = false;
+ };
+ 
+ struct BuiltinGroupPatch {
+@@ -291,6 +294,29 @@ constexpr std::array OOT_POLL_BACKOFF_RECORDS{
+     BuiltinPatchRecord{0x17088, OOT_POLL_BACKOFF_CAVE, OOT_POLL_PADDING_ORIGINAL},
+ };
+ 
++// EDEN_UP_OOT_TEXTURE_POOL_X2=1 (exact "1"; 0748): RsMan-Dev's Texture Pool x2 patch as built in
++// by Lichii #1313 (William RICHER, 12062785e3). With Max Resolution the render targets outgrow the
++// game's graphics allocator's first pool, and one later-area building then reads through a null
++// allocation and the game freezes. main+0xC2A36C (stp x8, x9, [sp, #0x10]) stores the first pool
++// size (x8) and the growth block size (x9) into the allocator's init descriptor; it becomes a call
++// of a cave at main+0x3C462C0 that doubles x8 first (lsl x8, x8, #1; stp; ret).
++[[nodiscard]] bool TexturePoolX2Enabled() {
++    static const bool enabled = UpSwitch("EDEN_UP_OOT_TEXTURE_POOL_X2");
++    return enabled;
++}
++constexpr std::array<u8, 4> OOT_TEXTURE_POOL_ORIGINAL{0xE8, 0x27, 0x01, 0xA9}; // stp x8, x9, [sp, #0x10]
++constexpr std::array<u8, 4> OOT_TEXTURE_POOL_CALL{0xD5, 0x6F, 0xC0, 0x94};     // bl 0x3c462c0
++constexpr std::array<u8, 12> OOT_TEXTURE_POOL_CAVE_ORIGINAL{};
++constexpr std::array<u8, 12> OOT_TEXTURE_POOL_CAVE{
++    0x08, 0xF9, 0x7F, 0xD3, // lsl x8, x8, #1
++    0xE8, 0x27, 0x01, 0xA9, // stp x8, x9, [sp, #0x10]
++    0xC0, 0x03, 0x5F, 0xD6, // ret
++};
++constexpr std::array OOT_TEXTURE_POOL_RECORDS{
++    BuiltinPatchRecord{0xC2A36C, OOT_TEXTURE_POOL_CALL, OOT_TEXTURE_POOL_ORIGINAL},
++    BuiltinPatchRecord{0x3C462C0, OOT_TEXTURE_POOL_CAVE, OOT_TEXTURE_POOL_CAVE_ORIGINAL, true},
++};
++
+ constexpr std::array BUILTIN_GROUP_PATCHES{
+     BuiltinGroupPatch{"Native zstd (built-in)", 0x0400486024DEC000, "main",
+                       "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348", OOT_NATIVE_ZSTD_RECORDS,
+@@ -304,6 +330,9 @@ constexpr std::array BUILTIN_GROUP_PATCHES{
+     BuiltinGroupPatch{"Resource poll backoff (built-in)", 0x0400486024DEC000, "main",
+                       "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348", OOT_POLL_BACKOFF_RECORDS,
+                       PollBackoffEnabled},
++    BuiltinGroupPatch{"Texture Pool x2 (built-in)", 0x0400486024DEC000, "main",
++                      "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348", OOT_TEXTURE_POOL_RECORDS,
++                      TexturePoolX2Enabled},
+ };
+ 
+ // `nso` is the module as loaded, `out` the same with the user's mods applied. A patch is applied
+@@ -336,6 +365,24 @@ void ApplyBuiltinGroupPatches(std::vector<u8>& out, const std::vector<u8>& nso,
+                 break;
+             }
+             const size_t offset = sizeof(Loader::NSOHeader) + record.module_offset;
++            if (record.executable_padding) {
++                // 0748: the cave must be executable and unused: zero bytes after .text, before
++                // the end of .text's last page and before .rodata.
++                Loader::NSOHeader header{};
++                std::memcpy(&header, nso.data(), sizeof(header));
++                const auto& text = header.segments[0];
++                const u64 text_end = u64{text.location} + text.size;
++                const u64 executable_end = (text_end + 0xFFF) & ~u64{0xFFF};
++                const u64 cave_end = u64{record.module_offset} + record.bytes.size();
++                if (record.module_offset < text_end || cave_end > executable_end ||
++                    cave_end > header.segments[1].location) {
++                    LOG_WARNING(Loader,
++                                "    - Skipping \"{}\": code cave {}+{:#x} is not executable padding",
++                                patch.name, name, record.module_offset);
++                    apply = false;
++                    break;
++                }
++            }
+             if (!std::equal(record.original.begin(), record.original.end(), nso.begin() + offset)) {
+                 LOG_WARNING(Loader, "    - Skipping \"{}\": unexpected original bytes at {}+{:#x}",
+                             patch.name, name, record.module_offset);

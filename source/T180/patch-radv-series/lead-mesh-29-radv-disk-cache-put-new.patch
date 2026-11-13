@@ -1,0 +1,188 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: EglantinePS5
+Date: Fri, 13 Nov 2026 20:00:00 +0100
+Subject: [PATCH] vulkan/runtime: hand an object to the disk cache only when it was new (RADV_PS5_DISK_CACHE_PUT_NEW)
+
+vk_pipeline_cache_create_and_insert_object (used by radv_shader_create for
+every shader binary RADV makes, and by vk_pipeline_cache_load for every object
+of the app's pipeline cache data) calls disk_cache_put before it looks in the
+cache in memory. A binary that is already there (an identical binary made by
+another pipeline) is queued for the disk again, and the disk side then works
+out that it has it: in the multi-file cache after making room for it (eviction
+reads a whole folder per call), in the database after a lock and a look-up.
+
+RADV_PS5_DISK_CACHE_PUT_NEW (exactly "1" or "2", read once per process):
+1: the object goes into the cache in memory first, and to the disk cache only
+   when it was new there (also when it replaced a not yet deserialized copy,
+   and when it could not be deserialized: both as upstream);
+2: as 1, and the objects read from the app's own pipeline cache data
+   (pInitialData; Eden loads its 77 MiB file this way at every boot and keeps
+   it itself) are not handed to the disk cache at all.
+Off: upstream order, one cached flag read per object. One stderr line
+"RADV_PS5_DISK_CACHE_PUT_NEW=<n> on" at first use.
+
+The disk cache's content is the same either way except that, with 2, an object
+only the app's file holds does not also go into the driver's disk cache. No key,
+no binary and no cache UUID changes (radv-build-id is pinned to the Mesa
+revision), so the driver's disk cache and the app's stores stay valid. Ours.
+
+Compiled with the driver's flags, syntax only. Not linked, not run.
+
+Co-Authored-By: Claude Opus 5.5
+---
+diff --git a/src/vulkan/runtime/vk_pipeline_cache.c b/src/vulkan/runtime/vk_pipeline_cache.c
+index 97f184c..a0a7fc9 100644
+--- a/src/vulkan/runtime/vk_pipeline_cache.c
++++ b/src/vulkan/runtime/vk_pipeline_cache.c
+@@ -36,11 +36,38 @@
+ #include "util/disk_cache.h"
+ #include "util/hash_table.h"
+ #include "util/set.h"
++#include "util/u_atomic.h"
++
++#include <stdio.h>
++#include <stdlib.h>
+ 
+ #define vk_pipeline_cache_log(cache, ...)                                      \
+    if (cache->base.client_visible)                                             \
+       vk_logw(VK_LOG_OBJS(cache), __VA_ARGS__)
+ 
++/* EglantinePS5: RADV_PS5_DISK_CACHE_PUT_NEW (exactly "1" or "2", read once per process; off
++ * otherwise). Upstream hands every object made from data to the disk cache before it looks in
++ * the cache in memory, so a shader binary that is already there (an identical binary made by
++ * another pipeline) is queued for the disk again, and the disk side then works out that it has
++ * it. 1: the object goes into the cache in memory first, and to the disk cache only when it was
++ * new there. 2: as 1, and the objects read from the app's own pipeline cache data
++ * (vkCreatePipelineCache's pInitialData, which the app keeps itself) are not handed to the disk
++ * cache at all. Off: upstream order, one cached flag read per object. */
++static int vk_pipeline_cache_put_new = -1;
++
++static int
++vk_pipeline_cache_put_new_mode(void)
++{
++   int mode = p_atomic_read(&vk_pipeline_cache_put_new);
++   if (mode < 0) {
++      const char *value = getenv("RADV_PS5_DISK_CACHE_PUT_NEW");
++      mode = value && (value[0] == '1' || value[0] == '2') && value[1] == '\0' ? value[0] - '0' : 0;
++      if (p_atomic_cmpxchg(&vk_pipeline_cache_put_new, -1, mode) == -1 && mode)
++         fprintf(stderr, "RADV_PS5_DISK_CACHE_PUT_NEW=%d on\n", mode);
++   }
++   return mode;
++}
++
+ static struct disk_cache *
+ get_disk_cache(const struct vk_pipeline_cache *cache)
+ {
+@@ -287,12 +314,18 @@ vk_pipeline_cache_object_deserialize(struct vk_pipeline_cache *cache,
+    return object;
+ }
+ 
++/* was_new (may be NULL): false only when an equal, fully formed object was already in the
++ * cache in memory and the one given was dropped (RADV_PS5_DISK_CACHE_PUT_NEW). */
+ static struct vk_pipeline_cache_object *
+-vk_pipeline_cache_insert_object(struct vk_pipeline_cache *cache,
+-                                struct vk_pipeline_cache_object *object)
++vk_pipeline_cache_insert_object_ex(struct vk_pipeline_cache *cache,
++                                   struct vk_pipeline_cache_object *object,
++                                   bool *was_new)
+ {
+    assert(object->ops != NULL);
+ 
++   if (was_new)
++      *was_new = true;
++
+    if (cache->object_cache == NULL)
+       return object;
+ 
+@@ -314,6 +347,8 @@ vk_pipeline_cache_insert_object(struct vk_pipeline_cache *cache,
+           assert(object->ref_cnt == 1);
+           entry->key = object;
+           object = found_object;
++       } else if (was_new) {
++          *was_new = false;
+        }
+ 
+       result = vk_pipeline_cache_object_ref((void *)entry->key);
+@@ -332,6 +367,13 @@ vk_pipeline_cache_insert_object(struct vk_pipeline_cache *cache,
+    return result;
+ }
+ 
++static struct vk_pipeline_cache_object *
++vk_pipeline_cache_insert_object(struct vk_pipeline_cache *cache,
++                                struct vk_pipeline_cache_object *object)
++{
++   return vk_pipeline_cache_insert_object_ex(cache, object, NULL);
++}
++
+ struct vk_pipeline_cache_object *
+ vk_pipeline_cache_lookup_object(struct vk_pipeline_cache *cache,
+                                 const void *key_data, size_t key_size,
+@@ -454,14 +496,17 @@ vk_pipeline_cache_add_object(struct vk_pipeline_cache *cache,
+    return inserted;
+ }
+ 
+-struct vk_pipeline_cache_object *
+-vk_pipeline_cache_create_and_insert_object(struct vk_pipeline_cache *cache,
+-                                           const void *key_data, uint32_t key_size,
+-                                           const void *data, size_t data_size,
+-                                           const struct vk_pipeline_cache_object_ops *ops)
++static struct vk_pipeline_cache_object *
++vk_pipeline_cache_create_and_insert_object_ex(struct vk_pipeline_cache *cache,
++                                              const void *key_data, uint32_t key_size,
++                                              const void *data, size_t data_size,
++                                              const struct vk_pipeline_cache_object_ops *ops,
++                                              bool from_app_data)
+ {
+    struct disk_cache *disk_cache = get_disk_cache(cache);
+-   if (!cache->skip_disk_cache && disk_cache) {
++   const bool to_disk = !cache->skip_disk_cache && disk_cache;
++   const int put_new = to_disk ? vk_pipeline_cache_put_new_mode() : 0;
++   if (to_disk && put_new == 0) {
+       cache_key cache_key;
+       disk_cache_compute_key(disk_cache, key_data, key_size, cache_key);
+       disk_cache_put(disk_cache, cache_key, data, data_size, NULL);
+@@ -471,12 +516,32 @@ vk_pipeline_cache_create_and_insert_object(struct vk_pipeline_cache *cache,
+        vk_pipeline_cache_object_deserialize(cache, key_data, key_size, data,
+                                             data_size, ops);
+ 
++   /* An object that could not be made is still handed to the disk cache, as upstream does. */
++   bool was_new = true;
+    if (object)
+-      object = vk_pipeline_cache_insert_object(cache, object);
++      object = vk_pipeline_cache_insert_object_ex(cache, object, &was_new);
++
++   /* RADV_PS5_DISK_CACHE_PUT_NEW: after the cache in memory, and only when the object was new
++    * there. data is the caller's and still valid. */
++   if (put_new != 0 && was_new && !(put_new == 2 && from_app_data)) {
++      cache_key cache_key;
++      disk_cache_compute_key(disk_cache, key_data, key_size, cache_key);
++      disk_cache_put(disk_cache, cache_key, data, data_size, NULL);
++   }
+ 
+    return object;
+ }
+ 
++struct vk_pipeline_cache_object *
++vk_pipeline_cache_create_and_insert_object(struct vk_pipeline_cache *cache,
++                                           const void *key_data, uint32_t key_size,
++                                           const void *data, size_t data_size,
++                                           const struct vk_pipeline_cache_object_ops *ops)
++{
++   return vk_pipeline_cache_create_and_insert_object_ex(cache, key_data, key_size, data,
++                                                        data_size, ops, false);
++}
++
+ nir_shader *
+ vk_pipeline_cache_lookup_nir(struct vk_pipeline_cache *cache,
+                              const void *key_data, size_t key_size,
+@@ -598,8 +663,8 @@ vk_pipeline_cache_load(struct vk_pipeline_cache *cache,
+          find_ops_for_type(cache->base.device->physical, type);
+ 
+       struct vk_pipeline_cache_object *object =
+-         vk_pipeline_cache_create_and_insert_object(cache, key_data, key_size,
+-                                                    data, data_size, ops);
++         vk_pipeline_cache_create_and_insert_object_ex(cache, key_data, key_size,
++                                                       data, data_size, ops, true);
+ 
+       if (object == NULL) {
+          vk_pipeline_cache_log(cache, "Failed to load pipeline cache object");

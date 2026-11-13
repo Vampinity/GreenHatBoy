@@ -1,0 +1,190 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_DESCRIPTOR_START_DIV=<n>: the descriptor update queues start at 1/n of their size and double on demand back to it; =1 counts only; a line every 3600 frames with the peak entries a frame and the grows; off by default
+
+Port of part 1 of heydemoura/EglantinePS5 PR #104 (branch perf/heap-memory, commit 0a5efdc,
+docs/HEAP-MEMORY-RESEARCH.md), by heydemoura; his switch name kept. Read only, nothing run from it.
+
+Our tree already has his shipping advice: 0107 made the queues a quarter of upstream's (guest
+0x20000, compute 0x8000 entries a frame, 24 + 6 MiB host over 8 frames), so most of his 114 MiB is
+in T173 already. This adds the small-start part on top: =8 starts guest at 0x4000 (3 MiB) and
+compute at 0x1000 (768 KiB); his porch peak (76-80k guest, 12-14k compute a frame) would grow
+guest back to 0x20000 and compute to 0x4000, so expect a few MiB, not 100.
+
+Growth: our own path from 0535 (EDEN_UP_HEAP_HOLDERS), not Lichii #495's GrowDescriptorPayload.
+In Acquire, before any entry is written: when used + reserve would not fit, double up to the
+size the queue was built for (T173's), allocate the new array (bad_alloc caught: growth stops for
+the session), WaitWorker, then swap. Past the ceiling or after a refusal the T173 path runs (wait
+for the worker, start the frame's slice again). Every writer of both queues goes through Acquire
+with its own reserve first (graphics ConfigureImpl and the fast delta draw incl. the L949 replay,
+whose kept entries are a copied vector; compute pipeline Configure; the mesh-as-compute passes use
+the draw's descriptor_data; every compute pass, FSR3 and the DLSS probe Acquire 2-3 or
+resources.size()); the only readers of the array are scheduler.Record lambdas, which WaitWorker
+drains before the old array goes. Both queues are used on the GPU thread only.
+
+Off (unset, or not 1..64): exactly T173: same start sizes, same growth rule, no line.
+=1: sizes and growth as without it, plus the lines (a control run's peak).
+=2..64: start = max(size/n, 0x1000), grow to the T173 size at most.
+Lines (Render_Vulkan): once per queue "EDEN_DESCRIPTOR_START_DIV=<n> guest|compute queue: start
+... ceiling ...", every 3600 frames "EDEN_DESCRIPTOR_START_DIV guest|compute queue: 3600 frames:
+peak N entries a frame, capacity ..., grows G, overflow waits W, refused R", and the existing
+"Descriptor payload grew: a -> b entries" per grow.
+
+vk_update_descriptor.cpp/.h only: not a translation id input (not under shader_recompiler and not
+reached from it; not in SINGLE), no name in TranslationSwitches: KEEPS THE STORE.
+
+---
+diff --git a/src/video_core/renderer_vulkan/vk_update_descriptor.cpp b/src/video_core/renderer_vulkan/vk_update_descriptor.cpp
+index d383cff308b47ca9286c0b0878b2e2b35b4e1b09..62a77ff7d613919edfd3d374bbdba2c0c408169c 100644
+--- a/src/video_core/renderer_vulkan/vk_update_descriptor.cpp
++++ b/src/video_core/renderer_vulkan/vk_update_descriptor.cpp
+@@ -5,6 +5,7 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include <algorithm>
++#include <cstdlib>
+ #include <new>
+ #include <variant>
+ #include <boost/container/static_vector.hpp>
+@@ -19,20 +20,87 @@
+ 
+ namespace Vulkan {
+ 
++namespace {
++// EDEN_DESCRIPTOR_START_DIV=<n> (port of part 1 of heydemoura/EglantinePS5 PR #104, branch
++// perf/heap-memory, commit 0a5efdc, by heydemoura; his switch name kept). Unset or not 1..64: off,
++// exactly T173 (no line, no growth). 1: sizes and growth as without it (T173), plus the count
++// line below, so a control run measures the peak. 2..64: each queue starts at 1/n of its T173 size (at least
++// 0x1000 entries a frame) and doubles on demand back to the T173 size at most; past that, or when
++// the larger array is refused, a full frame waits for the worker and starts again, as T173 does.
++// T173's sizes are already PR #104's shipping advice (0107: guest 0x20000, compute 0x8000).
++size_t StartDivisor() noexcept {
++    static const size_t divisor = [] {
++        const char* const value = std::getenv("EDEN_DESCRIPTOR_START_DIV");
++        if (value == nullptr || value[0] == '\0') {
++            return size_t{0};
++        }
++        char* end = nullptr;
++        const long parsed = std::strtol(value, &end, 10);
++        return (end != value && *end == '\0' && parsed >= 1 && parsed <= 64)
++                   ? static_cast<size_t>(parsed)
++                   : size_t{0};
++    }();
++    return divisor;
++}
++
++size_t StartPayloadSize(size_t size) noexcept {
++    const size_t divisor = StartDivisor();
++    if (divisor >= 2) {
++        return (std::max)(size / divisor, size_t{0x1000});
++    }
++    return Common::PeSwitch("EDEN_UP_HEAP_HOLDERS") ? size / 2 : size;
++}
++
++const char* QueueName(size_t full_size) noexcept {
++    return full_size == UpdateDescriptorQueue::GUEST_FRAME_PAYLOAD_SIZE     ? "guest"
++           : full_size == UpdateDescriptorQueue::COMPUTE_FRAME_PAYLOAD_SIZE ? "compute"
++                                                                            : "other";
++}
++} // Anonymous namespace
++
+ UpdateDescriptorQueue::UpdateDescriptorQueue(const Device& device_, size_t frame_payload_size_,
+                                              bool supports_descriptor_buffer_)
+-    : device{device_}, frame_payload_size{Common::PeSwitch("EDEN_UP_HEAP_HOLDERS") ? frame_payload_size_ / 2 : frame_payload_size_},
++    : device{device_}, frame_payload_size{StartPayloadSize(frame_payload_size_)},
+       supports_descriptor_buffer{supports_descriptor_buffer_},
+       payload(std::make_unique_for_overwrite<DescriptorUpdateEntry[]>(frame_payload_size * FRAMES_IN_FLIGHT))
+ {
+     initial_frame_payload_size = frame_payload_size;
++    full_frame_payload_size = frame_payload_size_;
+     payload_start = payload.get();
+     payload_cursor = payload.get();
++    if (StartDivisor() != 0) {
++        LOG_INFO(Render_Vulkan,
++                 "EDEN_DESCRIPTOR_START_DIV={} {} queue: start {} entries a frame ({} KiB host), "
++                 "ceiling {} ({} KiB host)",
++                 StartDivisor(), QueueName(full_frame_payload_size), frame_payload_size,
++                 frame_payload_size * FRAMES_IN_FLIGHT * sizeof(DescriptorUpdateEntry) >> 10,
++                 full_frame_payload_size,
++                 full_frame_payload_size * FRAMES_IN_FLIGHT * sizeof(DescriptorUpdateEntry) >> 10);
++    }
+ }
+ 
+ UpdateDescriptorQueue::~UpdateDescriptorQueue() = default;
+ 
+ void UpdateDescriptorQueue::TickFrame() {
++    if (StartDivisor() != 0) {
++        // EDEN_DESCRIPTOR_START_DIV: the most entries one frame wrote (restarts included).
++        const size_t frame_entries = frame_entries_restarted +
++                                     static_cast<size_t>(std::distance(payload_start, payload_cursor));
++        frame_entries_restarted = 0;
++        peak_frame_entries = (std::max)(peak_frame_entries, frame_entries);
++        if (++ticks_since_report >= 3600) {
++            LOG_INFO(Render_Vulkan,
++                     "EDEN_DESCRIPTOR_START_DIV {} queue: 3600 frames: peak {} entries a frame, "
++                     "capacity {} (start {}, ceiling {}), host {} KiB, grows {}, overflow waits {}, "
++                     "refused {} (grows and waits since start)",
++                     QueueName(full_frame_payload_size), peak_frame_entries, frame_payload_size,
++                     initial_frame_payload_size, full_frame_payload_size,
++                     frame_payload_size * FRAMES_IN_FLIGHT * sizeof(DescriptorUpdateEntry) >> 10,
++                     grows, overflow_waits, growth_refused ? 1 : 0);
++            ticks_since_report = 0;
++            peak_frame_entries = 0;
++        }
++    }
+     if (++frame_index >= FRAMES_IN_FLIGHT) {
+         frame_index = 0;
+     }
+@@ -45,12 +113,14 @@ void UpdateDescriptorQueue::Acquire(Scheduler& scheduler, size_t required_entrie
+     use_descriptor_buffer = supports_descriptor_buffer && use_descriptor_buffer_;
+     static constexpr size_t DEFAULT_REQUIRED_ENTRIES = 0x400;
+     const size_t reserve = required_entries > 0 ? required_entries : DEFAULT_REQUIRED_ENTRIES;
++    // EDEN_DESCRIPTOR_START_DIV 2..64 grows the same way, to the T173 size at most.
++    static const bool start_div = StartDivisor() >= 2;
+     static const bool trim = Common::PeSwitch("EDEN_UP_HEAP_HOLDERS");
+-    if (trim && !growth_refused) {
++    if ((trim || start_div) && !growth_refused) {
+         const size_t used = static_cast<size_t>(std::distance(payload_start, payload_cursor));
+         // EDEN_UP_HEAP_HOLDERS: grow back to 0107's size at most (2x the halved start), never
+         // past it: a frame that needs more waits for the worker as before (below).
+-        const size_t ceiling = initial_frame_payload_size * 2;
++        const size_t ceiling = start_div ? full_frame_payload_size : initial_frame_payload_size * 2;
+         size_t grown = frame_payload_size;
+         while (used + reserve >= grown && grown < ceiling) {
+             grown = (std::min)(grown * 2, ceiling);
+@@ -69,6 +139,8 @@ void UpdateDescriptorQueue::Acquire(Scheduler& scheduler, size_t required_entrie
+                 scheduler.WaitWorker();
+                 LOG_INFO(Render_Vulkan, "Descriptor payload grew: {} -> {} entries",
+                          frame_payload_size, grown);
++                frame_entries_restarted += used;
++                ++grows;
+                 payload = std::move(replacement);
+                 frame_payload_size = grown;
+                 payload_start = payload.get() + frame_index * frame_payload_size;
+@@ -86,6 +158,8 @@ void UpdateDescriptorQueue::Acquire(Scheduler& scheduler, size_t required_entrie
+         LOG_WARNING(Render_Vulkan, "Payload overflow (used={}, reserve={}, capacity={})",
+                     used, reserve, frame_payload_size);
+         scheduler.WaitWorker();
++        frame_entries_restarted += used;
++        ++overflow_waits;
+         payload_cursor = payload_start;
+     }
+     upload_start = payload_cursor;
+diff --git a/src/video_core/renderer_vulkan/vk_update_descriptor.h b/src/video_core/renderer_vulkan/vk_update_descriptor.h
+index 3623e6659902a13deb42687bcb00c0b24a849ba1..dd25fef9f3243ef4f6dbbf057b8d05b2816d61c5 100644
+--- a/src/video_core/renderer_vulkan/vk_update_descriptor.h
++++ b/src/video_core/renderer_vulkan/vk_update_descriptor.h
+@@ -135,6 +135,14 @@ private:
+     size_t frame_payload_size;
+     size_t initial_frame_payload_size{}; ///< EDEN_UP_HEAP_HOLDERS: the start, after halving
+     bool growth_refused{false};           ///< EDEN_UP_HEAP_HOLDERS: a growth was refused
++    // EDEN_DESCRIPTOR_START_DIV (heydemoura/EglantinePS5 PR #104, 0a5efdc): the size the queue
++    // was built for (the growth ceiling), and counts for its line every 3,600 frames.
++    size_t full_frame_payload_size{};
++    size_t frame_entries_restarted{}; ///< entries of this frame before a restart (grow or wait)
++    size_t peak_frame_entries{};
++    size_t grows{};
++    size_t overflow_waits{};
++    size_t ticks_since_report{};
+     const bool supports_descriptor_buffer;
+     bool use_descriptor_buffer{false};
+     size_t frame_index{0};

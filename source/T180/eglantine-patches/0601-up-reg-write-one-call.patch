@@ -1,0 +1,357 @@
+From: EglantinePS5
+Subject: up: 3D state register writes in one inlined step (EDEN_UP_REG_WRITE_ONE_CALL, live), off by default
+
+What: on the back (or the one GPU thread without the split), a 3D state register write (not in
+execution_mask) that CallMethod's checks cannot affect (no macro collecting parameters, no write
+history, no first-write trace, no profiler) writes shadow RAM, does the same-value test and sets
+the dirty flags in one always-inlined step instead of CallMethod's prelude, ProcessShadowRam and a
+ProcessDirtyRegisters call. The same step is used by MacroWrite's short path
+(EDEN_PE_MACRO_STATE_WRITES) and by the method sink (ConsumeSinkImpl). Same registers, shadow
+registers, dirty flags, deferred-draw and fast-draw-break calls. Not gated: ProcessDirtyRegisters'
+body moved into an always-inlined WriteDirtyRegister that it calls (same code). The same-value rule
+for the new paths is a member taken from SkipSameValueWrites() in the constructor (the draft read
+the variable again; taking the old path's value means the two cannot differ).
+Placed from the reviewed draft our drafts (made on T129), applied
+to c68c78e without changes, plus review correction 1: in verify mode the "verifying" flag is a token
+the very next CallMethod uses up, so the writes of a macro started inside a checked call are checked
+one by one too.
+
+Switches: EDEN_UP_REG_WRITE_ONE_CALL=1 (exact "1"), a live switch (Id::RegWriteOneCall, last in the
+enum, ParseExactOne, not armed); off: one relaxed load and a branch per CallMethod, per MacroWrite
+short-path write and per sink run, and an OR of four zero counters per sync point.
+EDEN_UP_REG_WRITE_ONE_CALL_VERIFY=1 (boot, exact "1"): with the switch on, every CallMethod write
+takes the old path, and each write the short path would have taken is compared with what the short
+path would have left (register, shadow, write or skip and dirty flags); the first 8 differences are
+logged as "Register write one call differs: ..." (HW_GPU Warning).
+Log (HW_GPU Info, from ProcessSyncPoint, every 10 s once any counter moved): "Register write one
+call in 10.0 s (EDEN_UP_REG_WRITE_ONE_CALL=1, _VERIFY=0): N short-path writes, N macro writes, N sink
+writes, N verified, N differences (session: ...)".
+
+Origin and credit: zortos293/Lichii 73a1b58e7d (#1095), jpkto (upstream: 260.7 instead of 278.8
+instructions per 3D method), by way of waveydude/Eglantine-PS5- 711c2c7 (his core patch 0916: the
+member for the same-value rule and the MacroWrite short path). Our draft v2/ports-3 and its reviews.
+---
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+index ba5f2cd..1cce34c 100644
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -216,6 +216,11 @@ enum class Id : u8 {
+     EmptyDrawStats,
+     /// Per-bind choice; both branches maintain the same complete uniform Slot.
+     UboInplace,
++    /// EDEN_UP_REG_WRITE_ONE_CALL (waveydude 711c2c7 / 0916, from zortos293/Lichii #1095
++    /// 73a1b58e7). Read at each 3D register write (Maxwell3D::CallMethod, MacroWrite's short path)
++    /// and each run of the method sink: a state register write takes the inlined path or the full
++    /// one, and both leave the same registers, shadow registers and dirty flags.
++    RegWriteOneCall,
+     Count,
+ };
+ 
+@@ -356,6 +361,7 @@ inline constexpr std::array<Def, NumSwitches> kDefs{{
+     {"EDEN_UP_DMA_MISS_STATS", ParseExactOne, false, -1},
+     {"EDEN_UP_EMPTY_DRAW_STATS", ParseExactOne, false, -1},
+     {"EDEN_NX2_UBO_INPLACE", ParseLeadingOne, false, -1},
++    {"EDEN_UP_REG_WRITE_ONE_CALL", ParseExactOne, false, -1},
+ }};
+ 
+ static_assert(kDefs[static_cast<size_t>(Id::PollBackoffUs)].needs ==
+diff --git a/src/video_core/engines/maxwell_3d.cpp b/src/video_core/engines/maxwell_3d.cpp
+index 2e20f1f..0d638ee 100644
+--- a/src/video_core/engines/maxwell_3d.cpp
++++ b/src/video_core/engines/maxwell_3d.cpp
+@@ -84,6 +84,15 @@ Maxwell3D::Maxwell3D(MemoryManager& memory_manager_)
+     }();
+     batch_constant_words = batch_words && !record_write_history &&
+                            !g_trace_first_method_writes && !VideoCommon::Nx2Profile::Enabled();
++    // EDEN_UP_REG_WRITE_ONE_CALL: its first read here, so that CallMethod and the sink can Peek.
++    static_cast<void>(Common::LiveSwitch::Value<Common::LiveSwitch::Id::RegWriteOneCall>());
++    one_call_plain = !record_write_history && !g_trace_first_method_writes;
++    one_call_verify = Common::PeSwitch("EDEN_UP_REG_WRITE_ONE_CALL_VERIFY");
++    one_call_short = one_call_plain && !one_call_verify;
++    // SkipSameValueWrites() as a member (waveydude's 0916): the short paths then test a plain bool
++    // instead of a function static's guard. Taken from the old path's own value, so the two paths
++    // cannot read the switch differently (the old path keeps its first value for the process).
++    one_call_skip_same = SkipSameValueWrites();
+ }
+ 
+ Maxwell3D::~Maxwell3D() = default;
+@@ -349,6 +358,12 @@ u32 Maxwell3D::ProcessShadowRam(u32 method, u32 argument) {
+ }
+ 
+ void Maxwell3D::ConsumeSinkImpl(Core::System& system) {
++    // EDEN_UP_REG_WRITE_ONE_CALL: the same loops with the register write inlined. With _VERIFY
++    // the sink keeps this path (VerifyOneCall checks CallMethod's writes).
++    if (Common::LiveSwitch::Peek<Common::LiveSwitch::Id::RegWriteOneCall>() != 0 &&
++        !one_call_verify) {
++        return ConsumeSinkOneCall();
++    }
+     const auto control = shadow_state.shadow_ram_control;
+     // Sunk methods are state writes only (not in execution_mask): skip unchanged values, as
+     // CallMethod does.
+@@ -443,7 +458,7 @@ void NoteReportStats(const Maxwell3D::Regs& regs, const MemoryManager& memory, u
+ }
+ } // Anonymous namespace
+ 
+-void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
++[[gnu::always_inline]] inline void Maxwell3D::WriteDirtyRegister(u32 method, u32 argument) {
+     // The instances after the first are drawn together once their loop ends, and they must see
+     // the state they were begun with: NVN's draw macros reset the base instance (and its copy in
+     // c[0][0x644]) right after the loop, before the macro returns.
+@@ -459,6 +474,145 @@ void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
+         dirty.flags[table[method]] = true;
+ }
+ 
++void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
++    WriteDirtyRegister(method, argument);
++}
++
++// EDEN_UP_REG_WRITE_ONE_CALL (waveydude/Eglantine-PS5- 711c2c7, his core patch 0916, adapted from
++// jpkto's zortos293/Lichii PR #1095, 73a1b58e7): a state register is written in one inlined step,
++// 260.7 instead of 278.8 instructions a write upstream. What
++// CallMethod does before its state register branch cannot apply to these writes: no macro
++// collects parameters, the method is no macro call, the write history, the first-write trace
++// and the profile are off, and SET_SHADOW_RAM_CONTROL is in execution_mask.
++[[gnu::always_inline]] inline bool Maxwell3D::OneCallEligible(bool plain, u32 method) const {
++    return plain && executing_macro == 0 && method < MacroRegistersStart &&
++           !execution_mask[method] && !VideoCommon::Nx2Profile::Enabled();
++}
++
++// CallMethod's state register branch and ProcessShadowRam, without acting on it.
++[[gnu::always_inline]] inline Maxwell3D::OneCallPlan Maxwell3D::PlanOneCall(
++    u32 method, u32 method_argument) const {
++    const auto control = shadow_state.shadow_ram_control;
++    OneCallPlan plan{method_argument, false, false};
++    if (control == Regs::ShadowRamControl::Track ||
++        control == Regs::ShadowRamControl::TrackWithFilter) {
++        plan.track = true;
++    } else if (control == Regs::ShadowRamControl::Replay) {
++        plan.value = shadow_state.reg_array[method];
++    }
++    plan.write = !one_call_skip_same || regs.reg_array[method] != plan.value;
++    return plan;
++}
++
++// CallMethod's state register branch, ProcessShadowRam and ProcessDirtyRegisters in one.
++// The caller counts the write (CallMethod: one_call_writes, MacroWrite: one_call_macro).
++[[gnu::always_inline]] inline void Maxwell3D::WriteStateOneCall(u32 method, u32 method_argument) {
++    const OneCallPlan plan = PlanOneCall(method, method_argument);
++    if (plan.track) {
++        shadow_state.reg_array[method] = method_argument;
++    }
++    if (plan.write) {
++        WriteDirtyRegister(method, plan.value);
++    }
++}
++
++void Maxwell3D::VerifyOneCall(Core::System& system, u32 method, u32 method_argument,
++                              bool is_last_call) {
++    const bool eligible = OneCallEligible(one_call_plain, method);
++    // What WriteStateOneCall would leave (PlanOneCall, its own code), before the full path runs.
++    u32 value = method_argument;
++    u32 shadow = 0;
++    bool write = false;
++    std::array<bool, std::tuple_size<DirtyState::Tables>::value> flags_before{};
++    if (eligible) {
++        const OneCallPlan plan = PlanOneCall(method, method_argument);
++        value = plan.value;
++        shadow = plan.track ? method_argument : shadow_state.reg_array[method];
++        write = plan.write;
++        for (size_t i = 0; i < flags_before.size(); ++i) {
++            flags_before[i] = dirty.flags[dirty.tables[i][method]];
++        }
++    }
++    one_call_verifying = true;
++    CallMethod(system, method, method_argument, is_last_call);
++    one_call_verifying = false;
++    if (!eligible) {
++        return;
++    }
++    ++one_call_verified;
++    bool same = regs.reg_array[method] == value && shadow_state.reg_array[method] == shadow;
++    for (size_t i = 0; i < flags_before.size(); ++i) {
++        const bool flag = dirty.flags[dirty.tables[i][method]];
++        same = same && (write ? flag : flag == flags_before[i]);
++    }
++    if (!same) {
++        ++one_call_differences;
++        if (one_call_differences <= 8) {
++            LOG_WARNING(HW_GPU,
++                        "Register write one call differs: method {:#x} argument {:#x}: full "
++                        "path left {:#x} (shadow {:#x}), short path {:#x} (shadow {:#x}, {})",
++                        method, method_argument, regs.reg_array[method],
++                        shadow_state.reg_array[method], value, shadow,
++                        write ? "write" : "skip");
++        }
++    }
++}
++
++void Maxwell3D::ConsumeSinkOneCall() {
++    one_call_sink += method_sink.size();
++    const auto control = shadow_state.shadow_ram_control;
++    const bool skip_same = one_call_skip_same;
++    const auto process = [&](u32 method, u32 value) {
++        if (!skip_same || regs.reg_array[method] != value) {
++            WriteDirtyRegister(method, value);
++        }
++    };
++    if (control == Regs::ShadowRamControl::Track || control == Regs::ShadowRamControl::TrackWithFilter) {
++        for (auto [method, value] : method_sink) {
++            shadow_state.reg_array[method] = value;
++            process(method, value);
++        }
++    } else if (control == Regs::ShadowRamControl::Replay) {
++        for (auto [method, value] : method_sink)
++            process(method, shadow_state.reg_array[method]);
++    } else {
++        for (auto [method, value] : method_sink)
++            process(method, value);
++    }
++    method_sink.clear();
++}
++
++void Maxwell3D::ReportOneCall() {
++    // From ProcessSyncPoint once a counter has moved, so only after the switch was on. One line
++    // every 10 s, also while it is off again (the window's counts then stay 0), so a live A/B
++    // shows its A phases too.
++    const u64 now = VideoCommon::Nx2Profile::Now();
++    if (one_call_window_start == 0) {
++        one_call_window_start = now;
++        return;
++    }
++    const u64 window = now - one_call_window_start;
++    if (window < 10'000'000'000ULL) {
++        return;
++    }
++    const u64 writes = one_call_writes - one_call_logged[0];
++    const u64 macro = one_call_macro - one_call_logged[1];
++    const u64 sink = one_call_sink - one_call_logged[2];
++    const u64 verified = one_call_verified - one_call_logged[3];
++    const u64 differences = one_call_differences - one_call_logged[4];
++    one_call_logged = {one_call_writes, one_call_macro, one_call_sink, one_call_verified,
++                       one_call_differences};
++    one_call_window_start = now;
++    LOG_INFO(HW_GPU,
++             "Register write one call in {:.1f} s (EDEN_UP_REG_WRITE_ONE_CALL={}, _VERIFY={}): "
++             "{} short-path writes, {} macro writes, {} sink writes, {} verified, {} differences "
++             "(session: {} short, {} macro, {} sink, {} verified, {} differences)",
++             static_cast<double>(window) / 1e9,
++             Common::LiveSwitch::Peek<Common::LiveSwitch::Id::RegWriteOneCall>(),
++             one_call_verify ? 1 : 0, writes, macro, sink, verified, differences, one_call_writes,
++             one_call_macro, one_call_sink, one_call_verified, one_call_differences);
++}
++
+ bool Maxwell3D::IsFastDrawParameter(u32 method) {
+     switch (method) {
+     case MAXWELL3D_REG_INDEX(const_buffer.size):
+@@ -800,6 +954,13 @@ void Maxwell3D::MacroWrite(Core::System& system, u32 method, u32 argument) {
+     if (short_path && method < MacroRegistersStart && !execution_mask[method] &&
+         !front_macros && !bookkeeping)
+         [[likely]] {
++        // EDEN_UP_REG_WRITE_ONE_CALL (waveydude's 0916 does the same here): the same three steps
++        // inlined. With _VERIFY the old lines below run (VerifyOneCall checks CallMethod).
++        if (Common::LiveSwitch::Peek<Common::LiveSwitch::Id::RegWriteOneCall>() != 0 &&
++            !one_call_verify) {
++            ++one_call_macro;
++            return WriteStateOneCall(method, argument);
++        }
+         const u32 value = ProcessShadowRam(method, argument);
+         if (!SkipSameValueWrites() || regs.reg_array[method] != value) {
+             ProcessDirtyRegisters(method, value);
+@@ -810,6 +971,25 @@ void Maxwell3D::MacroWrite(Core::System& system, u32 method, u32 argument) {
+ }
+ 
+ void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
++    // EDEN_UP_REG_WRITE_ONE_CALL (live): off, one plain load. With _VERIFY every write takes the
++    // full path below, from VerifyOneCall, which checks it against the short path
++    // (one_call_short is false with _VERIFY, so no write takes the short path then).
++    if (Common::LiveSwitch::Peek<Common::LiveSwitch::Id::RegWriteOneCall>() != 0) {
++        if (OneCallEligible(one_call_short, method)) {
++            ++one_call_writes;
++            return WriteStateOneCall(method, method_argument);
++        }
++        if (one_call_verify) {
++            // A token the very next CallMethod uses up: the call VerifyOneCall just made takes
++            // the full path unchecked, and writes a macro started inside it are checked again
++            // one by one (review correction 1).
++            if (one_call_verifying) {
++                one_call_verifying = false;
++            } else {
++                return VerifyOneCall(system, method, method_argument, is_last_call);
++            }
++        }
++    }
+     // It is an error to write to a register other than the current macro's ARG register before
+     // it has finished execution.
+     if (executing_macro != 0 && method != executing_macro + 1) {
+@@ -1212,6 +1392,10 @@ void Maxwell3D::ProcessCounterReset() {
+ }
+ 
+ void Maxwell3D::ProcessSyncPoint() {
++    // EDEN_UP_REG_WRITE_ONE_CALL: the counters stay 0 unless the switch was on.
++    if ((one_call_writes | one_call_macro | one_call_sink | one_call_verified) != 0) [[unlikely]] {
++        ReportOneCall();
++    }
+     if (GetNativeMacroEngine().native_turing) {
+         LOG_DEBUG(HW_GPU, "Native 3D syncpoint increment: id={}, raw={:#x}", regs.sync_info.sync_point.Value(), regs.reg_array[MAXWELL3D_REG_INDEX(sync_info)]);
+     }
+diff --git a/src/video_core/engines/maxwell_3d.h b/src/video_core/engines/maxwell_3d.h
+index 377c443..0123016 100644
+--- a/src/video_core/engines/maxwell_3d.h
++++ b/src/video_core/engines/maxwell_3d.h
+@@ -3331,6 +3331,35 @@ private:
+ 
+     void ProcessDirtyRegisters(u32 method, u32 argument);
+ 
++    /// ProcessDirtyRegisters' body (always inlined): it and the EDEN_UP_REG_WRITE_ONE_CALL paths
++    /// below share it, so the two cannot drift apart.
++    inline void WriteDirtyRegister(u32 method, u32 argument);
++
++    /// EDEN_UP_REG_WRITE_ONE_CALL (waveydude 711c2c7 / 0916, from jpkto's zortos293/Lichii PR #1095,
++    /// 73a1b58e7), a live switch: a
++    /// state register write (not in execution_mask) in one inlined step, without CallMethod's
++    /// checks for macros, the write history, the first-write trace and the profile, which cannot
++    /// apply to it (OneCallEligible says when; `plain` is one_call_short on the hot path,
++    /// one_call_plain in VerifyOneCall). Each is defined in maxwell_3d.cpp and used only there.
++    inline bool OneCallEligible(bool plain, u32 method) const;
++    /// What the short path does to a state register: the value it stores, whether the shadow
++    /// RAM takes the argument, whether it writes (or skips a same value). WriteStateOneCall acts
++    /// on it, VerifyOneCall checks it against the full path, so both use the same code.
++    struct OneCallPlan {
++        u32 value;
++        bool track;
++        bool write;
++    };
++    inline OneCallPlan PlanOneCall(u32 method, u32 method_argument) const;
++    inline void WriteStateOneCall(u32 method, u32 method_argument);
++    /// EDEN_UP_REG_WRITE_ONE_CALL_VERIFY=1: CallMethod's full path for every write, and for each
++    /// write the short path would take, a check that it left what the short path would have.
++    void VerifyOneCall(Core::System& system, u32 method, u32 method_argument, bool is_last_call);
++    /// ConsumeSinkImpl with WriteDirtyRegister inlined in its loops.
++    void ConsumeSinkOneCall();
++    /// The 10 s "Register write one call in" line (from ProcessSyncPoint, never on a write).
++    void ReportOneCall();
++
+ public:
+     /// A register write a macro makes (MacroEngine::Execute): a state register (not in
+     /// execution_mask) takes a short path with CallMethod's effect (shadow RAM, the same-value
+@@ -3430,6 +3459,20 @@ private:
+         }
+         recent_writes[recent_write_index++ % recent_writes.size()] = {method, argument, amount, pending};
+     }
++    /// EDEN_UP_REG_WRITE_ONE_CALL. All of it belongs to the thread that runs CallMethod and the
++    /// method sink: the split's back, or the one GPU thread without the split.
++    bool one_call_plain{};      ///< No write history and no first-write trace (constructor)
++    bool one_call_verify{};     ///< EDEN_UP_REG_WRITE_ONE_CALL_VERIFY=1, read in the constructor
++    bool one_call_short{};      ///< one_call_plain && !one_call_verify: one load on the hot path
++    bool one_call_verifying{};  ///< VerifyOneCall is running CallMethod's full path
++    bool one_call_skip_same{};  ///< EDEN_NX2_SKIP_SAME as SkipSameValueWrites() reads it (constructor)
++    u64 one_call_writes{};      ///< CallMethod writes that took the short path
++    u64 one_call_macro{};       ///< MacroWrite short-path writes that took WriteStateOneCall
++    u64 one_call_sink{};        ///< Method sink entries applied by ConsumeSinkOneCall
++    u64 one_call_verified{};    ///< Short-path writes VerifyOneCall checked
++    u64 one_call_differences{}; ///< ...and of those, the ones the full path left otherwise
++    u64 one_call_window_start{};             ///< Start of the current 10 s window (ns), 0 = none yet
++    std::array<u64, 5> one_call_logged{};    ///< The five counters at the last 10 s line
+     void DumpRecentWrites(u32 method);
+     /// Parameters that have been submitted to the macro call so far.
+     std::vector<u32> macro_params;

@@ -1,0 +1,77 @@
+From: EglantinePS5
+Subject: [PATCH] up: the ASTC opacity scan reads 16 KiB at a time by default (waveydude's 0917), unconditional crash fix; EDEN_UP_ASTC_SCAN_CHUNKS=0 is the old scan
+
+What: JoinImages decides whether a new ASTC image is opaque (re-packed as BC1, half of BC3) by
+reading the whole image, up to 64 MiB, into astc_scan_buffer, a vector that grows to the largest
+image seen and is kept. waveydude's crash 20261111-095523: operator new refused 32,435,200 bytes for
+that resize on the GPU back thread. 0579 (T137) already ported his 0917 loop, but only with
+EDEN_UP_ASTC_SCAN_CHUNKS=1, which our play settings do not set.
+
+Now the chunked scan (16 KiB pieces through the fixed astc_scan_chunk, stop at the first block with
+alpha) is the default. EDEN_UP_ASTC_SCAN_CHUNKS: unset or any other text = chunked; exactly "0" =
+the old whole-image scan (a way back for a comparison); exactly "2" = verify, as in 0579. The
+"EDEN_UP_ASTC_SCAN_CHUNKS 10s:" line now prints only when the switch is set to exactly 1 or 2, so
+the default adds no log line.
+
+Why unconditional: IsOpaque (textures/astc.cpp) judges each whole 16-byte block on its own, skips a
+partial tail and returns false at the first block with alpha; 16 KiB is a whole number of blocks and
+each piece starts on a block, so the pieces cover the same blocks and the answer is the same for
+every image (host check: the real IsOpaque, 2,606 images up to 32,435,200 bytes, 0 differences).
+What changes: no heap request at scan time, fewer guest bytes read for images with alpha, and the
+scan buffer no longer holds up to 64 MiB of heap after a big scan.
+
+Origin and credit: waveydude, patch 0917 ("Scan ASTC opacity with fixed-size scratch"), commit
+c405b1f; the loop is his (as placed by 0579).
+---
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index b58ec3f..1e16e2d 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -6176,13 +6176,21 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
+                 // blocks are 16 bytes and IsOpaque judges each on its own, and 16 KiB is a whole
+                 // number of blocks, so the answer is the same. 2 = verify: the chunked scan runs,
+                 // then the old whole-image scan, whose answer is used; differences are counted.
+-                // Unset: a few tests of one static int, then the old path below, unchanged.
++                // 0661 (T149): the chunked scan is the default. Unset, or anything but exactly
++                // "0" or "2", is mode 1; "0" is the old whole-image scan (a way back for a
++                // comparison). Same answer either way (above), so a crash fix with no switch; the
++                // 10 s line below only when EDEN_UP_ASTC_SCAN_CHUNKS is set to exactly 1 or 2.
+                 static const int scan_chunks = [] {
+                     const char* const value = std::getenv("EDEN_UP_ASTC_SCAN_CHUNKS");
+                     if (value == nullptr || value[0] == '\0' || value[1] != '\0') {
+-                        return 0;
++                        return 1;
+                     }
+-                    return value[0] == '1' ? 1 : value[0] == '2' ? 2 : 0;
++                    return value[0] == '0' ? 0 : value[0] == '2' ? 2 : 1;
++                }();
++                static const bool scan_chunks_log = [] {
++                    const char* const value = std::getenv("EDEN_UP_ASTC_SCAN_CHUNKS");
++                    return value != nullptr && (value[0] == '1' || value[0] == '2') &&
++                           value[1] == '\0';
+                 }();
+                 bool chunked_opaque = true;
+                 if (scan_chunks != 0) {
+@@ -6223,7 +6231,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
+                     }
+                 }
+                 ++(new_info.astc_opaque ? astc_opaque_images : astc_alpha_images);
+-                if (scan_chunks != 0) {
++                if (scan_chunks_log) {
+                     const auto now = std::chrono::steady_clock::now();
+                     if (astc_chunk_last_log == std::chrono::steady_clock::time_point{}) {
+                         astc_chunk_last_log = now;
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index 02918dc..b005dd2 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -372,7 +372,8 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
+     u64 astc_alpha_images{};
+     std::vector<u8> astc_scan_buffer;
+     /// EDEN_UP_ASTC_SCAN_CHUNKS (waveydude 0917): fixed scan piece, part of the cache object (no
+-    /// heap request at scan time), and the 10 s line's counters. Unused while the switch is unset.
++    /// heap request at scan time), and the 10 s line's counters. Used by default since 0661
++    /// (EDEN_UP_ASTC_SCAN_CHUNKS=0 goes back to astc_scan_buffer).
+     std::array<u8, 16 * 1024> astc_scan_chunk;
+     u64 astc_chunk_scans{};
+     u64 astc_chunk_read_bytes{};

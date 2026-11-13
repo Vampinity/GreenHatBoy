@@ -1,0 +1,342 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: EglantinePS5
+Date: Fri, 13 Nov 2026 23:30:00 +0100
+Subject: [PATCH] util/mesa_cache_db: fast mode reads with pread, one index write per batch, repair at open (RADV_PS5_CACHE_FAST)
+
+Review fixes for lead-mesh-32..35, all behind RADV_PS5_CACHE_FAST=1.
+
+1. Read hits. lead-mesh-32 gives the .db stream a 1.06 MiB stdio buffer, and
+   reads go through the same stream: every read hit (fseek + fread of the
+   28-byte entry header) refilled that buffer, so up to 1.06 MiB read per hit
+   instead of the entry. A boot that loads thousands of shaders from the cache
+   would read gigabytes. A fast database now reads a hit with pread (the
+   stream and its buffer are left alone). An entry still held back is first
+   written with its index line (mesa_db_fast_flush), so no data reaches the
+   file without its index line.
+
+2. The index batch (up to 64 x 28 B) went through the index stream's default
+   buffer; if that is smaller than the batch, stdio writes it in two calls and
+   a kill between them leaves a torn index line, which makes upstream's load
+   recreate (empty) the whole part. The index stream gets a 64 KiB buffer, and
+   a fast database cuts a torn last index line at open instead of recreating.
+
+3. Files that disagree after a kill or crash. Data the stdio buffer spilled
+   (or a read hit flushed) before its index lines were written, then a kill:
+   .db bytes no index line points at. Upstream appends after them, and the
+   next compaction of that part stops at the gap (mesa_db_compact: "Sanity-
+   check the cache-read offset") and zaps the part. After a crash of the
+   console (no fsync), index lines can point past the data: the first read of
+   such an entry zaps the part. A fast database now cuts both at open (not on
+   reload): index lines past the data, then .db bytes past the last indexed
+   entry. Both are tails (appends and compaction keep index and data in one
+   order). Entries the index points at are never touched. One stderr line
+   "RADV_PS5_CACHE repair: ..." per cut.
+
+4. The buffers are now our own (malloc, kept until close): setvbuf with a NULL
+   buffer may ignore the size. glibc does (measured natively: the 1.06 MiB
+   buffer was 4 KiB, data reached the file every 4 KiB); musl does too
+   (1 KiB). FreeBSD's libc allocates the size asked for; which one the PS5's
+   is, not checked. Now the buffer is the asked size on every libc.
+
+5. radv_ps5_disk_cache_drain: "puts left" could wrap below 0 (done is counted
+   before added can be).
+
+Same files, format, keys and cache UUID. Off: unchanged. Ours. Applies after
+lead-mesh-35.
+
+T172: applies unchanged after the rebased lead-mesh-35.
+
+Co-Authored-By: Claude Opus 5.5
+---
+diff --git a/src/util/disk_cache.c b/src/util/disk_cache.c
+index 0ba3b33..787be67 100644
+--- a/src/util/disk_cache.c
++++ b/src/util/disk_cache.c
+@@ -486,7 +486,11 @@ radv_ps5_disk_cache_drain(unsigned timeout_ms)
+       struct disk_cache *cache = caches[i];
+       if (!cache)
+          continue;
+-      left += p_atomic_read(&cache->ps5_added) - p_atomic_read(&cache->ps5_done);
++      /* lead-mesh-39: done is counted before added can be (the add is
++       * counted after util_queue_add_job returns): never below 0. */
++      uint32_t added = p_atomic_read(&cache->ps5_added);
++      uint32_t done = p_atomic_read(&cache->ps5_done);
++      left += (int32_t)(added - done) > 0 ? added - done : 0;
+       if (mesa_cache_db_multipart_flush(&cache->cache_db))
+          flushed++;
+    }
+diff --git a/src/util/mesa_cache_db.c b/src/util/mesa_cache_db.c
+index fbd3b02..8be8b82 100644
+--- a/src/util/mesa_cache_db.c
++++ b/src/util/mesa_cache_db.c
+@@ -12,6 +12,7 @@
+ #if DETECT_OS_WINDOWS == 0
+ 
+ #include <fcntl.h>
++#include <inttypes.h>
+ #include <stddef.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -70,6 +71,7 @@ struct mesa_index_db_hash_entry {
+ #define MESA_DB_FAST_BUFFER      (1024 * 1024 + 64 * 1024)
+ #define MESA_DB_FAST_FLUSH_BYTES (1024 * 1024)
+ #define MESA_DB_FAST_PENDING     64
++#define MESA_DB_FAST_INDEX_BUFFER 4096
+ 
+ static struct mesa_cache_db_ps5_counts mesa_db_ps5_counts;
+ 
+@@ -283,8 +285,31 @@ mesa_db_write_header(struct mesa_cache_db_file *db_file,
+ static void
+ mesa_db_fast_buffers(struct mesa_cache_db *db)
+ {
+-   if (db->fast && db->cache.file)
+-      setvbuf(db->cache.file, NULL, _IOFBF, MESA_DB_FAST_BUFFER);
++   if (!db->fast)
++      return;
++
++   /* lead-mesh-39: buffers of our own. setvbuf with a NULL buffer may ignore
++    * the size (glibc and musl do: the 1 MiB buffer was then 4 KiB or 1 KiB).
++    * They live until mesa_cache_db_close, as the streams are reopened after
++    * a compaction. The index stream's: a batch of index entries (up to
++    * 64 x 28 B) goes out in one write call, so a kill cannot tear a line. */
++   if (!db->fast_buf[0])
++      db->fast_buf[0] = malloc(MESA_DB_FAST_BUFFER);
++   if (!db->fast_buf[1])
++      db->fast_buf[1] = malloc(MESA_DB_FAST_INDEX_BUFFER);
++
++   if (db->cache.file)
++      setvbuf(db->cache.file, db->fast_buf[0], _IOFBF, MESA_DB_FAST_BUFFER);
++   if (db->index.file)
++      setvbuf(db->index.file, db->fast_buf[1], _IOFBF, MESA_DB_FAST_INDEX_BUFFER);
++}
++
++static void
++mesa_db_fast_free_buffers(struct mesa_cache_db *db)
++{
++   free(db->fast_buf[0]);
++   free(db->fast_buf[1]);
++   db->fast_buf[0] = db->fast_buf[1] = NULL;
+ }
+ 
+ /* Writes what a fast database holds back: the .db bytes first, then the
+@@ -466,6 +491,138 @@ mesa_db_recreate_files(struct mesa_cache_db *db)
+    return true;
+ }
+ 
++static uint32_t blob_file_size(uint32_t blob_size);
++
++/* lead-mesh-39: a read hit in a fast database. The .db stream has a 1 MiB
++ * buffer for appends; a read through it would fetch up to 1 MiB per hit, so
++ * the entry is read with pread, which leaves the stream alone. An entry still
++ * held back is first written out with its index line (mesa_db_fast_flush), so
++ * no data reaches the file without the index line that points at it.
++ * Returns 0: read, 1: not this key, 2: broken (zap), 3: no memory. */
++static int
++mesa_db_fast_read(struct mesa_cache_db *db,
++                  struct mesa_index_db_hash_entry *hash_entry,
++                  const uint8_t *cache_key_160bit,
++                  struct mesa_cache_db_file_entry *cache_entry, void **data)
++{
++   int fd = fileno(db->cache.file);
++   int64_t offset = hash_entry->cache_db_file_offset;
++
++   if (db->pending_bytes &&
++       offset + (int64_t)blob_file_size(hash_entry->size) >
++       db->cache_end - (int64_t)db->pending_bytes &&
++       !mesa_db_fast_flush(db))
++      return 2;
++
++   if (pread(fd, cache_entry, sizeof(*cache_entry), offset) !=
++          (ssize_t)sizeof(*cache_entry) ||
++       !mesa_db_cache_entry_valid(cache_entry))
++      return 2;
++
++   if (memcmp(cache_entry->key, cache_key_160bit, sizeof(cache_entry->key)))
++      return 1;
++
++   *data = malloc(cache_entry->size);
++   if (!*data)
++      return 3;
++
++   if (pread(fd, *data, cache_entry->size, offset + sizeof(*cache_entry)) !=
++          (ssize_t)cache_entry->size ||
++       util_hash_crc32(*data, cache_entry->size) != cache_entry->crc)
++      return 2;
++
++   return 0;
++}
++
++/* lead-mesh-39: a torn last index line (a kill or crash during its write)
++ * made upstream's load fail and recreate the whole part. A fast database cuts
++ * the partial line instead, before the index is read. */
++static bool
++mesa_db_fast_trim_index(struct mesa_cache_db *db)
++{
++   int64_t start = db->index.offset, end, rest;
++
++   if (!mesa_db_seek_end(db->index.file))
++      return false;
++
++   end = ftell(db->index.file);
++   if (end < start)
++      return true;
++
++   rest = (end - start) % sizeof(struct mesa_index_db_file_entry);
++   if (rest) {
++      fprintf(stderr, "RADV_PS5_CACHE repair: %s: cut a torn index line "
++              "(%" PRId64 " B)\n", db->index.path, rest);
++      if (!mesa_db_truncate(db->index.file, end - rest))
++         return false;
++   }
++
++   return mesa_db_seek(db->index.file, start);
++}
++
++/* lead-mesh-39: after a kill or crash a fast database's files can disagree:
++ * .db bytes no index line points at (data written, its index lines still held
++ * back), or, after a crash of the console, index lines that point past the
++ * data. Upstream appended after the first kind, and its compaction stops at
++ * such a gap and zaps the part; the second kind zaps the part at its first
++ * read. At open (not reload) a fast database cuts both: index lines past the
++ * data, then .db bytes past the last indexed entry. Index lines and data are
++ * in the same order (appends, and compaction keeps the order), so both are
++ * tails. Entries the index points at are never touched. */
++static bool
++mesa_db_fast_repair(struct mesa_cache_db *db)
++{
++   int64_t data_end, used_end = sizeof(struct mesa_db_file_header);
++   int64_t cut_index = -1;
++
++   if (!mesa_db_seek_end(db->cache.file))
++      return false;
++
++   data_end = ftell(db->cache.file);
++   if (data_end < (int64_t)sizeof(struct mesa_db_file_header))
++      return false;
++
++   hash_table_foreach(&db->index_db->table, entry) {
++      struct mesa_index_db_hash_entry *e = entry->data;
++      int64_t end = e->cache_db_file_offset + blob_file_size(e->size);
++
++      if (end > data_end &&
++          (cut_index < 0 || (int64_t)e->index_db_file_offset < cut_index))
++         cut_index = e->index_db_file_offset;
++   }
++
++   if (cut_index >= 0) {
++      fprintf(stderr, "RADV_PS5_CACHE repair: %s: cut %" PRId64
++              " B of index lines that point past the data\n", db->index.path,
++              (int64_t)db->index.offset - cut_index);
++      if (!mesa_db_truncate(db->index.file, cut_index))
++         return false;
++      mesa_db_hash_table_reset(db);
++      db->index.offset = sizeof(struct mesa_db_file_header);
++      if (!mesa_db_seek(db->index.file, db->index.offset) ||
++          !mesa_db_update_index(db))
++         return false;
++   }
++
++   hash_table_foreach(&db->index_db->table, entry) {
++      struct mesa_index_db_hash_entry *e = entry->data;
++      used_end = MAX2(used_end, (int64_t)(e->cache_db_file_offset +
++                                          blob_file_size(e->size)));
++   }
++
++   if (data_end > used_end) {
++      fprintf(stderr, "RADV_PS5_CACHE repair: %s: cut %" PRId64
++              " B of data no index line points at\n", db->cache.path,
++              data_end - used_end);
++      if (!mesa_db_truncate(db->cache.file, used_end))
++         return false;
++   }
++
++   db->cache_end = -1;
++
++   return true;
++}
++
+ static bool
+ mesa_db_load(struct mesa_cache_db *db, bool reload)
+ {
+@@ -493,6 +650,10 @@ mesa_db_load(struct mesa_cache_db *db, bool reload)
+    if (reload)
+       mesa_db_hash_table_reset(db);
+ 
++   /* lead-mesh-39: a fast database cuts a torn last index line. */
++   if (db->fast && !reload && !mesa_db_fast_trim_index(db))
++      goto fail;
++
+    /* The update failed so we assume the files are corrupt and
+     * recreate them.
+     */
+@@ -504,6 +665,10 @@ mesa_db_load(struct mesa_cache_db *db, bool reload)
+          goto fail;
+    }
+ 
++   /* lead-mesh-39: and makes its files agree after a kill or crash. */
++   if (db->fast && !reload && !mesa_db_fast_repair(db))
++      goto fail;
++
+    if (!reload)
+       mesa_db_unlock(db);
+ 
+@@ -968,6 +1133,7 @@ close_locks:
+    mesa_db_free_file(&db->index);
+ close_cache:
+    mesa_db_free_file(&db->cache);
++   mesa_db_fast_free_buffers(db);
+ 
+    return false;
+ }
+@@ -1018,6 +1184,8 @@ mesa_cache_db_close(struct mesa_cache_db *db)
+ 
+    mesa_db_free_file(&db->index);
+    mesa_db_free_file(&db->cache);
++   /* lead-mesh-39: after the streams that use them are closed. */
++   mesa_db_fast_free_buffers(db);
+ 
+    for (unsigned i = 0; i < 2; i++) {
+       if (db->owned && db->lock_fds[i] >= 0)
+@@ -1064,6 +1232,20 @@ mesa_cache_db_read_entry(struct mesa_cache_db *db,
+    if (!hash_entry)
+       goto fail;
+ 
++   if (db->fast) {
++      /* lead-mesh-39: pread, not through the 1 MiB append buffer. */
++      switch (mesa_db_fast_read(db, hash_entry, cache_key_160bit,
++                                &cache_entry, &data)) {
++      case 0:
++         goto read_done;
++      case 1:
++      case 3:
++         goto fail;
++      default:
++         goto fail_fatal;
++      }
++   }
++
+    if (!mesa_db_seek(db->cache.file, hash_entry->cache_db_file_offset) ||
+        !mesa_db_read(db->cache.file, &cache_entry) ||
+        !mesa_db_cache_entry_valid(&cache_entry))
+@@ -1080,6 +1262,8 @@ mesa_cache_db_read_entry(struct mesa_cache_db *db,
+        util_hash_crc32(data, cache_entry.size) != cache_entry.crc)
+       goto fail_fatal;
+ 
++read_done:
++
+    if (db->owned) {
+       /* The index file's copy of the access time is written in batches: a
+        * write at every hit, under the lock, made readers on other threads
+diff --git a/src/util/mesa_cache_db.h b/src/util/mesa_cache_db.h
+index bc1726f..b9dbc1d 100644
+--- a/src/util/mesa_cache_db.h
++++ b/src/util/mesa_cache_db.h
+@@ -74,6 +74,8 @@ struct mesa_cache_db {
+    void *pending_index;
+    unsigned pending;
+    uint64_t pending_bytes;
++   /* lead-mesh-39: the .db and .idx streams' stdio buffers (fast only). */
++   void *fast_buf[2];
+    /* RADV_PS5_CACHE_FAST: a full part takes entries up to this size (its cap
+     * and a quarter) and is compacted later, when the writers are idle
+     * (mesa_cache_db_compact_deferred); 0: compacted at once, as upstream. */

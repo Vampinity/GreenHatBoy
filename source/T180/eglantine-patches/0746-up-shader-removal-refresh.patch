@@ -1,0 +1,107 @@
+From: EglantinePS5
+Subject: [PATCH] up: after a removal freed shader programs, RefreshStages looks the stages up again (Lichii #1573), EDEN_UP_SHADER_REMOVAL_REFRESH=1, off by default
+
+What: RemovePendingShaders frees the ShaderInfo of programs whose memory was written, unmapped or
+remapped. But RefreshStages returns at once while Dirty::Shaders is clear, so shader_infos keeps
+pointing at the freed ShaderInfo until the game writes a shader register again. When a draw then
+needs a pipeline that is not built yet, GetGraphicsEnvironments reads the freed memory: a crash in
+GetGraphicsEnvironments, or junk read as a shader. This can happen at a scene change, the same
+moment as our area-load crashes (those show as out-of-memory in the driver's shader compiler, so
+this is not a known cause of them: a guard for a crash at the same moment).
+
+With the switch: a removal that freed programs adds one to a counter (atomic), and RefreshStages
+looks the stages up again when it has not seen the latest count. Same code as upstream, behind the
+switch. One line at the 1st, 2nd, 4th, 8th, ... such refresh:
+"EDEN_UP_SHADER_REMOVAL_REFRESH: stages looked up again after a removal that freed programs (n so far)".
+
+Switch: EDEN_UP_SHADER_REMOVAL_REFRESH=1 (exact "1"), read once. Off: one test of a static bool in
+RefreshStages and in RemovePendingShaders, then the old code. Off by default because it can cost a
+little: the first draw after such a removal looks up up to 6 programs again, and a program that is
+gone is read and hashed again (as when the game writes a shader register).
+
+Test: the log line above shows the case happens on our runs (how often, at which moment). Compare
+crash backtraces at area loads (any GetGraphicsEnvironments frame). Watch for a stall at a scene
+change; none expected. Not checked: compile and run (upstream also says "not tested at runtime").
+
+Origin and credit: Zortos, zortos293/Lichii 48f1d9b71b (#1573), ported there from
+anthonyloukinas/Lichii 730887b (Anthony Loukinas). The upstream text names a related change, #1221,
+that makes the case frequent there; we do not have #1221.
+---
+diff --git a/src/video_core/shader_cache.cpp b/src/video_core/shader_cache.cpp
+index fdad74b..ea4aa09 100644
+--- a/src/video_core/shader_cache.cpp
++++ b/src/video_core/shader_cache.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include <algorithm>
+ #include <atomic>
++#include <cstdlib>
+ #include <chrono>
+ #include <exception>
+ #include <cstring>
+@@ -156,10 +157,37 @@ u64 ShaderCache::MeshStateHash() const {
+     return Common::CityHash64(reinterpret_cast<const char*>(state.data()), sizeof(state)) | 1;
+ }
+ 
++// EDEN_UP_SHADER_REMOVAL_REFRESH=1 (exact "1"; 0746, Lichii #1573): after a removal freed
++// programs, the next RefreshStages looks the stages up again although no shader register was
++// written, so shader_infos never points at a freed ShaderInfo. Off: the old early return.
++[[nodiscard]] static bool ShaderRemovalRefresh() {
++    static const bool enabled = [] {
++        const char* const value = std::getenv("EDEN_UP_SHADER_REMOVAL_REFRESH");
++        return value != nullptr && value[0] == '1' && value[1] == '\0';
++    }();
++    return enabled;
++}
++
+ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
+     auto& dirty{maxwell3d->dirty.flags};
+     if (!dirty[VideoCommon::Dirty::Shaders]) {
+-        return last_shaders_valid;
++        if (!ShaderRemovalRefresh()) {
++            return last_shaders_valid;
++        }
++        const u64 removals{removal_serial.load(std::memory_order_acquire)};
++        if (removals == seen_removal_serial) {
++            return last_shaders_valid;
++        }
++        // One line at the 1st, 2nd, 4th, 8th, ... time: a removal really left stages to refresh.
++        if (const u64 count{++shader_removal_refreshes}; (count & (count - 1)) == 0) {
++            LOG_INFO(HW_GPU,
++                     "EDEN_UP_SHADER_REMOVAL_REFRESH: stages looked up again after a removal that "
++                     "freed programs ({} so far)",
++                     count);
++        }
++    }
++    if (ShaderRemovalRefresh()) {
++        seen_removal_serial = removal_serial.load(std::memory_order_acquire);
+     }
+     dirty[VideoCommon::Dirty::Shaders] = false;
+ 
+@@ -422,6 +450,10 @@ void ShaderCache::RemovePendingShaders() {
+ 
+     if (!removed_shaders.empty()) {
+         Nx2FastDraw::Break(Nx2FastDraw::Reason::Invalidation);
++        if (ShaderRemovalRefresh()) {
++            // 0746: shader_infos may point at a program freed below.
++            removal_serial.fetch_add(1, std::memory_order_release);
++        }
+         if (removed_shaders.size() > 16) {
+             std::ranges::sort(removed_shaders, std::less<ShaderInfo*>{});
+             std::erase_if(storage, [&removed_shaders](const std::unique_ptr<ShaderInfo>& shader) {
+diff --git a/src/video_core/shader_cache.h b/src/video_core/shader_cache.h
+index bf928ed..d089f79 100644
+--- a/src/video_core/shader_cache.h
++++ b/src/video_core/shader_cache.h
+@@ -197,6 +197,11 @@ private:
+     ::Common::unordered_map<u64, std::vector<Entry*>> invalidation_cache;
+     std::vector<std::unique_ptr<ShaderInfo>> storage;
+     std::vector<Entry*> marked_for_removal;
++    /// EDEN_UP_SHADER_REMOVAL_REFRESH (0746, Lichii #1573): removals that freed programs, and the
++    /// last one RefreshStages saw; it looks the stages up again after each one.
++    std::atomic<u64> removal_serial{};
++    u64 seen_removal_serial{};
++    u64 shader_removal_refreshes{}; ///< Lookups made only because of a removal (log line)
+ 
+     /// Native programs the lowering rejected, by address, so each draw or dispatch rethrows the
+     /// first error instead of lowering again; dropped when guest memory there is written.

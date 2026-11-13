@@ -1,0 +1,383 @@
+From: EglantinePS5
+Subject: [PATCH] up: a large depth image whose guest bytes are all zero is cleared to zero instead of uploaded (EDEN_UP_BIG_DEPTH_NO_UPLOAD=<MiB>), off by default
+
+What: EDEN_UP_BIG_IMAGE_LOG shows Ocarina's 12288x12288 D16 shadow map made by JoinImages with
+rt=0 (first seen as a texture, not as a cleared or drawn target) and uploaded from guest memory
+right there: "staging=288MiB went through", at the area load where the pool is empty. JoinImages'
+last branch calls RefreshContents for every new image that no clear, whole join copy or drawn-over
+target covers, and RefreshContents uploads whatever guest memory holds.
+
+With EDEN_UP_BIG_DEPTH_NO_UPLOAD=<MiB> (digits, 1..65536, read once; test value 128),
+RefreshContents first reads the guest bytes of a depth or depth-stencil image of at least that
+size (plain only: not sparse, unbacked, converted, rescaled, MSAA or with dirty layers), page by
+page as MemoryManager::ReadBlockImpl does (a page without memory reads zero, a page the front will
+not hand out as a span is copied through GuestReadThrough). Every byte zero: the image is cleared
+with vkCmdClearDepthStencilImage to depth 0.0 / stencil 0, which are the texels an upload of zero
+bytes gives in any tiling; no staging, no unswizzle, no buffer-to-image copy. One non-zero byte: the
+upload runs as before. Applies to every RefreshContents of such an image, so a later CPU write that
+marks it modified again is handled the same way (zero: clear; data: upload): the skip does not
+move the upload. Tracking (TrackImage) and CpuModified are handled as before, at the top.
+
+Lines (HW_GPU, the first 16 then powers of two, each kind counted apart):
+"EDEN_UP_BIG_DEPTH: cleared instead of uploaded ... staging_avoided=<MiB> no_memory_pages=<n>
+scan=<ms> ... (<n> cleared, <MiB> of staging avoided so far; <n> kept)",
+"EDEN_UP_BIG_DEPTH: kept the upload ... a non-zero byte at +<offset> scan=<ms>",
+"EDEN_UP_BIG_DEPTH: not checked ... flags=<hex> ...: uploaded".
+
+Also: vkCmdClearDepthStencilImage in the Vulkan wrapper (loaded with the other device functions),
+TextureCacheRuntime::ClearDepthToZero.
+
+Off: one compare per upload. Not in the kept-store stamp: texture_cache*.h, vk_texture_cache.*
+and vulkan_wrapper.* are not translation inputs; no switch name added to TranslationSwitches.
+---
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index 08fcecfa8e..f97e337147 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -6562,6 +6562,71 @@ void TextureCacheRuntime::TranscodeAstcBatched(
+               plan.bands ? "row bands" : "layer batches");
+ }
+ 
++bool TextureCacheRuntime::ClearDepthToZero(Image& image) {
++    const VkImageAspectFlags aspect = image.AspectMask();
++    if ((aspect & VK_IMAGE_ASPECT_DEPTH_BIT) == 0 ||
++        (image.UsageFlags() & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0) {
++        return false;
++    }
++    // As CopyBufferToImage does for an upload: from the image's layout (undefined when nothing
++    // was written yet) to transfer, the clear, then back to general for every later use.
++    const bool was_initialized = image.ExchangeInitialization();
++    const VkImage vk_image = image.Handle();
++    const bool all_stages = UploadAllStages();
++    scheduler.RequestOutsideRenderPassOperationContext();
++    scheduler.Record([vk_image, aspect, was_initialized, all_stages](vk::CommandBuffer cmdbuf) {
++        static constexpr VkAccessFlags WRITE_ACCESS_FLAGS =
++            VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
++            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
++        static constexpr VkAccessFlags READ_ACCESS_FLAGS =
++            VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
++            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
++        const VkImageSubresourceRange range{
++            .aspectMask = aspect,
++            .baseMipLevel = 0,
++            .levelCount = VK_REMAINING_MIP_LEVELS,
++            .baseArrayLayer = 0,
++            .layerCount = VK_REMAINING_ARRAY_LAYERS,
++        };
++        const VkImageMemoryBarrier to_transfer{
++            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
++            .pNext = nullptr,
++            .srcAccessMask = all_stages ? (WRITE_ACCESS_FLAGS | VK_ACCESS_TRANSFER_WRITE_BIT)
++                                        : WRITE_ACCESS_FLAGS,
++            .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
++            .oldLayout = was_initialized ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
++            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
++            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++            .image = vk_image,
++            .subresourceRange = range,
++        };
++        const VkImageMemoryBarrier to_general{
++            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
++            .pNext = nullptr,
++            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
++            .dstAccessMask = WRITE_ACCESS_FLAGS | READ_ACCESS_FLAGS,
++            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
++            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
++            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++            .image = vk_image,
++            .subresourceRange = range,
++        };
++        const VkPipelineStageFlags use_stages =
++            all_stages ? vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER
++                       : VkPipelineStageFlags{VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
++                                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
++                                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT};
++        cmdbuf.PipelineBarrier(use_stages, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, to_transfer);
++        cmdbuf.ClearDepthStencilImage(vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
++                                      VkClearDepthStencilValue{.depth = 0.0f, .stencil = 0},
++                                      range);
++        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, use_stages, 0, to_general);
++    });
++    return true;
++}
++
+ void TextureCacheRuntime::TransitionImageLayout(Image& image) {
+     if (!image.ExchangeInitialization()) {
+         VkImageMemoryBarrier barrier{
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.h b/src/video_core/renderer_vulkan/vk_texture_cache.h
+index 22d2da4afa..95234602e2 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.h
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.h
+@@ -234,6 +234,11 @@ public:
+ 
+     void TransitionImageLayout(Image& image);
+ 
++    /// EDEN_UP_BIG_DEPTH_NO_UPLOAD: records a clear of every level and layer of a depth (or
++    /// depth-stencil) image to depth 0.0, stencil 0: the texels an upload of all-zero guest bytes
++    /// gives. False (nothing recorded) for an image without a depth aspect or transfer use.
++    bool ClearDepthToZero(Image& image);
++
+     bool HasBrokenTextureViewFormats() const noexcept {
+         // No known Vulkan driver has broken image views
+         return false;
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index a146c1383c..ce757ec65e 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -7,6 +7,7 @@
+ #pragma once
+ 
+ #include "common/pe_switch.h"
++#include "common/guest_read_through.h"
+ #include "common/frame_wait_progress.h"
+ #include "common/live_switch.h"
+ #include "common/memory_detect.h"
+@@ -15,7 +16,9 @@
+ #include <algorithm>
+ #include <array>
+ #include <numeric>
++#include <chrono>
+ #include <cstdio>
++#include <cstring>
+ #include <cstdlib>
+ #include <limits>
+ #include <map>
+@@ -228,6 +231,51 @@ constexpr u64 BigImageLogBytes = u64{128} << 20;
+     return enabled;
+ }
+ 
++/// EDEN_UP_BIG_DEPTH_NO_UPLOAD=<MiB> (digits only, 1..65536, read once; unset, 0 or anything
++/// else: off, exactly as before). Ocarina's 12288x12288 D16 shadow map (288 MiB) is first seen as
++/// a texture (EDEN_UP_BIG_IMAGE_LOG "made ... rt=0"), not as a cleared or drawn target, so
++/// JoinImages uploads it from guest memory: a 288 MiB staging buffer and its copy, at the area
++/// load. With the switch, RefreshContents first reads the guest bytes of a depth or depth-stencil
++/// image of at least that size; when every byte is zero (or has no memory, which the upload reads
++/// as zero), the image is cleared to depth 0.0 / stencil 0 instead: the texels an upload of those
++/// bytes gives, whatever the tiling. One non-zero byte and the upload runs as before. Counted:
++/// one EDEN_UP_BIG_DEPTH line per image (the first 16, then the 32nd, 64th, ...).
++[[nodiscard]] inline u64 BigDepthNoUploadBytes() {
++    static const u64 bytes = [] {
++        const char* const value = std::getenv("EDEN_UP_BIG_DEPTH_NO_UPLOAD");
++        if (value == nullptr || *value == '\0') {
++            return u64{0};
++        }
++        u64 mib = 0;
++        for (const char* at = value; *at != '\0'; ++at) {
++            if (*at < '0' || *at > '9') {
++                return u64{0};
++            }
++            mib = mib * 10 + static_cast<u64>(*at - '0');
++            if (mib > 65536) {
++                return u64{0};
++            }
++        }
++        return mib << 20;
++    }();
++    return bytes;
++}
++
++/// Whether `size` bytes at `data` are all zero (EDEN_UP_BIG_DEPTH_NO_UPLOAD).
++[[nodiscard]] inline bool BytesAllZero(const u8* data, size_t size) {
++    u64 seen = 0;
++    size_t at = 0;
++    for (; at + 8 <= size; at += 8) {
++        u64 word;
++        std::memcpy(&word, data + at, sizeof(word));
++        seen |= word;
++    }
++    for (; at < size; ++at) {
++        seen |= data[at];
++    }
++    return seen == 0;
++}
++
+ [[nodiscard]] inline bool TcTrace() {
+     static const bool enabled = Common::PeSwitch("EDEN_UP_TC_TRACE");
+     return enabled;
+@@ -5557,6 +5605,13 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
+         runtime.TransitionImageLayout(image);
+         return;
+     }
++    // EDEN_UP_BIG_DEPTH_NO_UPLOAD: a large depth image whose guest bytes are all zero is cleared to
++    // zero instead (the same texels, no staging). Unset: one compare.
++    if (const u64 big_depth = BigDepthNoUploadBytes();
++        big_depth != 0 && image.guest_size_bytes >= big_depth &&
++        ClearZeroDepthInsteadOfUpload(image, image_id)) [[unlikely]] {
++        return;
++    }
+     static const bool busy_only = Common::PeSwitch("EDEN_PE_ASTC_BUSY_ASYNC");
+     // A decode still pending for this image lands after anything uploaded now, so while one is,
+     // the next goes the same way and lands after it. IsDecoding is not enough: the first of two
+@@ -5660,6 +5715,117 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
+     }
+ }
+ 
++template <class P>
++bool TextureCache<P>::ClearZeroDepthInsteadOfUpload(Image& image, ImageId image_id) {
++    if constexpr (!requires { runtime.ClearDepthToZero(image); }) {
++        return false; // no depth clear in this renderer: uploaded as before
++    } else {
++        using VideoCore::Surface::SurfaceType;
++        static u64 cleared = 0;      // under the texture cache lock
++        static u64 cleared_mib = 0;  // staging not taken
++        static u64 kept = 0;         // non-zero guest bytes: uploaded
++        static u64 not_checked = 0;  // a kind of image this does not handle: uploaded
++        const auto logs = [](u64 count) { return count <= 16 || (count & (count - 1)) == 0; };
++        const SurfaceType type = VideoCore::Surface::GetFormatType(image.info.format);
++        if (type != SurfaceType::Depth && type != SurfaceType::DepthStencil) {
++            return false; // colour: not this switch's (no line, every texture would print one)
++        }
++        // Only a plain, whole, native image: one host image the clear reaches in full, and guest
++        // bytes the upload would read in one piece. Anything else is uploaded as before.
++        constexpr ImageFlagBits not_plain =
++            ImageFlagBits::Sparse | ImageFlagBits::SparseLayers | ImageFlagBits::SparseTiles |
++            ImageFlagBits::UnwrittenSparse | ImageFlagBits::Unbacked | ImageFlagBits::Converted |
++            ImageFlagBits::Rescaled | ImageFlagBits::AsynchronousDecode |
++            ImageFlagBits::IsDecoding;
++        if (True(image.flags & not_plain) || image.info.num_samples != 1 ||
++            !image.dirty_layers.empty()) {
++            if (logs(++not_checked)) {
++                LOG_WARNING(HW_GPU,
++                            "EDEN_UP_BIG_DEPTH: not checked id={} gpu={:#x} fmt={} {}x{}x{} "
++                            "guest={}MiB flags={:#x} samples={} dirty_layers={} frame={} ({} so "
++                            "far): uploaded",
++                            image_id.index, image.gpu_addr, static_cast<u32>(image.info.format),
++                            image.info.size.width, image.info.size.height, image.info.size.depth,
++                            image.guest_size_bytes >> 20, static_cast<u32>(image.flags),
++                            image.info.num_samples, image.dirty_layers.size(), frame_tick,
++                            not_checked);
++            }
++            return false;
++        }
++        // Read the guest bytes the upload would read (MemoryManager::ReadBlockImpl): page by
++        // page; a page without memory (unmapped, reserved, no host page) reads zero there, and a
++        // page the front may not hand out as a span is copied (GuestReadThrough), as there.
++        const auto started = std::chrono::steady_clock::now();
++        constexpr u64 Page = 4096;
++        alignas(8) std::array<u8, Page> scratch;
++        u64 no_memory_pages = 0;
++        u64 nonzero_at = ~u64{0};
++        for (u64 offset = 0; offset < image.guest_size_bytes;) {
++            const GPUVAddr address = image.gpu_addr + offset;
++            const u64 count =
++                (std::min)(Page - (address & (Page - 1)), image.guest_size_bytes - offset);
++            const u8* const pointer = gpu_memory->GetPointer<u8>(address);
++            if (pointer == nullptr) {
++                ++no_memory_pages;
++            } else {
++                const u8* data = pointer;
++                if (!Common::GuestReadThrough::SpanReadable(pointer, count)) {
++                    Common::GuestReadThrough::Copy(scratch.data(), pointer, count);
++                    data = scratch.data();
++                }
++                if (!BytesAllZero(data, count)) {
++                    nonzero_at = offset;
++                    break;
++                }
++            }
++            offset += count;
++        }
++        const double scan_ms = std::chrono::duration<double, std::milli>(
++                                   std::chrono::steady_clock::now() - started)
++                                   .count();
++        if (nonzero_at != ~u64{0}) {
++            if (logs(++kept)) {
++                LOG_WARNING(HW_GPU,
++                            "EDEN_UP_BIG_DEPTH: kept the upload id={} gpu={:#x} fmt={} {}x{}x{} "
++                            "guest={}MiB: a non-zero byte at +{:#x} scan={:.1f}ms frame={} ({} "
++                            "kept so far)",
++                            image_id.index, image.gpu_addr, static_cast<u32>(image.info.format),
++                            image.info.size.width, image.info.size.height, image.info.size.depth,
++                            image.guest_size_bytes >> 20, nonzero_at, scan_ms, frame_tick, kept);
++            }
++            return false;
++        }
++        if (!runtime.ClearDepthToZero(image)) {
++            if (logs(++not_checked)) {
++                LOG_WARNING(HW_GPU,
++                            "EDEN_UP_BIG_DEPTH: not cleared id={} gpu={:#x} (no depth aspect or "
++                            "transfer use) frame={} ({} so far): uploaded",
++                            image_id.index, image.gpu_addr, frame_tick, not_checked);
++            }
++            return false;
++        }
++        // What a finished upload leaves (RefreshContents below): no retry pending, no failures.
++        image.upload_retry_frame = 0;
++        image.upload_fail_count = 0;
++        const u64 staging_mib = u64{MapSizeBytes(image)} >> 20;
++        ++cleared;
++        cleared_mib += staging_mib;
++        if (logs(cleared)) {
++            LOG_WARNING(HW_GPU,
++                        "EDEN_UP_BIG_DEPTH: cleared instead of uploaded id={} gpu={:#x} fmt={} "
++                        "{}x{}x{} lv={} ly={} guest={}MiB staging_avoided={}MiB no_memory_pages={} "
++                        "scan={:.1f}ms frame={} ({} cleared, {} MiB of staging avoided so far; "
++                        "{} kept)",
++                        image_id.index, image.gpu_addr, static_cast<u32>(image.info.format),
++                        image.info.size.width, image.info.size.height, image.info.size.depth,
++                        image.info.resources.levels, image.info.resources.layers,
++                        image.guest_size_bytes >> 20, staging_mib, no_memory_pages, scan_ms,
++                        frame_tick, cleared, cleared_mib, kept);
++        }
++        return true;
++    }
++}
++
+ template <class P>
+ void TextureCache<P>::KeepContentsAfterBadAlloc(Image& image) {
+     static const bool ends = [] {
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index 36a89847f4..b4321b79b2 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -865,6 +865,10 @@ private:
+ 
+     void RefreshContents(Image& image, ImageId image_id);
+ 
++    /// EDEN_UP_BIG_DEPTH_NO_UPLOAD (RefreshContents): true when a depth image of the switch's size
++    /// or more read all zero in guest memory and was cleared to zero instead of uploaded.
++    bool ClearZeroDepthInsteadOfUpload(Image& image, ImageId image_id);
++
+     /// Upload data from guest to an image
+     template <typename StagingBuffer>
+     void UploadImageContents(Image& image, StagingBuffer& staging_buffer);
+diff --git a/src/video_core/vulkan_common/vulkan_wrapper.cpp b/src/video_core/vulkan_common/vulkan_wrapper.cpp
+index 2520fff909..7152a355fa 100644
+--- a/src/video_core/vulkan_common/vulkan_wrapper.cpp
++++ b/src/video_core/vulkan_common/vulkan_wrapper.cpp
+@@ -127,6 +127,7 @@ void Load(VkDevice device, DeviceDispatch& dld) noexcept {
+     X(vkCmdBlitImage);
+     X(vkCmdClearAttachments);
+     X(vkCmdClearColorImage);
++    X(vkCmdClearDepthStencilImage);
+     X(vkCmdCopyBuffer);
+     X(vkCmdCopyBufferToImage);
+     X(vkCmdCopyImage);
+diff --git a/src/video_core/vulkan_common/vulkan_wrapper.h b/src/video_core/vulkan_common/vulkan_wrapper.h
+index 68ff9fc5b6..8e348c8334 100644
+--- a/src/video_core/vulkan_common/vulkan_wrapper.h
++++ b/src/video_core/vulkan_common/vulkan_wrapper.h
+@@ -218,6 +218,7 @@ struct DeviceDispatch : InstanceDispatch {
+     PFN_vkCmdBlitImage vkCmdBlitImage{};
+     PFN_vkCmdClearAttachments vkCmdClearAttachments{};
+     PFN_vkCmdClearColorImage vkCmdClearColorImage{};
++    PFN_vkCmdClearDepthStencilImage vkCmdClearDepthStencilImage{};
+     PFN_vkCmdCopyBuffer vkCmdCopyBuffer{};
+     PFN_vkCmdCopyBufferToImage vkCmdCopyBufferToImage{};
+     PFN_vkCmdCopyImage vkCmdCopyImage{};
+@@ -1371,6 +1372,13 @@ public:
+         dld->vkCmdClearColorImage(handle, image, layout, &color, ranges.size(), ranges.data());
+     }
+ 
++    void ClearDepthStencilImage(VkImage image, VkImageLayout layout,
++                                VkClearDepthStencilValue value,
++                                Span<VkImageSubresourceRange> ranges) {
++        dld->vkCmdClearDepthStencilImage(handle, image, layout, &value, ranges.size(),
++                                         ranges.data());
++    }
++
+     void BlitImage(VkImage src_image, VkImageLayout src_layout, VkImage dst_image,
+                    VkImageLayout dst_layout, Span<VkImageBlit> regions,
+                    VkFilter filter) const noexcept {

@@ -1,0 +1,369 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_DRAIN_TO_POOL=2: one line per pressure drain with the allocator's device memory before and after (what went back to the driver), the room left inside the blocks by kind, the pool's largest free piece before and after, and the deleted buffers that waited by size; count only, off by default
+
+Switches: EDEN_UP_DRAIN_TO_POOL=2 (exact; the line only) or =1 (the line and 0896's own memory).
+Acts with EDEN_UP_PRESSURE_DRAIN=1 or 2 (the line is written by RasterizerVulkan::PressureDrainLook
+after each drain). Line (stderr), the first 32 drains and every 16th:
+"EDEN_UP_DRAIN_TO_POOL drain <n>: <freed> MiB freed, <back> MiB of it back to the driver (device
+memory <before> -> <after> MiB, objects <a> -> <b>); room left inside the blocks <slack> MiB
+(buffer pool <s> of <blocks> MiB blocks, sparse/trim pools <s>, default blocks <s>); largest free
+piece <before> -> <after> MiB; deleted buffers that waited by size: under 1 MiB <x>, 1 MiB to half
+a pool block <y>, larger <z> MiB; memory of their own since the last line: <n> buffers <m> MiB,
+<r> went to the pool after all".
+
+Why: after the 13 Nov drains (run1395, run1397: 934-1,268 MiB freed) the census showed 720-782 MiB
+empty inside the allocator's blocks and only about 50-340 MiB came back to the pool; the existing
+line has only the allocator's use (allocationBytes) and the largest free piece at the look, BEFORE
+the drain (vk_rasterizer.cpp 3188, printed at 3305: the 239 and 8 MiB in those lines are before,
+not after). Nothing says which blocks keep the freed room or how big the drained buffers were.
+
+What: MemoryAllocator::DeviceMemory (vmaGetHeapBudgets: blockBytes and blockCount, which count
+VMA's blocks and its allocations of their own alike, vk_mem_alloc.h 3.3.0 AllocateVulkanMemory)
+before and after the drain, under the drain's own lock; the three separate pools' statistics
+(Device::AddSeparatePoolUsage) after it; a walk of the deleted buffers before it
+(BufferCache::ForEachDeleted, the same ring DeletedWaiting walks) split at 1 MiB and at half a
+separate-pool block (Device::SeparatePoolBlockSize()/2: 8 MiB; larger ones take memory of their
+own by VMA's rule); the pool's largest free piece again after it.
+Off: one test of a static per drain.
+
+Translation id: vk_rasterizer.cpp, pressure_drain.h, drain_to_pool.h (new),
+vulkan_memory_allocator.{h,cpp} and buffer_cache_base.h are not in gen-translation-id.py's inputs
+(none is a hashed single file, none is reached from src/shader_recompiler: checked against
+t166c/translation_inputs-7f97.txt, 418 files), and EDEN_UP_DRAIN_TO_POOL is not in
+TranslationSwitches: KEEPS THE STORE.
+
+---
+diff --git a/src/video_core/buffer_cache/buffer_cache_base.h b/src/video_core/buffer_cache/buffer_cache_base.h
+index 8ec80e2925..2302045b3b 100644
+--- a/src/video_core/buffer_cache/buffer_cache_base.h
++++ b/src/video_core/buffer_cache/buffer_cache_base.h
+@@ -280,6 +280,13 @@ public:
+     /// (a walk of the ring). The caller holds mutex.
+     [[nodiscard]] std::pair<size_t, u64> DeletedWaiting() const;
+ 
++    /// EDEN_UP_DRAIN_TO_POOL (renderer_vulkan/pressure_drain.h): f(buffer) for each deleted buffer
++    /// still waiting, as DeletedWaiting walks them. The caller holds mutex.
++    template <typename F>
++    void ForEachDeleted(F&& f) const {
++        delayed_destruction_ring.ForEach(f);
++    }
++
+     /// EDEN_UP_PRESSURE_DRAIN, after a drain: a buffer of any size memory refused is asked for
+     /// again at the next request. The caller holds mutex.
+     void RetryRefusedNow() noexcept {
+diff --git a/src/video_core/renderer_vulkan/pressure_drain.h b/src/video_core/renderer_vulkan/pressure_drain.h
+index 71fff66159..80bb39be59 100644
+--- a/src/video_core/renderer_vulkan/pressure_drain.h
++++ b/src/video_core/renderer_vulkan/pressure_drain.h
+@@ -11,6 +11,7 @@
+ 
+ #include "common/common_types.h"
+ #include "video_core/memory_census.h"
++#include "video_core/vulkan_common/drain_to_pool.h"
+ 
+ /// EDEN_UP_PRESSURE_DRAIN (off unless set; RasterizerVulkan::PressureDrainLook and PressureDrain).
+ ///
+@@ -210,4 +211,72 @@ inline void MaybeLine(std::chrono::steady_clock::time_point now, size_t buffers_
+                  Mib(used()), c.looks);
+ }
+ 
++/// EDEN_UP_DRAIN_TO_POOL=1|2 (vulkan_common/drain_to_pool.h): one drain's way to the pool.
++struct ToPool {
++    u64 device_before{};  ///< VMA's device memory (blocks and allocations of their own)
++    u64 objects_before{};
++    u64 device_after{};
++    u64 objects_after{};
++    u64 used_after{};
++    u64 buffer_pool_blocks{}; ///< The DeviceBuffers pool after the drain
++    u64 buffer_pool_used{};
++    u64 other_pools_blocks{}; ///< SparsePages and TrimmedImages after the drain
++    u64 other_pools_used{};
++    u64 waited_small{};  ///< Deleted buffers waiting, under 1 MiB
++    u64 waited_shared{}; ///< 1 MiB up to half a separate-pool block: the pool's blocks by size
++    u64 waited_own{};    ///< Over half a block: memory of their own by VMA's rule
++    u64 largest_after{};
++};
++
++/// The recording thread's: drains so far with the line on, and the own-memory counts at the last
++/// line.
++struct ToPoolState {
++    u64 lines{};
++    u64 made_seen{};
++    u64 made_bytes_seen{};
++    u64 refused_seen{};
++};
++
++inline ToPoolState g_to_pool{};
++
++/// The line, for the first 32 drains and every 16th.
++inline void ToPoolLine(u64 drain, u64 freed, u64 largest_before, const ToPool& p) {
++    ToPoolState& s = g_to_pool;
++    ++s.lines;
++    if (s.lines > 32 && s.lines % 16 != 0) {
++        return;
++    }
++    const u64 made = DrainToPool::g_shared.made.load(std::memory_order_relaxed);
++    const u64 made_bytes = DrainToPool::g_shared.made_bytes.load(std::memory_order_relaxed);
++    const u64 refused = DrainToPool::g_shared.refused.load(std::memory_order_relaxed);
++    const u64 back = p.device_before > p.device_after ? p.device_before - p.device_after : 0;
++    const u64 slack = p.device_after > p.used_after ? p.device_after - p.used_after : 0;
++    const u64 buffer_slack =
++        p.buffer_pool_blocks > p.buffer_pool_used ? p.buffer_pool_blocks - p.buffer_pool_used : 0;
++    const u64 other_slack =
++        p.other_pools_blocks > p.other_pools_used ? p.other_pools_blocks - p.other_pools_used : 0;
++    const u64 default_slack = slack > buffer_slack + other_slack ? slack - buffer_slack - other_slack
++                                                                 : 0;
++    std::fprintf(stderr,
++                 "EDEN_UP_DRAIN_TO_POOL drain %llu: %llu MiB freed, %llu MiB of it back to the "
++                 "driver (device memory %llu -> %llu MiB, objects %llu -> %llu); room left inside "
++                 "the blocks %llu MiB (buffer pool %llu of %llu MiB blocks, sparse/trim pools %llu, "
++                 "default blocks %llu); largest free piece %llu -> %llu MiB; deleted buffers that "
++                 "waited by size: under 1 MiB %llu, 1 MiB to half a pool block %llu, larger %llu "
++                 "MiB; memory of their own since the last line: %llu buffers %llu MiB, %llu went to "
++                 "the pool after all\n",
++                 static_cast<unsigned long long>(drain), Mib(freed), Mib(back),
++                 Mib(p.device_before), Mib(p.device_after),
++                 static_cast<unsigned long long>(p.objects_before),
++                 static_cast<unsigned long long>(p.objects_after), Mib(slack), Mib(buffer_slack),
++                 Mib(p.buffer_pool_blocks), Mib(other_slack), Mib(default_slack),
++                 Mib(largest_before), Mib(p.largest_after), Mib(p.waited_small),
++                 Mib(p.waited_shared), Mib(p.waited_own),
++                 static_cast<unsigned long long>(made - s.made_seen), Mib(made_bytes - s.made_bytes_seen),
++                 static_cast<unsigned long long>(refused - s.refused_seen));
++    s.made_seen = made;
++    s.made_bytes_seen = made_bytes;
++    s.refused_seen = refused;
++}
++
+ } // namespace Vulkan::PressureDrain
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index f4a3d0104e..5231767617 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -3246,9 +3246,22 @@ void RasterizerVulkan::PressureDrainLook(bool frame_end) {
+     }
+     u64 before = 0, after = 0, waited_us = 0, staging = 0;
+     bool reached = false;
++    // EDEN_UP_DRAIN_TO_POOL=1|2 (vulkan_common/drain_to_pool.h): where the freed bytes went.
++    static const bool to_pool = DrainToPool::On();
++    PD::ToPool to_pool_seen{};
+     {
+         std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+         before = memory_allocator.UsedBytes();
++        if (to_pool) [[unlikely]] {
++            memory_allocator.DeviceMemory(to_pool_seen.device_before, to_pool_seen.objects_before);
++            const u64 shared_max = Device::SeparatePoolBlockSize() / 2;
++            buffer_cache.ForEachDeleted([&](const auto& buffer) {
++                const u64 size = buffer.SizeBytes();
++                (size < (u64{1} << 20)     ? to_pool_seen.waited_small
++                 : size <= shared_max      ? to_pool_seen.waited_shared
++                                           : to_pool_seen.waited_own) += size;
++            });
++        }
+         if (VideoCommon::Nx2FastDraw::Enabled()) {
+             VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Frame);
+         }
+@@ -3277,6 +3290,19 @@ void RasterizerVulkan::PressureDrainLook(bool frame_end) {
+             }
+         }(staging_pool);
+         after = memory_allocator.UsedBytes();
++        if (to_pool) [[unlikely]] {
++            memory_allocator.DeviceMemory(to_pool_seen.device_after, to_pool_seen.objects_after);
++            to_pool_seen.used_after = after;
++            device.AddSeparatePoolUsage(Device::SeparatePool::DeviceBuffers,
++                                        to_pool_seen.buffer_pool_blocks,
++                                        to_pool_seen.buffer_pool_used);
++            device.AddSeparatePoolUsage(Device::SeparatePool::SparsePages,
++                                        to_pool_seen.other_pools_blocks,
++                                        to_pool_seen.other_pools_used);
++            device.AddSeparatePoolUsage(Device::SeparatePool::TrimmedImages,
++                                        to_pool_seen.other_pools_blocks,
++                                        to_pool_seen.other_pools_used);
++        }
+     }
+     const u64 freed = before > after ? before - after : 0;
+     ++c.drains;
+@@ -3292,6 +3318,10 @@ void RasterizerVulkan::PressureDrainLook(bool frame_end) {
+     c.longest_us = (std::max)(c.longest_us, waited_us);
+     ++s.total_drains;
+     s.total_freed += freed;
++    if (to_pool) [[unlikely]] {
++        to_pool_seen.largest_after = PD::LargestFree();
++        PD::ToPoolLine(s.total_drains, freed, largest, to_pool_seen);
++    }
+     if (s.total_drains <= 16 || s.total_drains % 64 == 0) {
+         std::fprintf(stderr,
+                      "EDEN_UP_PRESSURE_DRAIN %llu %s%s: waited %llu ms, %s; %llu MiB freed "
+diff --git a/src/video_core/vulkan_common/drain_to_pool.h b/src/video_core/vulkan_common/drain_to_pool.h
+new file mode 100644
+index 0000000000..e5a71209a4
+--- /dev/null
++++ b/src/video_core/vulkan_common/drain_to_pool.h
+@@ -0,0 +1,130 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <algorithm>
++#include <atomic>
++#include <chrono>
++#include <cstdlib>
++#include <cstring>
++
++#include "common/common_types.h"
++
++/// EDEN_UP_DRAIN_TO_POOL (off unless set; acts only with EDEN_UP_PRESSURE_DRAIN=1 or 2, whose look
++/// arms it: RasterizerVulkan::PressureDrainLook).
++///
++/// A drain (renderer_vulkan/pressure_drain.h) frees the deleted buffers at once, but a buffer of
++/// half a separate-pool block or less (8 MiB) sits in one of the DeviceBuffers pool's 16 MiB blocks
++/// (Device::SeparatePool), and a block goes back to the driver only when its last buffer goes. At
++/// the load past the field the new area's buffers were made and deleted side by side in the same
++/// blocks, so after a 934-1,268 MiB drain 720-782 MiB stayed as empty room inside the blocks
++/// (census vma_slack), which only buffers can use: the heap and the big images could not.
++///
++///   EDEN_UP_DRAIN_TO_POOL=2       one line per drain (EDEN_UP_DRAIN_TO_POOL ...): the allocator's
++///                                 device memory before and after (what went back to the driver),
++///                                 the room left inside the blocks by kind, the pool's largest free
++///                                 piece before and after, and what waited by size. Nothing else
++///                                 changes.
++///   EDEN_UP_DRAIN_TO_POOL=1       the line, and: while the pool is short (the drain's own mark,
++///                                 EDEN_UP_PRESSURE_DRAIN_MIB) or an area loads (EDEN_UP_DRAIN_AT_AREA's
++///                                 window), a device-local buffer of _KIB or more that would go to
++///                                 the DeviceBuffers pool gets memory of its own instead, so a drain
++///                                 that deletes it gives its bytes back to the driver.
++///   EDEN_UP_DRAIN_TO_POOL_KIB=<KiB>  the smallest buffer given memory of its own (unset: 2048; 64
++///                                 to 8192). Smaller ones stay in the pool's blocks: many small
++///                                 objects of their own would split the pool into pieces under the
++///                                 2 MiB the heap grows by.
++///
++/// Off: one test of a static per buffer the DeviceBuffers pool would take, nothing else.
++namespace Vulkan::DrainToPool {
++
++enum class Mode : u8 {
++    Off,
++    OwnMemory, ///< The line, and buffers of their own while the pool is short or an area loads
++    LineOnly,  ///< The line only
++};
++
++[[nodiscard]] inline Mode GetMode() {
++    static const Mode mode = [] {
++        const char* const value = std::getenv("EDEN_UP_DRAIN_TO_POOL");
++        if (value != nullptr && std::strcmp(value, "1") == 0) {
++            return Mode::OwnMemory;
++        }
++        if (value != nullptr && std::strcmp(value, "2") == 0) {
++            return Mode::LineOnly;
++        }
++        return Mode::Off;
++    }();
++    return mode;
++}
++
++[[nodiscard]] inline bool On() {
++    return GetMode() != Mode::Off;
++}
++
++[[nodiscard]] inline bool OwnMemoryOn() {
++    return GetMode() == Mode::OwnMemory;
++}
++
++/// Bytes: the smallest buffer given memory of its own.
++[[nodiscard]] inline u64 OwnMemoryMin() {
++    static const u64 bytes = [] {
++        u64 kib = 2048;
++        if (const char* const value = std::getenv("EDEN_UP_DRAIN_TO_POOL_KIB");
++            value != nullptr && value[0] >= '0' && value[0] <= '9') {
++            char* end = nullptr;
++            const unsigned long long number = std::strtoull(value, &end, 10);
++            if (end != value && *end == '\0' && number != 0) {
++                kib = std::clamp<u64>(number, 64, 8192);
++            }
++        }
++        return kib << 10;
++    }();
++    return bytes;
++}
++
++/// Shared between the drain's look (the recording thread) and the allocator (any thread).
++struct Shared {
++    /// steady_clock nanoseconds: buffers get memory of their own until then
++    std::atomic<s64> until_ns{0};
++    std::atomic<u64> made{};       ///< Buffers given memory of their own
++    std::atomic<u64> made_bytes{};
++    std::atomic<u64> refused{};    ///< Asked for memory of their own and went to the pool after all
++};
++
++inline Shared g_shared{};
++
++[[nodiscard]] inline s64 NowNs() {
++    return static_cast<s64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                std::chrono::steady_clock::now().time_since_epoch())
++                                .count());
++}
++
++/// The look: buffers get memory of their own for the next `ms` (never shortens an armed window).
++inline void Arm(s64 ms) {
++    const s64 until = NowNs() + ms * 1'000'000LL;
++    s64 current = g_shared.until_ns.load(std::memory_order_relaxed);
++    while (current < until &&
++           !g_shared.until_ns.compare_exchange_weak(current, until, std::memory_order_relaxed)) {
++    }
++}
++
++/// The allocator, for a buffer the DeviceBuffers pool would take: memory of its own now?
++[[nodiscard]] inline bool OwnMemoryFor(u64 size) {
++    if (!OwnMemoryOn() || size < OwnMemoryMin()) {
++        return false;
++    }
++    return NowNs() < g_shared.until_ns.load(std::memory_order_relaxed);
++}
++
++inline void CountMade(u64 size) {
++    g_shared.made.fetch_add(1, std::memory_order_relaxed);
++    g_shared.made_bytes.fetch_add(size, std::memory_order_relaxed);
++}
++
++inline void CountRefused() {
++    g_shared.refused.fetch_add(1, std::memory_order_relaxed);
++}
++
++} // namespace Vulkan::DrainToPool
+diff --git a/src/video_core/vulkan_common/vulkan_memory_allocator.cpp b/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
+index eaf97491f2..ddf31b9c9a 100644
+--- a/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
++++ b/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
+@@ -994,6 +994,17 @@ u64 MemoryAllocator::UsedBytes() const {
+     return used;
+ }
+ 
++void MemoryAllocator::DeviceMemory(u64& bytes, u64& objects) const {
++    VmaBudget budgets[VK_MAX_MEMORY_HEAPS]{};
++    vmaGetHeapBudgets(allocator, budgets);
++    bytes = 0;
++    objects = 0;
++    for (const VmaBudget& budget : budgets) {
++        bytes += budget.statistics.blockBytes;
++        objects += budget.statistics.blockCount;
++    }
++}
++
+ void LogMemoryStatistics(const Device& device) {
+     const VmaAllocator allocator = device.GetAllocator();
+     const VkPhysicalDeviceMemoryProperties* properties{};
+diff --git a/src/video_core/vulkan_common/vulkan_memory_allocator.h b/src/video_core/vulkan_common/vulkan_memory_allocator.h
+index 8848eb85e1..0e1af8edc4 100644
+--- a/src/video_core/vulkan_common/vulkan_memory_allocator.h
++++ b/src/video_core/vulkan_common/vulkan_memory_allocator.h
+@@ -143,6 +143,10 @@ namespace Vulkan {
+         /// What VMA's allocations hold in all heaps (EDEN_UP_PRESSURE_DRAIN: what a drain freed).
+         u64 UsedBytes() const;
+ 
++        /// EDEN_UP_DRAIN_TO_POOL (drain_to_pool.h): the device memory VMA holds from the driver in
++        /// all heaps (its blocks and the allocations of their own), and how many objects.
++        void DeviceMemory(u64& bytes, u64& objects) const;
++
+         vk::Buffer CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsage usage) const;
+ 
+         /// A buffer in the space of the blocks held already: no new block, no budget, no report.

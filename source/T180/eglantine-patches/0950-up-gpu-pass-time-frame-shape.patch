@@ -1,0 +1,255 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_GPU_PASS_TIME=1 (log only): after nx2:vi2's 600-present line, the frame times in 16.7 ms bins and Ocarina of Time's game speed (game seconds per second of the guest counter) from the dynamic-fps routine's two words (patch 0149, main+0x4E9FE00, address noted by the loader); unset: as before
+
+T180p (writer P), part 2 of EDEN_UP_GPU_PASS_TIME=1 (the front's gpu_time_probe.inc has part 1).
+Log only. After nx2:vi2's "last 600 presents" line, two more lines:
+- "nx2:vi2 last 600 presents shape": the 599 frame times in 16.7 ms bins (<16.7, <33.3, <50,
+  <66.7, <83.3, <100, >=100 ms).
+- "nx2:vi2 last 600 presents game speed": with EDEN_NX2_OOT_DYNAMIC_FPS=1 (patch 0149) the loader
+  notes where the routine keeps its two words (main+0x4E9FE00, from the routine's adrp/add:
+  +0 the counter at its last call, +8 the smoothed frame time in counter ticks, capped at
+  CNTFRQ/20 = 50 ms, smoothed by 1/8). Each present reads both; per routine call seen the game
+  advances max(own step, smoothed) seconds (the routine takes the smoothed time when it is over
+  1.03x the own step). Game speed = game seconds / seconds of the guest counter between the calls
+  seen. The own step (s1/s0 of the game's state) is not read: taken as 1/30 s, which matters only
+  for calls whose smoothed time is under 34.3 ms. Calls that fall between two presents with no
+  present of their own are not seen (counted as "gaps that look like more than one call").
+Cost with the switch: two 8-byte guest reads and a few additions per present. Unset: one test of a
+static bool per present; nso.cpp's routine is unchanged (ApplyOcarinaDynamicFps only returns
+whether it put the routine in). No shader, pipeline or translation file is touched: KEEPS THE STORE.
+---
+ src/common/nx2_game_speed.h    | 17 ++++++
+ src/core/hle/service/nx2_gsv.h | 99 ++++++++++++++++++++++++++++++++++
+ src/core/loader/nso.cpp        | 22 +++++---
+ 3 files changed, 131 insertions(+), 7 deletions(-)
+ create mode 100644 src/common/nx2_game_speed.h
+
+diff --git a/src/common/nx2_game_speed.h b/src/common/nx2_game_speed.h
+new file mode 100644
+index 0000000000..d74c50a9e2
+--- /dev/null
++++ b/src/common/nx2_game_speed.h
+@@ -0,0 +1,17 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <atomic>
++
++#include "common/common_types.h"
++
++namespace Common::Nx2GameSpeed {
++
++/// Patch 0950 (EDEN_UP_GPU_PASS_TIME): the address of the two words of Ocarina of Time's
++/// dynamic-fps routine (patch 0149, main+0x4E9FE00) once the loader put the routine in, else 0.
++/// Written by the loader (core/loader/nso.cpp), read by nx2:vi2's 600-present line.
++inline std::atomic<u64> state_address{0};
++
++} // namespace Common::Nx2GameSpeed
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index 33d99f9e88..cc419b7339 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -34,11 +34,14 @@
+ #include "common/frame_wait_progress.h"
+ #include "common/game_presets.h"
+ #include "common/live_switch.h"
++#include "common/nx2_game_speed.h"
+ #include "common/nx2_load_wait.h"
+ #include "common/settings.h"
+ #include "common/thread.h"
+ #include "core/core.h"
+ #include "core/device_memory.h"
++#include "core/hardware_properties.h"
++#include "core/memory.h"
+ #include "video_core/rasterizer_interface.h"
+ #include "video_core/readback_wait.h"
+ #include "video_core/renderer_base.h"
+@@ -2361,11 +2364,23 @@ private:
+                     win.start = entered;
+                 }
+             }
++            // EDEN_UP_GPU_PASS_TIME=1 (patch 0950, log only): the shape of the frame times and the
++            // game's own speed, a second line after the 600-present line below. Off: one test of a
++            // static bool per present.
++            static const bool shape_lines = Common::PeSwitch("EDEN_UP_GPU_PASS_TIME");
+             if (m_stats.last_present != std::chrono::steady_clock::time_point{}) {
+                 const long long frame = to_us(entered - m_stats.last_present);
+                 m_stats.frame_us += frame;
+                 m_stats.max_frame_us = (std::max)(m_stats.max_frame_us, frame);
+                 m_stats.hitches += frame > 100'000 ? 1 : 0;
++                if (shape_lines) [[unlikely]] {
++                    // 16.7 ms bins: 0-16.7, -33.3, -50, -66.7, -83.3, -100, 100 ms and more.
++                    ++m_stats.bins[static_cast<size_t>(
++                        (std::min<long long>)((std::max<long long>)(frame, 0) * 3 / 50'000, 6))];
++                }
++            }
++            if (shape_lines) [[unlikely]] {
++                SampleGameSpeed();
+             }
+             m_stats.last_present = entered;
+             if (++m_stats.presents == 600) {
+@@ -2376,6 +2391,9 @@ private:
+                          m_stats.frame_us / 599, m_stats.max_frame_us, m_stats.hitches,
+                          m_stats.fence_us / 600, m_stats.max_fence_us, m_stats.composite_us / 600,
+                          m_stats.pace_us / 600, m_stats.ran_ahead);
++                if (shape_lines) [[unlikely]] {
++                    LogShapeAndGameSpeed();
++                }
+                 m_stats = {.last_present = entered};
+             }
+         }
+@@ -2418,7 +2436,88 @@ private:
+         long long max_frame_us{}, hitches{};
+         u32 presents{}, ran_ahead{};
+         std::chrono::steady_clock::time_point last_present{};
++        std::array<u32, 7> bins{}; ///< EDEN_UP_GPU_PASS_TIME: frame times in 16.7 ms bins
+     } m_stats{};
++    // EDEN_UP_GPU_PASS_TIME=1, Ocarina of Time with EDEN_NX2_OOT_DYNAMIC_FPS=1 (patch 0149): the
++    // dynamic-fps routine's two words (main+0x4E9FE00: the counter at its last call; +8: its
++    // smoothed frame time in counter ticks, the time since the last call capped at CNTFRQ/20 =
++    // 50 ms and smoothed by 1/8), read once per present. The routine replaces the game's step with
++    // the smoothed time when that is more than 1.03x the game's own step, so the game advances
++    // max(own, smoothed) seconds per frame. The own step is s1/s0 of the game's state, which this
++    // does not read: taken as 1/30 s (the game's 30 fps step; only presents where the smoothed time
++    // is under 34.3 ms depend on it).
++    struct GameSpeed {
++        u64 last_counter{};
++        u64 wall_ticks{};
++        double game_s{};
++        double smoothed_s{};
++        u32 calls{};
++        u32 dynamic{};
++        u32 capped{};
++        u32 skipped{};   ///< presents whose routine counter had not moved
++        u32 multi{};     ///< gaps over 1.5x the smoothed time: likely more than one call
++    } m_game_speed{};
++
++    void SampleGameSpeed() {
++        const u64 address = Common::Nx2GameSpeed::state_address.load(std::memory_order_relaxed);
++        if (address == 0) {
++            return;
++        }
++        auto& memory = system.ApplicationMemory();
++        if (!memory.IsValidVirtualAddressRange(address, 16)) {
++            return;
++        }
++        const u64 counter = memory.Read64(address);
++        const u64 smoothed = memory.Read64(address + 8);
++        auto& speed = m_game_speed;
++        if (counter == 0 || counter == speed.last_counter) {
++            ++speed.skipped;
++            return;
++        }
++        if (speed.last_counter != 0 && counter > speed.last_counter) {
++            constexpr double frequency = static_cast<double>(Core::Hardware::CNTFREQ);
++            constexpr double own_step_s = 1.0 / 30.0;
++            const u64 gap = counter - speed.last_counter;
++            const double smoothed_s = static_cast<double>(smoothed) / frequency;
++            const bool dynamic = smoothed_s > own_step_s * 1.03;
++            speed.wall_ticks += gap;
++            speed.game_s += dynamic ? smoothed_s : own_step_s;
++            speed.smoothed_s += smoothed_s;
++            ++speed.calls;
++            speed.dynamic += dynamic ? 1 : 0;
++            speed.capped += gap >= Core::Hardware::CNTFREQ / 20 ? 1 : 0;
++            speed.multi += smoothed != 0 && gap * 2 > smoothed * 3 + Core::Hardware::CNTFREQ / 20 ? 1 : 0;
++        }
++        speed.last_counter = counter;
++    }
++
++    void LogShapeAndGameSpeed() {
++        const auto& b = m_stats.bins;
++        LOG_INFO(Service,
++                 "nx2:vi2 last 600 presents shape: frames in 16.7 ms bins: <16.7 {} | <33.3 {} | "
++                 "<50 {} | <66.7 {} | <83.3 {} | <100 {} | >=100 {}",
++                 b[0], b[1], b[2], b[3], b[4], b[5], b[6]);
++        auto& speed = m_game_speed;
++        if (Common::Nx2GameSpeed::state_address.load(std::memory_order_relaxed) == 0) {
++            LOG_INFO(Service, "nx2:vi2 last 600 presents game speed: no dynamic-fps routine "
++                              "(not Ocarina of Time, or EDEN_NX2_OOT_DYNAMIC_FPS unset)");
++        } else if (speed.calls == 0 || speed.wall_ticks == 0) {
++            LOG_INFO(Service, "nx2:vi2 last 600 presents game speed: routine not seen ({} presents "
++                              "without a call)", speed.skipped);
++        } else {
++            const double wall_s =
++                static_cast<double>(speed.wall_ticks) / static_cast<double>(Core::Hardware::CNTFREQ);
++            LOG_INFO(Service,
++                     "nx2:vi2 last 600 presents game speed {:.3f}: game {:.2f} s in {:.2f} s of the "
++                     "routine's clock; {} calls seen ({} presents without one, {} gaps that look "
++                     "like more than one call), {} on the smoothed step, {} gaps capped at 50 ms, "
++                     "smoothed step mean {:.1f} ms (own step taken as 33.3 ms)",
++                     speed.game_s / wall_s, speed.game_s, wall_s, speed.calls, speed.skipped,
++                     speed.multi, speed.dynamic, speed.capped,
++                     speed.smoothed_s * 1000.0 / static_cast<double>(speed.calls));
++        }
++        speed = GameSpeed{.last_counter = speed.last_counter};
++    }
+     // EDEN_GBB_FPS_5S: frame times of the current 5 s window (cleared, not freed, each window).
+     struct FpsWindow {
+         std::vector<long long> frames_us;
+diff --git a/src/core/loader/nso.cpp b/src/core/loader/nso.cpp
+index 566683ad72..fef796ed0c 100644
+--- a/src/core/loader/nso.cpp
++++ b/src/core/loader/nso.cpp
+@@ -18,6 +18,7 @@
+ #include "common/logging.h"
+ #include "common/lz4_compression.h"
+ #include "common/zbic_compression.h"
++#include "common/nx2_game_speed.h"
+ #include "common/settings.h"
+ #include "common/swap.h"
+ #include "core/core.h"
+@@ -81,20 +82,21 @@ constexpr std::array<u8, 120> OcarinaDynamicFpsCode{
+ 
+ // EDEN_NX2_OOT_DYNAMIC_FPS=1. `image` starts at the module's first byte, `code_size` is the size of
+ // its executable segment. The build id says the bytes are the ones the patch was written for.
+-void ApplyOcarinaDynamicFps(std::span<u8> image, const NSOHeader& header, u64 code_size) {
++// Returns whether the routine was put in (patch 0950 then notes where its state sits).
++bool ApplyOcarinaDynamicFps(std::span<u8> image, const NSOHeader& header, u64 code_size) {
+     const char* const setting = std::getenv("EDEN_NX2_OOT_DYNAMIC_FPS");
+     if (setting == nullptr || setting[0] != '1') {
+-        return;
++        return false;
+     }
+     if (!std::equal(OcarinaMainBuildId.begin(), OcarinaMainBuildId.end(),
+                     header.build_id.begin())) {
+         LOG_WARNING(Loader, "Ocarina of Time: Dynamic FPS skipped, not the build it was made for");
+-        return;
++        return false;
+     }
+     constexpr size_t routine_end = OcarinaDynamicFpsSite + OcarinaDynamicFpsCode.size();
+     if (routine_end > code_size || routine_end > image.size()) {
+         LOG_WARNING(Loader, "Ocarina of Time: Dynamic FPS skipped, code ends at {:#x}", code_size);
+-        return;
++        return false;
+     }
+     u32 replaced{};
+     std::memcpy(&replaced, image.data() + OcarinaFrameStepSite, sizeof(replaced));
+@@ -115,6 +117,7 @@ void ApplyOcarinaDynamicFps(std::span<u8> image, const NSOHeader& header, u64 co
+     const auto& data = header.segments[2];
+     LOG_INFO(Loader, "Ocarina of Time: Dynamic FPS on (main+{:#x} held {:#010x}, BSS ends at {:#x})",
+              OcarinaFrameStepSite, replaced, u64{data.location} + data.size + data.bss_size);
++    return true;
+ }
+ } // Anonymous namespace
+ 
+@@ -257,9 +260,14 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
+     }
+ 
+     if (name == "main" && process.GetProgramId() == OcarinaProgramId) {
+-        ApplyOcarinaDynamicFps(std::span<u8>{codeset.memory}.subspan(module_start), nso_header,
+-                               u64{nso_header.segments[0].location} +
+-                                   PageAlignSize(nso_header.segments[0].size));
++        // Patch 0950: where the routine keeps its two words (adrp/add in the routine:
++        // main+0x4E9FE00), for nx2:vi2's game speed (EDEN_UP_GPU_PASS_TIME=1, log only).
++        if (ApplyOcarinaDynamicFps(std::span<u8>{codeset.memory}.subspan(module_start), nso_header,
++                                   u64{nso_header.segments[0].location} +
++                                       PageAlignSize(nso_header.segments[0].size))) {
++            Common::Nx2GameSpeed::state_address.store(load_base + module_start + 0x4E9FE00,
++                                                      std::memory_order_relaxed);
++        }
+     }
+ 
+     // Mario Kart World selects a 1- or 2-vblank frame mode in its main loop. Force its native

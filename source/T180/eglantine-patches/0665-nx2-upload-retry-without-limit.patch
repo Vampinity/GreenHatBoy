@@ -1,0 +1,51 @@
+From: EglantinePS5
+Subject: [PATCH] nx2: with EDEN_NX2_UPLOAD_BACKOFF a refused upload is retried without a limit unless EDEN_NX2_UPLOAD_MAX_RETRIES sets one (waveydude's 0924), off by default
+
+What: 0664 (his 0919) gives an image up at its 8th refusal in a row: CpuModified is cleared and the
+image is drawn with what it holds. waveydude's finding: under a long shortage that is every waiting
+image, about 630 frames after the shortage began, and an image that was never uploaded is black
+until the game writes it again.
+
+Now the default is no limit: the image is tried again for as long as it is used, 128 frames apart
+at most, which costs one refused attempt each time. EDEN_NX2_UPLOAD_MAX_RETRIES=<n> (1 or more)
+brings a limit back; "0" or text that is not a number is no limit.
+
+Off (EDEN_NX2_UPLOAD_BACKOFF unset): nothing of 0664 runs, so nothing changes. Not in the
+kept-store stamp.
+
+Origin and credit: waveydude, patch 0924 ("Keep retrying a refused texture upload instead of
+giving the image up") and headless/upload_retry.h, commit 2ca0fdb.
+---
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index c54e7d3..8082a3f 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -4646,10 +4646,13 @@ void TextureCache<P>::UploadLater(Image& image) {
+     // then 128 frames (RefreshContents skips the image until then), and with
+     // EDEN_NX2_UPLOAD_MAX_RETRIES=<n> the image is given up at its n-th refusal in a row: drawn
+     // with what it holds until the guest writes it again. Off: as before (no wait, no limit).
++    // 0665 (waveydude's 0924): no limit unless EDEN_NX2_UPLOAD_MAX_RETRIES asks for one. An image
++    // given up for good stays black until the game writes it again, and under a long shortage
++    // that was every waiting image (~630 frames in); now it is tried every 128 frames at most.
+     if (UploadBackoff()) {
+         image.upload_fail_count = UploadRetry::NextFailCount(image.upload_fail_count);
+         static const u32 max_retries =
+-            UploadRetry::ReadMaxRetries(std::getenv("EDEN_NX2_UPLOAD_MAX_RETRIES"), 8);
++            UploadRetry::ReadMaxRetries(std::getenv("EDEN_NX2_UPLOAD_MAX_RETRIES"), 0);
+         if (UploadRetry::GiveUp(image.upload_fail_count, max_retries)) {
+             if (const char* value = std::getenv("EDEN_NX2_BAD_ALLOC_ENDS"); value && value[0] == '1') {
+                 throw std::bad_alloc{};
+diff --git a/src/video_core/texture_cache/upload_retry.h b/src/video_core/texture_cache/upload_retry.h
+index ca557b4..ab4cee0 100644
+--- a/src/video_core/texture_cache/upload_retry.h
++++ b/src/video_core/texture_cache/upload_retry.h
+@@ -23,7 +23,8 @@ constexpr std::uint64_t BackoffFrames(std::uint32_t fail_count) {
+ }
+ 
+ /// EDEN_NX2_UPLOAD_MAX_RETRIES as text: the refusals in a row after which the image is given up.
+-/// No text: `unset`. "0", or text that does not start with a digit: 0, never given up.
++/// No text: `unset` (0665: UploadLater passes 0, no limit, as waveydude's 0924; 0664 passed his
++/// 0919's 8). "0", or text that does not start with a digit: 0, never given up.
+ inline std::uint32_t ReadMaxRetries(const char* text, std::uint32_t unset) {
+     if (text == nullptr) {
+         return unset;

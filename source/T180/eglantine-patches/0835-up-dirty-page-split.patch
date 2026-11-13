@@ -1,0 +1,92 @@
+From: EglantinePS5
+Subject: [PATCH] up: the dirty-write tracker collects a guest write a 2 KiB page at a time (lost-write fix, EDEN_UP_DIRTY_PAGE_SPLIT, on by default, "0" turns it off)
+
+Upstream: zortos293/Lichii 5e42857 (PR #1586, the "GPUDirtyMemoryManager collects a write a 2 KiB
+page at a time" part) and 26bf0e1 (PR #1591, std::min<size_t> so it builds with clang), both by
+Zortos (zortos293) with capy-ai; first written as 83411aa on egla146/micro. Only the
+core/gpu_dirty_memory_manager.h page split is taken; the rest of #1586 (MayHavePending, the BACKX
+verify counts, the vertex input cache, the fast-draw clock, uniform streaks, the break counter) is
+not in this patch.
+
+What: GPUDirtyMemoryManager::Collect (the list of guest CPU writes to GPU-cached memory that
+GPU::InvalidateGPUCache applies) keeps one transform per 2 KiB page with one bit per 64 bytes. A
+write that ran past its page end built its mask with a shift of 32 or more (undefined; on x86 and
+arm64 the count wraps), so the mask came out short or empty. The part past the page, or the whole
+write, was then never gathered: the buffer or texture cache keeps the older bytes (a stale buffer
+or a wrong picture) until something else touches those 64-byte blocks. Our block writes
+(Memory::WriteBlock and friends, HandleRasterizerWrite) hand it up to a whole 4 KiB guest page at
+once, so every block write over 2 KiB, and any write that straddles a 2 KiB boundary, hits it.
+Host check of the header (Mac clang -O2, scratch only): with "0", 600+1960 bytes lose all 31
+blocks, 4096 bytes from a page start lose the upper 32 of 64, a 2-byte write at offset 2047 loses
+both blocks; with the split nothing is lost in 8 cases.
+Now Collect hands each page's part to CollectInPage (the old body). Our Collect returns whether it
+stored anything (EDEN_UP_L1028_ASYNC_READBACK / EDEN_UP_FRITCHII_DOWNLOAD_LANDING fence only then):
+with the split, whether any page's part stored anything.
+
+Default ON: a pure fix. A write inside one page (nearly all) takes the loop once: a compare and a
+subtraction more per collected write, and one cached switch test. A crossing write now makes one
+transform per page (it may push the older one to back_buffer under the lock, as any write to a
+new page does): that is the work the lost part needed all along.
+EDEN_UP_DIRTY_PAGE_SPLIT=0 (exact "0"): the old single transform, for an A/B only.
+
+---
+diff --git a/src/core/gpu_dirty_memory_manager.h b/src/core/gpu_dirty_memory_manager.h
+index 34c20aac8e..fbda4e8042 100644
+--- a/src/core/gpu_dirty_memory_manager.h
++++ b/src/core/gpu_dirty_memory_manager.h
+@@ -106,14 +106,46 @@ public:
+         return on;
+     }
+ 
++    /// EDEN_UP_DIRTY_PAGE_SPLIT (zortos293/Lichii 5e42857 + 26bf0e1, #1586 + #1591, by Zortos
++    /// with capy-ai): on unless exactly "0". A transform covers one 2 KiB page with one bit per 64
++    /// bytes; Collect now hands a write that runs past its page to CollectInPage a page at a
++    /// time. "0": the old single transform, whose mask shifts by 32 or more for such a write and
++    /// can come out empty or short (the write, or its part past the page, is never gathered).
++    [[nodiscard]] static bool SplitAtPages() {
++        static const bool on = [] {
++            const char* const value = std::getenv("EDEN_UP_DIRTY_PAGE_SPLIT");
++            return !(value != nullptr && value[0] == '0' && value[1] == '\0');
++        }();
++        return on;
++    }
++
+     /// Returns whether it stored anything: false when the write's bits were already collected
+-    /// (EDEN_UP_L1028_ASYNC_READBACK skips its landing check then, see Core::Memory).
++    /// (EDEN_UP_L1028_ASYNC_READBACK skips its landing check then, see Core::Memory). With the
++    /// page split: whether any page's part stored anything.
+     bool Collect(PAddr address, size_t size) {
+         if (BankFlagPages()) {
+             // Set before the write's bytes land: a bank bind that takes the flag marks the page
+             // again at the bank's next bind (BufferCache::Nx2BankFlagPages).
+             CollectedWritePages().Mark(address, size);
+         }
++        if (!SplitAtPages()) [[unlikely]] {
++            return CollectInPage(address, size);
++        }
++        // A write inside one page (nearly all) takes the loop once.
++        bool stored = false;
++        while (size != 0) {
++            const size_t in_page = (std::min<size_t>)(size, page_size - (address & page_mask));
++            stored = CollectInPage(address, in_page) || stored;
++            address += in_page;
++            size -= in_page;
++        }
++        return stored;
++    }
++
++private:
++    /// The old body of Collect. With the page split [address, address + size) lies in one page
++    /// and size is not 0, so the mask has bits.
++    bool CollectInPage(PAddr address, size_t size) {
+         TransformAddress t = BuildTransform(address, size);
+         TransformAddress tmp, original;
+         do {
+@@ -141,6 +173,7 @@ public:
+         return true;
+     }
+ 
++public:
+     /// EDEN_UP_HELD_VS_DOWNLOAD: moves on with each Gather. A page the core reported to the GPU
+     /// before must be reported again on its next write: the write held back for it has been
+     /// applied. Read after Collect, it tells whether the write went into the list after a Gather.

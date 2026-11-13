@@ -1,0 +1,397 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_GPU_BADALLOC_BACKSTOP=1: a std::bad_alloc out of one engine method call on the GPU threads is caught, counted, the heap trimmed and the next method runs; off as before
+
+T178a. With the switch (exact "1"; off without it): the split's back (GpuSplit::BackLoop runs
+each ring entry through ExecuteCaught) and the single-thread path (DmaPusher::CallMethod and
+CallMultiMethod, the engine call) catch a std::bad_alloc from one entry / one engine call, print
+EDEN_UP_GPU_BADALLOC (where=back|single|dma, method, count, KiB eden_heap_trim gave back; the
+first 16, then each power of two) and go on with the next. The back skips the entry by the size
+Execute would have returned (EntryWords: the same tests, the constant-buffer and draw.begin runs
+included). MaxwellDMA catches inside Launch instead, so a lost copy still releases its semaphore
+(a game waiting on it would otherwise wait for ever).
+
+What a dropped call can leave inconsistent: the method's own work is lost (a draw is missing for
+that frame, a copy or upload does not land, so a surface can show old bytes until the game writes
+it again), and whatever it changed before the throw stays (registers, cache bookkeeping, dirty
+flags cleared for state it never bound). Limited by: register writes still queued for the engine
+(its method sink) are dropped with the call (a throw in ConsumeSink would otherwise run them
+again), a Maxwell3D marks all of its dirty flags (the next draw binds everything again), a
+deferred function (Call entry) leaves the engine alone. Locks are RAII and let go while the
+exception leaves. After EDEN_UP_GPU_BADALLOC_MAX (default 64) caught throws the next is not caught
+and the session ends as before. Off: each entry runs through Execute and each call bare, as T177
+(one well predicted test of a static bool).
+
+New file video_core/gpu_badalloc_backstop.h (header only). None of the touched files is a
+translation id input and no name is added to TranslationSwitches: KEEPS THE STORE. Not checked on
+the console.
+
+---
+diff --git a/src/video_core/dma_pusher.cpp b/src/video_core/dma_pusher.cpp
+index edf069a1697513ce08ae31319acf1de90d60900a..54ee3ec1416deaec5fe1a161a78148a6c71f62c9 100644
+--- a/src/video_core/dma_pusher.cpp
++++ b/src/video_core/dma_pusher.cpp
+@@ -30,6 +30,7 @@
+ #include "video_core/engines/maxwell_3d.h"
+ #include "video_core/engines/maxwell_dma.h"
+ #include "video_core/gpu.h"
++#include "video_core/gpu_badalloc_backstop.h" // 0921
+ #include "video_core/gpu_split.h"
+ #include "video_core/guest_memory.h"
+ #include "video_core/memory_manager.h"
+@@ -47,6 +48,29 @@ constexpr u32 MacroRegistersStart = 0xE00;
+ constexpr u32 ComputeInline = 0x6D;
+ 
+ namespace {
++// 0921 EDEN_UP_GPU_BADALLOC_BACKSTOP=1, the single-thread path (no split): a std::bad_alloc out
++// of one engine method call is caught, counted and the heap trimmed (gpu_badalloc_backstop.h); the
++// parser goes on with the next method. Register writes left queued go with it, and a Maxwell3D binds
++// all of its state again at the next draw. Off: the call runs bare, as before.
++template <typename Call>
++void CallEngineCaught(Engines::EngineInterface* engine, u32 method, Call&& call) {
++    if (!VideoCommon::GpuBadAllocBackstop::Enabled()) [[likely]] {
++        call();
++        return;
++    }
++    try {
++        call();
++    } catch (const std::bad_alloc&) {
++        if (!VideoCommon::GpuBadAllocBackstop::Absorb("single", method, 0)) {
++            throw;
++        }
++        engine->method_sink.clear();
++        if (engine->hang_engine_type == Engines::EngineTypes::Maxwell3D) {
++            static_cast<Engines::Maxwell3D*>(engine)->dirty.flags.set();
++        }
++    }
++}
++
+ // Compute dispatches and DMA copies write the command lists ReadGpuWrittenCommands reads. The
+ // register writes that set them up only store a value: marking those too made every list fetch
+ // after one wait for all the work queued before it (draws included).
+@@ -1750,9 +1774,11 @@ void DmaPusher::CallMethod(u32 argument) {
+             subchannel->method_sink.emplace_back(dma_state.method, argument);
+         } else {
+             VideoCommon::Nx2Profile::Scope method_scope{VideoCommon::Nx2Profile::Zone::Method};
+-            subchannel->ConsumeSink(system);
+-            subchannel->current_dma_segment = dma_state.dma_get + dma_state.dma_word_offset;
+-            subchannel->CallMethod(system, dma_state.method, argument, dma_state.is_last_call);
++            CallEngineCaught(subchannel, dma_state.method, [&] {
++                subchannel->ConsumeSink(system);
++                subchannel->current_dma_segment = dma_state.dma_get + dma_state.dma_word_offset;
++                subchannel->CallMethod(system, dma_state.method, argument, dma_state.is_last_call);
++            });
+         }
+     }
+ }
+@@ -1840,9 +1866,12 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
+             return;
+         }
+         VideoCommon::Nx2Profile::Scope method_scope{VideoCommon::Nx2Profile::Zone::Method};
+-        subchannel->ConsumeSink(system);
+-        subchannel->current_dma_segment = dma_state.dma_get + dma_state.dma_word_offset;
+-        subchannel->CallMultiMethod(system, dma_state.method, base_start, num_methods, dma_state.method_count);
++        CallEngineCaught(subchannel, dma_state.method, [&] {
++            subchannel->ConsumeSink(system);
++            subchannel->current_dma_segment = dma_state.dma_get + dma_state.dma_word_offset;
++            subchannel->CallMultiMethod(system, dma_state.method, base_start, num_methods,
++                                        dma_state.method_count);
++        });
+     }
+ }
+ 
+diff --git a/src/video_core/engines/maxwell_dma.cpp b/src/video_core/engines/maxwell_dma.cpp
+index a688a60852e0e25cbae5430225b58be2ed7e311d..ee307356d5050a07052487411ea9aa6be746ba2b 100644
+--- a/src/video_core/engines/maxwell_dma.cpp
++++ b/src/video_core/engines/maxwell_dma.cpp
+@@ -20,6 +20,7 @@
+ #include "core/core.h"
+ #include "video_core/engines/maxwell_3d.h"
+ #include "video_core/engines/maxwell_dma.h"
++#include "video_core/gpu_badalloc_backstop.h" // 0921
+ #include "video_core/guest_memory.h"
+ #include "video_core/memory_manager.h"
+ #include "video_core/renderer_base.h"
+@@ -373,11 +374,30 @@ void MaxwellDMA::ReserveScratch() {
+     }
+ }
+ 
++// 0921 EDEN_UP_GPU_BADALLOC_BACKSTOP=1: a std::bad_alloc in the copy (after the stripes of 0920
++// could not take it: the accelerated paths' own allocations, a shape stripes do not cover) is
++// caught here; the copy is lost, but its semaphore is still released, or a game waiting on it
++// would wait for ever. Off: LaunchCopy runs bare, as Launch did.
+ void MaxwellDMA::Launch() {
+     if (!scratch_reserve_tried && DmaScratchReserveBytes() != 0) [[unlikely]] {
+         ReserveScratch();
+     }
+-    LaunchCopy();
++    if (!VideoCommon::GpuBadAllocBackstop::Enabled()) [[likely]] {
++        LaunchCopy();
++        return;
++    }
++    semaphore_released = false;
++    try {
++        LaunchCopy();
++    } catch (const std::bad_alloc&) {
++        if (!VideoCommon::GpuBadAllocBackstop::Absorb("dma", regs.reg_array[LaunchDmaMethod],
++                                                      u64{regs.line_length_in} * regs.line_count)) {
++            throw;
++        }
++        if (!semaphore_released) {
++            ReleaseSemaphore();
++        }
++    }
+ }
+ 
+ void MaxwellDMA::LaunchCopy() {
+@@ -747,6 +767,7 @@ void MaxwellDMA::CopyBlockLinearToBlockLinear() {
+ }
+ 
+ void MaxwellDMA::ReleaseSemaphore() {
++    semaphore_released = true; // 0921
+     const auto type = regs.launch_dma.semaphore_type;
+     const GPUVAddr address = regs.semaphore.address;
+     const u32 payload = regs.semaphore.payload;
+diff --git a/src/video_core/engines/maxwell_dma.h b/src/video_core/engines/maxwell_dma.h
+index 4fdabe0feb66872137bb54f9c13b740d7697c7a4..02201bb90b4e8020de0eb1a18bb9312bdf9cbeaa 100644
+--- a/src/video_core/engines/maxwell_dma.h
++++ b/src/video_core/engines/maxwell_dma.h
+@@ -258,7 +258,7 @@ private:
+     /// registers.
+     void Launch();
+ 
+-    /// Launch's work as it was (Launch reserves the scratch first, 0920).
++    /// Launch's work as it was (0921: Launch runs it inside a catch with the backstop on).
+     void LaunchCopy();
+ 
+     /// 0920 EDEN_UP_DMA_SCRATCH_MIB: the read and write scratch reserved once, at the first launch.
+@@ -281,6 +281,7 @@ private:
+     Common::ScratchBuffer<u8> write_buffer;
+     Common::ScratchBuffer<u8> intermediate_buffer;
+     bool scratch_reserve_tried{}; ///< 0920
++    bool semaphore_released{};    ///< 0921: ReleaseSemaphore began for the launch in hand
+ 
+     static constexpr std::size_t NUM_REGS = 0x800;
+     struct Regs {
+diff --git a/src/video_core/gpu_badalloc_backstop.h b/src/video_core/gpu_badalloc_backstop.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..bbc3cbcc827591d1ecc8efb6f872e8f3aaf7fa3e
+--- /dev/null
++++ b/src/video_core/gpu_badalloc_backstop.h
+@@ -0,0 +1,76 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++// 0921 EDEN_UP_GPU_BADALLOC_BACKSTOP=1 (exact "1"; off without it): a std::bad_alloc that
++// escapes one engine method call on a GPU thread (the split's back, GpuSplit::BackLoop, or the
++// single-thread path, DmaPusher::CallMethod/CallMultiMethod) is caught there, counted, the heap is
++// trimmed (eden_heap_trim, the front's, weak), one stderr line is printed (EDEN_UP_GPU_BADALLOC),
++// and the next method runs. Before this, nothing caught it and std::terminate ended the session.
++//
++// What is lost: that one method's work (a copy, a draw, an upload, a macro). What can be left
++// half done: whatever the method changed before the throw (registers, dirty flags cleared for state
++// it had not yet bound, cache bookkeeping). To limit that, register writes still queued for the
++// engine (its method sink) are dropped with the call, and a Maxwell3D marks all of its state dirty,
++// so the next draw binds everything again. MaxwellDMA catches inside Launch instead and still
++// releases the copy's semaphore (a game waiting on it would otherwise wait for ever). Locks are
++// held by RAII objects and let go while the exception leaves. After EDEN_UP_GPU_BADALLOC_MAX
++// (default 64) caught throws the next one is not caught: the session ends as before, so a run
++// that keeps failing does not go on drawing garbage.
++
++#include <atomic>
++#include <cstddef>
++#include <cstdio>
++#include <cstdlib>
++#include <new>
++
++#include "common/common_types.h"
++
++extern "C" std::size_t eden_heap_trim(void) __attribute__((weak));
++
++namespace VideoCommon::GpuBadAllocBackstop {
++
++[[nodiscard]] inline bool Enabled() noexcept {
++    static const bool on = [] {
++        const char* const value = std::getenv("EDEN_UP_GPU_BADALLOC_BACKSTOP");
++        return value != nullptr && value[0] == '1' && value[1] == '\0';
++    }();
++    return on;
++}
++
++[[nodiscard]] inline u64 Limit() noexcept {
++    static const u64 limit = [] {
++        const char* const value = std::getenv("EDEN_UP_GPU_BADALLOC_MAX");
++        if (value == nullptr || value[0] == '\0') {
++            return u64{64};
++        }
++        char* end = nullptr;
++        const unsigned long long parsed = std::strtoull(value, &end, 10);
++        return end != nullptr && *end == '\0' && parsed != 0 ? u64{parsed} : u64{64};
++    }();
++    return limit;
++}
++
++/// In a catch of std::bad_alloc on a GPU thread. Counts, trims the heap, prints a line (the first
++/// 16, then each power of two, and the last). False when the limit is reached: the caller
++/// rethrows and the session ends as it did before the backstop.
++inline bool Absorb(const char* where, u32 method, u64 detail) noexcept {
++    static std::atomic<u64> count{0};
++    const u64 n = count.fetch_add(1, std::memory_order_relaxed) + 1;
++    const bool give_up = n > Limit();
++    const std::size_t trimmed = (!give_up && eden_heap_trim != nullptr) ? eden_heap_trim() : 0;
++    if (n <= 16 || (n & (n - 1)) == 0 || give_up) {
++        std::fprintf(stderr,
++                     "EDEN_UP_GPU_BADALLOC where=%s method=%#x detail=%llu count=%llu "
++                     "trimmed_kib=%llu%s\n",
++                     where, method, static_cast<unsigned long long>(detail),
++                     static_cast<unsigned long long>(n),
++                     static_cast<unsigned long long>(trimmed >> 10),
++                     give_up ? " limit reached: not caught, the session ends as before"
++                             : " dropped, going on");
++    }
++    return !give_up;
++}
++
++} // namespace VideoCommon::GpuBadAllocBackstop
+diff --git a/src/video_core/gpu_split.cpp b/src/video_core/gpu_split.cpp
+index 30c1c7240e4679bfbba4bb56fdfc1d608c6bdc23..24d73550461c3f7052d209538cd4d5057e40cab3 100644
+--- a/src/video_core/gpu_split.cpp
++++ b/src/video_core/gpu_split.cpp
+@@ -27,6 +27,7 @@
+ #include "video_core/engines/engine_interface.h"
+ #include "video_core/engines/maxwell_3d.h"
+ #include "video_core/engines/maxwell_3d.h"
++#include "video_core/gpu_badalloc_backstop.h" // 0921
+ #include "video_core/gpu_split.h"
+ #include "video_core/nx2.h"
+ #include "video_core/nx2_fast_draw.h"
+@@ -1107,6 +1108,91 @@ size_t GpuSplit::Execute(const u64* entry, size_t words) {
+     return 1;
+ }
+ 
++// 0921: what Execute returns for the entry, worked out from the entry alone (the same tests as
++// Execute's, in the same order), for an entry whose run a std::bad_alloc cut short.
++size_t GpuSplit::EntryWords(const u64* entry, size_t words) const {
++    const u64 head = entry[0];
++    switch (static_cast<Kind>(head & 0xf)) {
++    case Kind::Wrap:
++        return 0;
++    case Kind::Engine:
++        return 2;
++    case Kind::Method: {
++        const u32 method = static_cast<u32>((head >> 8) & 0xffff);
++        auto* const engine = back_engine;
++        if (engine != nullptr && engine->batch_constant_words && (head & HasSegment) == 0) {
++            using Tegra::Engines::Maxwell3D;
++            constexpr u32 cb_data = MAXWELL3D_REG_INDEX(const_buffer.buffer);
++            if (method - cb_data < 16) {
++                size_t count = 1;
++                while (count < 64 && count < words) {
++                    const u64 next = entry[count];
++                    const u32 next_method = static_cast<u32>((next >> 8) & 0xffff);
++                    if (static_cast<Kind>(next & 0xf) != Kind::Method ||
++                        (next & HasSegment) != 0 || next_method - cb_data >= 16) {
++                        break;
++                    }
++                    ++count;
++                }
++                if (count > 1) {
++                    return count;
++                }
++            }
++        }
++        using Tegra::Engines::Maxwell3D;
++        if (engine != nullptr && engine->repeat_draw_begin &&
++            method == MAXWELL3D_REG_INDEX(draw.begin) && (head & HasSegment) == 0 && words > 1 &&
++            entry[1] == head) {
++            size_t count = 2;
++            while (count < words && entry[count] == head) {
++                ++count;
++            }
++            return count;
++        }
++        return (head & HasSegment) != 0 ? 2 : 1;
++    }
++    case Kind::Multi: {
++        const u32 amount = static_cast<u32>(head >> 32);
++        const size_t data = (head & HasSegment) != 0 ? 3 : 2;
++        return data + (amount + 1) / 2;
++    }
++    case Kind::Regs:
++    case Kind::CbData:
++        return 1 + static_cast<size_t>((head >> 8) & 0xff);
++    case Kind::Call:
++        return 2 + static_cast<size_t>((head >> 8) & 0xffffff);
++    }
++    return 1;
++}
++
++size_t GpuSplit::ExecuteCaught(const u64* entry, size_t words) {
++    try {
++        return Execute(entry, words);
++    } catch (const std::bad_alloc&) {
++        const u64 head = entry[0];
++        const u32 kind = static_cast<u32>(head & 0xf);
++        const u32 method = kind == static_cast<u32>(Kind::Method) ||
++                                   kind == static_cast<u32>(Kind::Multi)
++                               ? static_cast<u32>((head >> 8) & 0xffff)
++                               : 0;
++        if (!GpuBadAllocBackstop::Absorb("back", method, kind)) {
++            throw;
++        }
++        // A deferred function (Call) is not the engine's: the engine is left alone then.
++        if (auto* const engine = back_engine;
++            engine != nullptr && kind != static_cast<u32>(Kind::Call)) {
++            // Register writes a throw in ConsumeSink left queued would run again with the next
++            // method: drop them with the call. A Maxwell3D binds all of its state again at the
++            // next draw (its dirty flags may have been cleared for state it never bound).
++            engine->method_sink.clear();
++            if (engine->hang_engine_type == Tegra::Engines::EngineTypes::Maxwell3D) {
++                static_cast<Tegra::Engines::Maxwell3D*>(engine)->dirty.flags.set();
++            }
++        }
++        return EntryWords(entry, words);
++    }
++}
++
+ void GpuSplit::BackLoop(std::stop_token stop_token) {
+     Common::SetCurrentThreadName("GPUBack");
+     on_back_thread = true;
+@@ -1123,6 +1209,8 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
+     // zortos293/Lichii #949, as MaybeStart set them before this thread started.
+     const bool feed_on = feed;
+     const bool counting = g_l949_counting;
++    // 0921 EDEN_UP_GPU_BADALLOC_BACKSTOP=1; off, each entry runs through Execute as before.
++    const bool backstop = GpuBadAllocBackstop::Enabled();
+     u64 read_position = 0;
+     while (!stop_token.stop_requested()) {
+         Nx2Profile::Report("GPU back thread");
+@@ -1202,8 +1290,9 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
+                     back_entry_call.store(ring[index + 1], std::memory_order_relaxed);
+                 }
+             }
+-            const size_t size =
+-                Execute(&ring[index], std::min<u64>(available - read_position, RingWords - index));
++            const size_t entry_words = std::min<u64>(available - read_position, RingWords - index);
++            const size_t size = backstop ? ExecuteCaught(&ring[index], entry_words)
++                                         : Execute(&ring[index], entry_words);
+             read_position += size != 0 ? size : RingWords - index;
+             if (hook_requested.load(std::memory_order_relaxed) &&
+                 idle_hook != nullptr) [[unlikely]] {
+diff --git a/src/video_core/gpu_split.h b/src/video_core/gpu_split.h
+index 95651b875826c67af60348c1d2da1e9f3f8daeab..9ee1bd8977bada408c4a8d0f8c5374bd8a20e7cb 100644
+--- a/src/video_core/gpu_split.h
++++ b/src/video_core/gpu_split.h
+@@ -1036,6 +1036,11 @@ private:
+     void BackLoop(std::stop_token stop_token);
+     /// Runs the entry at `entry` (of the `words` published before the ring's end), returns its size.
+     size_t Execute(const u64* entry, size_t words);
++    /// 0921 EDEN_UP_GPU_BADALLOC_BACKSTOP=1: Execute, with a std::bad_alloc that leaves it caught
++    /// (gpu_badalloc_backstop.h); the entry is skipped by the size Execute would have returned.
++    size_t ExecuteCaught(const u64* entry, size_t words);
++    /// The words Execute takes for the entry at `entry`, without running it (0921).
++    size_t EntryWords(const u64* entry, size_t words) const;
+ 
+     Core::System* system{};
+     bool active{};

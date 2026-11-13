@@ -1,0 +1,289 @@
+From: EglantinePS5
+Subject: [PATCH] up: cold hints only while the host is short of RAM; on the PS5 that is never, so the upload notes, page walks and region scans stop (zortos293/Lichii #1581 e633e165f7), off by default
+
+Switch: EDEN_UP_COLD_HINT_GATE=1 (exact "1", read once, at the first upload or cold hint). Off, or
+any other value: exactly T151. On, the first use logs "EDEN_UP_COLD_HINT_GATE: cold hints only
+while the host is short of RAM (available-memory figure on this host: none, so never)" (LOG_INFO,
+Common_Memory). On the PS5 it should say "none, so never".
+
+What: the texture and buffer caches note every upload of 64 KiB / 256 KiB and more. Every 600
+frames, on the GPU thread, TextureCache::TickFrame and BufferCache::TickFrame hand each noted range
+to DeviceMemoryManager::HintCold, which walks the range page by page, builds a list of runs, makes
+the "DeviceMemory:ColdHint" worker thread on first use and queues the runs to it. Every 30 s the
+nx2:ColdHint thread takes the gsv region lock and builds a list of every block of every GPU-only
+region (the game's texture pools, GBs), then hints each one. At the end of all that,
+HostMemory::HintCold does nothing on the PS5: its body is VirtualUnlock on Windows, MADV_PAGEOUT on
+Linux, and nothing else (host_memory.cpp, checked). So on our console all of it is work for nothing,
+some of it on the GPU thread and under a lock guest map calls also take, plus short allocations at
+the moments memory is lowest.
+
+Upstream (#1581) makes both HintCold paths return unless less than a quarter of the RAM, and less
+than 4 GiB, is available (Common::GetAvailablePhysicalMemory, read at most once a second). Its
+available-memory read has a body only for Windows and Linux; elsewhere it returns 0, which counts
+as "not short", so on a host like ours upstream never hints. This patch takes that code as is
+(memory_detect.h/.cpp, the two early returns) behind the switch, and adds one thing of ours:
+with the switch on, on a host whose HintCold does nothing, the two caches no longer note uploads
+at all (Common::ColdHintRecord), so the range lists and the sparse-segment walk at upload stop too.
+On Windows and Linux the notes are kept and only the hint is gated, as upstream.
+
+Why a switch and not unconditional: it changes nothing a player can see on the PS5 (the hint is a
+no-op here), but it removes a thread and moves work and allocations, so it gets its own A/B like
+any memory change. Off cost: one cached bool test per HintCold call (every 600 frames per range,
+every 30 s per region pass) and one non-inline call returning a cached bool per noted upload.
+
+Test: memory census (EDEN_UP_MEM_CENSUS=1) at the big loads, on against off: lowest free memory
+not lower, no new hitch at the 600-frame ticks (frame times every 20 s at 30 fps). The start log
+must have the line above. A thread list (if a probe gives one) should lack DeviceMemory:ColdHint.
+Do not expect an fps change; the walk is small. What it can show: fewer short allocations at a load.
+
+Not taken from upstream: its unit test (our core has no src/tests).
+
+Origin and credit: zortos293 (Zortos), zortos293/Lichii PR #1581, commit e633e165f7 (13 Nov 2026),
+ported there from ThatGuyMcd/Lichii-TGM c3fa9cb010 by Julius Bairaktaris (cherry-pick of
+eb19f75dfb; idea from Fritchii EXP8 by Frizti), compared there with Eglantine nx2-experimental
+3b87091034 / 42fdfac891 by kraibse (PR #825). The record-side skip is ours.
+---
+diff --git a/src/common/memory_detect.cpp b/src/common/memory_detect.cpp
+index 86a3abc..5fc41cb 100644
+--- a/src/common/memory_detect.cpp
++++ b/src/common/memory_detect.cpp
+@@ -12,11 +12,19 @@
+ #include <sys/sysctl.h>
+ #elif defined(__linux__)
+ #include <sys/sysinfo.h>
++#include <sys/mman.h>
+ #else
+ #include <unistd.h>
+ #endif
+ #endif
+ 
++#include <atomic>
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++
++#include "common/logging.h"
+ #include "common/memory_detect.h"
+ 
+ namespace Common {
+@@ -69,4 +77,75 @@ const MemoryInfo& GetMemInfo() {
+     return mem_info;
+ }
+ 
++// EDEN_UP_COLD_HINT_GATE (0755): zortos293/Lichii #1581 (e633e165f7, ported there from
++// ThatGuyMcd/Lichii-TGM c3fa9cb010 by Julius Bairaktaris; idea from Fritchii EXP8 by Frizti).
++u64 GetAvailablePhysicalMemory() {
++#ifdef _WIN32
++    MEMORYSTATUSEX memorystatus;
++    memorystatus.dwLength = sizeof(memorystatus);
++    if (!GlobalMemoryStatusEx(&memorystatus)) {
++        return 0;
++    }
++    return memorystatus.ullAvailPhys;
++#elif defined(__linux__)
++    // MemAvailable counts the page cache the kernel can drop, which sysinfo's freeram doesn't.
++    std::FILE* const file = std::fopen("/proc/meminfo", "r");
++    if (file == nullptr) {
++        return 0;
++    }
++    u64 available_kib = 0;
++    char line[128];
++    while (std::fgets(line, sizeof(line), file) != nullptr) {
++        unsigned long long value = 0;
++        if (std::sscanf(line, "MemAvailable: %llu kB", &value) == 1) {
++            available_kib = value;
++            break;
++        }
++    }
++    std::fclose(file);
++    return available_kib * 1024;
++#else
++    return 0;
++#endif
++}
++
++bool IsHostLowOnMemory() {
++    using Clock = std::chrono::steady_clock;
++    static std::atomic<Clock::rep> checked_at{};
++    static std::atomic<bool> low{};
++    const Clock::rep now = Clock::now().time_since_epoch().count();
++    const Clock::rep last = checked_at.load(std::memory_order_relaxed);
++    if (last == 0 || now - last >= Clock::duration{std::chrono::seconds{1}}.count()) {
++        checked_at.store(now, std::memory_order_relaxed);
++        low.store(IsLowOnMemory(GetAvailablePhysicalMemory(), GetMemInfo().TotalPhysicalMemory),
++                  std::memory_order_relaxed);
++    }
++    return low.load(std::memory_order_relaxed);
++}
++
++bool ColdHintGate() {
++    static const bool enabled = [] {
++        const char* const value = std::getenv("EDEN_UP_COLD_HINT_GATE");
++        const bool on = value != nullptr && std::strcmp(value, "1") == 0;
++        if (on) {
++            LOG_INFO(Common_Memory,
++                     "EDEN_UP_COLD_HINT_GATE: cold hints only while the host is short of RAM "
++                     "(available-memory figure on this host: {})",
++                     GetAvailablePhysicalMemory() != 0 ? "yes" : "none, so never");
++        }
++        return on;
++    }();
++    return enabled;
++}
++
++bool ColdHintRecord() {
++    // Same platform test as HostMemory::HintCold (host_memory.cpp): keep the two in step.
++#if defined(_WIN32) || (defined(__linux__) && defined(MADV_PAGEOUT))
++    return true;
++#else
++    static const bool record = !ColdHintGate();
++    return record;
++#endif
++}
++
+ } // namespace Common
+diff --git a/src/common/memory_detect.h b/src/common/memory_detect.h
+index c8f239a..d4dc902 100644
+--- a/src/common/memory_detect.h
++++ b/src/common/memory_detect.h
+@@ -3,6 +3,8 @@
+ 
+ #pragma once
+ 
++#include <algorithm>
++
+ #include "common/common_types.h"
+ 
+ namespace Common {
+@@ -18,4 +20,26 @@ struct MemoryInfo {
+  */
+ [[nodiscard]] const MemoryInfo& GetMemInfo();
+ 
++/// Physical memory the host can hand out now without paging anything out (0 when unknown).
++/// EDEN_UP_COLD_HINT_GATE (0755, zortos293/Lichii #1581 e633e165f7).
++[[nodiscard]] u64 GetAvailablePhysicalMemory();
++
++/// Whether the host is short of RAM: less than a quarter of it, and less than 4 GiB, free.
++[[nodiscard]] constexpr bool IsLowOnMemory(u64 available, u64 total) {
++    return available != 0 && available < (std::min<u64>)(total / 4, u64{4} << 30);
++}
++
++/// IsLowOnMemory for this host, read again at most once a second. Always false where the host
++/// gives no available-memory figure (the PS5 build).
++[[nodiscard]] bool IsHostLowOnMemory();
++
++/// EDEN_UP_COLD_HINT_GATE=1 (exact "1", read once): cold hints only while the host is short of
++/// RAM (Lichii #1581). Off: every upload is hinted cold as before.
++[[nodiscard]] bool ColdHintGate();
++
++/// Whether the texture and buffer caches should note uploads for a later cold hint. False only
++/// with EDEN_UP_COLD_HINT_GATE=1 on a host whose HostMemory::HintCold does nothing (the PS5
++/// build: neither VirtualUnlock nor MADV_PAGEOUT), where the note could never be used.
++[[nodiscard]] bool ColdHintRecord();
++
+ } // namespace Common
+diff --git a/src/core/device_memory_manager.inc b/src/core/device_memory_manager.inc
+index a370858..61461de 100644
+--- a/src/core/device_memory_manager.inc
++++ b/src/core/device_memory_manager.inc
+@@ -19,6 +19,7 @@
+ #include "common/alignment.h"
+ #include "common/assert.h"
+ #include "common/div_ceil.h"
++#include "common/memory_detect.h"
+ #include "common/paged_scalar.h"
+ #include "common/scope_exit.h"
+ #include "common/settings.h"
+@@ -187,6 +188,13 @@ DeviceMemoryManager<Traits>::~DeviceMemoryManager() = default;
+ 
+ template <typename Traits>
+ void DeviceMemoryManager<Traits>::HintCold(DAddr address, size_t size) {
++    // EDEN_UP_COLD_HINT_GATE (0755, Lichii #1581): the hint takes the pages out of the working
++    // set at once (VirtualUnlock), whether or not the host needs the RAM. Only when RAM is short.
++    // On the PS5 the hint itself does nothing (HostMemory::HintCold), so this only saves the
++    // page walk, the run list and the DeviceMemory:ColdHint thread.
++    if (Common::ColdHintGate() && !Common::IsHostLowOnMemory()) {
++        return;
++    }
+     struct Run {
+         u64 physical_offset;
+         VAddr virtual_address; ///< 0: no CPU mapping known
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index 510d97a..2f4904f 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -30,6 +30,7 @@
+ 
+ #include "common/alignment.h"
+ #include "common/div_ceil.h"
++#include "common/memory_detect.h"
+ #include "common/frame_wait_progress.h"
+ #include "common/game_presets.h"
+ #include "common/live_switch.h"
+@@ -1632,6 +1633,11 @@ private:
+     // is read again only when the texture cache builds an image over it, so the OS may compress or
+     // page it out before anything else. Last member: stops before the regions are destroyed.
+     void HintColdBacking() {
++        // EDEN_UP_COLD_HINT_GATE (0755, Lichii #1581): only while the host is short of RAM, as
++        // for uploads (DeviceMemoryManager::HintCold). Saves the region lock and the block list.
++        if (Common::ColdHintGate() && !Common::IsHostLowOnMemory()) {
++            return;
++        }
+         struct Range {
+             u64 physical_offset;
+             u64 virtual_address;
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index de7be13..64e9ac4 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -8,6 +8,7 @@
+ 
+ #include "common/cityhash.h"
+ #include "common/live_switch.h"
++#include "common/memory_detect.h"
+ #include "common/pe_switch.h"
+ #include "video_core/readback_wait.h"
+ #include <algorithm>
+@@ -5278,7 +5279,7 @@ void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
+             ReadGuestForBuffer(device_addr, src_pointer, copy.size, true);
+             // Large uploads are mostly geometry the host GPU now has its own copy of: TickFrame
+             // marks their guest memory cold (see TextureCache::RefreshContents).
+-            if (copy.size >= 256_KiB) {
++            if (copy.size >= 256_KiB && Common::ColdHintRecord()) { // 0755
+                 uploaded_buffer_ranges.emplace_back(device_addr, copy.size);
+             }
+             // Apply the staging offset
+@@ -5331,7 +5332,7 @@ void BufferCache<P>::UploadInPieces([[maybe_unused]] Buffer& buffer,
+                 }
+                 done += size;
+             }
+-            if (copy.size >= 256_KiB) {
++            if (copy.size >= 256_KiB && Common::ColdHintRecord()) { // 0755
+                 uploaded_buffer_ranges.emplace_back(device_addr, copy.size);
+             }
+         }
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 8082a3f..9b25848 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -9,6 +9,7 @@
+ #include "common/pe_switch.h"
+ #include "common/frame_wait_progress.h"
+ #include "common/live_switch.h"
++#include "common/memory_detect.h"
+ #include "video_core/image_pages.h"
+ #include "video_core/astc_policy.h"
+ #include <algorithm>
+@@ -4608,8 +4609,10 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
+     // marks it cold, so the OS pages it out before anything else when it needs RAM (title 1
+     // streams several GB of textures through it).
+     constexpr u64 ColdHintMinBytes = 64_KiB;
++    // EDEN_UP_COLD_HINT_GATE (0755): not noted where the hint can never run (Common::ColdHintRecord).
+     if (image.guest_size_bytes >= ColdHintMinBytes &&
+-        False(image.flags & (ImageFlagBits::GpuModified | ImageFlagBits::CpuModified))) {
++        False(image.flags & (ImageFlagBits::GpuModified | ImageFlagBits::CpuModified)) &&
++        Common::ColdHintRecord()) {
+         if (True(image.flags & ImageFlagBits::Sparse)) {
+             // Non-contiguous: each mapped piece (title 1 maps its own memory into these).
+             ForEachSparseSegment(image, [&](GPUVAddr, DAddr address, size_t size) {

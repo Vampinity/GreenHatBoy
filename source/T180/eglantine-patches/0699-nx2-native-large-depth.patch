@@ -1,0 +1,56 @@
+From: EglantinePS5
+Subject: [PATCH] nx2: below 1x a huge D16 depth target stays native instead of getting a second, scaled allocation (waveydude's 0912 part, EDEN_NX2_NATIVE_LARGE_DEPTH), off by default
+
+What: below 1x (resolution_info.downscale) a target that is scaled keeps its native allocation as
+well. The game's 12288x12288 D16 shadow map (288 MiB native; the largest live image in every
+report) then gets a second one: at 0.75x 9216x9216, 162 MiB. The settings plan keeps a 0.75x arm
+for memory, so this is memory at that arm.
+
+With EDEN_NX2_NATIVE_LARGE_DEPTH=1 (exact "1", read once): while downscaling, a D16_UNORM image of
+8192x8192 or more is never rescaled (ImageCanRescale says no, and JoinImages does not rescale a
+join that makes one). It is drawn at its native size: the shadow is as sharp as at 1x, the draw
+into it costs what it costs at 1x. At 1x and above nothing changes (downscale is false).
+
+Changed from his: comment only.
+
+Off: one static bool in ImageCanRescale and per JoinImages; nothing else. Not in the kept-store
+stamp.
+
+Origin and credit: waveydude, ocarina-private patch 0912 ("T120: integrate Build O and add idle
+texture pressure cleanup"), commits dc8796d and 3db885a.
+---
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 67ed95c..f1d30c5 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -5273,9 +5273,20 @@ ImageId TextureCache<P>::FindImage(const ImageInfo& info, GPUVAddr gpu_addr,
+     return found(*std::ranges::max_element(image_ids, image_ids_compare));
+ }
+ 
++// EDEN_NX2_NATIVE_LARGE_DEPTH=1 (exact "1"; waveydude's 0912): below 1x resolution a scaled
++// target keeps its native allocation too, so a D16 depth target of 8192x8192 or more (Ocarina's
++// 12288x12288 shadow map: 288 MiB) gets a second one (at 0.75x 9216x9216, 162 MiB). With the
++// switch such a target stays native and unscaled. Only while downscaling; 1x and up as before.
++[[nodiscard]] inline bool KeepLargeDepthNative(const ImageInfo& info) {
++    static const bool enabled = Common::PeSwitch("EDEN_NX2_NATIVE_LARGE_DEPTH");
++    return enabled && Settings::values.resolution_info.downscale &&
++           info.format == VideoCore::Surface::PixelFormat::D16_UNORM &&
++           info.size.width >= 8192 && info.size.height >= 8192;
++}
++
+ template <class P>
+ bool TextureCache<P>::ImageCanRescale(ImageBase& image) {
+-    if (!image.info.rescaleable) {
++    if (!image.info.rescaleable || KeepLargeDepthNative(image.info)) {
+         return false;
+     }
+     if (Settings::values.resolution_info.downscale && !image.info.downscaleable) {
+@@ -6308,7 +6319,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
+     ForEachSparseImageInRegion(channel_state->gpu_memory.GetID(), gpu_addr, size_bytes,
+                                region_check_gpu);
+ 
+-    bool can_rescale = info.rescaleable;
++    bool can_rescale = info.rescaleable && !KeepLargeDepthNative(new_info);
+     bool any_rescaled = false;
+     for (const auto& copy : join_copies_to_do) {
+         if (!can_rescale) {

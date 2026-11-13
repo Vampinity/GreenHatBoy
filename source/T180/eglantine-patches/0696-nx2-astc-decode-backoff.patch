@@ -1,0 +1,155 @@
+From: EglantinePS5
+Subject: [PATCH] nx2: after an ASTC decode image finds no memory, no new one is asked for for 8-64 frames (waveydude's 0923, EDEN_NX2_ASTC_DECODE_BACKOFF), off by default
+
+What: an ASTC texture is decoded on the GPU into a temporary RGBA8 storage image (TranscodeAstcToBcn,
+and TranscodeAstcBatched with EDEN_UP_ASTC_BATCH_MIB). When memory is short every ASTC texture the
+frame meets asks the allocator for its own decode image; each ask that fails is a VMA attempt and a
+driver refusal and, with EDEN_NX2_TRANSCODE_WAIT=1, an upload that goes back for later anyway. At an area load under 0 MiB
+free that is dozens of failed requests a frame on the GPU thread.
+
+With EDEN_NX2_ASTC_DECODE_BACKOFF=1 (exact "1", read once): after a new decode image is refused
+(none made, or with TRANSCODE_WAIT an unbacked one), no new decode image is asked for until 8, 16,
+32, then 64 frames have passed (the n-th refusal in a row waits 2^min(n+2,6) frames). Meanwhile an
+upload that needs a new one is refused as TRANSCODE_WAIT refuses it (upload_refused: the image stays
+CPU-modified and is tried again at its next use; with 0664's EDEN_NX2_UPLOAD_BACKOFF that use waits
+too). A decode image of the same shape that is free for reuse is still taken. One made resets the
+count. A Render_Vulkan warning at the 1st, 2nd, 4th, 8th ... refusal in a row.
+
+Use it with EDEN_NX2_TRANSCODE_WAIT=1 (our env has it). Without it an upload held back here
+is still refused and redone later; it is never drawn from an empty decode.
+
+Changed from his: the switch (his patch has none: always on); his NoteAstcDecodeStorageRefusal /
+Success are one NoteAstcDecodeStorage(bool); his "upload_refused = true" inside the refusal note is
+left where the code already sets it; the frame counter is runtime_frame (his runtime_frame_index);
+his min(.., 64) is dropped (the shift already stops at 64).
+
+Off: one u64 increment per frame (runtime_frame, unconditional, read only by the switch), one test
+of a static bool per new decode image (none for a reused one); no wait, no line. Not in the
+kept-store stamp.
+
+Origin and credit: waveydude, ocarina-private patch 0923 ("Back off repeated ASTC decode storage
+allocation failures"), commit 6001e12.
+
+T153 integration review: NoteAstcDecodeStorage is noexcept and runs exactly when memory was
+refused; its LOG_WARNING formats a std::string, so a std::bad_alloc there would end the process.
+The line is now wrapped in a std::bad_alloc catch (a line that finds no memory is left out).
+---
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index a17273b..e207555 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -3358,6 +3358,7 @@ void TextureCacheRuntime::ReleaseMsaaScratchImage(VkImage image) {
+ }
+ 
+ void TextureCacheRuntime::TickFrame() {
++    ++runtime_frame;
+     static constexpr u32 MAX_UNUSED_SCRATCH_FRAMES = 60;
+     LogTrim2d();
+     // EDEN_NX2_CLEAN_BY_TIME=1: the unused-frame counters below (decode images, copy buffers, MSAA
+@@ -5546,6 +5547,41 @@ void TextureCacheRuntime::AccelerateImageUploadLayers(
+     astc_decoder_pass->AssembleLayers(image, map, swizzles, layers);
+ }
+ 
++namespace {
++[[nodiscard]] bool AstcDecodeBackoff() {
++    static const bool enabled = Common::PeSwitch("EDEN_NX2_ASTC_DECODE_BACKOFF");
++    return enabled;
++}
++} // Anonymous namespace
++
++bool TextureCacheRuntime::AstcDecodeStorageHeldBack() const noexcept {
++    return AstcDecodeBackoff() && runtime_frame < astc_decode_retry_frame;
++}
++
++void TextureCacheRuntime::NoteAstcDecodeStorage(bool made) noexcept {
++    if (!AstcDecodeBackoff()) {
++        return;
++    }
++    if (made) {
++        astc_decode_fail_count = 0;
++        astc_decode_retry_frame = 0;
++        return;
++    }
++    ++astc_decode_fail_count;
++    const u64 backoff_frames = u64{1} << (std::min<u32>)(astc_decode_fail_count + 2, 6);
++    astc_decode_retry_frame = runtime_frame + backoff_frames;
++    if ((astc_decode_fail_count & (astc_decode_fail_count - 1)) == 0) {
++        // noexcept, and memory is short here: a line that finds none is left out.
++        try {
++            LOG_WARNING(Render_Vulkan,
++                        "EDEN_NX2_ASTC_DECODE_BACKOFF: an ASTC decode image found no memory ({} "
++                        "times in a row): no new one for {} frames",
++                        astc_decode_fail_count, backoff_frames);
++        } catch (const std::bad_alloc&) {
++        }
++    }
++}
++
+ void TextureCacheRuntime::TranscodeAstcToBcn(
+     Image& image, const StagingBufferRef& map,
+     std::span<const VideoCommon::SwizzleParameters> swizzles) {
+@@ -5643,6 +5679,10 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
+         pending = std::move(*reusable);
+         free_transcodes.erase(reusable);
+     } else {
++        if (AstcDecodeStorageHeldBack()) {
++            upload_refused = true;
++            return;
++        }
+         // With no memory the allocator gives an image with nothing bound (or, with no room for
+         // that either, throws).
+         vk::Image decode_image;
+@@ -5670,9 +5710,11 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
+             }
+         }
+         if (!decode_image || (wait_for_memory && decode_image.IsUnbacked())) {
++            NoteAstcDecodeStorage(false);
+             upload_refused = true;
+             return;
+         }
++        NoteAstcDecodeStorage(true);
+         pending = PendingTranscode{
+             .tick = 0,
+             .image = std::move(decode_image),
+@@ -5822,12 +5864,18 @@ void TextureCacheRuntime::TranscodeAstcBatched(
+         scratch = std::move(*reusable);
+         free_transcodes.erase(reusable);
+     } else {
++        if (AstcDecodeStorageHeldBack()) {
++            upload_refused = true;
++            return;
++        }
+         vk::Image scratch_image = make_decode_image(plan.scratch_width, plan.scratch_height,
+                                                     plan.scratch_levels, plan.scratch_layers);
+         if (!scratch_image || (wait_for_memory && scratch_image.IsUnbacked())) {
++            NoteAstcDecodeStorage(false);
+             upload_refused = true;
+             return;
+         }
++        NoteAstcDecodeStorage(true);
+         scratch = PendingTranscode{
+             .tick = 0,
+             .image = std::move(scratch_image),
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.h b/src/video_core/renderer_vulkan/vk_texture_cache.h
+index 66c6928..b887404 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.h
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.h
+@@ -336,6 +336,18 @@ public:
+     /// See TakeUploadRefused.
+     bool upload_refused = false;
+ 
++    /// EDEN_NX2_ASTC_DECODE_BACKOFF=1 (exact "1"; waveydude's 0923): after a decode image for an
++    /// ASTC texture found no memory, no new one is asked for until runtime_frame passes
++    /// astc_decode_retry_frame (8, 16, 32, then 64 frames after the n-th refusal in a row); the
++    /// upload is refused as TRANSCODE_WAIT refuses it and tried again at the image's next use. A
++    /// decode image that is made resets the count. Off: never read or written but runtime_frame.
++    u64 runtime_frame = 0;
++    u64 astc_decode_retry_frame = 0;
++    u32 astc_decode_fail_count = 0;
++
++    [[nodiscard]] bool AstcDecodeStorageHeldBack() const noexcept;
++    void NoteAstcDecodeStorage(bool made) noexcept;
++
+     /// Temporary decode images, reusable once the GPU is past `tick`.
+     struct PendingTranscode {
+         u64 tick;

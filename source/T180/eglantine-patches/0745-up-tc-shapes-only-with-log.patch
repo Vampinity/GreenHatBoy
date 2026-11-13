@@ -1,0 +1,63 @@
+From: EglantinePS5
+Subject: [PATCH] up: created_shapes is filled only when EDEN_NX2_TC_LOG and debug lines ask for it (Lichii #428), on by default; EDEN_UP_TC_SHAPES_ALWAYS=1 is the old way
+
+What: TextureCache::debug_stats started as true and was only set again inside the 600-frame report,
+which runs only with EDEN_NX2_TC_LOG. So without EDEN_NX2_TC_LOG every new image added its shape
+(format, type, levels, layers, width, height) to the map created_shapes, and the map was never
+cleared. Only that report reads the map. Now the constructor sets debug_stats the way the report
+would: EDEN_NX2_TC_LOG set and HW_GPU debug lines on. The periodic report is unchanged.
+
+How much memory: the map is keyed by shape, not by image or address. It grows by one node per new
+shape, about 64 bytes (libc++ map node of 32 bytes plus a 24-byte value, rounded by the heap).
+A repeated shape costs no memory, only one map lookup per created image. So the growth per hour is
+64 bytes times the new shapes seen in that hour. Upper bound, if every image were a new shape:
+64 bytes per created image, so 1 MiB per 16,384 images. No log on file counts the shapes or the
+images created per hour (searched; not checked on the console). Most likely well under 1 MiB per
+hour: this is not big enough to explain a crash after 10-15 minutes by itself.
+
+Switch: none needed to get the fix (it changes no picture and no log line without EDEN_NX2_TC_LOG).
+EDEN_UP_TC_SHAPES_ALWAYS=1 (exact "1") fills the map again from the start, as before (a way back).
+The switch is read once, when the texture cache is made.
+
+Test: nothing to see in play. With EDEN_NX2_TC_LOG=1 and HW_GPU debug on, the "created Nx: format"
+lines still come every 600 frames. A long run's memory line should not rise faster than before.
+
+Origin and credit: Zortos, zortos293/Lichii 5637cf1c48 (#428, refs #401), "texture_cache: collect
+debug statistics only when EDEN_NX2_TC_LOG asks for them"; same two lines, plus the way back.
+---
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 8082a3f..4b83500 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -427,6 +427,17 @@ template <typename Runtime>
+ template <class P>
+ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManager& device_memory_)
+     : runtime{runtime_}, device_memory{device_memory_} {
++    // 0745 (Lichii #428, Zortos): debug_stats used to start true and was only set again inside
++    // the EDEN_NX2_TC_LOG 600-frame report, so without EDEN_NX2_TC_LOG every new image shape went
++    // into created_shapes for the whole session and the map was never cleared. Now it starts as
++    // the report would set it. EDEN_UP_TC_SHAPES_ALWAYS=1 (exact "1") is the old way.
++    {
++        const char* const always = std::getenv("EDEN_UP_TC_SHAPES_ALWAYS");
++        debug_stats = (always != nullptr && always[0] == '1' && always[1] == '\0') ||
++                      (std::getenv("EDEN_NX2_TC_LOG") != nullptr &&
++                       Common::Log::IsLevelEnabled(Common::Log::Class::HW_GPU,
++                                                   Common::Log::Level::Debug));
++    }
+     // Configure null sampler
+     TSCEntry sampler_descriptor{};
+     sampler_descriptor.min_filter.Assign(Tegra::Texture::TextureFilter::Linear);
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index b005dd2..7bf577f 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -403,7 +403,8 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
+     u64 keep_remade_deletes{}; ///< Kept images deleted so far (old pass, unmap, join)
+     u64 scale_epoch{}; ///< InvalidateScale calls (EDEN_UP_L949_DESC_REPLAY)
+     std::map<u64, std::pair<u32, GPUVAddr>> created_shapes;
+-    bool debug_stats{true}; ///< Collect what only the debug statistics lines use
++    /// Collect what only the debug statistics lines use (0745: set in the constructor)
++    bool debug_stats{};
+ 
+     static constexpr s64 DEFAULT_EXPECTED_MEMORY = 1_GiB + 125_MiB;
+     static constexpr s64 DEFAULT_CRITICAL_MEMORY = 1_GiB + 625_MiB;

@@ -1,0 +1,140 @@
+From: EglantinePS5
+Subject: [PATCH] EDEN_UP_AHEAD_GUARD_SLOTS unset: the one-slot guard exactly as T137 (log text, the most-copies count, a writer's wait); our own, after 0630
+
+0630 (waveydude's 0927 as GrowingBlackBeans ported it) changes three small things for the one-slot
+guard too. Each is put back to T137 here; two slots are unchanged.
+- Log lines: the 300-present line and the copies line got their two-slot fields appended with one
+  slot as well ("; 1 slots, 0 armed beside another", "; 0 copies served both slots, ..."). Now only
+  with EDEN_UP_AHEAD_GUARD_SLOTS=2, so log readers see T137's lines word for word.
+- "most N of M" in the copies line: 0630 counted copies as they were made; T137 counted them when a
+  guard was lifted. A log window that ended with a guard up showed a different number. One slot
+  counts at each lift again (ReleaseSlotLocked); two slots keep 0630's count at each copy.
+- HoldWriter: 0630 looks at the write's pages under the lock and returns at once when none is
+  guarded any more (another writer copied it meanwhile), and for an empty or out-of-range write.
+  T137 waits for the whole guard in that race. One slot waits as T137 again.
+
+Proof (host, t143/check/diff): ahead_guard.h of T137 and of T143 driven through the same seeded
+frame simulation (reads, front notes, guest writes as core/memory.cpp makes them, presents and
+late fences, a copy pool run full): the traces of every result, trap call, byte read, redirty
+range, guard state and log line are the same in 30 of 30 runs (guard =1/=2/=3, ALL_WRITES, FRONT,
+COPY_PAGES=64, SLOTS unset, =1 and junk), wait times masked. 0630 alone differs in 30 of 30.
+
+Switches: none of its own. Off (one slot): T137. Two slots: as 0630.
+---
+diff --git a/src/video_core/ahead_guard.h b/src/video_core/ahead_guard.h
+index 31e3f23..04fc69d 100644
+--- a/src/video_core/ahead_guard.h
++++ b/src/video_core/ahead_guard.h
+@@ -12,6 +12,7 @@
+ #include <cstring>
+ #include <memory>
+ #include <mutex>
++#include <string>
+ #include <utility>
+ #include <vector>
+ 
+@@ -451,7 +452,10 @@ u32 NewCopyLocked(State& s, u64 page, u32 slots, DeviceMemory& device_memory) {
+     const u32 copy = s.copy_free.back();
+     s.copy_free.pop_back();
+     ++s.copies_used;
+-    s.stats.most_copies = (std::max)(s.stats.most_copies, s.copies_used);
++    if (SlotCount() == 2) {
++        // 0631: one slot notes the most copies at each lift only, as T137 did.
++        s.stats.most_copies = (std::max)(s.stats.most_copies, s.copies_used);
++    }
+     device_memory.ReadBlockUnsafe(page << PageBits, s.copy_bytes.get() + u64{copy} * PageSize,
+                                   PageSize);
+     s.copy_page[copy] = static_cast<u32>(page);
+@@ -510,7 +514,9 @@ void ReleaseSlotLocked(State& s, u32 index, DeviceMemory& device_memory) {
+     device_memory.UpdatePagesCachedBatch(runs, -1);
+     slot.pages.clear();
+     if (s.copies_used != 0) {
+-        // The frame is done: its copies go.
++        // The frame is done: its copies go. 0631: the most copies are noted here too, as T137
++        // did at each lift (a log window that starts while a guard is up still sees them).
++        s.stats.most_copies = (std::max)(s.stats.most_copies, s.copies_used);
+         const u8 bit = static_cast<u8>(1U << index);
+         bool freed = false;
+         for (u32 copy = 0; copy < static_cast<u32>(s.copy_mask.size()); ++copy) {
+@@ -597,16 +603,27 @@ inline void LogWindowLocked(State& s, u64 present_number) {
+     }
+     const u32 arms = (std::max)(st.arms, 1U);
+     const u32 holds = (std::max)(st.holds, 1U);
++    // 0631: the two-slot fields only with EDEN_UP_AHEAD_GUARD_SLOTS=2, so one slot logs T137's
++    // lines word for word.
++    const bool two_slots = SlotCount() == 2;
++    const std::string slots_tail =
++        two_slots ? "; " + std::to_string(SlotCount()) + " slots, " +
++                        std::to_string(st.second_arms) + " armed beside another"
++                  : std::string{};
++    const std::string copies_tail =
++        two_slots ? "; " + std::to_string(st.shared_copies) + " copies served both slots, " +
++                        std::to_string(st.newer_copy_reads) + " reads took a newer frame's copy"
++                  : std::string{};
+     LOG_INFO(HW_GPU,
+              "EDEN_UP_AHEAD_GUARD: last 300 presents (to #{}): armed {} ({} while one was still "
+              "armed), {} pages in {} runs each, arming {} us (max {}), armed {} us each; {} "
+              "writes waited, {} us each (max {}), by core {}/{}/{}/{}/{}/{}/other {}; lifted "
+-             "early {} ({} for a waiting GPU channel); {} slots, {} armed beside another",
++             "early {} ({} for a waiting GPU channel){}",
+              present_number, st.arms, st.overlaps, st.pages / arms, st.runs / arms,
+              st.arm_us / arms, st.max_arm_us, st.armed_us / arms, st.holds, st.held_us / holds,
+              st.max_held_us, st.core_holds[0], st.core_holds[1], st.core_holds[2],
+              st.core_holds[3], st.core_holds[4], st.core_holds[5], st.core_holds[6], st.gave_up,
+-             st.gave_up_gpu, SlotCount(), st.second_arms);
++             st.gave_up_gpu, slots_tail);
+     if (st.holds != 0) {
+         LOG_INFO(HW_GPU,
+                  "EDEN_UP_AHEAD_GUARD: guest threads that waited (id: writes, ms in all): {}: {}, "
+@@ -625,12 +642,11 @@ inline void LogWindowLocked(State& s, u64 present_number) {
+                  "{} of {}), the pool was full {} times; {} GPU thread reads took {} KiB from "
+                  "copies, and {} handle or pointer reads; of {} pages first read with a guard "
+                  "up, {} were not in it; {} pages outside the guard copied before a write ({} "
+-                 "left for a full pool); the front named {} pages, {} of them with a guard up; "
+-                 "{} copies served both slots, {} reads took a newer frame's copy",
++                 "left for a full pool); the front named {} pages, {} of them with a guard up{}",
+                  st.copies, st.copies / arms, st.most_copies, CopyCapacity(), st.pool_full,
+                  st.copy_reads, st.copy_read_bytes >> 10, st.value_reads, st.armed_new_pages,
+                  st.armed_unguarded_pages, st.other_copies, st.other_skipped, st.front_pages,
+-                 st.front_late, st.shared_copies, st.newer_copy_reads);
++                 st.front_late, copies_tail);
+     }
+     st = {};
+ }
+@@ -1184,18 +1200,26 @@ void HoldWriter(u64 device_addr, u64 size, size_t core, u64 thread_id, DeviceMem
+     bool lifted = false;
+     {
+         std::unique_lock lk{s.mutex};
+-        if (!s.active.load(std::memory_order_relaxed) || size == 0 || device_addr >= limit) {
++        if (!s.active.load(std::memory_order_relaxed)) {
+             return;
+         }
+-        // The slots this write waits for, as armed now.
+-        u32 waits_for = 0;
+-        const u64 last = ((std::min)(device_addr + size, limit) - 1) >> PageBits;
+-        for (u64 page = device_addr >> PageBits; page <= last; ++page) {
+-            waits_for |= Detail::SlotsWith(s.guarded, page);
+-        }
+-        waits_for &= s.armed_mask.load(std::memory_order_relaxed);
+-        if (waits_for == 0) {
+-            return;
++        // 0631: one slot waits for the guard up now, whatever its pages' bits say by now (T137:
++        // a page copied by another writer meanwhile still waits for the whole guard).
++        u32 waits_for = s.armed_mask.load(std::memory_order_relaxed);
++        if (SlotCount() == 2) {
++            if (size == 0 || device_addr >= limit) {
++                return;
++            }
++            // The slots this write waits for, as armed now.
++            waits_for = 0;
++            const u64 last = ((std::min)(device_addr + size, limit) - 1) >> PageBits;
++            for (u64 page = device_addr >> PageBits; page <= last; ++page) {
++                waits_for |= Detail::SlotsWith(s.guarded, page);
++            }
++            waits_for &= s.armed_mask.load(std::memory_order_relaxed);
++            if (waits_for == 0) {
++                return;
++            }
+         }
+         std::array<u64, MaxSlots> serials{};
+         u64 frame = ~u64{0};

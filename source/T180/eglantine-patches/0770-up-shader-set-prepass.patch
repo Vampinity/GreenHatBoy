@@ -1,0 +1,987 @@
+From: EglantinePS5
+Subject: up: EDEN_UP_SHADER_SET_PREPASS: the shader set is prepared before the game starts (list keys first, every worker, full duty, no cap, resumable), off by default
+
+Why: test d4 (13 Nov 2026, run1366) showed the whole-game shader set holds the keys the game asks
+for (43 of 43 sorted by EDEN_UP_SHADER_SET_WHY: 28 served, 15 in the set but not prepared yet, 0 near,
+0 without a record; the Mac key check found 441 of d4's 458 first_start.list graphics keys in the
+set). What failed was time: beside the game at 1 job, 50% duty and a 5,000 cap, 820 of 113,054
+records were prepared (185 ms a record) before the 384 MB memory floor stopped it at 500 s.
+
+What, with EDEN_UP_SHADER_SET_PREPASS=1 (needs EDEN_UP_SHADER_SET=1, EDEN_UP_CANONICAL_KEYS=1 and the
+prepared store, as the set itself): in LoadDiskResources, after the boot's own pipelines and
+PrepareKept and before StartShaderSet (so before system.Run(): the game's memory is not taken yet),
+on the loading thread:
+1. the set file is made or reused (ShaderSet::Prepare; a first conversion runs at full duty through
+   the new ShaderSet::OverrideDuty and is not cut by the time limit). StartShaderSet's thread then
+   uses this result instead of preparing it again.
+2. one key-only read of the file counts what is left: every usable key not in the kept store, each
+   once (the set has about 73,400 distinct keys in 113,054 records; a repeated key is now queued
+   once, also with several jobs in flight).
+3. list keys: G rows of first_start.list / first_start.prev.list (header must name this cache
+   version, driver, lowering tag and canonical=1) and graphics records of EGPLIST1 pipeline lists
+   (0720 format; key taken with this driver's fields) found as *.list in the shader folder and the
+   title folder, plus EDEN_UP_PIPELINE_LIST_IMPORT=<path> when it names a file.
+4. PrepareShaderSet runs with a ShaderSetPass: first over the listed keys, then over the records of
+   programs earlier sessions saw live (prep_shader_set.live), then the rest of the file. No cap,
+   full duty, on threads of its own: EDEN_UP_SHADER_SET_PREPASS_WORKERS=<n> (default one per core
+   but one, at most 16), made for the prepass and gone after it, so EDEN_NX2_PIPELINE_WORKERS (2 in
+   d4) keeps its meaning for play. Each job is the existing one: translate, driver build with the
+   driver's own cache only (prep_no_cache), keep SPIR-V/infos/answers, drop the pipeline.
+It ends when all is done; at EDEN_UP_SHADER_SET_PREPASS_MAX_S=<s> counted from the prepass start;
+under the disk floor (EDEN_UP_SHADER_SET_MIN_FREE_DISK_MB, checked every 64 queued as before); after
+EDEN_UP_SHADER_SET_PREPASS_MEMORY_WAIT_S (300) under the memory floor (it waits, polling every 250 ms,
+while jobs in flight give memory back; the background pass stops at once instead); or when a file
+shader_set_prepass.skip appears in the shader or title folder (checked every second, removed, so it
+skips one start). What is left goes on beside the game as before (StartShaderSet: live first, then
+the file up to EDEN_UP_SHADER_PREP_MAX unless EDEN_UP_SHADER_SET_PREP_ALL=1) and at the next start.
+Resumable: a key in the kept store is never queued again; the index is committed at most once a
+minute and at the end, so a kill loses at most a minute of work. A pass that reads the whole file
+writes the existing "every record is known" marker, so later starts skip the read.
+
+Shown: the boot screen counts the set's records (LoadCallbackStage::Prepare, which the core never
+sent before; the headless front adds records a second and minutes left: front commit, same T157
+commit). Log: a start line, one line with the counts (keys left, known, repeats, list files, disk
+needed vs free), a progress line every 10 s (done/total, listed done, rate, minutes left, kept,
+failed, free memory, free disk, store size) and an end line with totals and why it ended.
+Disk: if std::filesystem::space() cannot be read the floor check now says so once (it was silent).
+
+Off: one cached switch read in LoadDiskResources; PrepareShaderSet takes a null pass (each new
+branch tests it); DutyPercent reads one relaxed atomic. Nothing else changes.
+
+Cost estimate (our notes in the T157 folder): about 73,400 builds for a full set, about 1.5 GiB of
+kept store (21 KiB a record, d4), the driver's disk cache about 0.5 GiB more (estimate). At d4's 185
+ms a record per worker: 73,400 x 0.185 s / 8 workers = about 28 min; at the 7-8 ms a record the
+own-record preparation shows on 8 workers before play (about 60 ms per worker): about 9 min. Not
+measured on the console.
+
+Test: EDEN_UP_SHADER_SET_PREPASS=1 with the set's usual switches; look for "Shader set prepass"
+lines (rate, minutes left, end line), the boot screen's count, and in play EDEN_UP_SHADER_SET_WHY
+totals with exact_not_prepared near 0. A second start should say "known already" for what the
+first did and finish fast.
+
+Credits: the shader set (0501, 0522, 0528, 0529; our v3.1 draft, Fritchii's recipe and
+extractor), the first-start list (0595), the pipeline list format (0720).
+---
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 819c9da..6e0805c 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -1515,6 +1515,13 @@ size_t ShaderSetNumber(const char* name, size_t fallback) {
+ struct StopReading : std::runtime_error {
+     using std::runtime_error::runtime_error;
+ };
++
++/// EDEN_UP_SHADER_SET_PREPASS=1 (exact "1", 0770): the shader set is prepared before the game
++/// starts (RunShaderSetPrepass). Read once.
++bool ShaderSetPrepassAsked() {
++    static const bool asked = Common::PeSwitch("EDEN_UP_SHADER_SET_PREPASS");
++    return asked;
++}
+ } // Anonymous namespace
+ 
+ void PipelineCache::BuildCleanWatch() {
+@@ -2366,8 +2373,18 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
+     }
+     // EDEN_UP_SHADER_SET: off this (loading) thread: extraction, conversion and the preparation
+     // of the converted records go on beside the game.
++    // EDEN_UP_SHADER_SET_PREPASS=1 (0770): first, on this thread and before the game starts,
++    // the set file is made or reused and its records are prepared (list keys first); what is
++    // left when it ends goes on beside the game as before.
+     if (shader_set_enabled && prep && !stop_loading.stop_requested()) {
++        if (ShaderSetPrepassAsked()) {
++            RunShaderSetPrepass(title_dir, stop_loading, callback);
++        }
+         StartShaderSet(title_dir);
++    } else if (ShaderSetPrepassAsked()) {
++        LOG_WARNING(Render_Vulkan, "EDEN_UP_SHADER_SET_PREPASS=1 needs EDEN_UP_SHADER_SET=1, "
++                                   "EDEN_UP_CANONICAL_KEYS=1 and an open prepared store: no "
++                                   "prepass this start");
+     }
+ 
+     if (use_vulkan_pipeline_cache) {
+@@ -5344,11 +5361,7 @@ namespace {
+ constexpr u64 ShaderSetLoweringTag = 0x4f554e4345000003ULL;
+ } // namespace
+ 
+-void PipelineCache::StartShaderSet(const std::filesystem::path& title_dir) {
+-    if (shader_set_thread.joinable()) {
+-        return;
+-    }
+-    audit_logged = std::chrono::steady_clock::now();
++VideoCommon::ShaderSet::Identity PipelineCache::MakeShaderSetIdentity() const {
+     VideoCommon::ShaderSet::Identity identity;
+     identity.cache_version = CACHE_VERSION;
+     identity.lowering_tag = ShaderSetLoweringTag; // shader_environment.cpp Analyze
+@@ -5361,21 +5374,37 @@ void PipelineCache::StartShaderSet(const std::filesystem::path& title_dir) {
+         ShaderPrep::MakeStamp(CACHE_VERSION, static_cast<u32>(device.GetDriverID()),
+                               device.GetDriverVersion(), PrepDeviceDigest()) +
+         (canonical_keys ? " canonical1" : "");
++    return identity;
++}
++
++void PipelineCache::StartShaderSet(const std::filesystem::path& title_dir) {
++    if (shader_set_thread.joinable()) {
++        return;
++    }
++    audit_logged = std::chrono::steady_clock::now();
++    const VideoCommon::ShaderSet::Identity identity = MakeShaderSetIdentity();
+     const auto output_dir = pipeline_cache_filename.parent_path();
++    // EDEN_UP_SHADER_SET_PREPASS: the prepass made or found the file already (or found none).
++    VideoCommon::ShaderSet::Outputs prepared;
++    prepared.records = shader_set_prepared_records;
++    prepared.programs = shader_set_prepared_programs;
+     shader_set_thread = std::jthread([this, title = visual_workaround_title, title_dir, output_dir,
+-                                      identity](std::stop_token stop) {
++                                      identity, prepared, use_prepared = shader_set_prepared](
++                                         std::stop_token stop) {
+         Common::SetCurrentThreadName("ShaderSet");
+         Common::SetCurrentThreadPriority(Common::ThreadPriority::Low);
+         Common::SetCurrentThreadToBackgroundWork();
+         bool why_indexed = false; // EDEN_UP_SHADER_SET_WHY: the catalogue read was reached
+         try {
+-            const auto outputs = VideoCommon::ShaderSet::Prepare(
+-                title, title_dir, output_dir, identity,
+-                [this](std::span<const u8> state, std::array<u64, 6> hashes, u32 read_mask,
+-                       std::vector<u8>& bytes) {
+-                    return MapShaderSetState(state, hashes, read_mask, bytes);
+-                },
+-                stop);
++            const auto outputs =
++                use_prepared ? prepared
++                             : VideoCommon::ShaderSet::Prepare(
++                                   title, title_dir, output_dir, identity,
++                                   [this](std::span<const u8> state, std::array<u64, 6> hashes,
++                                          u32 read_mask, std::vector<u8>& bytes) {
++                                       return MapShaderSetState(state, hashes, read_mask, bytes);
++                                   },
++                                   stop);
+             if (outputs.records.empty() || stop.stop_requested()) {
+                 if (shader_set_why && !stop.stop_requested()) {
+                     set_why_failed.store(true, std::memory_order_release);
+@@ -5454,11 +5483,15 @@ void PipelineCache::StartShaderSet(const std::filesystem::path& title_dir) {
+ }
+ 
+ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::stop_token stop,
+-                                     const std::unordered_set<u64>* only_programs) {
++                                     const std::unordered_set<u64>* only_programs,
++                                     ShaderSetPass* pass) {
+     if (!prep_store.IsOpen() || stop.stop_requested()) {
+         return false;
+     }
+     const bool filtered = only_programs != nullptr;
++    // EDEN_UP_SHADER_SET_PREPASS (0770): a pass before play (pass set), maybe over the keys of
++    // list files only. Such a pass never writes the "every record is known" marker.
++    const bool partial = filtered || (pass != nullptr && pass->only_keys != nullptr);
+     const auto begin = std::chrono::steady_clock::now();
+     const auto seconds = [&begin] {
+         return std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+@@ -5473,14 +5506,23 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+     // its own queued: the workers are shared, and a new area's pipelines must not wait behind
+     // these (thread priorities do nothing for SCHED_OTHER threads on the console).
+     const bool all = Common::PeSwitch("EDEN_UP_SHADER_SET_PREP_ALL");
+-    const size_t limit = all ? std::numeric_limits<size_t>::max() : ShaderPrep::MaxPerBoot();
++    // The prepass: no cap, its own number of jobs, full duty (nothing else runs yet).
++    const size_t limit = all || pass != nullptr ? std::numeric_limits<size_t>::max()
++                                                : ShaderPrep::MaxPerBoot();
++    // The prepass runs on its own threads (pass->pool); the background pass shares the
++    // pipeline workers with the runtime.
++    Common::ThreadWorker& job_workers =
++        pass != nullptr && pass->pool != nullptr ? *pass->pool : workers;
+     const size_t worker_count =
+-        device.HasBrokenParallelShaderCompiling() ? size_t{1} : GetTotalPipelineWorkers();
++        pass != nullptr && pass->pool != nullptr ? pass->jobs
++        : device.HasBrokenParallelShaderCompiling() ? size_t{1}
++                                                    : GetTotalPipelineWorkers();
+     const size_t max_in_flight = std::clamp<size_t>(
+-        ShaderSetNumber("EDEN_UP_SHADER_SET_PREP_JOBS", 1), 1, std::max<size_t>(worker_count, 1));
++        pass != nullptr ? pass->jobs : ShaderSetNumber("EDEN_UP_SHADER_SET_PREP_JOBS", 1), 1,
++        std::max<size_t>(worker_count, 1));
+     const u64 floor = VideoCommon::ShaderSet::MinimumFreeBytes();
+     const u64 disk_floor = VideoCommon::ShaderSet::MinimumFreeDiskBytes();
+-    const unsigned duty = VideoCommon::ShaderSet::DutyPercent();
++    const unsigned duty = pass != nullptr ? 100U : VideoCommon::ShaderSet::DutyPercent();
+     if (VideoCommon::ShaderSet::FreeMemoryBytes() == 0 &&
+         !VideoCommon::ShaderSet::MemoryCheckWaived()) {
+         // The floor cannot be checked: refused, not skipped (a base PS5 has a few hundred MB).
+@@ -5612,7 +5654,8 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+ 
+     size_t read = 0, known = 0, left_out = 0, other = 0, struck = 0, queued = 0;
+     bool paused = false;
+-    if (!filtered) {
++    bool said_disk_unknown = false;
++    if (!filtered && pass == nullptr) {
+         LOG_INFO(Render_Vulkan,
+                  "Shader set: preparing the records of {} on the pipeline workers: {} in flight, "
+                  "duty {}%, cap {}, memory floor {} MB, disk floor {} MB",
+@@ -5638,6 +5681,18 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+             ++read;
+             CanonicalizeLoadedKey(key, envs); // idempotent: the mapping made it canonical
+             const u64 hash = key.Hash();
++            // The prepass: a key taken from `left` is counted once it is built or left out, and
++            // handed back when the pass stops before it is queued.
++            const auto taken = [pass] {
++                if (pass != nullptr) {
++                    pass->processed.fetch_add(1, std::memory_order_relaxed);
++                }
++            };
++            const auto hand_back = [pass, hash] {
++                if (pass != nullptr && pass->left != nullptr) {
++                    pass->left->insert(hash);
++                }
++            };
+             const bool mesh =
+                 std::ranges::any_of(envs, [](const VideoCommon::FileEnvironment& env) {
+                     return env.ShaderStage() == Shader::Stage::Task ||
+@@ -5649,24 +5704,40 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+                 key.state.driver_version != dynamic_features.driver_version ||
+                 key.state.app_stage.Value() == Tegra::Engines::Maxwell3D::EngineHint::OnHLEMacro) {
+                 ++left_out;
++                taken();
+                 return;
+             }
+             if (OtherDeviceBits(key) != 0) {
+                 ++other;
++                taken();
+                 return;
+             }
+             if (prep_store.Contains(hash)) {
+                 ++known; // kept by an earlier start, or remembered as not keepable
++                taken();
+                 return;
+             }
+             if (struck_out(hash)) {
+                 ++struck;
++                taken();
+                 return;
+             }
+             if (queued >= limit) {
+                 stopped = fmt::format("the cap of {} per start (EDEN_UP_SHADER_PREP_MAX)", limit);
+                 throw StopReading{stopped};
+             }
++            if (pass != nullptr) {
++                // The prepass ends at its time limit or when the skip flag is seen; the game
++                // then starts and the rest goes on beside it (or at the next start).
++                const bool late = pass->deadline != std::chrono::steady_clock::time_point{} &&
++                                  std::chrono::steady_clock::now() >= pass->deadline;
++                if (late || pass->skip.load(std::memory_order_relaxed)) {
++                    hand_back();
++                    stopped = late ? std::string{"the time limit (EDEN_UP_SHADER_SET_PREPASS_MAX_S)"}
++                                   : std::string{"the skip flag (shader_set_prepass.skip)"};
++                    throw StopReading{stopped};
++                }
++            }
+             // The index is written at most once a minute (it is rebuilt whole under the
+             // store's lock, which the GPU thread's lookups wait on) and at the end.
+             if (prep_store.Uncommitted() != 0 &&
+@@ -5676,8 +5747,43 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+             }
+             // Before every record: the memory floor; every 64: the disk floor (the store grows
+             // by gigabytes over a full pass, and a full disk ends keeping for the session).
+-            if (const u64 free = VideoCommon::ShaderSet::FreeMemoryBytes();
+-                free != 0 && free < floor) {
++            if (pass != nullptr) {
++                // The prepass waits under the memory floor (the jobs in flight give theirs
++                // back); it gives up only after `memory_wait` with no change for the better.
++                std::chrono::steady_clock::time_point waiting_since{};
++                for (;;) {
++                    const u64 free = VideoCommon::ShaderSet::FreeMemoryBytes();
++                    if (free == 0 || free >= floor) {
++                        break;
++                    }
++                    const auto now = std::chrono::steady_clock::now();
++                    if (waiting_since == std::chrono::steady_clock::time_point{}) {
++                        waiting_since = now;
++                        LOG_INFO(Render_Vulkan,
++                                 "Shader set prepass: {} MB free, under the {} MB memory floor "
++                                 "(EDEN_UP_SHADER_SET_MIN_FREE_MB); waiting",
++                                 free >> 20, floor >> 20);
++                    }
++                    if (now - waiting_since >= pass->memory_wait ||
++                        (pass->deadline != std::chrono::steady_clock::time_point{} &&
++                         now >= pass->deadline)) {
++                        hand_back();
++                        paused = true;
++                        stopped = fmt::format("{} MB free, under the {} MB memory floor for {} s",
++                                              free >> 20, floor >> 20,
++                                              std::chrono::duration_cast<std::chrono::seconds>(
++                                                  now - waiting_since)
++                                                  .count());
++                        throw StopReading{stopped};
++                    }
++                    if (!Common::StoppableTimedWait(stop, std::chrono::milliseconds{250})) {
++                        hand_back();
++                        stopped = "stopped at shutdown";
++                        throw StopReading{stopped};
++                    }
++                }
++            } else if (const u64 free = VideoCommon::ShaderSet::FreeMemoryBytes();
++                       free != 0 && free < floor) {
+                 paused = true;
+                 stopped = fmt::format("{} MB free, under the {} MB memory floor "
+                                       "(EDEN_UP_SHADER_SET_MIN_FREE_MB)",
+@@ -5685,14 +5791,23 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+                 throw StopReading{stopped};
+             }
+             if (queued % 64 == 0) {
++                // space().available: what this process may still write on the store's file
++                // system (statvfs f_bavail), not the store's own size.
+                 std::error_code space_error;
+                 const auto space = std::filesystem::space(file.parent_path(), space_error);
+                 if (!space_error && space.available < disk_floor) {
++                    hand_back();
+                     paused = true;
+                     stopped = fmt::format("{} MB free on disk, under the {} MB floor",
+                                           space.available >> 20, disk_floor >> 20);
+                     throw StopReading{stopped};
+                 }
++                if (space_error && !std::exchange(said_disk_unknown, true)) {
++                    LOG_WARNING(Render_Vulkan,
++                                "Shader set: free disk space cannot be read ({}); the disk floor "
++                                "is not checked this pass",
++                                space_error.message());
++                }
+             }
+             // Yield while the runtime has builds of its own queued on the shared workers, then
+             // rest as the duty cycle asks (busy time over wall time stays under `duty` percent).
+@@ -5704,8 +5819,9 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+                     in_flight = state.in_flight;
+                     busy = state.busy;
+                 }
+-                if (workers.Pending() > in_flight) {
++                if (job_workers.Pending() > in_flight) {
+                     if (!Common::StoppableTimedWait(stop, std::chrono::milliseconds{100})) {
++                        hand_back();
+                         stopped = "stopped at shutdown";
+                         throw StopReading{stopped};
+                     }
+@@ -5718,6 +5834,7 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+                 const auto nap = std::min<std::chrono::steady_clock::duration>(
+                     rest - slept, std::chrono::seconds{2});
+                 if (!Common::StoppableTimedWait(stop, nap)) {
++                    hand_back();
+                     stopped = "stopped at shutdown";
+                     throw StopReading{stopped};
+                 }
+@@ -5736,8 +5853,10 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+             constexpr u32 flags =
+                 ShaderPrep::KeptStore::FlagPredicted | ShaderPrep::KeptStore::FlagShaderSet;
+             try {
+-                workers.QueueWork([this, key, hash, slot, envs_ = std::move(envs), &state,
+-                                   &note_slot, &seconds, queued]() mutable {
++                const bool listed_key =
++                    pass != nullptr && pass->only_keys != nullptr;
++                job_workers.QueueWork([this, key, hash, slot, envs_ = std::move(envs), &state,
++                                   &note_slot, &seconds, queued, pass, listed_key]() mutable {
+                     bool ok = false;
+                     bool kept = false;
+                     const auto started = std::chrono::steady_clock::now();
+@@ -5777,7 +5896,13 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+                     }
+                     state.free_slots.push_back(slot);
+                     note_slot(slot, 0);
+-                    if (state.finished % ShaderPrep::LogEvery() == 0) {
++                    if (pass != nullptr) {
++                        pass->kept.fetch_add(kept ? 1 : 0, std::memory_order_relaxed);
++                        pass->failed.fetch_add(ok ? 0 : 1, std::memory_order_relaxed);
++                        pass->listed_done.fetch_add(listed_key ? 1 : 0, std::memory_order_relaxed);
++                        pass->processed.fetch_add(1, std::memory_order_relaxed);
++                    }
++                    if (pass == nullptr && state.finished % ShaderPrep::LogEvery() == 0) {
+                         LOG_INFO(Render_Vulkan,
+                                  "Shader set: prepared {} of {} queued, {:.0f} s, {} failed",
+                                  state.finished, queued, seconds(), state.failed);
+@@ -5790,6 +5915,7 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+                 state.free_slots.push_back(slot);
+                 note_slot(slot, 0);
+                 state.cv.notify_all();
++                hand_back();
+                 throw;
+             }
+         },
+@@ -5806,6 +5932,15 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+             }
+             GraphicsPipelineCacheKey key;
+             std::memcpy(static_cast<void*>(&key), bytes.data(), sizeof(key));
++            if (pass != nullptr && pass->left != nullptr) {
++                // The prepass: only keys still left (and, for a list pass, named by a list),
++                // each taken once: the set holds about 39,600 repeated keys.
++                const u64 hash = key.Hash();
++                if (pass->only_keys != nullptr && !pass->only_keys->contains(hash)) {
++                    return false;
++                }
++                return pass->left->erase(hash) != 0;
++            }
+             if (!prep_store.Contains(key.Hash())) {
+                 return true;
+             }
+@@ -5818,8 +5953,11 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+         std::scoped_lock lock{state.mutex};
+         state.journal.close();
+     }
++    if (pass != nullptr && !stopped.empty()) {
++        pass->ended = stopped;
++    }
+     // A pass over live programs' records that prepared nothing leaves the store as it is.
+-    const bool quiet = filtered && state.finished == 0 && !paused;
++    const bool quiet = partial && state.finished == 0 && !paused;
+     const bool committed = quiet ? true : prep_store.Commit();
+     if (!quiet) {
+         prep_store.Compact();
+@@ -5845,12 +5983,15 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+              : whole ? std::string{}
+                      : std::string{"; the file could not be read to its end"},
+              filtered ? fmt::format(" (the records of {} live programs)", only_programs->size())
+-                      : std::string{});
+-    if (paused) {
++             : pass != nullptr && pass->only_keys != nullptr
++                 ? fmt::format(" (the {} keys list files name; before play)", pass->only_keys->size())
++             : pass != nullptr ? std::string{" (before play)"}
++                               : std::string{});
++    if (paused && pass == nullptr) {
+         LOG_WARNING(Render_Vulkan,
+                     "Shader set: preparation paused ({}); it resumes at the next start", stopped);
+     }
+-    if (!filtered && whole && stopped.empty() && committed && !stop.stop_requested()) {
++    if (!partial && whole && stopped.empty() && committed && !stop.stop_requested()) {
+         // Everything in the file is known now: the next start skips the pass (see above).
+         std::ofstream out{done_filename, std::ios::trunc};
+         out << file_identity << " store " << prep_store.Size() << '\n';
+@@ -5858,6 +5999,440 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+     return paused;
+ }
+ 
++// EDEN_UP_SHADER_SET_PREPASS=1 (0770) ------------------------------------------------------
++// The whole-game shader set prepared before the game starts. Test d4 (13 Nov) showed the set's
++// keys are the game's (43 of 43 sorted: 28 served, 15 in the set but not prepared yet) and that
++// the gap is time: beside the game at 1 job and 50% duty, 820 of 113,054 records were prepared
++// before the start died. Here, after the boot's own pipelines and before the guest runs (its
++// memory is not taken yet), the set file is made or reused on the loading thread and its
++// records are prepared on every pipeline worker at full duty, with no cap:
++//   1. the keys list files name (first_start.list and the other *.list files of the shader
++//      folder and the title folder, EDEN_UP_PIPELINE_LIST_IMPORT=<path>): the ones the game
++//      asked for before;
++//   2. the records of programs earlier sessions saw live (prep_shader_set.live);
++//   3. the rest of the set, in the file's order.
++// A key already in the kept store is never queued (a second start does only what is left), and
++// a key the set holds more than once is queued once. It ends when all is done, at
++// EDEN_UP_SHADER_SET_PREPASS_MAX_S, under the disk floor, after EDEN_UP_SHADER_SET_PREPASS_MEMORY_WAIT_S
++// (300) under the memory floor, or when shader_set_prepass.skip appears in the shader folder (the
++// file is removed, so it skips one start). What is left goes on beside the game as before
++// (StartShaderSet), or at the next start. The boot screen shows done / total, records a second
++// and minutes left (LoadCallbackStage::Prepare); the log has a line every 10 s and one at the end.
++// Off: one cached switch read in LoadDiskResources.
++
++namespace {
++/// The keys of the list files, in order, each once. first_start.list (EDEN_FIRST_START_2, its
++/// header must name this cache version, driver, lowering tag and canonical keys; G rows only:
++/// the set has no task/mesh or compute records) and pipeline lists (EGPLIST1, 0720: graphics
++/// records; the key is taken with this device's driver fields, as EDEN_UP_PIPELINE_LIST_IMPORT_
++/// DRIVER takes it, and hashed as stored: a list of canonical records matches the set's keys).
++struct PrepassLists {
++    std::vector<u64> keys;
++    std::string report;
++};
++
++PrepassLists ReadPrepassLists(const std::vector<std::filesystem::path>& files, u32 cache_version,
++                              u32 driver_id, u32 driver_version, bool canonical,
++                              const std::function<u64(GraphicsPipelineCacheKey&)>& list_key_hash) {
++    PrepassLists out;
++    std::unordered_set<u64> seen;
++    constexpr size_t MostKeys = 1U << 20;
++    constexpr u64 MostBytes = 256ULL << 20;
++    const auto add = [&](u64 hash) {
++        if (out.keys.size() < MostKeys && seen.insert(hash).second) {
++            out.keys.push_back(hash);
++        }
++    };
++    for (const auto& path : files) {
++        const std::string name = path.filename().string();
++        std::error_code error;
++        const u64 bytes = std::filesystem::file_size(path, error);
++        if (error || bytes > MostBytes) {
++            out.report += fmt::format(" {}: not read ({});", name, error ? "no size" : "over 256 MiB");
++            continue;
++        }
++        std::ifstream in{path, std::ios::binary};
++        std::array<char, 8> magic{};
++        if (!in.read(magic.data(), magic.size())) {
++            out.report += fmt::format(" {}: too short;", name);
++            continue;
++        }
++        const size_t before = out.keys.size();
++        if (std::string_view{magic.data(), magic.size()} == "EDEN_FIR") {
++            in.seekg(0);
++            std::string line;
++            std::getline(in, line);
++            std::map<std::string, std::string> fields;
++            for (size_t at = 0; at < line.size();) {
++                const size_t end = std::min(line.find(' ', at), line.size());
++                const std::string token = line.substr(at, end - at);
++                if (const size_t equals = token.find('='); equals != std::string::npos) {
++                    fields[token.substr(0, equals)] = token.substr(equals + 1);
++                }
++                at = end + 1;
++            }
++            const bool fits =
++                line.rfind("EDEN_FIRST_START_2 ", 0) == 0 &&
++                fields["cache"] == fmt::format("{}", cache_version) &&
++                fields["driver"] == fmt::format("{:x}.{:x}", driver_id, driver_version) &&
++                fields["canonical"] == (canonical ? "1" : "0") &&
++                fields["lowering"] == fmt::format("{:016x}", ShaderSetLoweringTag);
++            if (!fits) {
++                out.report += fmt::format(" {}: made with another cache, driver, lowering or key "
++                                          "policy, not used;",
++                                          name);
++                continue;
++            }
++            size_t rows = 0, other_rows = 0;
++            while (std::getline(in, line)) {
++                if (line.size() == 18 && line[0] == 'G' && line[1] == ' ') {
++                    add(std::strtoull(line.c_str() + 2, nullptr, 16));
++                    ++rows;
++                } else if (!line.empty() && line[0] != '#' && line[0] != 'T') {
++                    ++other_rows; // M (task/mesh) and C (compute): not in the set
++                }
++            }
++            out.report += fmt::format(" {}: {} graphics rows ({} new), {} mesh or compute;", name,
++                                      rows, out.keys.size() - before, other_rows);
++            continue;
++        }
++        if (std::string_view{magic.data(), magic.size()} != "EGPLIST1") {
++            out.report += fmt::format(" {}: not a list;", name);
++            continue;
++        }
++        u32 header[6]{}; // format, cache version, graphics key size, compute key size, count, flags
++        if (!in.read(reinterpret_cast<char*>(header), sizeof(header)) || header[0] != 1 ||
++            header[1] != cache_version || header[2] != sizeof(GraphicsPipelineCacheKey)) {
++            out.report += fmt::format(" {}: another format or cache version;", name);
++            continue;
++        }
++        u64 left = bytes - 32;
++        size_t graphics = 0, others = 0;
++        bool cut = false;
++        for (u32 record = 0; record < header[4] && !cut; ++record) {
++            std::array<u8, 4> head{};
++            if (left < head.size() || !in.read(reinterpret_cast<char*>(head.data()), 4)) {
++                cut = true;
++                break;
++            }
++            left -= head.size();
++            const u8 kind = head[0];
++            const u32 count = head[1];
++            if (count == 0 || count > 6 || kind > 2) {
++                cut = true;
++                break;
++            }
++            for (u32 program = 0; program < count && !cut; ++program) {
++                u64 code_hash{};
++                u32 size{};
++                if (left < 12 || !in.read(reinterpret_cast<char*>(&code_hash), 8) ||
++                    !in.read(reinterpret_cast<char*>(&size), 4) || size > left - 12) {
++                    cut = true;
++                    break;
++                }
++                left -= 12 + u64{size};
++                in.seekg(size, std::ios::cur);
++            }
++            const u64 key_size = kind == 0 ? header[3] : header[2];
++            if (cut || left < key_size) {
++                cut = true;
++                break;
++            }
++            left -= key_size;
++            if (kind != 1) {
++                in.seekg(static_cast<std::streamoff>(key_size), std::ios::cur);
++                ++others;
++                continue;
++            }
++            GraphicsPipelineCacheKey key;
++            if (!in.read(reinterpret_cast<char*>(&key), sizeof(key))) {
++                cut = true;
++                break;
++            }
++            add(list_key_hash(key));
++            ++graphics;
++        }
++        out.report += fmt::format(" {}: {} graphics records ({} new), {} task/mesh or compute{};",
++                                  name, graphics, out.keys.size() - before, others,
++                                  cut ? ", cut short" : "");
++    }
++    return out;
++}
++
++/// Free space where the store grows, in MB (0 when it cannot be read).
++u64 FreeDiskMegabytes(const std::filesystem::path& dir) {
++    std::error_code error;
++    const auto space = std::filesystem::space(dir, error);
++    return error ? 0 : space.available >> 20;
++}
++} // namespace
++
++void PipelineCache::RunShaderSetPrepass(const std::filesystem::path& title_dir,
++                                        std::stop_token stop,
++                                        const VideoCore::DiskResourceLoadCallback& callback) try {
++    using Clock = std::chrono::steady_clock;
++    const auto begin = Clock::now();
++    const auto since = [](Clock::time_point from) {
++        return std::chrono::duration<double>(Clock::now() - from).count();
++    };
++    const auto output_dir = pipeline_cache_filename.parent_path();
++    // Threads of its own (EDEN_UP_SHADER_SET_PREPASS_WORKERS, default one per core but one, at
++    // most 16), gone when the prepass ends: EDEN_NX2_PIPELINE_WORKERS (2 in test d4) stays the
++    // number for play.
++    const size_t cores = std::max<size_t>(std::thread::hardware_concurrency(), 2) - 1;
++    const size_t jobs =
++        device.HasBrokenParallelShaderCompiling()
++            ? size_t{1}
++            : std::clamp<size_t>(ShaderSetNumber("EDEN_UP_SHADER_SET_PREPASS_WORKERS", cores), 1, 16);
++    const size_t max_seconds = ShaderSetNumber("EDEN_UP_SHADER_SET_PREPASS_MAX_S", 0);
++    const size_t memory_wait = ShaderSetNumber("EDEN_UP_SHADER_SET_PREPASS_MEMORY_WAIT_S", 300);
++    LOG_INFO(Render_Vulkan,
++             "Shader set prepass (EDEN_UP_SHADER_SET_PREPASS=1): before the game starts, {} "
++             "threads of its own ({} cores but one), full duty, no cap, time limit {}, memory "
++             "floor {} MB (waits up to {} s), disk floor {} MB",
++             jobs, cores, max_seconds ? fmt::format("{} s", max_seconds) : "none",
++             VideoCommon::ShaderSet::MinimumFreeBytes() >> 20, memory_wait,
++             VideoCommon::ShaderSet::MinimumFreeDiskBytes() >> 20);
++
++    // 1. The set file: reused while its stamp holds, else made now (once; minutes) at full duty.
++    VideoCommon::ShaderSet::OverrideDuty(100);
++    VideoCommon::ShaderSet::Outputs outputs;
++    try {
++        outputs = VideoCommon::ShaderSet::Prepare(
++            visual_workaround_title, title_dir, output_dir, MakeShaderSetIdentity(),
++            [this](std::span<const u8> state, std::array<u64, 6> hashes, u32 read_mask,
++                   std::vector<u8>& bytes) {
++                return MapShaderSetState(state, hashes, read_mask, bytes);
++            },
++            stop);
++    } catch (...) {
++        VideoCommon::ShaderSet::OverrideDuty(0);
++        throw;
++    }
++    VideoCommon::ShaderSet::OverrideDuty(0);
++    if (stop.stop_requested()) {
++        return;
++    }
++    shader_set_prepared = true;
++    shader_set_prepared_records = outputs.records;
++    shader_set_prepared_programs = outputs.programs;
++    if (outputs.records.empty()) {
++        LOG_WARNING(Render_Vulkan, "Shader set prepass: no set file this start ({:.0f} s); "
++                                   "nothing prepared",
++                    since(begin));
++        return;
++    }
++    if (VideoCommon::ShaderSet::FreeMemoryBytes() == 0 &&
++        !VideoCommon::ShaderSet::MemoryCheckWaived()) {
++        return; // PrepareShaderSet says why
++    }
++    const double set_seconds = since(begin);
++
++    // 2. What is left: every usable key of the set not in the kept store, once.
++    std::unordered_set<u64> left;
++    size_t records = 0, known = 0, repeats = 0, unusable = 0;
++    const auto count_begin = Clock::now();
++    const bool counted = VideoCommon::ShaderSet::ReadRecords(
++        outputs.records, CACHE_VERSION, [](std::ifstream&, std::vector<VideoCommon::FileEnvironment>) {},
++        {},
++        [&](std::span<const u8> bytes) {
++            if (stop.stop_requested()) {
++                throw std::runtime_error("stopped at shutdown");
++            }
++            ++records;
++            if (bytes.size() != sizeof(GraphicsPipelineCacheKey)) {
++                ++unusable;
++                return false;
++            }
++            GraphicsPipelineCacheKey key;
++            std::memcpy(static_cast<void*>(&key), bytes.data(), sizeof(key));
++            if (key.unique_hashes[0] != 0 || key.state.driver_id != dynamic_features.driver_id ||
++                key.state.driver_version != dynamic_features.driver_version ||
++                key.state.app_stage.Value() == Tegra::Engines::Maxwell3D::EngineHint::OnHLEMacro ||
++                OtherDeviceBits(key) != 0) {
++                ++unusable;
++                return false;
++            }
++            const u64 hash = key.Hash();
++            if (prep_store.Contains(hash)) {
++                ++known;
++            } else if (!left.insert(hash).second) {
++                ++repeats;
++            }
++            return false; // keys only: no record's environments are built
++        });
++    if (!counted || stop.stop_requested()) {
++        LOG_WARNING(Render_Vulkan, "Shader set prepass: {} could not be read to its end; "
++                                   "nothing prepared before play",
++                    outputs.records.filename().string());
++        return;
++    }
++    const size_t total = left.size();
++
++    // 3. The keys list files name.
++    std::vector<std::filesystem::path> list_files;
++    {
++        std::vector<std::filesystem::path> dirs{output_dir};
++        if (title_dir != output_dir) {
++            dirs.push_back(title_dir);
++        }
++        for (const auto& dir : dirs) {
++            std::vector<std::filesystem::path> found;
++            std::error_code error;
++            for (std::filesystem::directory_iterator it{dir, error}, end; !error && it != end;
++                 it.increment(error)) {
++                if (it->is_regular_file(error) && it->path().extension() == ".list") {
++                    found.push_back(it->path());
++                }
++            }
++            // first_start.list first, then its previous copy, then the rest by name.
++            const auto rank = [](const std::filesystem::path& path) {
++                const auto name = path.filename().string();
++                return name == "first_start.list" ? 0 : name == "first_start.prev.list" ? 1 : 2;
++            };
++            std::ranges::sort(found, [&rank](const auto& a, const auto& b) {
++                return std::pair{rank(a), a.filename().string()} <
++                       std::pair{rank(b), b.filename().string()};
++            });
++            list_files.insert(list_files.end(), found.begin(), found.end());
++        }
++        if (const char* const value = std::getenv("EDEN_UP_PIPELINE_LIST_IMPORT");
++            value != nullptr && value[0] != '\0' && std::string_view{value} != "1") {
++            list_files.emplace_back(value);
++        }
++    }
++    const auto lists = ReadPrepassLists(
++        list_files, CACHE_VERSION, static_cast<u32>(device.GetDriverID()), device.GetDriverVersion(),
++        canonical_keys, [this](GraphicsPipelineCacheKey& key) {
++            key.state.driver_id = dynamic_features.driver_id;
++            key.state.driver_version = dynamic_features.driver_version;
++            return key.Hash();
++        });
++    std::unordered_set<u64> listed;
++    size_t listed_known = 0, listed_missing = 0;
++    for (const u64 hash : lists.keys) {
++        if (left.contains(hash)) {
++            listed.insert(hash);
++        } else if (prep_store.Contains(hash)) {
++            ++listed_known;
++        } else {
++            ++listed_missing;
++        }
++    }
++    // About 21 KiB a kept record (d4: 820 kept in 17 MiB; own stores 18-20.5 KiB).
++    const u64 disk_needed_mb = (u64{total} * 21) >> 10;
++    const u64 disk_free_mb = FreeDiskMegabytes(output_dir);
++    LOG_INFO(Render_Vulkan,
++             "Shader set prepass: set file ready in {:.0f} s; {} records: {} keys to prepare, {} "
++             "known already, {} repeats of a key, {} not for this device ({:.1f} s to count). "
++             "Lists: {} keys from {} files, {} of them to prepare first, {} known already, {} not "
++             "in the set;{} Needs about {} MB of disk, {} MB free (floor {} MB)",
++             set_seconds, records, total, known, repeats, unusable, since(count_begin),
++             lists.keys.size(), list_files.size(), listed.size(), listed_known, listed_missing,
++             lists.report, disk_needed_mb, disk_free_mb,
++             VideoCommon::ShaderSet::MinimumFreeDiskBytes() >> 20);
++    if (total == 0) {
++        return;
++    }
++
++    // 4. The passes, with a reporter beside them: the boot screen twice a second, the log every
++    // 10 s, the skip flag once a second.
++    const auto pool = std::make_unique<Common::ThreadWorker>(jobs, "ShaderSetPrepass");
++    ShaderSetPass pass;
++    pass.left = &left;
++    pass.pool = pool.get();
++    pass.jobs = jobs;
++    pass.memory_wait = std::chrono::seconds{memory_wait};
++    if (max_seconds != 0) {
++        pass.deadline = begin + std::chrono::seconds{max_seconds};
++    }
++    const auto pass_begin = Clock::now();
++    const auto rate = [&] {
++        const double seconds = since(pass_begin);
++        return seconds > 0 ? static_cast<double>(pass.processed.load()) / seconds : 0.0;
++    };
++    const auto minutes_left = [&](double per_second) {
++        const size_t done = pass.processed.load();
++        return per_second > 0 ? static_cast<double>(total - std::min(done, total)) / per_second / 60.0
++                              : 0.0;
++    };
++    std::mutex callback_mutex;
++    callback(VideoCore::LoadCallbackStage::Prepare, 0, total);
++    std::jthread reporter([&](std::stop_token done) {
++        Common::SetCurrentThreadName("ShaderSetPrepass");
++        const std::array<std::filesystem::path, 2> flags{output_dir / "shader_set_prepass.skip",
++                                                         title_dir / "shader_set_prepass.skip"};
++        for (unsigned tick = 1; Common::StoppableTimedWait(done, std::chrono::milliseconds{500});
++             ++tick) {
++            {
++                std::scoped_lock lock{callback_mutex};
++                callback(VideoCore::LoadCallbackStage::Prepare,
++                         std::min(pass.processed.load(), total), total);
++            }
++            if (tick % 2 == 0 && !pass.skip.load()) {
++                for (const auto& flag : flags) {
++                    std::error_code error;
++                    if (std::filesystem::exists(flag, error)) {
++                        std::filesystem::remove(flag, error);
++                        pass.skip.store(true);
++                        LOG_INFO(Render_Vulkan, "Shader set prepass: {} found (removed); the "
++                                                "game starts after the builds in flight",
++                                 Common::FS::PathToUTF8String(flag));
++                        break;
++                    }
++                }
++            }
++            if (tick % 20 == 0) {
++                const double per_second = rate();
++                LOG_INFO(Render_Vulkan,
++                         "Shader set prepass: {} of {} ({} of {} listed), {:.1f} a second, about "
++                         "{:.0f} min left; {} kept, {} failed; {:.0f} s; {} MB free memory, {} MB "
++                         "free disk, store {} MiB",
++                         pass.processed.load(), total, pass.listed_done.load(), listed.size(),
++                         per_second, minutes_left(per_second), pass.kept.load(), pass.failed.load(),
++                         since(pass_begin), VideoCommon::ShaderSet::FreeMemoryBytes() >> 20,
++                         FreeDiskMegabytes(output_dir), prep_store.DataBytes() >> 20);
++            }
++        }
++    });
++    if (!listed.empty()) {
++        pass.only_keys = &listed;
++        (void)PrepareShaderSet(outputs.records, stop, nullptr, &pass);
++        pass.only_keys = nullptr;
++    }
++    if (pass.ended.empty() && !stop.stop_requested()) {
++        std::unordered_set<u64> earlier;
++        for (const u64 hash :
++             VideoCommon::ShaderSet::ReadPrograms(output_dir / "prep_shader_set.live")) {
++            earlier.insert(hash);
++        }
++        if (!earlier.empty()) {
++            (void)PrepareShaderSet(outputs.records, stop, &earlier, &pass);
++        }
++    }
++    if (pass.ended.empty() && !stop.stop_requested()) {
++        (void)PrepareShaderSet(outputs.records, stop, nullptr, &pass);
++    }
++    reporter.request_stop();
++    reporter.join();
++    const size_t done = std::min(pass.processed.load(), total);
++    callback(VideoCore::LoadCallbackStage::Prepare, done, total);
++    const double per_second = rate();
++    LOG_INFO(Render_Vulkan,
++             "Shader set prepass done: {} of {} keys taken ({} kept, {} failed; {} of {} listed) in "
++             "{:.0f} s ({:.1f} a second; {:.0f} s with the set file and the count); {} left for "
++             "beside the game or the next start; store {} records, {} MiB; {} MB free disk; {}",
++             done, total, pass.kept.load(), pass.failed.load(), pass.listed_done.load(),
++             listed.size(), since(pass_begin), per_second, since(begin), left.size(),
++             prep_store.Size(), prep_store.DataBytes() >> 20, FreeDiskMegabytes(output_dir),
++             stop.stop_requested() ? std::string{"stopped at shutdown"}
++             : pass.ended.empty()  ? std::string{"all done"}
++                                   : "ended early: " + pass.ended);
++} catch (const std::exception& e) {
++    VideoCommon::ShaderSet::OverrideDuty(0);
++    LOG_WARNING(Render_Vulkan, "Shader set prepass: ended: {}; the game starts", e.what());
++}
++
+ // EDEN_UP_FIRST_START_LIST_WRITE=1 -----------------------------------------------------------
+ // Ported from a draft (12 Nov 2026), remade after two reviews: the
+ // list is also written every 30 s (a start that dies at the door leaves one), the header names
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.h b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+index 3eaea99..10e7c73 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.h
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+@@ -47,6 +47,7 @@
+ #include "video_core/renderer_vulkan/vk_pipeline_prep.h"
+ #include "video_core/renderer_vulkan/vk_build_burst.h"
+ #include "video_core/shader_cache.h"
++#include "video_core/shader_set.h"
+ #include "video_core/stage_cache.h"
+ 
+ namespace Core {
+@@ -477,10 +478,41 @@ private:
+     bool MapShaderSetState(std::span<const u8> state, std::array<u64, 6> hashes,
+                            u32 vertex_read_mask, std::vector<u8>& bytes) const;
+     void StartShaderSet(const std::filesystem::path& title_dir);
++    /// What the set file is made from (cache version, lowering tag, device, translation stamp).
++    [[nodiscard]] VideoCommon::ShaderSet::Identity MakeShaderSetIdentity() const;
++    /// EDEN_UP_SHADER_SET_PREPASS=1 (0770): one pass of PrepareShaderSet before the game starts.
++    /// `left` holds the keys still to prepare (a key is taken out when it is queued, so a key the
++    /// set holds twice is built once); `only_keys`, when set, limits the pass to those keys (the
++    /// ones list files name). Full duty, no cap, `jobs` in flight on `pool` (the prepass's own
++    /// threads, so EDEN_NX2_PIPELINE_WORKERS keeps its meaning for play); under the memory floor
++    /// the reading waits (up to `memory_wait`) instead of stopping.
++    struct ShaderSetPass {
++        std::unordered_set<u64>* left{};
++        const std::unordered_set<u64>* only_keys{};
++        Common::ThreadWorker* pool{};
++        size_t jobs{1};
++        std::chrono::steady_clock::time_point deadline{}; ///< epoch: no time limit
++        std::chrono::seconds memory_wait{300};
++        std::atomic<size_t> processed{}; ///< keys taken: built, failed or left out
++        std::atomic<size_t> kept{};
++        std::atomic<size_t> failed{};
++        std::atomic<size_t> listed_done{}; ///< of them, keys a list named
++        std::atomic<bool> skip{};          ///< the skip flag file was seen: queue nothing more
++        std::string ended;                 ///< why reading stopped early (empty: read through)
++    };
++    void RunShaderSetPrepass(const std::filesystem::path& title_dir, std::stop_token stop,
++                             const VideoCore::DiskResourceLoadCallback& callback);
++    /// Set by RunShaderSetPrepass: StartShaderSet's thread uses these instead of preparing the
++    /// set file again (empty records: there is none this start).
++    bool shader_set_prepared{};
++    std::filesystem::path shader_set_prepared_records;
++    std::filesystem::path shader_set_prepared_programs;
+     /// `only_programs`: a pass over the records whose programs are all in it (the ones that are
+     /// live, or were in earlier sessions), in place of the whole file. True: it paused for memory.
++    /// `pass` (EDEN_UP_SHADER_SET_PREPASS): the before-play pass's settings and counts.
+     bool PrepareShaderSet(const std::filesystem::path& file, std::stop_token stop,
+-                          const std::unordered_set<u64>* only_programs = nullptr);
++                          const std::unordered_set<u64>* only_programs = nullptr,
++                          ShaderSetPass* pass = nullptr);
+     /// The audit line, every 60 s from TickFrame and at shutdown.
+     void LogShaderSetAudit(bool final);
+     /// The audit's counters (programs: native programs registered this session and those whose
+diff --git a/src/video_core/shader_set.cpp b/src/video_core/shader_set.cpp
+index 1588724..7c1af96 100644
+--- a/src/video_core/shader_set.cpp
++++ b/src/video_core/shader_set.cpp
+@@ -405,12 +405,23 @@ u64 MinimumFreeDiskBytes() {
+     return floor;
+ }
+ 
++namespace {
++std::atomic<unsigned> duty_override{0}; // OverrideDuty (EDEN_UP_SHADER_SET_PREPASS); 0: none
++} // namespace
++
+ unsigned DutyPercent() {
+     static const unsigned duty =
+         static_cast<unsigned>(std::clamp<size_t>(SwitchNumber("EDEN_UP_SHADER_SET_DUTY", 50), 1, 100));
++    if (const unsigned forced = duty_override.load(std::memory_order_relaxed); forced != 0) {
++        return forced;
++    }
+     return duty;
+ }
+ 
++void OverrideDuty(unsigned percent) {
++    duty_override.store(std::min(percent, 100U), std::memory_order_relaxed);
++}
++
+ bool MemoryCheckWaived() {
+     static const bool waived = Common::PeSwitch("EDEN_UP_SHADER_SET_NO_MEMORY_CHECK");
+     return waived;
+diff --git a/src/video_core/shader_set.h b/src/video_core/shader_set.h
+index 771b405..3260929 100644
+--- a/src/video_core/shader_set.h
++++ b/src/video_core/shader_set.h
+@@ -98,6 +98,10 @@ struct Identity {
+ /// Extraction, lowering and preparation rest after each piece of work for the remainder.
+ [[nodiscard]] unsigned DutyPercent();
+ 
++/// EDEN_UP_SHADER_SET_PREPASS (0770): while nothing else runs (before the game starts) the work
++/// takes full duty. `percent` 1-100 overrides DutyPercent until it is called again with 0.
++void OverrideDuty(unsigned percent);
++
+ /// EDEN_UP_SHADER_SET_NO_MEMORY_CHECK=1: run even where free memory cannot be read. Without it
+ /// the work is refused there (the floor is the only guard on a base PS5's few hundred MB).
+ [[nodiscard]] bool MemoryCheckWaived();

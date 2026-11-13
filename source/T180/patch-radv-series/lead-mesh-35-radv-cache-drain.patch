@@ -1,0 +1,148 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: EglantinePS5
+Date: Fri, 13 Nov 2026 18:00:00 +0100
+Subject: [PATCH] util/disk_cache: bounded drain before the guest starts, and at exit (RADV_PS5_CACHE_FAST)
+
+radv_ps5_disk_cache_drain(timeout_ms) waits up to timeout_ms for every put
+queued so far in the owned database caches, then writes what the parts hold
+back (lead-mesh-32), and prints "RADV_PS5_CACHE drain: N puts left after X ms
+(limit Y ms), K caches flushed". It returns true when no put was left. After
+tools/isolate-radv.py the symbol is eden_radv_private_radv_ps5_disk_cache_drain;
+Eden can declare it weak and call it once its before-play pass is done. With
+RADV_PS5_CACHE_FAST off it returns at once.
+
+At exit without vkDestroyInstance, u_queue.c's atexit handler stops the writer
+threads and drops what is queued. An atexit handler registered after that one
+(so run before it) drains for up to RADV_PS5_CACHE_EXIT_MS (2000 by default)
+and writes the held-back entries. vkDestroyInstance keeps upstream's unbounded
+util_queue_finish, and mesa_cache_db_close writes the held-back entries.
+
+Off: unchanged. Ours. Applies after lead-mesh-34.
+
+T172: applies unchanged after the rebased lead-mesh-34. lead-mesh-41 adds the
+link to lead-mesh-31's RADV_PS5_DISK_CACHE_DRAIN_EXIT and the app's hooks.
+
+Co-Authored-By: Claude Opus 5.5
+---
+diff --git a/src/util/disk_cache.c b/src/util/disk_cache.c
+index 024c0dc..0ba3b33 100644
+--- a/src/util/disk_cache.c
++++ b/src/util/disk_cache.c
+@@ -306,6 +306,19 @@ static uint64_t ps5_compress_last;
+ static uint64_t ps5_next_ns;
+ static unsigned ps5_draining;
+ 
++/* exit() without destroying the Vulkan instance: u_queue.c's atexit handler
++ * stops the writer threads and drops what is queued, and the batch of index
++ * entries a part holds back (up to 64) would be lost with them. This handler
++ * is registered after that one, so it runs first: it waits up to
++ * RADV_PS5_CACHE_EXIT_MS (2000 by default) and writes the parts out. */
++static unsigned ps5_exit_ms = 2000;
++
++static void
++ps5_cache_atexit(void)
++{
++   radv_ps5_disk_cache_drain(ps5_exit_ms);
++}
++
+ static void
+ ps5_cache_register(struct disk_cache *cache)
+ {
+@@ -317,6 +330,8 @@ ps5_cache_register(struct disk_cache *cache)
+       }
+    }
+    if (!ps5_start_ns) {
++      ps5_exit_ms = debug_get_num_option("RADV_PS5_CACHE_EXIT_MS", 2000);
++      atexit(ps5_cache_atexit);
+       ps5_start_ns = os_time_get_nano();
+       p_atomic_set(&ps5_next_ns, ps5_start_ns + PS5_REPORT_NS);
+       fprintf(stderr, "RADV_PS5_CACHE fast on: %s, %u writer threads\n",
+@@ -329,6 +344,12 @@ static void
+ ps5_cache_unregister(struct disk_cache *cache)
+ {
+    simple_mtx_lock(&ps5_caches_lock);
++   /* lead-mesh-35: not while a drain uses the cache. */
++   while (p_atomic_read(&ps5_draining)) {
++      simple_mtx_unlock(&ps5_caches_lock);
++      os_time_sleep(1000);
++      simple_mtx_lock(&ps5_caches_lock);
++   }
+    for (unsigned i = 0; i < PS5_CACHE_MAX; i++) {
+       if (ps5_caches[i] == cache)
+          ps5_caches[i] = NULL;
+@@ -428,6 +449,58 @@ ps5_cache_report(void)
+    ps5_last = now_counts;
+ }
+ 
++/* lead-mesh-35: waits up to timeout_ms for every put queued so far in the
++ * owned database caches to be written, then writes what the parts hold back
++ * (lead-mesh-32), whether or not the wait finished. True when no put was
++ * left. Eden can call it once its before-play pass is done, before the guest
++ * starts (eden_radv_private_radv_ps5_disk_cache_drain after isolate-radv.py);
++ * it runs at exit too. With RADV_PS5_CACHE_FAST off it returns at once. */
++bool
++radv_ps5_disk_cache_drain(unsigned timeout_ms)
++{
++   if (!mesa_cache_db_ps5_fast())
++      return true;
++
++   int64_t start = os_time_get_nano();
++   int64_t deadline = start + (int64_t)timeout_ms * 1000000;
++   struct disk_cache *caches[PS5_CACHE_MAX];
++   unsigned left = 0, flushed = 0;
++
++   /* The registry lock is not held while waiting (the writer threads take
++    * it for the RADV_PS5_CACHE line); ps5_draining keeps the caches from
++    * being unregistered, and so freed, meanwhile. */
++   simple_mtx_lock(&ps5_caches_lock);
++   p_atomic_inc(&ps5_draining);
++   memcpy(caches, ps5_caches, sizeof(caches));
++   simple_mtx_unlock(&ps5_caches_lock);
++
++   for (unsigned i = 0; i < PS5_CACHE_MAX; i++) {
++      struct disk_cache *cache = caches[i];
++      if (!cache)
++         continue;
++      while (p_atomic_read(&cache->ps5_added) != p_atomic_read(&cache->ps5_done) &&
++             os_time_get_nano() < deadline)
++         os_time_sleep(2000);
++   }
++   for (unsigned i = 0; i < PS5_CACHE_MAX; i++) {
++      struct disk_cache *cache = caches[i];
++      if (!cache)
++         continue;
++      left += p_atomic_read(&cache->ps5_added) - p_atomic_read(&cache->ps5_done);
++      if (mesa_cache_db_multipart_flush(&cache->cache_db))
++         flushed++;
++   }
++
++   simple_mtx_lock(&ps5_caches_lock);
++   p_atomic_dec(&ps5_draining);
++   simple_mtx_unlock(&ps5_caches_lock);
++
++   fprintf(stderr, "RADV_PS5_CACHE drain: %u puts left after %" PRId64
++           " ms (limit %u ms), %u caches flushed\n", left,
++           (os_time_get_nano() - start) / 1000000, timeout_ms, flushed);
++   return left == 0;
++}
++
+ void
+ disk_cache_ps5_note_write(size_t bytes, uint64_t ns, bool ok)
+ {
+diff --git a/src/util/disk_cache.h b/src/util/disk_cache.h
+index 94681b7..96d85e5 100644
+--- a/src/util/disk_cache.h
++++ b/src/util/disk_cache.h
+@@ -182,6 +182,12 @@ disk_cache_destroy(struct disk_cache *cache);
+ void
+ disk_cache_wait_for_idle(struct disk_cache *cache);
+ 
++/* RADV_PS5_CACHE_FAST=1 (lead-mesh-35): waits up to timeout_ms for the queued
++ * puts of the owned database caches and writes what their parts hold back;
++ * true when no put was left. Returns at once when the switch is off. */
++bool
++radv_ps5_disk_cache_drain(unsigned timeout_ms);
++
+ /**
+  * Remove the item in the cache under the name \key.
+  */

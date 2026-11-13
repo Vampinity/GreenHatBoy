@@ -1,0 +1,29 @@
+From: EglantinePS5
+Subject: up: no reserve() before each batched state write to the method sink (unconditional, behaviour-neutral)
+
+What: DmaPusher's fast path for runs of non-executable methods (only taken without the GPU thread
+split) called method_sink.reserve(size + batch) before every batch. reserve() allocates exactly
+that much, and the sink is cleared but never shrunk, so a sink that grew across batches before its
+next ConsumeSink reallocated and copied on every batch. Without it the vector grows geometrically,
+as push_back normally does.
+
+No switch: the sink holds the same entries in the same order either way; only when its storage is
+reallocated changes (behaviour-neutral). Memory: the sink keeps up to about twice its largest size
+as slack (8 bytes an entry, a few KiB). With the split on (the console's normal setting,
+EDEN_NX2_SPLIT=2) this path is not reached, so expect nothing there; it helps a run without the split.
+Nothing to see in a log.
+
+Origin and credit: zortos293/Lichii 979b5875d8 (#404), Paulius (no number given).
+---
+diff --git a/src/video_core/dma_pusher.cpp b/src/video_core/dma_pusher.cpp
+index f7fb1c5..edf069a 100644
+--- a/src/video_core/dma_pusher.cpp
++++ b/src/video_core/dma_pusher.cpp
+@@ -1420,7 +1420,6 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
+                         ++batch_count;
+                     }
+                     if (batch_count > 1) {
+-                        subchannel->method_sink.reserve(subchannel->method_sink.size() + batch_count);
+                         for (u32 i = 0; i < batch_count; ++i) {
+                             subchannel->method_sink.emplace_back(dma_state.method + i, commands[index + i].argument);
+                         }

@@ -1,0 +1,148 @@
+From: EglantinePS5
+Subject: [PATCH] up: FlushCommands skips a submit only when nothing at all was recorded since the last one (Frizti/Fritchii EXP61, exact check), off by default
+
+Switch: EDEN_UP_EXACT_EMPTY_SUBMITS=1 (exact 1, a live switch, Id ExactEmptySubmits, not armed).
+
+What: the scheduler counts every recorded command (Scheduler::RecordWithUploadBuffer, which every
+Record goes through) and notes the count at each Flush and Finish. With the switch on,
+RasterizerVulkan::FlushCommands returns without a submit when no command was recorded since then
+and no batched upload (EDEN_UP_UPLOAD_RUNS) is still pending. In Fritchii's busy town a fence with
+a download was flushed by InnerFence::Queue and then again by FlushCommands with an empty command
+buffer: about 4,600 empty submits a second. Our FlushCommands has the same shape (draw_counter is
+not reset by the InnerFence::Queue flush), so the same double flush can happen here. Not checked
+on the console how often it does.
+
+How it differs from 0318 EDEN_PE_NO_EMPTY_SUBMITS (ProsperoEden): 0318 skips when no draw went
+through FlushWork in this tick. Uploads, copies, clears and query work recorded outside FlushWork
+do not count there, so 0318 can hold back a submit that has real work in it. This check counts
+every recorded command, so it skips only truly empty submits. Both can be on; 0318 is checked
+first.
+
+Where it comes from (credit): Frizti/Fritchii c338269b92 "vulkan: EXP61 skips FlushCommands'
+submit when nothing was recorded since the last one" (author Frizti), made default-on in
+0d9dc6e362 (his numbers: empty submits 4,600 -> 145 a second, 43.0 -> 45.6 fps, GPU thread drain
+432 -> 396 ms/s, on his PC). The pending-uploads part of RecordedSinceSubmit is from his
+25892ea154 (EXP62), because our tree has the same upload batch. Port and switch name ours.
+
+Off (unset or anything but exact 1): one live-switch load per FlushCommands that got past its draw
+count, and one counter increment per recorded command (the count runs always, so a live flip is
+right at once). No submit changes. Changes no shader translation and no shader-store stamp: the
+switch name is only in common/live_switch.h, outside the sources TranslationSwitches is made from
+(the Vulkan files name it only as "patch 0750"). vk_scheduler.h is not in the translation id's
+file list.
+
+Risk when on: a submit that was needed for something other than recorded commands would be held
+back until the next Flush. Every wait for a tick that is not submitted yet flushes by itself
+(Scheduler::Wait), and a deferred fence flush still goes out at FlushDeferred, so none is known.
+Fritchii runs it on by default.
+
+What a test should look at: live A/B on the village walk (EDEN_UP_LIVE_SWITCHES=1, this switch
+alone). Compare 5 s fps windows, submits a second (EDEN_UP_SUBMIT_STATS=1, video_core/submit_stats.h), GPU thread drain ms a second, and memory at the door load. The new log line
+"Exact empty submits (0750): N flushes skipped so far" (at 1, 2, 4, 8 ...) shows whether it does
+anything at all. If N stays small, the double flush is rare here: say that, not "no gain".
+Picture: watch for a frame that shows late (it should not change anything on screen).
+---
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+index 156b0a3..647fa9d 100644
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -225,6 +225,11 @@ enum class Id : u8 {
+     /// macro DMA read (Maxwell3D::FrontDmaRead); each read chooses on its own, both ways give the
+     /// words guest memory holds after the work that may write them.
+     DmaUnwrittenFast,
++    /// EDEN_UP_EXACT_EMPTY_SUBMITS (0750, Frizti/Fritchii c338269b92, EXP61). Read by each
++    /// RasterizerVulkan::FlushCommands that got past its draw count: it skips the submit when
++    /// the scheduler recorded nothing since the last Flush or Finish. The count runs whatever the
++    /// value, so each flush decides on its own, and a skipped one leaves nothing unsent.
++    ExactEmptySubmits,
+     Count,
+ };
+ 
+@@ -367,6 +372,7 @@ inline constexpr std::array<Def, NumSwitches> kDefs{{
+     {"EDEN_NX2_UBO_INPLACE", ParseLeadingOne, false, -1},
+     {"EDEN_UP_REG_WRITE_ONE_CALL", ParseExactOne, false, -1},
+     {"EDEN_UP_DMA_UNWRITTEN_FAST", ParseExactOne, false, -1},
++    {"EDEN_UP_EXACT_EMPTY_SUBMITS", ParseExactOne, false, -1},
+ }};
+ 
+ static_assert(kDefs[static_cast<size_t>(Id::PollBackoffUs)].needs ==
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index fb0a426..b068612 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -2985,6 +2985,20 @@ void RasterizerVulkan::FlushCommands() {
+     if (no_empty && scheduler.CurrentTick() != pe_recorded_tick) {
+         return;
+     }
++    // Patch 0750 (Frizti/Fritchii c338269b92, EXP61; live switch ExactEmptySubmits, exact 1): a
++    // fence with a download is flushed by InnerFence::Queue, then again here with an empty
++    // command buffer (~4,600 empty submits a second in his busy town). Skip only when the
++    // scheduler recorded no command at all since the last Flush or Finish (uploads, copies,
++    // clears and barriers count too, and batched uploads still pending). Off: one load.
++    if (Common::LiveSwitch::Value<Common::LiveSwitch::Id::ExactEmptySubmits>() != 0 &&
++        !scheduler.RecordedSinceSubmit()) {
++        static u64 skipped = 0;
++        if (++skipped; (skipped & (skipped - 1)) == 0) {
++            LOG_INFO(Render_Vulkan, "Exact empty submits (0750): {} flushes skipped so far",
++                     skipped);
++        }
++        return;
++    }
+     // Fences with downloads or queries come here right after queueing: ~9,400 a second in
+     // Hyrule Warriors: Age of Imprisonment fights. Batched like the fences themselves.
+     VideoCommon::ZpassCut::SiteScope site{VideoCommon::ZpassCut::Site::FenceFlush};
+diff --git a/src/video_core/renderer_vulkan/vk_scheduler.cpp b/src/video_core/renderer_vulkan/vk_scheduler.cpp
+index 9855efb..f546572 100644
+--- a/src/video_core/renderer_vulkan/vk_scheduler.cpp
++++ b/src/video_core/renderer_vulkan/vk_scheduler.cpp
+@@ -259,6 +259,8 @@ u64 Scheduler::Flush(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore) {
+     const u64 signal_value = SubmitExecution(signal_semaphore, wait_semaphore);
+     AllocateNewContext();
+     last_flush = std::chrono::steady_clock::now();
++    // patch 0750: what AllocateNewContext recorded is sent (after last_flush: the port rewriter's anchor)
++    submitted_serial = record_serial;
+     flush_pending = false;
+     return signal_value;
+ }
+@@ -385,6 +387,7 @@ void Scheduler::Finish(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore)
+     SubmitExecution(signal_semaphore, wait_semaphore);
+     Wait(presubmit_tick);
+     AllocateNewContext();
++    submitted_serial = record_serial; // patch 0750
+ }
+ 
+ void Scheduler::WaitWorker() {
+diff --git a/src/video_core/renderer_vulkan/vk_scheduler.h b/src/video_core/renderer_vulkan/vk_scheduler.h
+index 0564467..9393c87 100644
+--- a/src/video_core/renderer_vulkan/vk_scheduler.h
++++ b/src/video_core/renderer_vulkan/vk_scheduler.h
+@@ -184,6 +184,12 @@ public:
+ 
+     void RecordUpload(VkBuffer src, VkBuffer dst, std::span<const VkBufferCopy> copies);
+ 
++    /// Patch 0750 (Frizti/Fritchii c338269b92 + 25892ea154): whether a command was recorded, or
++    /// a batched upload is still pending, since the last Flush or Finish.
++    [[nodiscard]] bool RecordedSinceSubmit() const noexcept {
++        return uploads_pending || record_serial != submitted_serial;
++    }
++
+     /// Send work to a separate thread.
+     template <typename T>
+         requires std::is_invocable_v<T, vk::CommandBuffer, vk::CommandBuffer>
+@@ -194,6 +200,7 @@ public:
+         if (uploads_pending) {
+             FlushUploads();
+         }
++        ++record_serial; // patch 0750: RecordedSinceSubmit
+         if (chunk->Record(command)) {
+             return;
+         }
+@@ -312,6 +319,8 @@ public:
+ private:
+     std::chrono::steady_clock::time_point last_flush{};
+     bool flush_pending{};
++    u64 record_serial{};    ///< Patch 0750: commands recorded (RecordWithUploadBuffer)
++    u64 submitted_serial{}; ///< Patch 0750: record_serial at the last Flush or Finish
+     /// Submit statistics: a flush was put off since the last submission, and when the first was.
+     bool stats_deferred{};
+     std::chrono::steady_clock::time_point stats_deferred_since{};

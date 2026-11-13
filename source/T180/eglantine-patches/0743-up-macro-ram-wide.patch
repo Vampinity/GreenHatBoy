@@ -1,0 +1,152 @@
+From: EglantinePS5
+Subject: [PATCH] up: native macro RAM 0x3000 -> 0x8000 words so entries past 0x1000 run (Zortos, zortos293/Lichii #439, from Djihads80/Eglantine#663), EDEN_UP_MACRO_RAM_WIDE=1 (boot), off by default
+
+Switch: EDEN_UP_MACRO_RAM_WIDE=1 (exact 1, read once when the first macro engine is made, so it
+is a boot switch). Unset: 0x3000 words and the method < 0x1000 clamp, as before.
+
+What: the Turing native macro RAM (MacroEngine::native_code) holds 0x3000 words, three per
+instruction, so 0x1000 instructions. Upstream's commit message and the core gap audit: Ocarina
+calls native macros that start at instructions 0x1010 and 0x1018; with the old size their code is
+cut off at upload (ClearCode sends the write offset past the end for an entry >= 0x1000) and the
+calls fail with "Native MME failed ... instruction outside uploaded RAM", dropping draws. The
+upstream author saw constant flicker in the village and thousands of these errors a minute
+before, none after. Our run149 (6 Nov) logged 31 such lines at 429 s; the 40 newest run folders
+(12 Nov) had none (from the core gap audit; not checked again here). With the switch on the RAM
+holds 0x8000 words (0x2aaa instructions) and ClearCode accepts every entry the RAM holds.
+
+Where: video_core/macro.h (NativeMacroRamWords; native_code is now a std::vector sized at boot
+from the switch instead of std::array<u32, 0x3000>; ClearCode's clamp is upstream's
+"method * 3 < size", which is method < 0x1000 at 0x3000 words), macro.cpp and
+engines/kepler_compute.cpp (the macro dumps write native_code.size() words instead of sizeof).
+Everything that reads the RAM already takes a span or size() (the interpreter, the native JIT,
+AnalyzeEffects, the headless MacroNative hook, the split back's copy).
+
+Differences from upstream: upstream changes the array to std::array<u32, 0x8000> for everyone
+(+80 KiB per macro engine) and adds a unit test; here the size is chosen at boot, so off costs no
+memory, and the test is not taken (our tree does not build src/tests for the console).
+
+Origin and credit: Zortos (zortos293), zortos293/Lichii commit 7969a392c2 "macro: enlarge the
+Turing macro RAM so entries past 0x1000 execute (#439)", 7 Nov 2026, GPL-3.0; from Brandon
+Bunnelle's Djihads80/Eglantine#663. Port and switch ours.
+
+Off: native_code is a heap vector of the same 0x3000 words (one pointer load more per macro
+upload word and per RAM read set-up); same clamp, same dumps byte for byte. No shader translation
+change, no shader-store stamp change.
+
+Cost when on: +80 KiB per macro engine (a few engines: 3D, compute and the split back's copy), dumps of 128 KiB instead
+of 48 KiB, and the native JIT (when it runs) prepares 0x2aaa instructions instead of 0x1000 each
+time the uploaded code changes, so a JIT prepare costs up to 2.7 times as long.
+
+Test: count "instruction outside uploaded RAM" lines in every batch run (on: should be 0). One run
+from a save in the later area where run149 saw them, if such a save exists. Look at: those lines,
+flicker in the village clips, walk fps within 0.3 of off, no new crash kind.
+---
+diff --git a/src/video_core/engines/kepler_compute.cpp b/src/video_core/engines/kepler_compute.cpp
+index 18819457b3..c9a161f7b7 100644
+--- a/src/video_core/engines/kepler_compute.cpp
++++ b/src/video_core/engines/kepler_compute.cpp
+@@ -205,7 +205,7 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
+                 std::ofstream dump(fmt::format("native-compute-mme-{}.bin", fmt::ptr(this)),
+                                    std::ios::binary);
+                 dump.write(reinterpret_cast<const char*>(native_macro->native_code.data()),
+-                           sizeof(native_macro->native_code));
++                           native_macro->native_code.size() * sizeof(u32));
+             }
+             LOG_INFO(HW_GPU, "MME call engine {} method {:#x} start={:#x} parameters={:08x}",
+                      fmt::ptr(this), *native_executing_macro_logged, native_macro_positions[entry],
+@@ -302,7 +302,7 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
+             if (static const bool diagnostics = std::getenv("EDEN_NATIVE_DRAW_DIAGNOSTICS") != nullptr;
+                 diagnostics) {
+                 std::ofstream dump("native-compute-mme.bin", std::ios::binary);
+-                dump.write(reinterpret_cast<const char*>(native_macro->native_code.data()), sizeof(native_macro->native_code));
++                dump.write(reinterpret_cast<const char*>(native_macro->native_code.data()), native_macro->native_code.size() * sizeof(u32));
+             }
+             LOG_ERROR(HW_GPU, "Native MME failed: compute start={:#x}, pc={:#x}, consumed={}/{}, error={}, parameters={:08x}",
+                 native_macro_positions[entry], result.pc, result.consumed, native_parameters.size(), result.error,
+@@ -472,7 +472,7 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
+             std::ofstream dump("native-qmd.bin", std::ios::binary);
+             dump.write(reinterpret_cast<const char*>(qmd.data()), sizeof(qmd));
+             std::ofstream macros("native-dispatch-mme.bin", std::ios::binary);
+-            macros.write(reinterpret_cast<const char*>(native_macro->native_code.data()), sizeof(native_macro->native_code));
++            macros.write(reinterpret_cast<const char*>(native_macro->native_code.data()), native_macro->native_code.size() * sizeof(u32));
+             std::ofstream registers("native-dispatch-registers.bin", std::ios::binary);
+             registers.write(reinterpret_cast<const char*>(native_registers.data()), sizeof(native_registers));
+         }
+diff --git a/src/video_core/macro.cpp b/src/video_core/macro.cpp
+index b6a9450ba3..fa889d1466 100644
+--- a/src/video_core/macro.cpp
++++ b/src/video_core/macro.cpp
+@@ -1452,7 +1452,7 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
+         static const bool capture = std::getenv("EDEN_NATIVE_FRAME_CAPTURE") != nullptr;
+         if (capture && captured_contexts.insert(context).second) {
+             std::ofstream dump("native-graphics-mme-" + std::to_string(context) + ".bin", std::ios::binary);
+-            dump.write(reinterpret_cast<const char*>(native_code.data()), sizeof(native_code));
++            dump.write(reinterpret_cast<const char*>(native_code.data()), native_code.size() * sizeof(u32));
+         }
+         // EDEN_NX2_MME_LOG: log every macro call (runs ~750,000 times a second in title 1).
+         if (static const bool log_calls = std::getenv("EDEN_NX2_MME_LOG") != nullptr; log_calls) {
+@@ -1487,7 +1487,7 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
+                 if (++recorded == 200000) {
+                     record.flush();
+                     std::ofstream code{std::string{record_path} + ".code", std::ios::binary};
+-                    code.write(reinterpret_cast<const char*>(native_code.data()), sizeof(native_code));
++                    code.write(reinterpret_cast<const char*>(native_code.data()), native_code.size() * sizeof(u32));
+                     LOG_INFO(HW_GPU, "Recorded 200000 macro calls to {}", record_path);
+                 }
+             }
+@@ -1694,7 +1694,7 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
+             if (static const bool diagnostics = std::getenv("EDEN_NATIVE_DRAW_DIAGNOSTICS") != nullptr;
+                 diagnostics) {
+                 std::ofstream dump("native-mme-" + std::to_string(method) + ".bin", std::ios::binary);
+-                dump.write(reinterpret_cast<const char*>(native_code.data()), sizeof(native_code));
++                dump.write(reinterpret_cast<const char*>(native_code.data()), native_code.size() * sizeof(u32));
+             }
+             LOG_ERROR(HW_GPU, "Native MME failed: start={:#x}, pc={:#x}, consumed={}/{}, error={}{}",
+                       method, result.pc, result.consumed, parameters.size(), result.error,
+diff --git a/src/video_core/macro.h b/src/video_core/macro.h
+index c01899c285..85a97966da 100644
+--- a/src/video_core/macro.h
++++ b/src/video_core/macro.h
+@@ -23,6 +23,7 @@ class TuringMacroJit;
+ #include "common/container/unordered_map.h"
+ #include "common/bit_field.h"
+ #include "common/common_types.h"
++#include "common/pe_switch.h"
+ 
+ namespace Core {
+ class System;
+@@ -236,6 +237,14 @@ using AnyCachedMacro = std::variant<
+     std::unique_ptr<DynamicCachedMacro>
+ >;
+ 
++/// Words in a MacroEngine's native macro RAM (native_code). EDEN_UP_MACRO_RAM_WIDE=1 (0743,
++/// zortos293/Lichii #439, from Djihads80/Eglantine#663): 0x8000, so entries past instruction
++/// 0x1000 are uploaded and run; unset: 0x3000 as before. Read once, at the first engine.
++[[nodiscard]] inline std::size_t NativeMacroRamWords() noexcept {
++    static const std::size_t words = Common::PeSwitch("EDEN_UP_MACRO_RAM_WIDE") ? 0x8000 : 0x3000;
++    return words;
++}
++
+ struct MacroEngine {
+     MacroEngine(bool is_interpreted_) noexcept : is_interpreted{is_interpreted_} {}
+     // Store the uploaded macro code to compile them when they're called.
+@@ -249,7 +258,8 @@ struct MacroEngine {
+     }
+     // Clear the code associated with a method.
+     inline void ClearCode(u32 method) noexcept {
+-        if (native_turing) { native_write_offset = method < 0x1000 ? method * 3 : static_cast<u32>(native_code.size()); return; }
++        // 0743: an entry the RAM holds (method < 0x1000 at the default 0x3000 words, as before).
++        if (native_turing) { native_write_offset = u64{method} * 3 < native_code.size() ? method * 3 : static_cast<u32>(native_code.size()); return; }
+         macro_cache.erase(method);
+         uploaded_macro_code.erase(method);
+     }
+@@ -267,7 +277,8 @@ struct MacroEngine {
+     bool native_turing{};
+     bool native_execution_failed{};
+     u32 native_write_offset{};
+-    std::array<u32, 0x3000> native_code{};
++    /// NativeMacroRamWords() words, zeroed (0743: sized at boot, was std::array<u32, 0x3000>).
++    std::vector<u32> native_code = std::vector<u32>(NativeMacroRamWords());
+     TuringMacroInterpreter native_interpreter;
+     std::vector<u32> native_fifo;
+     // Calls replayed instead of interpreted (macro_memo.h), and what the current call wrote.

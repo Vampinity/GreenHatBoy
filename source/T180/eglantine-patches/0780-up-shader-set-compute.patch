@@ -1,0 +1,283 @@
+From: EglantinePS5
+Subject: [PATCH] up: the shader set converts the recipe's compute records too (EDEN_UP_SHADER_SET_COMPUTE=1), off by default
+
+Switch: EDEN_UP_SHADER_SET_COMPUTE=1 (exact "1", read once). Needs EDEN_UP_SHADER_SET=1 (and so
+EDEN_UP_CANONICAL_KEYS=1). Off: nothing changes (the same records, the same file bytes, the same
+stamp).
+
+Why: the d4 cold start (13 Nov) converted 113,054 of the recipe's 120,461 records and dropped all
+4,088 compute records ("dropped compute-predicted-unsupported: 4088"). That was by design, not a
+missing key part: the first port lowered only vertex and pixel programs ("No compute/mesh
+guesses", Lower) and dropped every kind-1 record before looking at it. In that start the game
+asked for 94 compute pipelines (first_start.list, C rows), every one translated on the GPU thread.
+
+What, with the switch:
+- Lower() also lowers compute programs (stage 5): from the code area's first byte, with a zero
+  program header in front, as ComputeEnvironment does for a native program (source header size
+  0; the live hash is CityHash64 of that code ^ 0x4f554e4345000003, the same tag). GUESS, not
+  checked on the game's files: that the extractor's compute code area starts with the first
+  instruction (the extractor takes the stage from the control section, not from a header). If it
+  does not, these programs fail to lower or never meet a live key: the drop line and the 0781
+  counts say so, and nothing else changes.
+- A compute record (one fact, recipe kind 1) is written with its key as the bytes of
+  ComputePipelineCacheKey: the lowered hash, the shared memory size and the workgroup size, the
+  last two from the fact's last 16 bytes (FileEnvironment::Serialize order: workgroup x, y, z,
+  shared). Checks: fingerprint found, lowered, and the fact as the live compute environment
+  serializes it (start address 80, lowest read 0, stage 5, the texture bank the lowering needs).
+  Drop reasons as for graphics.
+- Compute facts are stored whole (tables, then workgroup and shared memory); AppendEnvironment
+  adds no program header after a compute fact (Deserialize reads the 16 bytes instead).
+- ReadRecords gets an optional on_compute callback. A record with a 24-byte key goes to it and
+  nowhere else; readers without it (the preparation without 0781, the WHY catalogue) skip compute
+  records, and key_wanted is never asked about them.
+- The stamp gets the line "compute 1", so a set made without the switch is converted again once
+  (and back when it is turned off). One more log line: how many converted records are compute.
+
+Measured on the Mac (t158/recipe_check.py, our notes): the 94 C rows of the d4 list all have a
+record in this console's own backed-up vulkan.bin files, so compute keys repeat across sessions;
+87 of them have a recipe compute record with the same answers (handle values aside), workgroup
+and shared memory (50 with the same lowered length in Fritchii's file). INFERRED: those are the
+same programs; only the console run can prove the keys meet.
+
+T161s: applies after 0770-0772 (T157); the code is T158's, only the context lines are new.
+---
+diff --git a/src/video_core/shader_set.cpp b/src/video_core/shader_set.cpp
+index 7c1af96..87f8601 100644
+--- a/src/video_core/shader_set.cpp
++++ b/src/video_core/shader_set.cpp
+@@ -199,6 +199,8 @@ std::string ExtractorLines() {
+     if (Common::PeSwitch("EDEN_UP_SHADER_SET_STREAM")) lines += "extractor stream 1\n";
+     if (Common::PeSwitch("EDEN_UP_SHADER_SET_INDEX")) lines += "extractor index 1\n";
+     lines += "records layout 3\n"; // each program's code once, with its hash (ReadRecords)
++    // 0780: a set with compute records is another file (off: no line, the stamp as before).
++    if (ComputeAsked()) lines += "compute 1\n";
+     // EDEN_UP_SHADER_SET_RECONVERT=<n> (a test aid): a number in the stamp, so a set made with
+     // another number (or none) is converted again once, e.g. to time the conversion.
+     if (const size_t again = SwitchNumber("EDEN_UP_SHADER_SET_RECONVERT", 0); again != 0) {
+@@ -290,17 +292,26 @@ u8 Stage(FileSys::Nx2ShaderExtract::Stage s) {
+ struct Lowered { std::vector<u64> code; u64 hash; u32 bound; u32 read_mask; };
+ std::optional<Lowered> Lower(const Guest& p, std::stop_token stop) {
+     using namespace Shader::Ampere;
+-    // This first port feeds only ordinary graphics into PrepareKept. No compute/mesh guesses.
+-    if ((p.stage != 0 && p.stage != 4) || p.code.size() <= 128) return {};
++    // Ordinary graphics (vertex, pixel); with EDEN_UP_SHADER_SET_COMPUTE=1 (0780) compute too.
++    const bool compute = p.stage == 5 && ComputeAsked();
++    if (p.stage != 0 && p.stage != 4 && !compute) return {};
++    // A graphics program's code area starts with 128 bytes, the first 80 its program header
++    // (GraphicsEnvironment lowers from +128). A native compute program has no header: the live
++    // path lowers from its first byte and puts a zero header in front (ComputeEnvironment:
++    // InitializeNativeCode(..., 0), sph zero). GUESS, not checked on the game's files: the
++    // extractor's compute code area is the program from its first instruction, as for the live
++    // path (the stage comes from the control section, not from a header, nx2_shader_extract.cpp).
++    const size_t header = compute ? 0 : 128;
++    if (p.code.size() <= (compute ? size_t{0} : size_t{128})) return {};
+     Shader::ProgramHeader sph{};
+     static_assert(sizeof(sph) == 80);
+-    std::memcpy(&sph, p.code.data(), sizeof(sph));
++    if (!compute) std::memcpy(&sph, p.code.data(), sizeof(sph));
+     std::vector<Instruction> native;
+     ProgramCaptureState capture;
+     bool complete = false;
+     for (u32 i = 0; i < ProgramCaptureState::MaximumInstructions; ++i) {
+         if (stop.stop_requested()) return {};
+-        const size_t at = 128 + size_t{i} * sizeof(Instruction);
++        const size_t at = header + size_t{i} * sizeof(Instruction);
+         if (at > p.code.size() || sizeof(Instruction) > p.code.size() - at) break;
+         const auto instruction = Load<Instruction>(p.code, at);
+         // v2: a trap (0x95c) is lowered as the live path lowers it (lower_to_maxwell.h:1558,
+@@ -343,6 +354,25 @@ bool HydrateOk(const Facts& f, const Lowered& p) {
+     return p.bound == ~0U || Load<u32>(f.bytes, 52) == p.bound;
+ }
+ 
++/// 0780: the same for a compute fact: the live compute environment starts at its zero header's
++/// end (start address 80, ComputeEnvironment), and the fact ends with the workgroup size and the
++/// shared memory size (16 bytes, FileEnvironment::Serialize).
++bool ComputeFactOk(const Facts& f, const Lowered& p) {
++    if (f.bytes.size() < 76 || f.tables_end < 76 || f.tables_end + 16 != f.bytes.size() ||
++        p.code.size() < 10) {
++        return false;
++    }
++    if (Load<u32>(f.bytes, 72) != 5 || Load<u32>(f.bytes, 56) != 80 || Load<u32>(f.bytes, 60) != 0)
++        return false;
++    return p.bound == ~0U || Load<u32>(f.bytes, 52) == p.bound;
++}
++
++/// What a records file keeps of a fact: graphics facts up to their tables' end (nothing follows
++/// them for the vertex and pixel stages), compute facts whole (0780: workgroup and shared memory).
++size_t StoredFactBytes(const Facts& f) {
++    return f.bytes.size() >= 76 && Load<u32>(f.bytes, 72) == 5 ? f.bytes.size() : f.tables_end;
++}
++
+ /// One environment as FileEnvironment::Deserialize reads it: the fact's bytes (up to its tables'
+ /// end) around the lowered code (`code`: 8 bytes an instruction). Appended to `out`.
+ void AppendEnvironment(std::vector<char>& out, std::span<const char> fact,
+@@ -358,10 +388,18 @@ void AppendEnvironment(std::vector<char>& out, std::span<const char> fact,
+     std::memcpy(out.data() + at + 64, &last, sizeof(last));
+     out.insert(out.end(), code.begin(), code.end());
+     out.insert(out.end(), fact.begin() + 76, fact.end());
++    u32 stage{};
++    std::memcpy(&stage, fact.data() + 72, sizeof(stage));
++    if (stage == 5) {
++        return; // 0780: compute: the fact's workgroup and shared memory end it, no program header
++    }
+     out.insert(out.end(), code.begin(), code.begin() + 80); // graphics ProgramHeader is absent from facts
+ }
+ 
+ constexpr char SetMagic[9] = "edenset3";
++/// sizeof(ComputePipelineCacheKey): a record with a key this long is a compute record (0780);
++/// a graphics key is 1,056 bytes.
++constexpr u32 ComputeKeyBytes = 24;
+ } // namespace
+ 
+ } // namespace VideoCommon::ShaderSet
+@@ -427,6 +465,11 @@ bool MemoryCheckWaived() {
+     return waived;
+ }
+ 
++bool ComputeAsked() {
++    static const bool asked = Common::PeSwitch("EDEN_UP_SHADER_SET_COMPUTE");
++    return asked;
++}
++
+ bool Rest(std::stop_token stop, std::chrono::steady_clock::duration rest) {
+     if (rest <= std::chrono::steady_clock::duration::zero()) {
+         return !stop.stop_requested();
+@@ -715,11 +758,39 @@ Outputs Prepare(u64 title, const std::filesystem::path& title_dir,
+         std::vector<u64> used_programs; // lowered hashes with at least one converted record
+         std::unordered_set<u64> used_seen;
+         size_t converted = 0;
++        size_t compute_converted = 0; // 0780
+         u64 next_report = u64{512} << 20;
+         std::vector<u8> used_fact(r.facts.size());
+         for (const auto& p : r.records) {
+             if (stop.stop_requested()) return out; // the temporary is removed with `file`
+-            if (p.kind == 1) { ++dropped["compute-predicted-unsupported"]; continue; }
++            if (p.kind == 1) {
++                if (!ComputeAsked()) { ++dropped["compute-predicted-unsupported"]; continue; }
++                // 0780: one compute fact; the key is ComputePipelineCacheKey's bytes (unique
++                // hash, shared memory size, workgroup size; vk_pipeline_cache.h), all from the
++                // lowered program and the fact's last 16 bytes (workgroup x, y, z, shared).
++                const u32 id = p.facts[0];
++                const auto& f = r.facts[id];
++                if (!have.contains(r.programs[f.program].fingerprint)) { ++dropped["fingerprint-not-found"]; continue; }
++                if (!lowered[f.program]) { ++dropped["stage-or-lowering"]; continue; }
++                const auto& program = *lowered[f.program];
++                if (!ComputeFactOk(f, program)) { ++dropped["incompatible-facts"]; continue; }
++                const size_t tail = f.tables_end;
++                std::vector<u8> key(ComputeKeyBytes);
++                Patch<u64>(key, 0, program.hash);
++                Patch<u32>(key, 8, Load<u32>(f.bytes, tail + 12));
++                Patch<u32>(key, 12, Load<u32>(f.bytes, tail));
++                Patch<u32>(key, 16, Load<u32>(f.bytes, tail + 4));
++                Patch<u32>(key, 20, Load<u32>(f.bytes, tail + 8));
++                file.Write(u32{1});
++                file.Write(id);
++                used_fact[id] = 1;
++                file.Write(static_cast<u32>(key.size()));
++                file.Write(Bytes{key});
++                ++converted;
++                ++compute_converted;
++                if (used_seen.insert(program.hash).second) used_programs.push_back(program.hash);
++                continue;
++            }
+             bool mesh = false, absent = false, lower_failed = false;
+             for (auto id : p.facts) {
+                 const auto pi = r.facts[id].program;
+@@ -774,6 +845,10 @@ Outputs Prepare(u64 title, const std::filesystem::path& title_dir,
+         }
+         LOG_INFO(Render_Vulkan, "Shader set: pipelines read {}, converted {}, dropped {} (exclusive reasons); "
+                  "{:.1f} s in all", r.records.size(), converted, total_dropped, seconds());
++        if (ComputeAsked()) {
++            LOG_INFO(Render_Vulkan, "Shader set: EDEN_UP_SHADER_SET_COMPUTE=1: {} of the converted records "
++                     "are compute pipelines", compute_converted);
++        }
+         if (!converted || stop.stop_requested()) return out;
+         // The facts and the programs the records name, each once, and the trailer.
+         const u64 facts_at = file.Written();
+@@ -784,8 +859,9 @@ Outputs Prepare(u64 title, const std::filesystem::path& title_dir,
+             const auto& f = r.facts[id];
+             file.Write(id);
+             file.Write(static_cast<u32>(f.program));
+-            file.Write(static_cast<u32>(f.tables_end));
+-            file.Write(Bytes{f.bytes.data(), f.tables_end});
++            const size_t stored = StoredFactBytes(f);
++            file.Write(static_cast<u32>(stored));
++            file.Write(Bytes{f.bytes.data(), stored});
+             used_program[f.program] = 1;
+             ++fact_count;
+         }
+@@ -865,7 +941,8 @@ bool ReadRecords(
+     const std::filesystem::path& path, u32 cache_version,
+     const std::function<void(std::ifstream&, std::vector<FileEnvironment>)>& on_graphics,
+     const std::function<bool(std::span<const u64>)>& programs_wanted,
+-    const std::function<bool(std::span<const u8>)>& key_wanted) {
++    const std::function<bool(std::span<const u8>)>& key_wanted,
++    const std::function<void(std::ifstream&, FileEnvironment)>& on_compute) {
+     // One record's bytes at a time, read through an ifstream as the pipeline cache's callbacks
+     // and FileEnvironment::Deserialize expect (they only read forward).
+     struct MemBuf final : std::streambuf {
+@@ -969,6 +1046,9 @@ bool ReadRecords(
+         std::vector<char> bytes, fact, code, key;
+         std::array<u64, 6> hashes{};
+         for (const SetIndex::Record& record : index->records) {
++            // 0780: a compute record goes to on_compute only; a reader without one never sees it.
++            const bool compute = record.key_size == ComputeKeyBytes;
++            if (compute && (!on_compute || record.count != 1)) continue;
+             if (programs_wanted) {
+                 for (u32 n = 0; n < record.count; ++n) {
+                     hashes[n] = index->code_at.at(index->fact_at.at(record.facts[n]).program).hash;
+@@ -978,7 +1058,7 @@ bool ReadRecords(
+             key.resize(record.key_size);
+             seek(record.key_at);
+             file.read(key.data(), key.size());
+-            if (key_wanted &&
++            if (key_wanted && !compute &&
+                 !key_wanted(std::span<const u8>{reinterpret_cast<const u8*>(key.data()),
+                                                key.size()})) {
+                 continue;
+@@ -1004,6 +1084,12 @@ bool ReadRecords(
+             in.exceptions(std::ifstream::failbit | std::ifstream::badbit);
+             u32 num_envs{};
+             in.read(reinterpret_cast<char*>(&num_envs), sizeof(num_envs));
++            if (compute) {
++                FileEnvironment env;
++                env.Deserialize(in);
++                on_compute(in, std::move(env));
++                continue;
++            }
+             std::vector<FileEnvironment> envs(num_envs);
+             for (FileEnvironment& env : envs) env.Deserialize(in);
+             on_graphics(in, std::move(envs));
+diff --git a/src/video_core/shader_set.h b/src/video_core/shader_set.h
+index 3260929..6b635b0 100644
+--- a/src/video_core/shader_set.h
++++ b/src/video_core/shader_set.h
+@@ -45,11 +45,14 @@ using MapState = std::function<bool(std::span<const u8> state, std::array<u64, 6
+ /// `programs_wanted` (optional) is asked for each record first, with the lowered hashes of its
+ /// programs and nothing read from the file; `key_wanted` (optional) next, with the record's key
+ /// bytes. False from either leaves the record out before its environments are built.
++/// `on_compute` (optional, 0780): compute records (key of 24 bytes, one environment) go here and
++/// nowhere else; without it they are skipped (`key_wanted` is never asked about them).
+ [[nodiscard]] bool ReadRecords(
+     const std::filesystem::path& file, u32 cache_version,
+     const std::function<void(std::ifstream&, std::vector<FileEnvironment>)>& on_graphics,
+     const std::function<bool(std::span<const u64>)>& programs_wanted = {},
+-    const std::function<bool(std::span<const u8>)>& key_wanted = {});
++    const std::function<bool(std::span<const u8>)>& key_wanted = {},
++    const std::function<void(std::ifstream&, FileEnvironment)>& on_compute = {});
+ 
+ struct Outputs {
+     std::filesystem::path records;  ///< prep_shader_set.bin, empty when there is none to use
+@@ -106,6 +109,12 @@ void OverrideDuty(unsigned percent);
+ /// the work is refused there (the floor is the only guard on a base PS5's few hundred MB).
+ [[nodiscard]] bool MemoryCheckWaived();
+ 
++/// EDEN_UP_SHADER_SET_COMPUTE=1 (0780; exact "1", read once; off by default): the recipe's compute
++/// records are converted too (lowered as the live path lowers a native compute program, keyed as
++/// ComputePipelineCacheKey) and handed to `on_compute` by ReadRecords. Off: they are dropped as
++/// before ("compute-predicted-unsupported") and the stamp is as before.
++[[nodiscard]] bool ComputeAsked();
++
+ /// Sleeps `rest` unless the stop token is signalled first; false when it was.
+ [[nodiscard]] bool Rest(std::stop_token stop, std::chrono::steady_clock::duration rest);
+ 

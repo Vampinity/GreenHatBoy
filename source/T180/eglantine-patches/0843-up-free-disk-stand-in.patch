@@ -1,0 +1,62 @@
+From: EglantinePS5
+Subject: [PATCH] up: the shader set says once whether the free-disk figure is a stand-in (KEEPS THE STORE)
+
+Store: KEEPS THE STORE. Only src/video_core/shader_set.cpp changes; it is not among the files of
+the translation id (tools/gen-translation-id.py: the translator, its quoted includes and the
+SINGLE list; vk_pipeline_cache.cpp is in it as <build>/vk_pipeline_cache_cost.cpp, shader_set.cpp
+is not).
+
+Why: every progress line of the before-play pass says "16384 MB free disk", in every run of
+13 Nov (94 lines and 6 start lines, T162), while the store grew by hundreds of MB and the driver's
+disk cache by more. The figure is std::filesystem::space (statvfs f_bavail). The console's real
+statfs is not open to a title: it is in libkernel_sys, which a title does not import, and the
+SDK's libc.a has it as a raw system call that ends the process (headless/remote/remote.cpp,
+FreeSpace). No other call that reads the real figure is known here. So the disk floors
+(EDEN_UP_SHADER_SET_MIN_FREE_DISK_MB: the pass, the background pass and the list's extraction)
+protect nothing on the console.
+
+What: the first Prepare of a process logs the figure once: a warning when capacity equals what is
+available (a file system that holds this cache cannot be all free: a stand-in), else the three
+figures. The pass's stop on a failed write (the only real protection) needs the pipeline cache
+and the store, which are in the id: that is 0845 (RESETS THE STORE).
+
+Not checked: which branch the console takes (capacity was never logged), a run, a build.
+---
+diff --git a/src/video_core/shader_set.cpp b/src/video_core/shader_set.cpp
+index ce7c543f35..2e8799b7a8 100644
+--- a/src/video_core/shader_set.cpp
++++ b/src/video_core/shader_set.cpp
+@@ -606,6 +606,33 @@ Outputs Prepare(u64 title, const std::filesystem::path& title_dir,
+                 const MapState& map_state, std::stop_token stop, const OnProgress& on_progress_arg) {
+     Outputs out;
+     if (!Common::PeSwitch("EDEN_UP_SHADER_SET")) return out;
++    // 0843: what the free-disk figure is worth, once a process. std::filesystem::space (statvfs)
++    // is what every disk floor here and in the pipeline cache reads; on the console it said
++    // "16384 MB free" in every line of every run of 13 Nov while the store grew by hundreds of MB,
++    // and the console's real statfs is not open to a title (headless/remote/remote.cpp FreeSpace).
++    // A file system cannot be as large as it is free while it holds this cache, so capacity equal
++    // to what is available marks a stand-in: the floors then protect nothing, and only a write
++    // that fails stops the kept store (KeptStore::Keep, "keeping stops").
++    static std::once_flag disk_said;
++    std::call_once(disk_said, [&output_dir] {
++        std::error_code space_error;
++        const auto space = std::filesystem::space(output_dir, space_error);
++        if (space_error) {
++            LOG_INFO(Render_Vulkan, "Shader set: free disk cannot be read ({}); the disk floor is "
++                     "not checked", space_error.message());
++        } else if (space.capacity == space.available) {
++            LOG_WARNING(Render_Vulkan, "Shader set: the free-disk figure is a stand-in on this "
++                        "system ({} MB in all, {} MB free, {} MB available: nothing used): the "
++                        "disk floor (EDEN_UP_SHADER_SET_MIN_FREE_DISK_MB, {} MB) protects nothing, "
++                        "and a full disk shows only as a failed write",
++                        space.capacity >> 20, space.free >> 20, space.available >> 20,
++                        MinimumFreeDiskBytes() >> 20);
++        } else {
++            LOG_INFO(Render_Vulkan, "Shader set: disk beside the pipeline cache: {} MB in all, {} "
++                     "MB free, {} MB available to this process",
++                     space.capacity >> 20, space.free >> 20, space.available >> 20);
++        }
++    });
+     // 0833: the parts' progress goes to `on_progress_arg` or, without one, to the boot screen's
+     // hook (SetBootProgress, set by the front only around the before-play pass), and a log line
+     // every 10 s in one format for every part. Neither: empty, everything as before 0832.

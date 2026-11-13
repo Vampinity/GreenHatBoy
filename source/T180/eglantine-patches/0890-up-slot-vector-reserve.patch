@@ -1,0 +1,71 @@
+From: EglantinePS5
+Subject: [PATCH] up: SlotVector: reserve(n), and a growth that fails leaves the table as it was (KEEPS THE STORE)
+
+Store: KEEPS THE STORE. Only src/common/slot_vector.h changes. It is not among the translation id's
+418 inputs (translation_inputs.txt of the VM's last build, id 7f9773909a21e3689fd7c18d27a3c10c: the
+translator reaches no slot_vector.h; the SINGLE files' includes are not followed); the console
+compiles a rewritten copy (<build>/recovery/common/slot_vector.h, headless/slot_vector_recovery.cmake),
+not an input either.
+
+Why: run1395 (13 Nov, T166, the load into the area past the field) ended in SlotVector<Image>::Reserve:
+the texture cache's image table doubled 2048 -> 4096 slots, one 10,354,696 byte operator new[]
+(2528 bytes a slot; disassembly of Reserve at 0x174fef1 in T166's llvm-pie.elf), on GPUBack, with
+the pool's largest free piece at 1-2 MiB (its crash log 2010-2017).
+
+What:
+- reserve(n): grows the table now to the next power of two of n, in one allocation (0891 calls it at
+  boot); capacity(). Unused without 0891's switch.
+- Reserve allocates the new array, the bitset's and the free list's room before it moves a slot, so a
+  failed allocation leaves the table as it was. The free list gets room for every slot, so erase()
+  never allocates (it is noexcept). Upstream's noexcept stays here; the console's rewrite drops it
+  (front commit, slot_vector_recovery.cmake). Same slots, same order, same growth as before.
+- Cost: the free list holds 4 bytes a slot of room from the first growth on (16 KiB at 4096 slots).
+
+Checked: a native test of the rewritten header (clang, ASan, macOS): 168 refused growths of a full
+32-slot table, contents intact, a freed slot reused, reserve(4096) and 4000 more inserts. PS5-target
+syntax check (t174a/check). Not checked: a build, the console.
+---
+diff --git a/src/common/slot_vector.h b/src/common/slot_vector.h
+index 4a1837ce7e..b3884d1f26 100644
+--- a/src/common/slot_vector.h
++++ b/src/common/slot_vector.h
+@@ -165,6 +165,20 @@ public:
+         return values_capacity - free_list.size();
+     }
+ 
++    /// Slots the table holds without growing (it doubles when they are all taken).
++    [[nodiscard]] size_t capacity() const noexcept {
++        return values_capacity;
++    }
++
++    /// Grows the table now to at least `wanted` slots (the next power of two), in one allocation,
++    /// so it does not double later at a bad moment (an area load with the pool short: 0890,
++    /// EDEN_UP_RESERVE_TABLES). Nothing when it already holds that many.
++    void reserve(size_t wanted) {
++        if (wanted > values_capacity) {
++            Reserve(std::bit_ceil(wanted));
++        }
++    }
++
+ private:
+     struct NonTrivialDummy {
+         NonTrivialDummy() noexcept {}
+@@ -206,7 +220,18 @@ private:
+     }
+ 
+     void Reserve(size_t new_capacity) noexcept {
++        // Every allocation first, then the moves (0890): when one of them fails nothing has
++        // changed yet. The console's copy of this header lets the failure out
++        // (headless/slot_vector_recovery.cmake); upstream's noexcept ends the program as before.
++        // free_list gets room for every slot, so erase never allocates.
+         Entry* const new_values = new Entry[new_capacity];
++        try {
++            stored_bitset.reserve((new_capacity + 63) / 64);
++            free_list.reserve(new_capacity);
++        } catch (...) {
++            delete[] new_values;
++            throw;
++        }
+         size_t index = 0;
+         for (u64 bits : stored_bitset) {
+             for (size_t bit = 0; bits; ++bit, bits >>= 1) {

@@ -1,0 +1,56 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_TC_AREA_STALE leaves CPU-decoded images while EDEN_NX2_TC_KEEP_ASYNC is on (as the collectors do); _CPU=1 lets them go, _CPU=0 keeps them always
+
+Follow-up to 0885 (review, 13 Nov). 0885 deleted CPU-decoded (AsynchronousDecode) images by default.
+The play settings (v3.4 line 87) set EDEN_NX2_TC_KEEP_ASYNC=120, and with it every collector leaves
+those images: the field's ground texture and its two 1365x1365x90 arrays take seconds of CPU
+decoding each, show black meanwhile, and take 321 MiB of heap while both decode (texture_cache.h,
+KeepAsyncDecodedFrames' comment: the pressure collector made each of them new 5 to 7 times a walk).
+A turn back into the field after a drop would bring that back.
+
+Now: EDEN_UP_TC_AREA_STALE_CPU exact "1": they go; exact "0": they stay; unset or anything else:
+they stay while EDEN_NX2_TC_KEEP_ASYNC is on, and go when it is off. Off (EDEN_UP_TC_AREA_STALE
+unset): unchanged, nothing runs. Same file as 0885 (texture_cache.h), not a translation id input,
+no name in TranslationSwitches: KEEPS THE STORE.
+
+---
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index afe75bc78b5b4440ed4561d2ebbbb830fc73cb95..3b5ce31a5f98f79696e367aba392b5937a2c94f0 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -1327,8 +1327,9 @@ void TextureCache<P>::ShortPoolCollect() {
+ // GPU did not write (no copy back, no staging, no GPU wait), not decoding. Unlike 0730 the costly
+ // ones go too: an ASTC texture is decoded again on the GPU when it is used again; a CPU-decoded
+ // one (the field's two 1365x1365x90 arrays: 4.5 s of decoding each in the logs of 13 Nov, and
+-// 321 MiB of heap while both decode) is decoded on the CPU again, unless
+-// EDEN_UP_TC_AREA_STALE_CPU=0 keeps those. Where the front has no pool figure (FreeLargest 0) it
++// 321 MiB of heap while both decode, black meanwhile) is decoded on the CPU again only when
++// EDEN_UP_TC_AREA_STALE_CPU=1; by default those stay while EDEN_NX2_TC_KEEP_ASYNC is on (the
++// collectors' rule, in the play settings), and =0 keeps them always. Where the front has no pool figure (FreeLargest 0) it
+ // does nothing; with the pool over <MiB> it deletes nothing.
+ // Lines: stderr "EDEN_UP_TC_AREA_STALE open ..." when a window opens and "... closed ..." when it
+ // ends having deleted something; eden_log (HW.GPU) "EDEN_UP_TC_AREA_STALE 600 frames: ..." with the
+@@ -1379,13 +1380,19 @@ void TextureCache<P>::ShortPoolCollect() {
+     return bytes;
+ }
+ 
+-/// EDEN_UP_TC_AREA_STALE_CPU=0 (exact "0"): CPU-decoded images stay. Unset or anything else: they go.
++/// EDEN_UP_TC_AREA_STALE_CPU: exact "1": CPU-decoded images go; exact "0": they stay; unset or
++/// anything else: they stay while EDEN_NX2_TC_KEEP_ASYNC is on (as every collector leaves them:
++/// seconds of decoding each, black meanwhile, and 321 MiB of heap for the field's two arrays),
++/// and go when it is off.
+ [[nodiscard]] inline bool AreaStaleDropsCpu() {
+-    static const bool drops = [] {
++    static const int setting = [] {
+         const char* const value = std::getenv("EDEN_UP_TC_AREA_STALE_CPU");
+-        return !(value != nullptr && value[0] == '0' && value[1] == '\0');
++        if (value != nullptr && (value[0] == '0' || value[0] == '1') && value[1] == '\0') {
++            return value[0] - '0';
++        }
++        return -1;
+     }();
+-    return drops;
++    return setting == 1 || (setting < 0 && KeepAsyncDecodedFrames() == 0);
+ }
+ 
+ /// How many deleted addresses AreaStaleDrop remembers for its "made again" count.

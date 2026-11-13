@@ -1,0 +1,427 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_TC_AREA_STALE=<MiB>: after an area change, with the pool short, clean images unused for 120 frames go even when costly (ASTC, CPU-decoded, kept as re-made); count lines; off by default
+
+Switches: EDEN_UP_TC_AREA_STALE=<MiB> (1 to 65535, digits only; unset, 0 or anything else: off).
+EDEN_UP_TC_AREA_STALE_FRAMES=<frames> (window, unset/0: 1800), _BURST=<images> (unset/0: 400),
+_WAVE_MIB=<MiB> (unset/0: 128), _CPU=0 (exact "0": CPU-decoded images stay).
+Lines: stderr "EDEN_UP_TC_AREA_STALE open at frame ..." / "... closed at frame ...";
+eden_log (HW.GPU) "EDEN_UP_TC_AREA_STALE 600 frames: ..." (deleted by kind, made again).
+
+Why (READ, a hand-played session, its crash log): at census n=405 (t 971 s,
+line 8212) the buffers fell 464 -> 16 MiB and the images 1020 -> 612 MiB (the area change before the
+load into the area past the field). From n=406 to n=411 (lines 8248-8365, 12 s) 366 MiB of images
+sat clean and unused for 120 frames, every byte of it ASTC (stale_clean=366 astc=366), with the
+pool's largest free block at 176 MiB and 1,483 MiB free; the load at n=411 then needed ~2,160.
+Nothing deleted them:
+- 0730 (EDEN_UP_TC_SHORT_COLLECT=1024, in v3.4): "600 frames with the pool under 1024 MiB ... 0
+  images" (eden_log 11128). It skips CostlyLoad, and on the console every ASTC texture is CostlyLoad
+  (vk_texture_cache.cpp: no ASTC sampling -> Converted + CostlyLoad).
+- The collector: images 601 MiB, under its 1024 MiB floor (minimum_memory), so it never ran; above
+  it, it skips CostlyLoad until it is past critical.
+- AreaEvict: burst 31 at frame 32313 (stderr 7942), done at 32463 with 0 deleted (8088), before
+  those images went unused (stale_clean 17 at n=403, 73 at n=404, 377 at n=405).
+What did go at that change: 0730 deleted 494 images, 381 MiB, in the 600 frames before eden_log
+1044.5 (line 11048; the cheap part of the area left, images 1020 -> 612 at n=404 -> 405), and the
+buffer cache fell 463 -> 16 MiB between eden_log 1041.5 and 1042.5 (11013, 11020). The texture
+cache counted 600 frames in 10 s there (11048 -> 11128): 1800 frames is 30 s.
+
+What: AreaStaleDrop(), in TickFrame after ShortPoolCollect and before the collector. A window of
+_FRAMES frames opens (or is pushed on) on a burst of _BURST new images within 30 frames, or on a
+wave: UnmapMemory, AreaEvict and 0730's ShortPoolCollect together deleting _WAVE_MIB of images
+within 120 frames (NoteAreaStaleWave; the collector's deletes do not count, it runs under pressure
+all through the field). At n=405 the wave was 0730's 381 MiB. While it is open and the pool's largest free block (MemoryCensus::FreeLargest, read
+every 30 frames) is under <MiB>, up to 32 images a frame unused for 120 frames
+(MemoryCensus::StaleFrames, what the census calls stale) go, oldest first: anything not GPU-written
+and not decoding, the costly ones included. Delete reason "area-stale" (not "gc", so
+EDEN_UP_TC_KEEP_REMADE does not learn from it). An image made again at a deleted image's address
+within the window's length is counted (the drop's cost: an ASTC re-decode on the GPU, a CPU decode
+for the two 1365x1365x90 arrays, 4.5 s each in the 13 Nov logs, 321 MiB of heap while both run;
+_CPU=0 keeps those two). Off: one test of a static per frame and per unmapped image.
+
+Expected (READ, not run): at n=405 the window opens (0730's 381 MiB came within a few frames:
+INFERRED from stale_clean 73 at n=404 and the images 1020 -> 612 two seconds later, 0730 deleting
+up to 32 a frame), the pool is under 1024 (largest 20-176), and the 366 MiB go within a few dozen
+frames (32 images a frame; their count is not in the census), well before the load at n=411 (12 s,
+about 700 frames). What reaches the pool: the images
+over half a VMA block (dedicated, EDEN_VMA_BLOCK_MIB=8: over 4 MiB, incl. the two arrays, 84 + 33
+MiB, if they were among them: not checked) at once; the smaller ones only as their 8 MiB blocks
+empty. Between 117 MiB (the arrays alone) and ~366 + part of the 328 MiB block slack (if those
+blocks held mostly these images). Not on the console yet.
+Risk: turning back into the field brings each texture back with a re-decode (a frame or a few per
+texture; the arrays seconds). The window needs both an area change and a short pool.
+Translation id: texture_cache.h and texture_cache_base.h are not in tools/gen-translation-id.py's
+inputs (t166c/translation_inputs-7f97.txt, 418 files), and the new names are not in
+TranslationSwitches: KEEPS THE STORE.
+
+---
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index dc0c9b0a3932b9f0b713eff43353574fdd73872a..afe75bc78b5b4440ed4561d2ebbbb830fc73cb95 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -212,7 +212,8 @@ constexpr u64 KeepRemadeWindow = 600;
+ /// and found, JoinImages ms, frame) and per image it deletes ("TCTRACE delete", with the reason:
+ /// gc, gc-high-priority, gc-aggressive, gc-old (unused for EDEN_NX2_TC_OLD_AGE frames), gc-buffer
+ /// (CollectForBuffer), gc-area (AreaEvict), gc-refusal (RefusalEvict), gc-refusal-copied
+-/// (RefusalDownloadEvict), cold (EDEN_UP_FRITCHII_COLD), unmap, join, join-ignored, other). Ours
++/// (RefusalDownloadEvict), cold (EDEN_UP_FRITCHII_COLD), area-stale (EDEN_UP_TC_AREA_STALE; not
++/// "gc", so EDEN_UP_TC_KEEP_REMADE does not count it), unmap, join, join-ignored, other). Ours
+ /// also: "TCTRACE refused" when JoinImages makes nothing. EDEN_UP_TC_TRACE_MIB=<N> (digits,
+ /// 0..4096; unset or 0: every image, as upstream): only images of at least N MiB of guest memory.
+ /// EDEN_UP_BIG_IMAGE_LOG=1 (exact "1", read once; count only): one HW_GPU line for every image of
+@@ -1294,6 +1295,257 @@ void TextureCache<P>::ShortPoolCollect() {
+     }
+     short_collect_images += doomed.size();
+     short_collect_bytes += bytes;
++    NoteAreaStaleWave(bytes); // EDEN_UP_TC_AREA_STALE
++}
++
++// EDEN_UP_TC_AREA_STALE=<MiB> (1 to 65535, digits only; unset, 0 or anything else: off, as
++// before). Every pass that deletes clean images leaves some kinds alone: ShortPoolCollect (0730)
++// skips CostlyLoad, CPU-decoded and kept-as-re-made images, and on the console every ASTC texture
++// is CostlyLoad (no ASTC sampling: Converted + CostlyLoad, vk_texture_cache.cpp); the collector
++// skips CostlyLoad unless it is past its critical mark, and it does not run at all while the
++// images are under its 1024 MiB floor; AreaEvict deletes only in the 120 frames after a burst.
++// Ocarina of Time, the 10:17 session of 13 Nov (a hand-played session, stderr census n=405 to 411):
++// at the area change before the load into the area past the field the buffers fell 464 -> 16 MiB
++// and the images 1020 -> 612 MiB, and from then on 366 MiB of images, all ASTC, sat clean and
++// unused for 120 frames (stale_clean=366 astc=366) for 12 s, with the pool's largest free block
++// at 176 MiB. 0730 deleted none of them (eden_log: "600 frames with the pool under 1024 MiB ...
++// 0 images"); AreaEvict's window of that change had closed (burst 31 at frame 32313, done at
++// 32463 with 0 deleted) before they went unused. The load then needed ~680 MiB more than the
++// pool had. What did go at that change: 0730 deleted 494 images, 381 MiB, in the 600 frames
++// before eden_log 1044.5 (the cheap part of the area left), the buffer cache 463 -> 16 MiB.
++// With the switch: a window of EDEN_UP_TC_AREA_STALE_FRAMES frames (unset, 0 or not a number:
++// 1800, 30 s at the texture cache's 60 frames a second there) opens, or is pushed on, when
++//  - at least EDEN_UP_TC_AREA_STALE_BURST new images (unset or 0: 400; AreaEvict's guard calls 400
++//    a large burst) come within 30 frames, or
++//  - a wave: UnmapMemory (the game freeing memory that held images), AreaEvict and 0730's
++//    ShortPoolCollect together delete at least EDEN_UP_TC_AREA_STALE_WAVE_MIB (unset or 0: 128)
++//    MiB of images within 120 frames. The collector's own deletes do not count (it runs under
++//    pressure all through the field).
++// While a window is open and the pool's largest free block (MemoryCensus::FreeLargest, read
++// every 30 frames) is under <MiB>, up to 32 images a frame that have not been used for 120
++// frames (MemoryCensus::StaleFrames, the census's stale_clean) go, oldest first: anything the
++// GPU did not write (no copy back, no staging, no GPU wait), not decoding. Unlike 0730 the costly
++// ones go too: an ASTC texture is decoded again on the GPU when it is used again; a CPU-decoded
++// one (the field's two 1365x1365x90 arrays: 4.5 s of decoding each in the logs of 13 Nov, and
++// 321 MiB of heap while both decode) is decoded on the CPU again, unless
++// EDEN_UP_TC_AREA_STALE_CPU=0 keeps those. Where the front has no pool figure (FreeLargest 0) it
++// does nothing; with the pool over <MiB> it deletes nothing.
++// Lines: stderr "EDEN_UP_TC_AREA_STALE open ..." when a window opens and "... closed ..." when it
++// ends having deleted something; eden_log (HW.GPU) "EDEN_UP_TC_AREA_STALE 600 frames: ..." with the
++// counts by kind and the images made again at a deleted image's address within the window's
++// length (what the drop cost). Off: one test of a static per frame and per unmap.
++[[nodiscard]] inline u64 AreaStaleLimit() {
++    static const u64 bytes = [] {
++        const char* const value = std::getenv("EDEN_UP_TC_AREA_STALE");
++        if (value == nullptr || value[0] == '\0') {
++            return u64{0};
++        }
++        u64 mib = 0;
++        for (const char* digit = value; *digit != '\0'; ++digit) {
++            if (*digit < '0' || *digit > '9') {
++                return u64{0};
++            }
++            mib = mib * 10 + static_cast<u64>(*digit - '0');
++            if (mib > 65535) {
++                return u64{0};
++            }
++        }
++        return mib << 20;
++    }();
++    return bytes;
++}
++
++/// A count from `name`: unset, 0 or not a number: `fallback`.
++[[nodiscard]] inline u64 AreaStaleEnv(const char* name, u64 fallback) {
++    const char* const value = std::getenv(name);
++    const u64 number = value != nullptr ? std::strtoull(value, nullptr, 10) : 0ULL;
++    return number != 0 ? number : fallback;
++}
++
++[[nodiscard]] inline u64 AreaStaleFrames() {
++    static const u64 frames = AreaStaleEnv("EDEN_UP_TC_AREA_STALE_FRAMES", 1800);
++    return frames;
++}
++
++[[nodiscard]] inline u64 AreaStaleBurst() {
++    static const u64 images = AreaStaleEnv("EDEN_UP_TC_AREA_STALE_BURST", 400);
++    return images;
++}
++
++[[nodiscard]] inline u64 AreaStaleWaveBytes() {
++    static const u64 bytes = (std::min)(AreaStaleEnv("EDEN_UP_TC_AREA_STALE_WAVE_MIB", 128),
++                                        u64{1} << 20)
++                             << 20;
++    return bytes;
++}
++
++/// EDEN_UP_TC_AREA_STALE_CPU=0 (exact "0"): CPU-decoded images stay. Unset or anything else: they go.
++[[nodiscard]] inline bool AreaStaleDropsCpu() {
++    static const bool drops = [] {
++        const char* const value = std::getenv("EDEN_UP_TC_AREA_STALE_CPU");
++        return !(value != nullptr && value[0] == '0' && value[1] == '\0');
++    }();
++    return drops;
++}
++
++/// How many deleted addresses AreaStaleDrop remembers for its "made again" count.
++constexpr size_t AreaStaleRemember = 4096;
++
++template <class P>
++void TextureCache<P>::NoteAreaStaleWave(u64 bytes) {
++    if (AreaStaleLimit() == 0 || bytes == 0) {
++        return;
++    }
++    constexpr u64 WaveFrames = 120;
++    if (frame_tick - area_stale_wave_frame >= WaveFrames) {
++        area_stale_wave_frame = frame_tick;
++        area_stale_wave_bytes = 0;
++    }
++    area_stale_wave_bytes += bytes;
++}
++
++template <class P>
++void TextureCache<P>::AreaStaleDrop() {
++    const u64 limit = AreaStaleLimit();
++    if (limit == 0) {
++        return;
++    }
++    constexpr u64 WindowFrames = 30;
++    constexpr u64 SampleFrames = 30;
++    constexpr u64 LogFrames = 600;
++    constexpr size_t MaxPerFrame = 32;
++    const u64 window = AreaStaleFrames();
++    const bool was_open = frame_tick < area_stale_until;
++    // The burst count, on its own (AreaEvict's is inside its window logic and needs
++    // EDEN_NX2_AREA_EVICT).
++    const u64 created = area_images_created - area_stale_created_seen;
++    area_stale_created_seen = area_images_created;
++    if (frame_tick - area_stale_burst_frame >= WindowFrames) {
++        area_stale_burst_frame = frame_tick;
++        area_stale_burst_created = 0;
++    }
++    area_stale_burst_created += created;
++    const char* reason = nullptr;
++    u64 reason_amount = 0;
++    if (area_stale_burst_created >= AreaStaleBurst()) {
++        reason = "new images";
++        reason_amount = area_stale_burst_created;
++        ++area_stale_opened_burst;
++        area_stale_burst_frame = frame_tick;
++        area_stale_burst_created = 0;
++    } else if (area_stale_wave_bytes >= AreaStaleWaveBytes()) {
++        reason = "MiB of images deleted by the unmap, AreaEvict and 0730";
++        reason_amount = area_stale_wave_bytes >> 20;
++        ++area_stale_opened_wave;
++        area_stale_wave_frame = frame_tick;
++        area_stale_wave_bytes = 0;
++    }
++    if (reason != nullptr) {
++        area_stale_until = frame_tick + window;
++        if (!was_open) {
++            area_stale_window_images = area_stale_window_bytes = 0;
++            area_stale_sample_frame = 0; // read the pool now
++        }
++    }
++    const bool open = frame_tick < area_stale_until;
++    if (was_open && !open && area_stale_window_images != 0) {
++        std::fprintf(stderr,
++                     "EDEN_UP_TC_AREA_STALE closed at frame %llu: %llu images, %llu MiB deleted "
++                     "in the window; images %llu MiB\n",
++                     static_cast<unsigned long long>(frame_tick),
++                     static_cast<unsigned long long>(area_stale_window_images),
++                     static_cast<unsigned long long>(area_stale_window_bytes >> 20),
++                     static_cast<unsigned long long>(total_used_memory >> 20));
++    }
++    if (frame_tick - area_stale_logged >= LogFrames) {
++        const u64 deleted = area_stale_images[0] + area_stale_images[1] + area_stale_images[2] +
++                            area_stale_images[3];
++        if (area_stale_opened_burst + area_stale_opened_wave + deleted +
++                area_stale_remade_images != 0) {
++            LOG_INFO(HW_GPU,
++                     "EDEN_UP_TC_AREA_STALE {} frames: windows opened or pushed on {} (new images "
++                     "{}, wave of deletes {}), {} frames open with the pool under {} MiB; deleted {} "
++                     "images: CPU-decoded {} / {} MiB, other costly {} / {} MiB, kept as re-made "
++                     "{} / {} MiB, cheap {} / {} MiB; made again at a deleted image's address "
++                     "within {} frames: {} images, {} MiB; now: largest free block {} MiB, images "
++                     "{} MiB, window {}",
++                     frame_tick - area_stale_logged, area_stale_opened_burst + area_stale_opened_wave,
++                     area_stale_opened_burst, area_stale_opened_wave, area_stale_frames,
++                     limit >> 20, deleted, area_stale_images[0], area_stale_bytes[0] >> 20,
++                     area_stale_images[1], area_stale_bytes[1] >> 20, area_stale_images[2],
++                     area_stale_bytes[2] >> 20, area_stale_images[3], area_stale_bytes[3] >> 20,
++                     window, area_stale_remade_images, area_stale_remade_bytes >> 20,
++                     area_stale_largest >> 20, total_used_memory >> 20, open ? "open" : "closed");
++        }
++        area_stale_logged = frame_tick;
++        area_stale_opened_burst = area_stale_opened_wave = area_stale_frames = 0;
++        area_stale_remade_images = area_stale_remade_bytes = 0;
++        for (size_t kind = 0; kind < 4; ++kind) {
++            area_stale_images[kind] = area_stale_bytes[kind] = 0;
++        }
++        // Forget deletes older than the window's length.
++        std::erase_if(area_stale_deleted,
++                      [&](const auto& entry) { return entry.second + window < frame_tick; });
++    }
++    if (!open) {
++        return;
++    }
++    if (area_stale_sample_frame == 0 || frame_tick - area_stale_sample_frame >= SampleFrames) {
++        area_stale_sample_frame = frame_tick != 0 ? frame_tick : 1;
++        area_stale_largest = MemoryCensus::FreeLargest();
++        area_stale_short = area_stale_largest != 0 && area_stale_largest < limit;
++    }
++    if (reason != nullptr && !was_open) {
++        std::fprintf(stderr,
++                     "EDEN_UP_TC_AREA_STALE open at frame %llu for %llu frames: %llu %s "
++                     "(30 / 120 frames); largest free block %llu MiB (%s %llu), images %llu MiB\n",
++                     static_cast<unsigned long long>(frame_tick),
++                     static_cast<unsigned long long>(window),
++                     static_cast<unsigned long long>(reason_amount), reason,
++                     static_cast<unsigned long long>(area_stale_largest >> 20),
++                     area_stale_short ? "under" : "not under",
++                     static_cast<unsigned long long>(limit >> 20),
++                     static_cast<unsigned long long>(total_used_memory >> 20));
++    }
++    if (!area_stale_short || frame_tick <= MemoryCensus::StaleFrames) {
++        return;
++    }
++    ++area_stale_frames;
++    const bool drop_cpu = AreaStaleDropsCpu();
++    boost::container::small_vector<ImageId, MaxPerFrame> doomed;
++    lru_cache.ForEachItemBelow(frame_tick - MemoryCensus::StaleFrames, [&](ImageId image_id) {
++        const Image& image = slot_images[image_id];
++        if (True(image.flags & ImageFlagBits::IsDecoding) ||
++            (!drop_cpu && True(image.flags & ImageFlagBits::AsynchronousDecode)) ||
++            (IsDownloadable(image) && False(image.flags & ImageFlagBits::BadOverlap))) {
++            return false;
++        }
++        doomed.push_back(image_id);
++        return doomed.size() == MaxPerFrame;
++    });
++    for (const ImageId image_id : doomed) {
++        Image& image = slot_images[image_id];
++        // Kept as re-made images are CostlyLoad too: that test first.
++        const size_t kind = True(image.flags & ImageFlagBits::AsynchronousDecode) ? 0
++                            : KeptRemade(image)                                   ? 2
++                            : True(image.flags & ImageFlagBits::CostlyLoad)       ? 1
++                                                                                  : 3;
++        const u64 bytes =
++            ImageMemoryBytes(image) + (image.HasScaled() ? GetScaledImageSizeBytes(image) : 0);
++        if (area_stale_deleted.size() < AreaStaleRemember) {
++            area_stale_deleted.insert_or_assign(image.gpu_addr, frame_tick);
++        }
++        if (True(image.flags & ImageFlagBits::Tracked)) {
++            UntrackImage(image, image_id);
++        }
++        UnregisterImage(image_id);
++        trace_delete_reason = "area-stale";
++        DeleteImage(image_id, image.scale_tick > frame_tick + 5);
++        ++area_stale_images[kind];
++        area_stale_bytes[kind] += bytes;
++        ++area_stale_window_images;
++        area_stale_window_bytes += bytes;
++    }
+ }
+ 
+ // EDEN_NX2_AREA_EVICT=<frames> (unset or 0: off, as before): when the game changes area, the
+@@ -1698,6 +1950,7 @@ void TextureCache<P>::AreaEvict() {
+     area_evicted_images += doomed.size();
+     area_evicted_bytes += bytes;
+     area_dropped_images += dropped;
++    NoteAreaStaleWave(bytes); // EDEN_UP_TC_AREA_STALE
+     area_kept_last = kept;
+     if (budget_stop) {
+         area_budget_left -= (std::min)(bytes, area_budget_left);
+@@ -2362,6 +2615,7 @@ void TextureCache<P>::TickFrame() {
+     DeleteSupersededImages(); // EDEN_NX2_TC_SUPERSEDED
+     AreaEvict();
+     ShortPoolCollect();
++    AreaStaleDrop(); // EDEN_UP_TC_AREA_STALE
+     if (total_used_memory > minimum_memory) {
+         HitchTrace::Op collector_trace{HitchTrace::Kind::Collector, total_used_memory, {}};
+         RunGarbageCollector();
+@@ -4075,6 +4329,11 @@ void TextureCache<P>::UnmapMemory(DAddr cpu_addr, size_t size) {
+             UntrackImage(image, id);
+         }
+         UnregisterImage(id);
++        if (AreaStaleLimit() != 0) [[unlikely]] {
++            // EDEN_UP_TC_AREA_STALE: the game freeing image memory is part of an area change.
++            NoteAreaStaleWave(ImageMemoryBytes(image) +
++                              (image.HasScaled() ? GetScaledImageSizeBytes(image) : 0));
++        }
+         trace_delete_reason = "unmap";
+         DeleteImage(id);
+     }
+@@ -7101,6 +7360,17 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
+         ++images_created;
+         ++area_images_created;
+         Churn::Add(Churn::ImagesCreated);
++        // EDEN_UP_TC_AREA_STALE: an image made again where AreaStaleDrop deleted one (its cost).
++        if (AreaStaleLimit() != 0 && !area_stale_deleted.empty()) [[unlikely]] {
++            if (const auto deleted = area_stale_deleted.find(new_image.gpu_addr);
++                deleted != area_stale_deleted.end()) {
++                if (deleted->second + AreaStaleFrames() >= frame_tick) {
++                    ++area_stale_remade_images;
++                    area_stale_remade_bytes += ImageMemoryBytes(new_image);
++                }
++                area_stale_deleted.erase(deleted);
++            }
++        }
+         // EDEN_UP_AREA_BUDGET: what it holds, and whether AreaEvict deleted it a moment ago.
+         if (Common::LiveSwitch::Peek<Common::LiveSwitch::Id::AreaBudget>() != 0) {
+             const u64 new_bytes = ImageMemoryBytes(new_image);
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index 88afd7d3737c4e62e5f0d3ae02a04e655cb0fccc..3cd51ba89778ae343722257bfdf5518f078c95cb 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -348,6 +348,29 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
+     u64 short_collect_images{};  ///< Images it deleted
+     u64 short_collect_bytes{};   ///< What they held
+     u64 short_collect_logged{};  ///< frame_tick of the last line
++    /// EDEN_UP_TC_AREA_STALE (AreaStaleDrop): the area-change window, its signals and the
++    /// counts for its lines. area_stale_deleted: GPU address -> frame of each image it deleted
++    /// (at most AreaStaleRemember), so an image made again at that address is counted.
++    u64 area_stale_until{};          ///< frame_tick the window closes (0: never opened)
++    u64 area_stale_burst_frame{};    ///< Start of the 30-frame count of new images
++    u64 area_stale_burst_created{};  ///< New images in that count
++    u64 area_stale_created_seen{};   ///< area_images_created at the last frame
++    u64 area_stale_wave_frame{};     ///< Start of the 120-frame count of the wave
++    u64 area_stale_wave_bytes{};     ///< Image bytes the unmap, AreaEvict and 0730 deleted in it
++    u64 area_stale_sample_frame{};
++    u64 area_stale_largest{};
++    bool area_stale_short{};
++    u64 area_stale_window_images{};  ///< Deleted in the window that is open (or last open)
++    u64 area_stale_window_bytes{};
++    u64 area_stale_opened_burst{};   ///< Windows opened (or extended) by a burst of new images
++    u64 area_stale_opened_wave{};    ///< ... by a wave of deletes (unmap, AreaEvict, 0730)
++    u64 area_stale_frames{};         ///< Frames in a window with the pool short
++    u64 area_stale_images[4]{};      ///< Deleted: CPU-decoded, other costly, kept as re-made, cheap
++    u64 area_stale_bytes[4]{};
++    u64 area_stale_remade_images{};  ///< Made again at a deleted image's address in time
++    u64 area_stale_remade_bytes{};
++    u64 area_stale_logged{};         ///< frame_tick of the last 600-frame line
++    std::unordered_map<GPUVAddr, u64> area_stale_deleted;
+     /// EDEN_NX2_CLEAN_BY_TIME / EDEN_NX2_REFUSAL_EVICT: when each frame ended (TickFrame).
+     FrameClock frame_clock;
+     /// EDEN_NX2_REFUSAL_EVICT: allocator refusals already answered at a frame's end.
+@@ -529,6 +552,18 @@ public:
+     /// collector. Off: one test of a static.
+     void ShortPoolCollect();
+ 
++    /// EDEN_UP_TC_AREA_STALE=<MiB>: for EDEN_UP_TC_AREA_STALE_FRAMES frames (1800) after an area
++    /// change (a burst of new images, or a wave of deletes by the other passes), while the pool's
++    /// largest free block is under <MiB>, deletes clean images unused for 120 frames that every
++    /// other pass leaves (ASTC and other costly ones, CPU-decoded ones, ones kept as re-made),
++    /// 32 a frame. At the end of a frame, with mutex held, before the collector. Off: one test of
++    /// a static.
++    void AreaStaleDrop();
++
++    /// EDEN_UP_TC_AREA_STALE: image bytes UnmapMemory, AreaEvict or ShortPoolCollect deleted
++    /// (the area being left going at once), summed over 120 frames. Off: one test of a static.
++    void NoteAreaStaleWave(u64 bytes);
++
+     /// EDEN_UP_MEM_CENSUS=1 (video_core/memory_census.h): starts the census thread, tells it when an
+     /// area load begins, and when a census asks, hands it what the images hold by kind. At the end
+     /// of a frame, with mutex held, before the relocation sweep and AreaEvict.

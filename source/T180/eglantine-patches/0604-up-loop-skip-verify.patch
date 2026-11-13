@@ -1,0 +1,149 @@
+From: EglantinePS5
+Subject: up: a check on the back for every write the loop skip drops (EDEN_UP_LOOP_SKIP_VERIFY), off by default
+
+What: EDEN_NX2_SPLIT_VERIFY compares the front's registers with the back's, and a skipped write
+leaves them equal, so it cannot show a draw lost by EDEN_UP_LOOP_SKIP (0600). With
+EDEN_UP_LOOP_SKIP_VERIFY=1 the front skips nothing: each write the skip would drop is sent as
+before, and right before it (a Call entry, neutral for fast draw reuse) the back checks, in stream
+order, that CallMethod would have ignored it: the 3D method sink is empty (#488's condition), the
+shadow RAM and the register already hold what the write leaves, the front's value is the back's,
+and for draw.end the draw manager is in an instance loop. A write that fails any of these is a
+difference. Zero differences over a walk is the proof that the skip loses nothing there.
+Timing changes in verify mode (an extra Call entry per would-be skip, and nothing skipped), so
+judge fps with EDEN_UP_LOOP_SKIP=1 alone.
+
+Switch: EDEN_UP_LOOP_SKIP_VERIFY=1 (exact "1", boot, read when the split front is made), only with
+EDEN_UP_LOOP_SKIP=1 working (same-value skip on). Off: one test of a front member, taken only on a
+write the skip drops. EDEN_NX2_SPLIT_VERIFY=1 can run beside it.
+Log (HW_GPU): at start "EDEN_UP_LOOP_SKIP_VERIFY=1: nothing is skipped; ..." (Info); then
+"EDEN_UP_LOOP_SKIP_VERIFY: N would-be skips checked on the back, D differences" (Info) at the first
+check, every 4 Mi checks and with each of the first 8 differences, which also get a Warning
+"EDEN_UP_LOOP_SKIP_VERIFY difference: method ... draw mode ...". The EDEN_UP_LOOP_SKIP lines keep
+counting, as would-be skips. Pass: N in the millions, D = 0.
+
+Origin and credit: our own, for zortos293/Lichii 7e2a9fe20c (#178, Thibaut LÉAUX) and 5ba52f7720
+(#488, Marc Stampfli) as ported in 0600.
+---
+diff --git a/src/video_core/engines/maxwell_3d.cpp b/src/video_core/engines/maxwell_3d.cpp
+index 0d638ee..9ca74bd 100644
+--- a/src/video_core/engines/maxwell_3d.cpp
++++ b/src/video_core/engines/maxwell_3d.cpp
+@@ -1599,6 +1599,8 @@ struct Maxwell3D::FrontState {
+     /// does not send the instance loop writes the back ignores (FrontSkipsLoopWrite). With it
+     /// off nothing below is read or written.
+     bool loop_skip{};
++    /// EDEN_UP_LOOP_SKIP_VERIFY=1, read with loop_skip: would-be skips are sent and checked.
++    bool loop_verify{};
+     /// The back's draw manager is in an instance loop (DrawMode::Instance): draw.end does nothing.
+     bool instance_loop{};
+     /// The back holds state writes in its method sink, which its next executable method consumes
+@@ -1756,6 +1758,14 @@ bool FrontLoopSkip() {
+     return value != nullptr && value[0] == '1' && value[1] == '\0';
+ }
+ 
++// EDEN_UP_LOOP_SKIP_VERIFY=1 (exact "1", with EDEN_UP_LOOP_SKIP=1; our own): nothing is skipped.
++// Each write the skip would drop is sent, and right before it the back checks that it would
++// have ignored it (Maxwell3D::VerifyLoopSkip). Read when the front is made.
++bool FrontLoopSkipVerify() {
++    const char* const value = std::getenv("EDEN_UP_LOOP_SKIP_VERIFY");
++    return value != nullptr && value[0] == '1' && value[1] == '\0';
++}
++
+ // EDEN_UP_UBO_SNAPSHOT: a bind group write (`value`, shadow RAM applied) as ProcessCBBind will
+ // run it on the back, against the front's copy of the registers, for the present's copy of the
+ // frame's constant buffers (ubo_snapshot.h).
+@@ -1917,6 +1927,12 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
+             front->loop_skip = front->skip_same;
+             front->loop_generation = split.SessionGeneration();
+             front->loop_report_time = std::chrono::steady_clock::now();
++            front->loop_verify = front->loop_skip && FrontLoopSkipVerify();
++            if (front->loop_verify) {
++                LOG_INFO(HW_GPU, "EDEN_UP_LOOP_SKIP_VERIFY=1: nothing is skipped; the back checks "
++                                 "each write EDEN_UP_LOOP_SKIP would drop (the EDEN_UP_LOOP_SKIP "
++                                 "lines then count would-be skips)");
++            }
+             if (front->loop_skip) {
+                 LOG_INFO(HW_GPU, "EDEN_UP_LOOP_SKIP=1: the split front does not send draw.end in "
+                                  "an instance loop or vertex_buffer.first/count writes that keep "
+@@ -1985,10 +2001,16 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
+     // EDEN_UP_LOOP_SKIP (#178 + #488): an instance loop write the back would ignore.
+     if (fs.loop_skip && execution_mask[method] &&
+         FrontSkipsLoopWrite(split, fs, method, value, shadow_kept)) {
+-        if (Profile::Enabled()) [[unlikely]] {
+-            Profile::Add(Profile::Counter::SameValueWrites, 1);
++        if (!fs.loop_verify) [[likely]] {
++            if (Profile::Enabled()) [[unlikely]] {
++                Profile::Add(Profile::Counter::SameValueWrites, 1);
++            }
++            return;
+         }
+-        return;
++        // EDEN_UP_LOOP_SKIP_VERIFY: sent as without the skip; the back first checks, at this
++        // point of the stream, that it would have ignored it. Neutral for fast draw reuse.
++        split.Defer([this, method, argument, value] { VerifyLoopSkip(method, argument, value); },
++                    VideoCommon::GpuSplit::FastDrawNeutral);
+     }
+     if (!execution_mask[method]) {
+         // Nothing would change on the back: CallMethod and ConsumeSinkImpl skip same-value state
+@@ -3337,6 +3359,48 @@ void Maxwell3D::FrontReportLoopSkip(FrontState& fs) {
+     fs.loop_report_time = now;
+ }
+ 
++// EDEN_UP_LOOP_SKIP_VERIFY=1, on the back, in order, right before a write EDEN_UP_LOOP_SKIP would
++// have dropped (FrontWrite sends it anyway): whether CallMethod would have ignored it. That is
++// what EDEN_NX2_SPLIT_VERIFY cannot see (a skip leaves the registers equal): the method sink is
++// empty (no state writes a changed one would end a deferred draw with, #488), the shadow RAM and
++// the register already hold what the write leaves, the front's value is the back's, and for
++// draw.end the draw manager is in an instance loop (DrawEnd draws nothing there). Back thread only.
++void Maxwell3D::VerifyLoopSkip(u32 method, u32 argument, u32 front_value) {
++    static u64 checks{};
++    static u64 differences{};
++    const auto control = shadow_state.shadow_ram_control;
++    u32 value = argument;
++    bool shadow_same = true;
++    if (control == Regs::ShadowRamControl::Track ||
++        control == Regs::ShadowRamControl::TrackWithFilter) {
++        shadow_same = shadow_state.reg_array[method] == argument;
++    } else if (control == Regs::ShadowRamControl::Replay) {
++        value = shadow_state.reg_array[method];
++    }
++    const bool end = method == MAXWELL3D_REG_INDEX(draw.end);
++    const bool in_loop = draw_manager.draw_state.draw_mode == DrawManager::DrawMode::Instance;
++    const bool ignored = method_sink.empty() && shadow_same && value == front_value &&
++                         regs.reg_array[method] == value && (!end || in_loop);
++    ++checks;
++    if (!ignored) {
++        ++differences;
++        if (differences <= 8) {
++            LOG_WARNING(HW_GPU,
++                        "EDEN_UP_LOOP_SKIP_VERIFY difference: method {:#x} argument {:#x}, front "
++                        "value {:#x}, back value {:#x} register {:#x}, shadow {}, sink {} entries, "
++                        "draw mode {}",
++                        method, argument, front_value, value, regs.reg_array[method],
++                        shadow_same ? "same" : "differs", method_sink.size(),
++                        static_cast<u32>(draw_manager.draw_state.draw_mode));
++        }
++    }
++    if (checks == 1 || (checks & ((u64{1} << 22) - 1)) == 0 || (!ignored && differences <= 8)) {
++        LOG_INFO(HW_GPU,
++                 "EDEN_UP_LOOP_SKIP_VERIFY: {} would-be skips checked on the back, {} differences",
++                 checks, differences);
++    }
++}
++
+ void Maxwell3D::FrontVerify(VideoCommon::GpuSplit& split, FrontState& fs) {
+     split.Drain(VideoCommon::DrainSite::FrontVerify);
+     static u64 checks{};
+diff --git a/src/video_core/engines/maxwell_3d.h b/src/video_core/engines/maxwell_3d.h
+index 1a14149..5a49b7c 100644
+--- a/src/video_core/engines/maxwell_3d.h
++++ b/src/video_core/engines/maxwell_3d.h
+@@ -3510,6 +3510,8 @@ private:
+     bool FrontSkipsLoopWrite(VideoCommon::GpuSplit& split, FrontState& state, u32 method,
+                              u32 value, bool shadow_kept);
+     void FrontReportLoopSkip(FrontState& state);
++    /// EDEN_UP_LOOP_SKIP_VERIFY=1, on the back: whether a would-be skip would have been ignored.
++    void VerifyLoopSkip(u32 method, u32 argument, u32 front_value);
+     void FrontWrite(VideoCommon::GpuSplit& split, FrontState& state, u32 method, u32 argument,
+                     bool is_last_call, bool from_macro);
+     void FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split, FrontState& state);

@@ -1,0 +1,369 @@
+From: EglantinePS5
+Subject: [PATCH] up: the before-play pass puts the C and M rows of the list files first too (with EDEN_UP_SHADER_SET_COMPUTE=1 / EDEN_UP_SHADER_SET_MESH=1), and counts compute keys in done / total
+
+Switches: none new. Acts in the before-play pass (EDEN_UP_SHADER_SET_PREPASS=1, 0770) when
+EDEN_UP_SHADER_SET_COMPUTE=1 (0780/0781) or EDEN_UP_SHADER_SET_MESH=1 (0782/0783) is on. With
+neither on, or without the prepass: nothing changes (no compute record is read, M and C rows are
+counted as "not used" as 0770 counted them).
+
+Why (T158 review, 13 Nov 2026): 0770's list pass took only the G rows of first_start.list. In d4
+the start asked 458 graphics, 59 mesh and 94 compute pipelines; with 0780-0783 the set can hold
+48 of those mesh and 87 of those compute pipelines, but they were prepared only in the whole-file
+pass, in the file's order. A prepass cut short by its time limit could leave a quarter of what a
+start needs.
+
+What:
+- ReadPrepassLists: M rows (EGPLIST1 kind 2) are taken as graphics keys when the mesh switch is
+  on; C rows (EGPLIST1 kind 0, a 24-byte ComputePipelineCacheKey) when the compute switch is on,
+  as the store's hash, KeptComputeHash = the C row's hash ^ "compute1" (the C row is
+  ComputePipelineCacheKey::Hash(), as NoteFirstStartPipeline writes it). The report line names
+  graphics, mesh and compute rows apart.
+- ShaderSet::ReadRecords takes one more optional callback, compute_key_wanted: asked with a
+  compute record's key bytes before its environment is built (as key_wanted for the others).
+- The prepass's key count reads the compute records' keys too (keys only): every compute key not
+  in the store goes into `left`, once. So done / total, the minutes left and the "N of M listed"
+  numbers cover compute; mesh keys were in them already (a mesh key is a graphics key).
+- PrepareShaderSet: in the prepass a compute record is read only when its key is still in `left`
+  (and, in the list pass, named by a list), and is taken out of `left` then (each key built once,
+  also with several jobs in flight); it is counted done when built or left out, and handed back
+  to `left` when the pass stops before it is queued, as a graphics key is. 0781's skip of
+  compute records in the list pass is gone: the list pass now takes the listed ones.
+- The count line says how many of the records are compute.
+
+Order of the prepass after this: listed G, M and C keys together (file order), then the records
+of programs earlier sessions saw live, then the rest.
+
+Needs 0770-0772 and 0780-0783. Checked: apply in name order on the core, PS5-target syntax check.
+Not checked on the console.
+---
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index c3f0b28..1880bce 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -5989,27 +5989,40 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+             stopped = "stopped at shutdown";
+             throw StopReading{stopped};
+         }
+-        if (pass != nullptr && pass->only_keys != nullptr) {
+-            return; // the prepass's list pass names graphics keys only: compute comes later
+-        }
+         ++read;
+         ++compute_read;
+         const u64 hash = KeptComputeHash(key);
++        // 0784: in the prepass a compute key is taken from `left` like a graphics one (by
++        // compute_key_wanted below), counted once it is built or left out, and handed back when
++        // the pass stops before it is queued.
++        const auto taken = [pass] {
++            if (pass != nullptr) {
++                pass->processed.fetch_add(1, std::memory_order_relaxed);
++            }
++        };
++        const auto hand_back = [pass, hash] {
++            if (pass != nullptr && pass->left != nullptr) {
++                pass->left->insert(hash);
++            }
++        };
+         if (prep_store.Contains(hash)) {
+             ++known;
++            taken();
+             return;
+         }
+         if (struck_out(hash)) {
+             ++struck;
++            taken();
+             return;
+         }
+-        const u32 slot = admit(hash, [] {});
++        const u32 slot = admit(hash, hand_back);
+         ++queued;
+         constexpr u32 flags =
+             ShaderPrep::KeptStore::FlagPredicted | ShaderPrep::KeptStore::FlagShaderSet;
+         try {
++            const bool listed_key = pass != nullptr && pass->only_keys != nullptr;
+             job_workers.QueueWork([this, key, hash, slot, env_ = std::move(env), &state,
+-                                   &note_slot, &seconds, queued, pass]() mutable {
++                                   &note_slot, &seconds, queued, pass, listed_key]() mutable {
+                 bool ok = false;
+                 bool kept = false;
+                 const auto started = std::chrono::steady_clock::now();
+@@ -6048,9 +6061,10 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+                 state.free_slots.push_back(slot);
+                 note_slot(slot, 0);
+                 if (pass != nullptr) {
+-                    // (Not in the prepass's done / total: that counts graphics keys.)
+                     pass->kept.fetch_add(kept ? 1 : 0, std::memory_order_relaxed);
+                     pass->failed.fetch_add(ok ? 0 : 1, std::memory_order_relaxed);
++                    pass->listed_done.fetch_add(listed_key ? 1 : 0, std::memory_order_relaxed);
++                    pass->processed.fetch_add(1, std::memory_order_relaxed);
+                 }
+                 if (pass == nullptr && state.finished % ShaderPrep::LogEvery() == 0) {
+                     LOG_INFO(Render_Vulkan,
+@@ -6065,9 +6079,28 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+             state.free_slots.push_back(slot);
+             note_slot(slot, 0);
+             state.cv.notify_all();
++            hand_back();
+             throw;
+         }
+     };
++    // 0784: which compute records are read at all, from the key alone (no environment built).
++    const auto compute_key_wanted = [&](std::span<const u8> bytes) {
++        if (bytes.size() != sizeof(ComputePipelineCacheKey)) {
++            return false;
++        }
++        ComputePipelineCacheKey key;
++        std::memcpy(static_cast<void*>(&key), bytes.data(), sizeof(key));
++        const u64 hash = KeptComputeHash(key);
++        if (pass != nullptr && pass->left != nullptr) {
++            // The prepass, as for graphics keys: only keys still left (and, for the list pass,
++            // named by a list: C rows), each taken once.
++            if (pass->only_keys != nullptr && !pass->only_keys->contains(hash)) {
++                return false;
++            }
++            return pass->left->erase(hash) != 0;
++        }
++        return true;
++    };
+     const bool whole = VideoCommon::ShaderSet::ReadRecords(
+         file, CACHE_VERSION,
+         [&](std::ifstream& in, std::vector<VideoCommon::FileEnvironment> envs) {
+@@ -6228,7 +6261,8 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+         },
+         VideoCommon::ShaderSet::ComputeAsked()
+             ? std::function<void(std::ifstream&, VideoCommon::FileEnvironment)>{on_compute}
+-            : std::function<void(std::ifstream&, VideoCommon::FileEnvironment)>{});
++            : std::function<void(std::ifstream&, VideoCommon::FileEnvironment)>{},
++        std::function<bool(std::span<const u8>)>{compute_key_wanted});
+     wait_for_jobs();
+     {
+         std::scoped_lock lock{state.mutex};
+@@ -6311,17 +6345,21 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+ 
+ namespace {
+ /// The keys of the list files, in order, each once. first_start.list (EDEN_FIRST_START_2, its
+-/// header must name this cache version, driver, lowering tag and canonical keys; G rows only:
+-/// the set has no task/mesh or compute records) and pipeline lists (EGPLIST1, 0720: graphics
+-/// records; the key is taken with this device's driver fields, as EDEN_UP_PIPELINE_LIST_IMPORT_
+-/// DRIVER takes it, and hashed as stored: a list of canonical records matches the set's keys).
++/// header must name this cache version, driver, lowering tag and canonical keys) and pipeline
++/// lists (EGPLIST1, 0720; the key is taken with this device's driver fields, as
++/// EDEN_UP_PIPELINE_LIST_IMPORT_DRIVER takes it, and hashed as stored: a list of canonical
++/// records matches the set's keys). Graphics rows always; 0784: task/mesh rows (M, EGPLIST1 kind
++/// 2: a graphics key) with `mesh` (EDEN_UP_SHADER_SET_MESH=1), compute rows (C, EGPLIST1 kind 0)
++/// with `compute` (EDEN_UP_SHADER_SET_COMPUTE=1), taken as the store's KeptComputeHash (the C
++/// row is the ComputePipelineCacheKey's hash). Without the switch the set has no such records.
+ struct PrepassLists {
+     std::vector<u64> keys;
+     std::string report;
+ };
+ 
+ PrepassLists ReadPrepassLists(const std::vector<std::filesystem::path>& files, u32 cache_version,
+-                              u32 driver_id, u32 driver_version, bool canonical,
++                              u32 driver_id, u32 driver_version, bool canonical, bool compute,
++                              bool mesh,
+                               const std::function<u64(GraphicsPipelineCacheKey&)>& list_key_hash) {
+     PrepassLists out;
+     std::unordered_set<u64> seen;
+@@ -6372,17 +6410,26 @@ PrepassLists ReadPrepassLists(const std::vector<std::filesystem::path>& files, u
+                                           name);
+                 continue;
+             }
+-            size_t rows = 0, other_rows = 0;
++            size_t rows = 0, mesh_rows = 0, compute_rows = 0, other_rows = 0;
+             while (std::getline(in, line)) {
+-                if (line.size() == 18 && line[0] == 'G' && line[1] == ' ') {
++                const bool row = line.size() == 18 && line[1] == ' ';
++                if (row && line[0] == 'G') {
+                     add(std::strtoull(line.c_str() + 2, nullptr, 16));
+                     ++rows;
++                } else if (row && line[0] == 'M' && mesh) {
++                    add(std::strtoull(line.c_str() + 2, nullptr, 16));
++                    ++mesh_rows;
++                } else if (row && line[0] == 'C' && compute) {
++                    add(std::strtoull(line.c_str() + 2, nullptr, 16) ^ KeptComputeMix);
++                    ++compute_rows;
+                 } else if (!line.empty() && line[0] != '#' && line[0] != 'T') {
+-                    ++other_rows; // M (task/mesh) and C (compute): not in the set
++                    ++other_rows; // M or C without its switch: the set has no such records
+                 }
+             }
+-            out.report += fmt::format(" {}: {} graphics rows ({} new), {} mesh or compute;", name,
+-                                      rows, out.keys.size() - before, other_rows);
++            out.report += fmt::format(" {}: {} graphics, {} mesh and {} compute rows ({} new), {} "
++                                      "not used;",
++                                      name, rows, mesh_rows, compute_rows,
++                                      out.keys.size() - before, other_rows);
+             continue;
+         }
+         if (std::string_view{magic.data(), magic.size()} != "EGPLIST1") {
+@@ -6396,7 +6443,7 @@ PrepassLists ReadPrepassLists(const std::vector<std::filesystem::path>& files, u
+             continue;
+         }
+         u64 left = bytes - 32;
+-        size_t graphics = 0, others = 0;
++        size_t graphics = 0, mesh_records = 0, compute_records = 0, others = 0;
+         bool cut = false;
+         for (u32 record = 0; record < header[4] && !cut; ++record) {
+             std::array<u8, 4> head{};
+@@ -6428,7 +6475,17 @@ PrepassLists ReadPrepassLists(const std::vector<std::filesystem::path>& files, u
+                 break;
+             }
+             left -= key_size;
+-            if (kind != 1) {
++            if (kind == 0 && compute && key_size == sizeof(ComputePipelineCacheKey)) {
++                ComputePipelineCacheKey key;
++                if (!in.read(reinterpret_cast<char*>(&key), sizeof(key))) {
++                    cut = true;
++                    break;
++                }
++                add(KeptComputeHash(key));
++                ++compute_records;
++                continue;
++            }
++            if (kind == 0 || (kind == 2 && !mesh)) {
+                 in.seekg(static_cast<std::streamoff>(key_size), std::ios::cur);
+                 ++others;
+                 continue;
+@@ -6439,11 +6496,12 @@ PrepassLists ReadPrepassLists(const std::vector<std::filesystem::path>& files, u
+                 break;
+             }
+             add(list_key_hash(key));
+-            ++graphics;
++            ++(kind == 2 ? mesh_records : graphics);
+         }
+-        out.report += fmt::format(" {}: {} graphics records ({} new), {} task/mesh or compute{};",
+-                                  name, graphics, out.keys.size() - before, others,
+-                                  cut ? ", cut short" : "");
++        out.report += fmt::format(" {}: {} graphics, {} task/mesh and {} compute records ({} "
++                                  "new), {} not used{};",
++                                  name, graphics, mesh_records, compute_records,
++                                  out.keys.size() - before, others, cut ? ", cut short" : "");
+     }
+     return out;
+ }
+@@ -6547,7 +6605,8 @@ void PipelineCache::RunShaderSetPrepass(const std::filesystem::path& title_dir,
+ 
+     // 2. What is left: every usable key of the set not in the kept store, once.
+     std::unordered_set<u64> left;
+-    size_t records = 0, known = 0, repeats = 0, unusable = 0;
++    size_t records = 0, known = 0, repeats = 0, unusable = 0, compute_keys = 0;
++    const bool compute_wanted = VideoCommon::ShaderSet::ComputeAsked();
+     const auto count_begin = Clock::now();
+     const bool counted = VideoCommon::ShaderSet::ReadRecords(
+         outputs.records, CACHE_VERSION, [](std::ifstream&, std::vector<VideoCommon::FileEnvironment>) {},
+@@ -6577,7 +6636,35 @@ void PipelineCache::RunShaderSetPrepass(const std::filesystem::path& title_dir,
+                 ++repeats;
+             }
+             return false; // keys only: no record's environments are built
+-        });
++        },
++        // 0784, EDEN_UP_SHADER_SET_COMPUTE=1: compute records' keys are counted too (by the
++        // store's KeptComputeHash), so the list pass can put their C rows first and done / total
++        // covers them. Keys only here as well.
++        compute_wanted ? std::function<void(std::ifstream&, VideoCommon::FileEnvironment)>{
++                             [](std::ifstream&, VideoCommon::FileEnvironment) {}}
++                       : std::function<void(std::ifstream&, VideoCommon::FileEnvironment)>{},
++        compute_wanted
++            ? std::function<bool(std::span<const u8>)>{[&](std::span<const u8> bytes) {
++                  if (stop.stop_requested()) {
++                      throw std::runtime_error("stopped at shutdown");
++                  }
++                  ++records;
++                  if (bytes.size() != sizeof(ComputePipelineCacheKey)) {
++                      ++unusable;
++                      return false;
++                  }
++                  ComputePipelineCacheKey key;
++                  std::memcpy(static_cast<void*>(&key), bytes.data(), sizeof(key));
++                  const u64 hash = KeptComputeHash(key);
++                  if (prep_store.Contains(hash)) {
++                      ++known;
++                  } else if (!left.insert(hash).second) {
++                      ++repeats;
++                  }
++                  ++compute_keys;
++                  return false;
++              }}
++            : std::function<bool(std::span<const u8>)>{});
+     if (!counted || stop.stop_requested()) {
+         LOG_WARNING(Render_Vulkan, "Shader set prepass: {} could not be read to its end; "
+                                    "nothing prepared before play",
+@@ -6620,7 +6707,8 @@ void PipelineCache::RunShaderSetPrepass(const std::filesystem::path& title_dir,
+     }
+     const auto lists = ReadPrepassLists(
+         list_files, CACHE_VERSION, static_cast<u32>(device.GetDriverID()), device.GetDriverVersion(),
+-        canonical_keys, [this](GraphicsPipelineCacheKey& key) {
++        canonical_keys, VideoCommon::ShaderSet::ComputeAsked(),
++        VideoCommon::ShaderSet::MeshAsked(), [this](GraphicsPipelineCacheKey& key) {
+             key.state.driver_id = dynamic_features.driver_id;
+             key.state.driver_version = dynamic_features.driver_version;
+             return key.Hash();
+@@ -6643,12 +6731,13 @@ void PipelineCache::RunShaderSetPrepass(const std::filesystem::path& title_dir,
+     const u64 disk_needed_mb = (u64{total} * (21 + 7)) >> 10;
+     const u64 disk_free_mb = FreeDiskMegabytes(output_dir);
+     LOG_INFO(Render_Vulkan,
+-             "Shader set prepass: set file ready in {:.0f} s; {} records: {} keys to prepare, {} "
+-             "known already, {} repeats of a key, {} not for this device ({:.1f} s to count). "
+-             "Lists: {} keys from {} files, {} of them to prepare first, {} known already, {} not "
+-             "in the set;{} Needs about {} MB of disk (kept store and driver cache), {} MB free "
+-             "(floor {} MB)",
+-             set_seconds, records, total, known, repeats, unusable, since(count_begin),
++             "Shader set prepass: set file ready in {:.0f} s; {} records ({} compute): {} keys to "
++             "prepare, {} known already, {} repeats of a key, {} not for this device ({:.1f} s to "
++             "count). Lists: {} keys from {} files, {} of them to prepare first, {} known already, "
++             "{} not in the set;{} Needs about {} MB of disk (kept store and driver cache), {} MB "
++             "free (floor {} MB)",
++             set_seconds, records, compute_keys, total, known, repeats, unusable,
++             since(count_begin),
+              lists.keys.size(), list_files.size(), listed.size(), listed_known, listed_missing,
+              lists.report, disk_needed_mb, disk_free_mb,
+              VideoCommon::ShaderSet::MinimumFreeDiskBytes() >> 20);
+diff --git a/src/video_core/shader_set.cpp b/src/video_core/shader_set.cpp
+index 2431e43..1edfa77 100644
+--- a/src/video_core/shader_set.cpp
++++ b/src/video_core/shader_set.cpp
+@@ -1020,7 +1020,8 @@ bool ReadRecords(
+     const std::function<void(std::ifstream&, std::vector<FileEnvironment>)>& on_graphics,
+     const std::function<bool(std::span<const u64>)>& programs_wanted,
+     const std::function<bool(std::span<const u8>)>& key_wanted,
+-    const std::function<void(std::ifstream&, FileEnvironment)>& on_compute) {
++    const std::function<void(std::ifstream&, FileEnvironment)>& on_compute,
++    const std::function<bool(std::span<const u8>)>& compute_key_wanted) {
+     // One record's bytes at a time, read through an ifstream as the pipeline cache's callbacks
+     // and FileEnvironment::Deserialize expect (they only read forward).
+     struct MemBuf final : std::streambuf {
+@@ -1141,6 +1142,13 @@ bool ReadRecords(
+                                                key.size()})) {
+                 continue;
+             }
++            // 0784: a compute record the reader does not want is left out before its
++            // environment is built.
++            if (compute && compute_key_wanted &&
++                !compute_key_wanted(std::span<const u8>{reinterpret_cast<const u8*>(key.data()),
++                                                        key.size()})) {
++                continue;
++            }
+             bytes.resize(sizeof(u32));
+             std::memcpy(bytes.data(), &record.count, sizeof(record.count));
+             for (u32 n = 0; n < record.count; ++n) {
+diff --git a/src/video_core/shader_set.h b/src/video_core/shader_set.h
+index f747003..f10ba6b 100644
+--- a/src/video_core/shader_set.h
++++ b/src/video_core/shader_set.h
+@@ -47,12 +47,15 @@ using MapState = std::function<bool(std::span<const u8> state, std::array<u64, 6
+ /// bytes. False from either leaves the record out before its environments are built.
+ /// `on_compute` (optional, 0780): compute records (key of 24 bytes, one environment) go here and
+ /// nowhere else; without it they are skipped (`key_wanted` is never asked about them).
++/// `compute_key_wanted` (optional, 0784): asked with a compute record's key bytes before its
++/// environment is built; false leaves the record out (as `key_wanted` for the others).
+ [[nodiscard]] bool ReadRecords(
+     const std::filesystem::path& file, u32 cache_version,
+     const std::function<void(std::ifstream&, std::vector<FileEnvironment>)>& on_graphics,
+     const std::function<bool(std::span<const u64>)>& programs_wanted = {},
+     const std::function<bool(std::span<const u8>)>& key_wanted = {},
+-    const std::function<void(std::ifstream&, FileEnvironment)>& on_compute = {});
++    const std::function<void(std::ifstream&, FileEnvironment)>& on_compute = {},
++    const std::function<bool(std::span<const u8>)>& compute_key_wanted = {});
+ 
+ struct Outputs {
+     std::filesystem::path records;  ///< prep_shader_set.bin, empty when there is none to use

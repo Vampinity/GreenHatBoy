@@ -1,0 +1,112 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_TC_OOM_SPARE_FRAMES guards: a waiting game write or heap request ends the sparing like a refusal; the expected mark latches until 512 MiB under it; no sparing while AreaEvict's window is open; unset as before
+
+T179a checker. 0940 spared images while a game write or a pipeline builder's heap request waited
+for a block (the front's GuestMemoryWanted, which makes PoolPressure read the pool as empty so the
+collector gives way at its hardest): the game's own memory comes first, so such a wait now ends
+the sparing for 600 frames, counted as "game memory waits" (front: eden_tc_game_memory_wanted,
+weak here). Over the expected mark the sparing stopped and started again every frame the images
+crossed it; it now stays off until they are 512 MiB (at most a quarter of the mark) under it.
+While AreaEvict's window is open (a burst of new images, the load into a new area) there is no
+sparing, so the load collects as T177 until a refusal. EDEN_UP_TC_OOM line gains "area window"
+and "game memory waits". All 0940 switches unset: exactly as before. texture_cache*.h are not
+translation id inputs: KEEPS THE STORE.
+
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 6c3741cdf1..ded8eb9ee6 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -646,6 +646,9 @@ extern "C" void eden_optional_allocation_scope(bool enter) noexcept __attribute_
+ // headless/performance.cpp: how many times the driver found no memory (graphics_refusals, the count
+ // the Vulkan port's PoolPressure reads). Weak: without it only the allocator's refusals count (0940).
+ extern "C" unsigned long long eden_graphics_refusals(void) __attribute__((weak));
++// headless/performance.cpp: nonzero while a game write or a pipeline builder's heap request waits
++// for a block (GuestMemoryWanted). Weak: without it only refusals end the sparing (0941).
++extern "C" unsigned eden_tc_game_memory_wanted(void) __attribute__((weak));
+ #endif
+ 
+ // Patch 0940, the collector while the pool is short but nothing is refused (the area past the field:
+@@ -2672,19 +2675,22 @@ void TextureCache<P>::TickFrame() {
+             // reached the age the pass would have taken without the spare and stayed (once each).
+             LOG_INFO(HW_GPU,
+                      "EDEN_UP_TC_OOM 600 frames: K={} frames sparing {} / off after a refusal {} / "
+-                     "over the mark {}; refusals {} ({} while sparing), left out {} ({} while "
++                     "over the mark {} / area window {}; refusals {} ({} while sparing, {} game "
++                     "memory waits), left out {} ({} while "
+                      "sparing); collector deleted {} by_age {}/{}/{}/{} recent_astc {}; remade {} "
+                      "({} ASTC); spared {} ({} MiB, {} ASTC); created {}, ASTC made {}, downloads "
+                      "{}, uploads {} ({} MiB); images held {} MiB, margin {} MiB",
+                      OomSpareFrames(), oom_frames_spared, oom_frames_off, oom_frames_over,
+-                     oom_refusals, oom_refusals_spared, oom_left_out_period, oom_left_out_spared,
++                     oom_frames_area, oom_refusals, oom_refusals_spared, oom_game_waits,
++                     oom_left_out_period, oom_left_out_spared,
+                      gc_deletes + gc_costly_deletes, oom_delete_age[0], oom_delete_age[1],
+                      oom_delete_age[2], oom_delete_age[3], oom_delete_costly_recent, oom_remakes,
+                      oom_remakes_costly, oom_spared_images, oom_spared_bytes >> 20,
+                      oom_spared_costly, images_created, astc_opaque_images + astc_alpha_images,
+                      gc_download_deletes, images_uploaded, uploaded_bytes >> 20,
+                      total_used_memory >> 20, pressure_margin >> 20);
+-            oom_frames_spared = oom_frames_off = oom_frames_over = 0;
++            oom_frames_spared = oom_frames_off = oom_frames_over = oom_frames_area = 0;
++            oom_game_waits = 0;
+             oom_refusals = oom_refusals_spared = oom_left_out_period = oom_left_out_spared = 0;
+             oom_spared_images = oom_spared_bytes = oom_spared_costly = 0;
+             oom_delete_age[0] = oom_delete_age[1] = oom_delete_age[2] = oom_delete_age[3] = 0;
+@@ -2904,6 +2910,14 @@ void TextureCache<P>::TickFrame() {
+             refused |= oom_primed && seen != oom_seen_graphics_refusals;
+             oom_seen_graphics_refusals = seen;
+         }
++        // 0941: a game write or a pipeline builder's heap request waiting for a block now (the
++        // front's GuestMemoryWanted, which makes PoolPressure read the pool as empty so the
++        // collector gives way at its hardest): the game's memory comes first, so it ends the
++        // sparing like a refusal.
++        if (eden_tc_game_memory_wanted != nullptr && eden_tc_game_memory_wanted() != 0) {
++            ++oom_game_waits;
++            refused = true;
++        }
+ #endif
+         oom_primed = true;
+         if (refused) {
+@@ -2911,13 +2925,25 @@ void TextureCache<P>::TickFrame() {
+             oom_refusals_spared += oom_spare_now ? 1 : 0;
+             oom_spare_off_until = frame_tick + 600;
+         }
++        // 0941: over the expected mark the sparing stops until the images are 512 MiB (at most a
++        // quarter of the mark) under it again, so it does not switch on and off every frame there.
++        if (total_used_memory >= expected_memory) {
++            oom_spare_over = true;
++        } else if (total_used_memory + (std::min)(expected_memory / 4, u64{512_MiB}) <
++                   expected_memory) {
++            oom_spare_over = false;
++        }
++        // 0941: no sparing while AreaEvict's window is open (a burst of new images: the load into
++        // a new area), so the load collects as before until a refusal ends the sparing anyway.
++        const bool area_window = frame_tick < area_evict_until;
+         const u64 spare = OomSpareFrames();
+-        oom_spare_now = spare != 0 && frame_tick >= oom_spare_off_until &&
+-                        total_used_memory < expected_memory;
++        oom_spare_now = spare != 0 && frame_tick >= oom_spare_off_until && !oom_spare_over &&
++                        !area_window;
+         if (spare != 0) {
+             ++(oom_spare_now                        ? oom_frames_spared
+                : frame_tick < oom_spare_off_until ? oom_frames_off
+-                                                  : oom_frames_over);
++               : oom_spare_over                   ? oom_frames_over
++                                                  : oom_frames_area);
+         }
+     }
+     if (total_used_memory > minimum_memory) {
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index ef999ff8b0..c8aac267ab 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -412,6 +412,9 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
+     u64 oom_frames_spared{};            ///< 600-frame counts from here on
+     u64 oom_frames_off{};               ///< not sparing: a refusal in the last 600 frames
+     u64 oom_frames_over{};              ///< not sparing: images at or over the expected mark
++    u64 oom_frames_area{};              ///< not sparing: AreaEvict's window is open (0941)
++    u64 oom_game_waits{};               ///< frames a game write or heap request waited (0941)
++    bool oom_spare_over{};              ///< over the expected mark, until 512 MiB under it (0941)
+     u64 oom_refusals{};                 ///< frames with a new refusal of any kind
+     u64 oom_refusals_spared{};          ///< of them, frames where the collector was sparing
+     u64 oom_left_out{};                 ///< images left out (no memory), never reset

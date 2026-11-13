@@ -1,0 +1,84 @@
+From: EglantinePS5
+Subject: [PATCH] nx2: the write-back scratch growth of EDEN_NX2_DEFER_WRITEBACK_OOM is optional: not tried when the pool is too small, refused at once otherwise (waveydude's 0918), off by default
+
+What: 0662 grows the swizzle scratch before an eviction's write-back and keeps the image when the
+growth is refused. That growth runs on the GPU thread. Without this patch a refusal first goes
+through operator new's handler (headless/main.cpp): the door wait (EDEN_UP_DOOR_WAIT), the
+EDEN_UP_NEW_WAIT_MS wait, the EDEN_HEAP_FAILURE line and a heap snapshot, all for an allocation the
+collector can do without.
+
+Now, inside ReserveEvictionWritebackScratch only (so only with EDEN_NX2_DEFER_WRITEBACK_OOM=1):
+- when the pool's largest free block is known (eden_pool_largest_free, headless/performance.cpp)
+  and smaller than the growth, it is not tried: the image stays for a later pass;
+- otherwise the growth runs inside eden_optional_allocation_scope (wrapper, headless/main.cpp, part
+  of this commit): while a thread's depth is not 0, the new handler throws bad_alloc at once. The
+  scope ends with the block (SCOPE_EXIT), also when the growth throws.
+Both hooks are weak and PS5_NATIVE only: without them the growth is tried as in 0662.
+
+Off: ReserveEvictionWritebackScratch returns before any of this, the depth stays 0, and the handler's
+only new work is one thread-local load, on a refusal. Not in the kept-store stamp.
+
+Risk: the largest free block counts the pool, not the free room inside the heap's own spaces, so
+it can say no to a growth the heap could have served from its arenas. The image then stays dirty
+until the pool has a block that size (no loss, but less memory freed by that pass).
+
+Origin and credit: waveydude, patch 0918 ("Skip memory waits for optional texture writeback
+scratch") and its wrapper half (eden_optional_allocation_scope in headless/main.cpp), commit
+c7ee4d0.
+---
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index d5210db..e60ce70 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -27,6 +27,7 @@
+ #include <boost/container/small_vector.hpp>
+ 
+ #include "common/alignment.h"
++#include "common/scope_exit.h"
+ #include "common/settings.h"
+ #include "common/slot_vector.h"
+ #include "video_core/control/channel_state.h"
+@@ -506,6 +507,14 @@ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManag
+     }
+ }
+ 
++#ifdef PS5_NATIVE
++// headless/performance.cpp: the pool's largest free block in bytes, 0 when unknown. headless/main.cpp
++// (0663): while a thread is inside this scope, operator new's handler refuses at once (no wait, no
++// failure line). Weak: without them the growth below is tried as it is.
++extern "C" unsigned long long eden_pool_largest_free(void) __attribute__((weak));
++extern "C" void eden_optional_allocation_scope(bool enter) noexcept __attribute__((weak));
++#endif
++
+ // EDEN_NX2_DEFER_WRITEBACK_OOM=1 (exact "1"; waveydude's 0913): a block-linear write-back needs
+ // scratch for one guest level at a time (SwizzleImage). When it would grow the scratch by a large
+ // request (WritebackNeedsHeap: not a host span, not covered by the write-back bands, 256 KiB or
+@@ -526,7 +535,28 @@ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManag
+     if (required <= scratch.capacity()) {
+         return true;
+     }
++#ifdef PS5_NATIVE
++    // waveydude's 0918: the image can stay for a later pass, so this growth is optional. When the
++    // pool's largest free block is known and smaller, it is not tried at all; when it is tried, a
++    // refusal comes back at once instead of waiting in operator new's handler on the GPU thread.
++    if (eden_pool_largest_free) {
++        const unsigned long long largest = eden_pool_largest_free();
++        if (largest != 0 && largest < required) {
++            return false;
++        }
++    }
++#endif
+     try {
++#ifdef PS5_NATIVE
++        if (eden_optional_allocation_scope) {
++            eden_optional_allocation_scope(true);
++        }
++        SCOPE_EXIT {
++            if (eden_optional_allocation_scope) {
++                eden_optional_allocation_scope(false);
++            }
++        };
++#endif
+         scratch.resize_destructive(required);
+         return true;
+     } catch (const std::bad_alloc&) {

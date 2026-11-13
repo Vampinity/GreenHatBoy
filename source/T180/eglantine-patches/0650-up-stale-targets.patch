@@ -1,0 +1,510 @@
+From: EglantinePS5
+Subject: [PATCH] up: delete render targets the game has drawn over once unused for ten frames (jpkto, zortos293/Lichii #1571), EDEN_UP_STALE_TARGETS=1, off by default
+
+What: Ocarina of Time makes its render targets (the shadow maps among them) anew every frame, at
+addresses that shift as the camera moves, so each frame's targets land over older ones; the
+texture cache makes a new image for each and flags the overlapped old ones BadOverlap. Our
+collector deletes such an image without a copy back, but only once it is 50 frames old while
+memory is under the expected mark (25 above it, 10 above critical) and only about ten images a
+frame, so they pile up between area loads. With the switch on, TextureCache::RetireStaleTargets
+runs every frame in TickFrame, before the area evict and the collector and whatever the memory
+use, and deletes a render target when all of this holds:
+- BadOverlap; made for a render target binding (new flag RenderTargetOrigin, set by
+  FindRenderTargetView on the image JoinImages makes, only while the switch is on); GPU-written,
+  not CPU-written; single-sample, backed, not sparse, rescaled, remapped or trimmed; whole 4 KiB
+  pages;
+- unused (LRU tick) for EDEN_UP_STALE_TARGETS_FRAMES frames (default 10, upstream's constant);
+- nothing still needs it: no queued download, asynchronous decode or unswizzle, not a bound
+  render target, not decoding; no alias, and no subresource-compatible overlap, used within those
+  frames; and (ours, the cold sweep's and the RT evict's rule) the guest never read it back
+  (forced_flushed, dma_downloaded, a relocation guard); and (ours, T148 review) it is not one of
+  the last four images a present showed: TryFindFramebufferImageView does not touch the LRU, so a
+  frame the game holds on screen (a load, a pause) would look unused after n frames and its
+  deletion would leave the present with nothing or with the stale guest bytes.
+A sampled twin (a BadOverlap alias of it with no other alias, not a render target, not
+CPU-written, not costly, converted or decoded) goes with it. At most 512 deletions a frame. The
+deletion is the collector's own: MarkStale, untrack, unregister, DeleteImage(id) without
+immediate_delete, so the VkImage and its memory wait in gpu_sentenced_images until the GPU has
+passed every command recorded with it.
+
+RomainROCH's review point on #1571 (the scan stops after 4,096 examined candidates and always
+started at the oldest, so 4,096 kept old targets would hide every target behind them for good):
+taken as upstream fixed it in fab2816. A scan that stops at its bound leaves the next one to resume
+behind the candidates it examined (the deleted ones are no longer counted); a scan that reaches
+the end starts the next round at the oldest. Host check: 4,096 kept + 1: deleted at the second
+call; 10,000 kept + 1: at the third; without the resume never in 120 calls.
+
+Switches (read once): EDEN_UP_STALE_TARGETS=1 (exact 1). EDEN_UP_STALE_TARGETS_FRAMES=<n>, digits
+only, 3 to 3600, anything else 10 with a warning. On: a start line, and every 10 s
+"EDEN_UP_STALE_TARGETS: N stale render targets deleted in the last 10 s (M MiB, T of them sampled
+twins); kept K checks as in use, R as read back; S scans resumed; ... deleted so far (... MiB);
+I images, texture memory X MiB" (HW_GPU, LOG_INFO). Off: one cached test in TickFrame, one in
+JoinImages for render targets and one per present; no flag set, nothing recorded, nothing deleted,
+no line.
+
+Left out of the PR: the zero clear of a later image over stale pages (ContentsDefined,
+TextureCacheRuntime::ClearImage, vkCmdClearDepthStencilImage) and the PendingTransfer ticks; the
+OpenGL flush fix (ef9f08d, OpenGL only); the Catch2 tests. Upstream also skips the deletion when
+the stale mark does not cover the image; ours deletes as our collector does (our MarkStale marks
+nothing unless EDEN_UP_NO_STALE_UPLOAD or EDEN_UP_SKIP_STALE_UPLOADS is on, and refuses with
+frames ahead), so a later image there uploads guest bytes as after any collector delete.
+
+Origin and credit: jpkto, zortos293/Lichii PR #1571 (open), commits 48761a3 ("delete overwritten
+render targets after ten unused frames"), 9a3a759 ("count only retirable targets against the retire
+cap", from a CodeRabbit review) and fab2816 ("resume the bounded retire scan where it stopped", from
+RomainROCH's review); names and paths mapped to our tree (no Lichii rename here).
+---
+diff --git a/src/video_core/texture_cache/image_base.h b/src/video_core/texture_cache/image_base.h
+index d47c981..ab11361 100644
+--- a/src/video_core/texture_cache/image_base.h
++++ b/src/video_core/texture_cache/image_base.h
+@@ -70,6 +70,9 @@ enum class ImageFlagBits : u32 {
+     GuestBytes = 1 << 24,
+     /// A render target the GPU had never written when it was bound (EDEN_NX2_RT_EVICT_PRESSURE).
+     TransientTarget = 1 << 25,
++    /// Made for a render target binding (FindRenderTargetView). Only set while
++    /// EDEN_UP_STALE_TARGETS=1 is on (Lichii #1571's RenderTargetOrigin).
++    RenderTargetOrigin = 1 << 26,
+ };
+ DECLARE_ENUM_FLAG_OPERATORS(ImageFlagBits)
+ 
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 57a27d0..b58ec3f 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -266,6 +266,41 @@ constexpr u64 KeepRemadeWindow = 600;
+     return frames;
+ }
+ 
++/// EDEN_UP_STALE_TARGETS=1 (exact 1; off unless set; jpkto, zortos293/Lichii #1571, head fab2816):
++/// a render target the game has drawn over is deleted once it has gone unused for
++/// EDEN_UP_STALE_TARGETS_FRAMES=<n> frames (digits only, 3 to 3600; unset or anything else: 10,
++/// upstream's constant STALE_TARGET_AGE), every frame, before the other collectors and whatever
++/// the memory use (TextureCache::RetireStaleTargets). 0 when the switch is off: nothing runs but
++/// this cached test.
++[[nodiscard]] inline u64 StaleTargetFrames() {
++    static const u64 frames = [] {
++        if (!Common::PeSwitch("EDEN_UP_STALE_TARGETS")) {
++            return u64{0};
++        }
++        u64 value = 10;
++        if (const char* const raw = std::getenv("EDEN_UP_STALE_TARGETS_FRAMES"); raw != nullptr) {
++            u64 parsed = 0;
++            bool digits = raw[0] != '\0';
++            for (const char* c = raw; digits && *c != '\0'; ++c) {
++                digits = *c >= '0' && *c <= '9' && parsed <= 100000;
++                parsed = parsed * 10 + static_cast<u64>(*c - '0');
++            }
++            if (digits && parsed >= 3 && parsed <= 3600) {
++                value = parsed;
++            } else {
++                LOG_WARNING(HW_GPU, "EDEN_UP_STALE_TARGETS_FRAMES={} is not 3 to 3600: 10 frames",
++                            raw);
++            }
++        }
++        LOG_INFO(HW_GPU,
++                 "EDEN_UP_STALE_TARGETS=1: render targets drawn over (BadOverlap, GPU-written) are "
++                 "deleted once unused for {} frames, at most 512 a frame",
++                 value);
++        return value;
++    }();
++    return frames;
++}
++
+ /// The relocation guard (frame of the last GPU write, cross-frame reads, CPU reads per shape) is
+ /// kept while relocation or the cold sweep is on, and not at all otherwise.
+ [[nodiscard]] inline bool FritchiiRelocationGuards() {
+@@ -2030,6 +2065,9 @@ void TextureCache<P>::TickFrame() {
+         // EDEN_UP_FRITCHII_RELOCATE / EDEN_UP_FRITCHII_COLD: the cold sweep and the 600-frame line.
+         TickRelocation();
+     }
++    // EDEN_UP_STALE_TARGETS: before the area evict and the collector, so they never see what it
++    // deletes (each image goes once, counted once, by whichever pass deletes it).
++    RetireStaleTargets();
+     AreaEvict();
+     if (total_used_memory > minimum_memory) {
+         HitchTrace::Op collector_trace{HitchTrace::Kind::Collector, total_used_memory, {}};
+@@ -2247,6 +2285,241 @@ void TextureCache<P>::SweepColdImages() {
+     }
+ }
+ 
++template <class P>
++void TextureCache<P>::CollectStaleReferences() {
++    stale_references.clear();
++    const auto collect_downloads = [&](const auto& downloads) {
++        for (const auto& download : downloads) {
++            if (download.is_swizzle && !download.retired_image) {
++                stale_references.insert(download.object_id);
++            }
++        }
++    };
++    collect_downloads(uncommitted_downloads);
++    for (const auto& batch : committed_downloads) {
++        collect_downloads(batch);
++    }
++    for (const auto& decode : async_decodes) {
++        stale_references.insert(decode->image_id);
++    }
++    for (const auto& entry : unswizzle_queue) {
++        stale_references.insert(entry.image_id);
++    }
++    const auto bound_view = [&](ImageViewId view_id) {
++        if (PreparesImage(slot_image_views, view_id)) {
++            stale_references.insert(slot_image_views[view_id].image_id);
++        }
++    };
++    for (const ImageViewId view_id : render_targets.color_buffer_ids) {
++        bound_view(view_id);
++    }
++    bound_view(render_targets.depth_buffer_id);
++    // Ours (review of 0650): what the last presents showed, which the LRU does not see.
++    for (const ImageId presented : stale_presented) {
++        if (presented) {
++            stale_references.insert(presented);
++        }
++    }
++}
++
++/// EDEN_UP_STALE_TARGETS=1 (StaleTargetFrames; jpkto, zortos293/Lichii #1571 48761a3 + 9a3a759 +
++/// fab2816). Ocarina of Time makes its render targets (shadow maps among them) anew every frame,
++/// at addresses that shift as the camera moves, so each frame's targets land over older ones and
++/// the old ones get BadOverlap. The collector deletes such an image without a copy back, but in
++/// our tree only once it is 50 frames old outside the memory thresholds (25 / 10 above them) and
++/// at most about 10 images a frame, so they pile up. This pass deletes them every frame once they
++/// are n frames old (default 10, the collector's age in its critical mode), with the collector's
++/// own deletion: MarkStale, untrack, unregister, DeleteImage (deferred: gpu_sentenced_images keeps
++/// the VkImage and its memory until the GPU has passed every command recorded with it).
++/// A candidate is BadOverlap, made for a render target binding (RenderTargetOrigin), GPU-written
++/// and not CPU-written, single-sample, backed, not sparse, rescaled, remapped or trimmed, and made
++/// of whole 4 KiB pages. It is kept while anything still needs it: a queued download, an
++/// asynchronous decode or unswizzle, a bound render target, one of the last four presented images
++/// (ours: a present does not touch the LRU), IsDecoding, an alias or a subresource-compatible
++/// overlap used within the n frames; and (ours, the cold sweep's and the
++/// RT evict's rule) while the guest has read its contents back (forced_flushed, dma_downloaded, a
++/// relocation guard). A sampled twin (BadOverlap alias of it with no other alias, not a render
++/// target, not CPU-written) goes with it. At most 512 deletions a frame; a scan examines at most
++/// 4,096 candidates and the next one resumes behind them (RomainROCH's review point on #1571:
++/// kept candidates at the old end of the LRU must not hold every scan in front of them).
++template <class P>
++void TextureCache<P>::RetireStaleTargets() {
++    const u64 age = StaleTargetFrames();
++    if (age == 0) {
++        return;
++    }
++    [&] {
++        if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || frame_tick <= age) {
++            return;
++        }
++        constexpr size_t MaxPerFrame = 512;
++        constexpr size_t MaxExaminedPerFrame = 8 * MaxPerFrame;
++        constexpr u64 page_mask = StalePages::STALE_PAGE_SIZE - 1;
++        constexpr ImageFlagBits excluded =
++            ImageFlagBits::CpuModified | ImageFlagBits::Sparse | ImageFlagBits::SparseLayers |
++            ImageFlagBits::SparseTiles | ImageFlagBits::UnwrittenSparse | ImageFlagBits::Unbacked |
++            ImageFlagBits::Rescaled | ImageFlagBits::Remapped | ImageFlagBits::TrimmedLevels;
++        const u64 cutoff = frame_tick - age;
++        // MarkStale keeps whole pages only: an image with a partial edge page is left to the
++        // collector (upstream's StaleMarkerCovers).
++        const auto whole_pages = [](const ImageBase& image) {
++            return image.guest_size_bytes != 0 && (image.cpu_addr & page_mask) == 0 &&
++                   (image.guest_size_bytes & page_mask) == 0;
++        };
++        const auto gpu_written_target = [&](const ImageBase& image) {
++            return True(image.flags & ImageFlagBits::RenderTargetOrigin) &&
++                   True(image.flags & ImageFlagBits::GpuModified) && False(image.flags & excluded) &&
++                   image.info.num_samples == 1 && !image.info.is_sparse && !image.HasScaled();
++        };
++        const auto read_back = [](const ImageBase& image) {
++            return image.info.forced_flushed || image.info.dma_downloaded ||
++                   image.relocation_guard_noted != 0;
++        };
++        // Not unused: registered and touched after the cutoff, or not registered (no LRU entry
++        // to read; such a partner protects).
++        const auto unused = [&](ImageId image_id) {
++            const Image& image = slot_images[image_id];
++            return True(image.flags & ImageFlagBits::Registered) && image.lru_index != SIZE_MAX &&
++                   lru_cache.Tick(image.lru_index) <= cutoff;
++        };
++        const auto kept = [&](ImageId image_id, const Image& image) {
++            if (True(image.flags & ImageFlagBits::IsDecoding) ||
++                stale_references.contains(image_id)) {
++                return true;
++            }
++            // Old alias pairs age out together; only recent partners protect an image.
++            for (const AliasedImage& alias : image.aliased_images) {
++                if (!unused(alias.id)) {
++                    return true;
++                }
++            }
++            constexpr auto options = RelaxedOptions::Size | RelaxedOptions::Format;
++            for (const ImageId other_id : image.overlapping_images) {
++                if (unused(other_id)) {
++                    continue;
++                }
++                const Image& other = slot_images[other_id];
++                if (IsSubresource(image.info, other, image.gpu_addr, options, false, true) ||
++                    IsSubresource(other.info, image, other.gpu_addr, options, false, true)) {
++                    return true;
++                }
++            }
++            return false;
++        };
++        boost::container::small_vector<ImageId, 64> aged;
++        bool references_collected = false;
++        const size_t resume_from = stale_retire_resume;
++        size_t matched = 0;
++        size_t examined = 0;
++        bool stopped = false;
++        lru_cache.ForEachItemBelow(cutoff, [&](ImageId image_id) {
++            const Image& image = slot_images[image_id];
++            if (False(image.flags & ImageFlagBits::BadOverlap) || !gpu_written_target(image) ||
++                !whole_pages(image)) {
++                return false;
++            }
++            if (matched++ < resume_from) {
++                return false; // examined by an earlier scan of this round
++            }
++            if (!references_collected) {
++                CollectStaleReferences();
++                references_collected = true;
++            }
++            ++examined;
++            if (read_back(image)) {
++                ++stale_kept_read;
++            } else if (kept(image_id, image)) {
++                ++stale_kept_used;
++            } else {
++                aged.push_back(image_id);
++            }
++            stopped = aged.size() >= MaxPerFrame || examined >= MaxExaminedPerFrame;
++            return stopped;
++        });
++        // A scan that reaches the end of the old candidates starts the next round at the oldest.
++        stale_retire_resume = stopped ? resume_from + examined : 0;
++        stale_scan_resumes += stopped ? 1 : 0;
++        if (aged.empty()) {
++            return;
++        }
++        const auto retire = [&](ImageId image_id) {
++            Image& image = slot_images[image_id];
++            const u64 bytes = ImageMemoryBytes(image);
++            MarkStale(image); // before UntrackImage (see MarkStale), as the collector does
++            if (True(image.flags & ImageFlagBits::Tracked)) {
++                UntrackImage(image, image_id);
++            }
++            UnregisterImage(image_id);
++            trace_delete_reason = "stale-target";
++            DeleteImage(image_id);
++            stale_retired_bytes += bytes;
++            stale_retired_total_bytes += bytes;
++            ++stale_retired_total;
++        };
++        boost::container::small_vector<ImageId, 8> partners;
++        size_t remaining = MaxPerFrame;
++        for (const ImageId image_id : aged) {
++            if (remaining == 0) {
++                break;
++            }
++            const Image& image = slot_images[image_id];
++            // Deleting the images before this one only removes partners and overlaps, so it cannot
++            // make this one kept; it can clear its BadOverlap once no overlap is left.
++            if (False(image.flags & ImageFlagBits::BadOverlap)) {
++                continue;
++            }
++            // A sampled twin with no other alias goes with its target when both are unused.
++            partners.clear();
++            for (const AliasedImage& alias : image.aliased_images) {
++                const Image& partner = slot_images[alias.id];
++                if (True(partner.flags & ImageFlagBits::Registered) &&
++                    True(partner.flags & ImageFlagBits::BadOverlap) &&
++                    False(partner.flags &
++                          (excluded | ImageFlagBits::CostlyLoad | ImageFlagBits::Converted |
++                           ImageFlagBits::AsynchronousDecode)) &&
++                    !gpu_written_target(partner) && whole_pages(partner) &&
++                    partner.aliased_images.size() == 1 && !read_back(partner) &&
++                    !kept(alias.id, partner)) {
++                    partners.push_back(alias.id);
++                }
++            }
++            if (partners.size() + 1 > remaining) {
++                continue;
++            }
++            retire(image_id);
++            ++stale_retired;
++            --remaining;
++            if (stopped && stale_retire_resume != 0) {
++                --stale_retire_resume; // left the LRU: no longer in front of the resume point
++            }
++            for (const ImageId partner_id : partners) {
++                retire(partner_id);
++                ++stale_retired_partners;
++                --remaining;
++            }
++        }
++    }();
++    const auto now = std::chrono::steady_clock::now();
++    if (stale_log_time == std::chrono::steady_clock::time_point{}) {
++        stale_log_time = now; // the first window starts with the first frame
++    } else if (now - stale_log_time >= std::chrono::seconds{10}) {
++        LOG_INFO(HW_GPU,
++                 "EDEN_UP_STALE_TARGETS: {} stale render targets deleted in the last {} s "
++                 "({} MiB, {} of them sampled twins); kept {} checks as in use, {} as read "
++                 "back; {} scans resumed; {} deleted so far ({} MiB); {} images, texture "
++                 "memory {} MiB",
++                 stale_retired + stale_retired_partners,
++                 std::chrono::duration_cast<std::chrono::seconds>(now - stale_log_time).count(),
++                 stale_retired_bytes >> 20, stale_retired_partners, stale_kept_used,
++                 stale_kept_read, stale_scan_resumes, stale_retired_total,
++                 stale_retired_total_bytes >> 20, slot_images.size(),
++                 total_used_memory >> 20);
++        stale_log_time = now;
++        stale_retired = stale_retired_partners = stale_retired_bytes = 0;
++        stale_kept_used = stale_kept_read = stale_scan_resumes = 0;
++    }
++}
++
+ template <class P>
+ void TextureCache<P>::TickRenderClock() {
+     // EDEN_UP_FRITCHII_CLOCK (Fritchii e722284eec, ddc5e2585c): follow the counter while it
+@@ -3689,6 +3962,11 @@ std::pair<typename P::ImageView*, bool> TextureCache<P>::TryFindFramebufferImage
+     }
+ 
+     const auto GetImageViewForFramebuffer = [&](ImageId image_id) {
++        if (StaleTargetFrames() != 0) {
++            // EDEN_UP_STALE_TARGETS: a held frame is never deleted while it is still shown.
++            stale_presented[stale_presented_next] = image_id;
++            stale_presented_next = (stale_presented_next + 1) % stale_presented.size();
++        }
+         ImageViewInfo info{ImageViewType::e2D, view_format};
+         if (config.blending == Tegra::BlendMode::Opaque) {
+             info.x_source = static_cast<u8>(SwizzleSource::R);
+@@ -4759,11 +5037,11 @@ ImageViewId TextureCache<P>::CreateImageView(const TICEntry& raw_config) {
+ 
+ template <class P>
+ ImageId TextureCache<P>::FindOrInsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
+-                                           RelaxedOptions options) {
++                                           RelaxedOptions options, bool render_target) {
+     if (const ImageId image_id = FindImage(info, gpu_addr, options); image_id) {
+         return image_id;
+     }
+-    return InsertImage(info, gpu_addr, options);
++    return InsertImage(info, gpu_addr, options, render_target);
+ }
+ 
+ template <class P>
+@@ -5600,7 +5878,7 @@ std::optional<DAddr> TextureCache<P>::ImageCpuAddress(GPUVAddr gpu_addr, size_t
+ 
+ template <class P>
+ ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
+-                                     RelaxedOptions options) {
++                                     RelaxedOptions options, bool render_target) {
+     std::optional<DAddr> cpu_addr = ImageCpuAddress(gpu_addr, CalculateGuestSizeInBytes(info));
+     if (!cpu_addr) {
+         const DAddr fake_addr = ~(1ULL << 40ULL) + virtual_invalid_space;
+@@ -5619,7 +5897,7 @@ ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
+     // EDEN_UP_TC_TRACE: JoinImages' time for the "TCTRACE create" line.
+     const auto trace_start =
+         TcTrace() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+-    const ImageId image_id = JoinImages(storage_info, gpu_addr, *cpu_addr);
++    const ImageId image_id = JoinImages(storage_info, gpu_addr, *cpu_addr, render_target);
+     if (!image_id) {
+         if (TcTrace() && CalculateGuestSizeInBytes(info) >= TcTraceMinBytes()) {
+             LOG_WARNING(HW_GPU,
+@@ -5757,7 +6035,8 @@ bool TextureCache<P>::StaleUploadOverDrawnTarget(const ImageBase& new_image,
+ }
+ 
+ template <class P>
+-ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DAddr cpu_addr) {
++ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DAddr cpu_addr,
++                                    bool render_target) {
+     ImageInfo new_info = info;
+     const size_t size_bytes = CalculateGuestSizeInBytes(new_info);
+     const bool broken_views = runtime.HasBrokenTextureViewFormats();
+@@ -6205,6 +6484,9 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
+         make_image();
+     }
+     Image& new_image = slot_images[new_image_id];
++    if (render_target && StaleTargetFrames() != 0) {
++        new_image.flags |= ImageFlagBits::RenderTargetOrigin; // EDEN_UP_STALE_TARGETS
++    }
+ 
+     new_image.allocation_tick = frame_tick;
+     {
+@@ -6783,7 +7065,7 @@ ImageViewId TextureCache<P>::FindRenderTargetView(const ImageInfo& info, GPUVAdd
+     bool delete_state = has_deleted_images;
+     do {
+         has_deleted_images = false;
+-        image_id = FindOrInsertImage(info, gpu_addr);
++        image_id = FindOrInsertImage(info, gpu_addr, RelaxedOptions{}, true);
+         delete_state |= has_deleted_images;
+     } while (has_deleted_images);
+     has_deleted_images = delete_state;
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index cc75e1b..02918dc 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -759,8 +759,11 @@ private:
+     [[nodiscard]] ImageViewId CreateImageView(const TICEntry& config);
+ 
+     /// Find or create an image from the given parameters
++    /// render_target: made for a render target binding (FindRenderTargetView), marked
++    /// RenderTargetOrigin while EDEN_UP_STALE_TARGETS is on.
+     [[nodiscard]] ImageId FindOrInsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
+-                                            RelaxedOptions options = RelaxedOptions{});
++                                            RelaxedOptions options = RelaxedOptions{},
++                                            bool render_target = false);
+ 
+     /// Find an image from the given parameters
+     [[nodiscard]] ImageId FindImage(const ImageInfo& info, GPUVAddr gpu_addr,
+@@ -768,11 +771,12 @@ private:
+ 
+     /// Create an image from the given parameters
+     [[nodiscard]] ImageId InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
+-                                      RelaxedOptions options);
++                                      RelaxedOptions options, bool render_target = false);
+ 
+     /// Create a new image and join perfectly matching existing images
+     /// Remove joined images from the cache
+-    [[nodiscard]] ImageId JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DAddr cpu_addr);
++    [[nodiscard]] ImageId JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DAddr cpu_addr,
++                                     bool render_target = false);
+ 
+     /// EDEN_NX2_TC_STALE_SKIP: JoinImages' new image is the same render target at a new size, over
+     /// a GPU-drawn one, so its guest memory is stale and the upload is skipped (exploitizm b3bdc42a70).
+@@ -1000,6 +1004,36 @@ private:
+     u64 cold_kept_guarded{}; ///< Dropped from the watch: GPU-written and guarded
+     u64 cold_kept_read{};    ///< Dropped from the watch: GPU-written and read later or by the CPU
+ 
++    /// EDEN_UP_STALE_TARGETS=1 (jpkto, zortos293/Lichii #1571): every frame, before the other
++    /// collectors, delete render targets the game has drawn over (BadOverlap, made for a render
++    /// target binding, last written by the GPU) once they have gone unused for
++    /// EDEN_UP_STALE_TARGETS_FRAMES (default 10) frames. See texture_cache.h.
++    void RetireStaleTargets();
++    /// The images a queued download, an asynchronous decode or unswizzle, a bound render target or
++    /// one of the last presents still needs (stale_references), gathered once per pass that has a
++    /// candidate.
++    void CollectStaleReferences();
++    ::Common::unordered_set<ImageId> stale_references;
++    /// Matching candidates in front of the point where the last scan stopped at its bound
++    /// (0 after a scan that reached the end): the next scan resumes there (Lichii fab2816).
++    size_t stale_retire_resume{};
++    u64 stale_retired{};          ///< Deleted render targets, since the last line
++    u64 stale_retired_bytes{};    ///< Their device memory (ImageMemoryBytes)
++    u64 stale_retired_partners{}; ///< Sampled twins deleted with them
++    u64 stale_kept_used{};        ///< Candidates kept: referenced, decoding, or a partner in use
++    u64 stale_kept_read{};        ///< Candidates kept: their contents were read back by the guest
++    u64 stale_scan_resumes{};     ///< Scans that stopped at the bound and left a resume point
++    u64 stale_retired_total{};
++    u64 stale_retired_total_bytes{};
++    std::chrono::steady_clock::time_point stale_log_time{};
++    /// The images the last presents showed (TryFindFramebufferImageView), recorded only while
++    /// EDEN_UP_STALE_TARGETS is on. A present does not touch the LRU, so a frame the game holds on
++    /// screen (a load, a pause) would look unused after n frames; RetireStaleTargets keeps these.
++    /// Ocarina presents three images in turn: four slots. A slot whose image has gone may name a
++    /// reused id, which only keeps that image a little longer.
++    std::array<ImageId, 4> stale_presented{};
++    size_t stale_presented_next{};
++
+     /// Remove image views references from the cache
+     void RemoveImageViewReferences(std::span<const ImageViewId> removed_views);
+ 

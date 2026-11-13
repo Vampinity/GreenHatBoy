@@ -1,0 +1,363 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: EglantinePS5
+Date: Fri, 13 Nov 2026 16:30:00 +0100
+Subject: [PATCH] radv: the objects the driver keeps are made inside a long-lived scope (eden_heap_long_lived_enter/leave), so the app's heap can keep them out of the compile threads' arenas
+
+T175b. After heydemoura/EglantinePS5 PR 104 (branch perf/heap-memory, commit
+0a5efdc, docs/HEAP-MEMORY-RESEARCH.md), which measured that after a cold
+shader build the eight compile threads hold 231 arenas (462 MiB) with 83 MiB
+live, the rest pinned by the driver's long-lived objects allocated between
+the compiler's short-lived blocks, and proposed this as "next steps" 1 (not
+written there). The code here is ours.
+
+A scope (u_eden_long_lived_enter/leave, src/util/u_eden_long_lived.h) around:
+- vk_pipeline_cache_object_deserialize: ops->deserialize, i.e. every cache
+  object made (a radv_shader via radv_shader_deserialize, a pipeline cache
+  object, raw data), from the disk cache, the app's data or radv_shader_create;
+- radv_shader_create_uncached: the shader, its shader arena block and its host
+  code copy (shader->code);
+- radv_parse_binary_debug_info: the debug info kept with the shader
+  (statistics, strings, debug_info);
+- radv_shader_part_create: prologs and epilogs (kept in the device's caches);
+- radv_pipeline_cache_object_create: the object a compiled pipeline is cached as;
+- the graphics, graphics library and compute pipeline objects (vk_zalloc2),
+  and the gs_compute record of a pipeline;
+- radv_CreateDescriptorSetLayout: the layout (vk_descriptor_set_layout_zalloc);
+- radv_CreatePipelineLayout and radv_CreateDescriptorUpdateTemplate: the
+  layout and the template (EglantinePS5 makes both on its builder threads).
+Nothing else: the blob a cache object is read from, the disk cache's copies
+and every compiler allocation stay outside.
+
+The two functions are the app's (EglantinePS5 headless/heap_arenas.inc),
+declared weak: a program without them links and the scopes do nothing.
+tools/isolate-radv.py renames defined symbols only; these are undefined in the
+driver and keep their names, as eden_radv_out_of_memory (lead-mesh-22) does.
+In the app they do nothing unless RADV_PS5_LONGLIVED_ARENA=1 (one relaxed load
+and a return otherwise).
+
+Nothing about shader compilation, keys, cache entries, files, the build id or
+the cache UUID changes (the UUID comes from the pinned build id, see
+tools/patch-radv-series.py). Anchors of tools/patch-radv-wsi.py in
+radv_shader.c, radv_pipeline_cache.c and radv_pipeline_compute.c checked: each
+still found once (it has none in the other files).
+
+Applied after lead-mesh-01..41 on the pinned Mesa (f5610fe) with git apply.
+Compiled in the T175b build. Not run on the console.
+
+Co-Authored-By: Claude Opus 5.5
+---
+diff --git a/src/amd/vulkan/radv_descriptor_set.c b/src/amd/vulkan/radv_descriptor_set.c
+index 8a9d587..06094fd 100644
+--- a/src/amd/vulkan/radv_descriptor_set.c
++++ b/src/amd/vulkan/radv_descriptor_set.c
+@@ -12,6 +12,7 @@
+ #include "radv_entrypoints.h"
+ #include "radv_sampler.h"
+ #include "vk_descriptors.h"
++#include "util/u_eden_long_lived.h" /* lead-mesh-42 */
+ 
+ VKAPI_ATTR VkResult VKAPI_CALL
+ radv_CreateDescriptorSetLayout(VkDevice _device, const VkDescriptorSetLayoutCreateInfo *pCreateInfo,
+@@ -62,7 +63,9 @@ radv_CreateDescriptorSetLayout(VkDevice _device, const VkDescriptorSetLayoutCrea
+     * they are reference counted and may not be destroyed when vkDestroyDescriptorSetLayout is
+     * called.
+     */
++   u_eden_long_lived_enter(); /* lead-mesh-42: the layout is kept */
+    set_layout = vk_descriptor_set_layout_zalloc(&device->vk, size, pCreateInfo);
++   u_eden_long_lived_leave();
+    if (!set_layout)
+       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+ 
+diff --git a/src/amd/vulkan/radv_pipeline_cache.c b/src/amd/vulkan/radv_pipeline_cache.c
+index 2de091d..685f5fc 100644
+--- a/src/amd/vulkan/radv_pipeline_cache.c
++++ b/src/amd/vulkan/radv_pipeline_cache.c
+@@ -8,6 +8,7 @@
+ #include "util/macros.h"
+ #include "util/mesa-blake3.h"
+ #include "util/u_atomic.h"
++#include "util/u_eden_long_lived.h" /* lead-mesh-42 */
+ #include "nir.h"
+ #include "nir_serialize.h"
+ #include "radv_descriptor_set.h"
+@@ -251,7 +252,9 @@ radv_pipeline_cache_object_create(struct vk_device *device, unsigned num_shaders
+    const size_t size =
+       sizeof(struct radv_pipeline_cache_object) + (num_shaders * sizeof(struct radv_shader *)) + data_size;
+ 
++   u_eden_long_lived_enter(); /* lead-mesh-42: kept in the cache */
+    struct radv_pipeline_cache_object *object = vk_alloc(&device->alloc, size, 8, VK_SYSTEM_ALLOCATION_SCOPE_CACHE);
++   u_eden_long_lived_leave();
+    if (!object)
+       return NULL;
+ 
+diff --git a/src/amd/vulkan/radv_pipeline_compute.c b/src/amd/vulkan/radv_pipeline_compute.c
+index e3846c6..efb7bfe 100644
+--- a/src/amd/vulkan/radv_pipeline_compute.c
++++ b/src/amd/vulkan/radv_pipeline_compute.c
+@@ -10,6 +10,7 @@
+ 
+ #include "meta/radv_meta.h"
+ #include "nir/nir.h"
++#include "util/u_eden_long_lived.h" /* lead-mesh-42 */
+ #include "nir/radv_nir.h"
+ #include "tools/radv_rmv.h"
+ #include "util/mesa-blake3.h"
+@@ -270,7 +271,9 @@ radv_compute_pipeline_create(VkDevice _device, VkPipelineCache _cache, const VkC
+    struct radv_compute_pipeline *pipeline;
+    VkResult result;
+ 
++   u_eden_long_lived_enter(); /* lead-mesh-42: the pipeline object is kept */
+    pipeline = vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*pipeline), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
++   u_eden_long_lived_leave();
+    if (pipeline == NULL) {
+       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+    }
+diff --git a/src/amd/vulkan/radv_pipeline_graphics.c b/src/amd/vulkan/radv_pipeline_graphics.c
+index 11aae1f..9232f74 100644
+--- a/src/amd/vulkan/radv_pipeline_graphics.c
++++ b/src/amd/vulkan/radv_pipeline_graphics.c
+@@ -22,6 +22,7 @@
+ #include "util/mesa-blake3.h"
+ #include "util/os_time.h"
+ #include "util/u_atomic.h"
++#include "util/u_eden_long_lived.h" /* lead-mesh-42 */
+ #include "radv_device.h"
+ #include "radv_entrypoints.h"
+ #include "radv_formats.h"
+@@ -3226,7 +3227,9 @@ radv_graphics_pipeline_compile(struct radv_graphics_pipeline *pipeline, const Vk
+       /* Its compute shaders are not in the shaders cache: the pipeline is not
+        * either. */
+       skip_shaders_cache = true;
++      u_eden_long_lived_enter(); /* lead-mesh-42: kept with the pipeline */
+       pipeline->base.gs_compute = calloc(1, sizeof(*pipeline->base.gs_compute));
++      u_eden_long_lived_leave();
+       if (!pipeline->base.gs_compute)
+          result = VK_ERROR_OUT_OF_HOST_MEMORY;
+       for (unsigned i = 0; i < RADV_GS_COMPUTE_SHADERS; i++) {
+@@ -3563,7 +3566,9 @@ radv_graphics_pipeline_create(VkDevice _device, VkPipelineCache _cache, const Vk
+    struct radv_graphics_pipeline *pipeline;
+    VkResult result;
+ 
++   u_eden_long_lived_enter(); /* lead-mesh-42: the pipeline object is kept */
+    pipeline = vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*pipeline), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
++   u_eden_long_lived_leave();
+    if (pipeline == NULL)
+       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+ 
+@@ -3711,7 +3716,9 @@ radv_graphics_lib_pipeline_create(VkDevice _device, VkPipelineCache _cache,
+    struct radv_graphics_lib_pipeline *pipeline;
+    VkResult result;
+ 
++   u_eden_long_lived_enter(); /* lead-mesh-42: the pipeline object is kept */
+    pipeline = vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*pipeline), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
++   u_eden_long_lived_leave();
+    if (pipeline == NULL)
+       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+ 
+diff --git a/src/amd/vulkan/radv_shader.c b/src/amd/vulkan/radv_shader.c
+index 286b30e..fe49316 100644
+--- a/src/amd/vulkan/radv_shader.c
++++ b/src/amd/vulkan/radv_shader.c
+@@ -25,6 +25,7 @@
+ #include "util/mesa-blake3.h"
+ #include "util/streaming-load-memcpy.h"
+ #include "util/u_atomic.h"
++#include "util/u_eden_long_lived.h" /* lead-mesh-42 */
+ #include "ac_shader_util.h"
+ #include "radv_cs.h"
+ #include "radv_entrypoints.h"
+@@ -2988,9 +2989,9 @@ radv_get_max_scratch_waves(const struct radv_device *device, struct radv_shader
+    return MIN2(device->scratch_waves, 4 * num_cu * shader->max_waves);
+ }
+ 
+-VkResult
+-radv_parse_binary_debug_info(const struct radv_compiler_info *compiler_info, const struct radv_shader_binary *binary,
+-                             struct radv_shader_debug_info *dbg)
++static VkResult
++radv_parse_binary_debug_info_kept(const struct radv_compiler_info *compiler_info, const struct radv_shader_binary *binary,
++                                  struct radv_shader_debug_info *dbg)
+ {
+    if (binary->type == RADV_BINARY_TYPE_RTLD) {
+ #if !defined(USE_LIBELF)
+@@ -3038,12 +3039,25 @@ radv_parse_binary_debug_info(const struct radv_compiler_info *compiler_info, con
+    return VK_SUCCESS;
+ }
+ 
++/* lead-mesh-42: the debug info stays with its shader: made inside a long-lived scope. */
++VkResult
++radv_parse_binary_debug_info(const struct radv_compiler_info *compiler_info, const struct radv_shader_binary *binary,
++                             struct radv_shader_debug_info *dbg)
++{
++   u_eden_long_lived_enter();
++   VkResult result = radv_parse_binary_debug_info_kept(compiler_info, binary, dbg);
++   u_eden_long_lived_leave();
++   return result;
++}
++
+ VkResult
+ radv_shader_create_uncached(struct radv_device *device, const struct radv_shader_binary *binary, bool replayable,
+                             struct radv_serialized_shader_arena_block *replay_block, struct radv_shader_debug_info *dbg,
+                             struct radv_shader **out_shader)
+ {
+    VkResult result = VK_SUCCESS;
++   /* lead-mesh-42: the shader, its arena block and its code copy are kept; left before the return. */
++   u_eden_long_lived_enter();
+    struct radv_shader *shader = calloc(1, sizeof(struct radv_shader));
+    if (!shader) {
+       result = VK_ERROR_OUT_OF_HOST_MEMORY;
+@@ -3117,6 +3131,7 @@ out:
+       *out_shader = NULL;
+    }
+ 
++   u_eden_long_lived_leave();
+    return result;
+ }
+ 
+@@ -3168,8 +3183,8 @@ radv_shader_part_binary_upload(struct radv_device *device, const struct radv_sha
+    return true;
+ }
+ 
+-struct radv_shader_part *
+-radv_shader_part_create(struct radv_device *device, struct radv_shader_part_binary *binary, unsigned wave_size)
++static struct radv_shader_part *
++radv_shader_part_create_kept(struct radv_device *device, struct radv_shader_part_binary *binary, unsigned wave_size)
+ {
+    const struct radv_physical_device *pdev = radv_device_physical(device);
+    struct radv_shader_part *shader_part;
+@@ -3209,6 +3224,16 @@ fail:
+    return NULL;
+ }
+ 
++/* lead-mesh-42: a shader part (prolog, epilog) is kept in the device's cache: a long-lived scope. */
++struct radv_shader_part *
++radv_shader_part_create(struct radv_device *device, struct radv_shader_part_binary *binary, unsigned wave_size)
++{
++   u_eden_long_lived_enter();
++   struct radv_shader_part *shader_part = radv_shader_part_create_kept(device, binary, wave_size);
++   u_eden_long_lived_leave();
++   return shader_part;
++}
++
+ void
+ radv_shader_part_cache_init(struct radv_shader_part_cache *cache, struct radv_shader_part_cache_ops *ops)
+ {
+diff --git a/src/util/u_eden_long_lived.h b/src/util/u_eden_long_lived.h
+new file mode 100644
+index 0000000..c2b0232
+--- /dev/null
++++ b/src/util/u_eden_long_lived.h
+@@ -0,0 +1,44 @@
++/*
++ * Copyright © 2026 EglantinePS5
++ * SPDX-License-Identifier: MIT
++ */
++
++/* lead-mesh-42 (EglantinePS5 T175b): the objects the driver keeps after a build (a shader, its
++ * code copy and debug info, cache objects, pipelines, descriptor set layouts) are made inside a
++ * long-lived scope. The app's heap (EglantinePS5 headless/heap_arenas.inc) then gives their small
++ * blocks from one shared set of arenas instead of the compile thread's own, so the compile threads'
++ * arenas empty after each build (RADV_PS5_LONGLIVED_ARENA=1, read by the app; unset or 0: the scope
++ * is a load and a return in the app). The two functions are the app's, weak here: a program without
++ * them links, and the scopes then do nothing. After heydemoura/EglantinePS5 PR 104 (branch
++ * perf/heap-memory, commit 0a5efdc, docs/HEAP-MEMORY-RESEARCH.md, "next steps" 1), which found
++ * these objects pinning the compile threads' arenas and proposed this; the code is ours.
++ */
++#ifndef U_EDEN_LONG_LIVED_H
++#define U_EDEN_LONG_LIVED_H
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++void eden_heap_long_lived_enter(void) __attribute__((weak));
++void eden_heap_long_lived_leave(void) __attribute__((weak));
++
++static inline void
++u_eden_long_lived_enter(void)
++{
++   if (eden_heap_long_lived_enter)
++      eden_heap_long_lived_enter();
++}
++
++static inline void
++u_eden_long_lived_leave(void)
++{
++   if (eden_heap_long_lived_leave)
++      eden_heap_long_lived_leave();
++}
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* U_EDEN_LONG_LIVED_H */
+diff --git a/src/vulkan/runtime/vk_pipeline_cache.c b/src/vulkan/runtime/vk_pipeline_cache.c
+index a0a7fc9..6b1d250 100644
+--- a/src/vulkan/runtime/vk_pipeline_cache.c
++++ b/src/vulkan/runtime/vk_pipeline_cache.c
+@@ -34,6 +34,7 @@
+ #include "util/blob.h"
+ #include "util/u_debug.h"
+ #include "util/disk_cache.h"
++#include "util/u_eden_long_lived.h" /* lead-mesh-42 */
+ #include "util/hash_table.h"
+ #include "util/set.h"
+ #include "util/u_atomic.h"
+@@ -299,8 +300,13 @@ vk_pipeline_cache_object_deserialize(struct vk_pipeline_cache *cache,
+    struct blob_reader reader;
+    blob_reader_init(&reader, data, data_size);
+ 
++   /* lead-mesh-42: the object is kept (in the cache, by a pipeline); its blocks go to the app's
++    * long-lived arenas with RADV_PS5_LONGLIVED_ARENA=1. Only the object: the blob it is read from is
++    * the caller's. */
++   u_eden_long_lived_enter();
+    struct vk_pipeline_cache_object *object =
+       ops->deserialize(cache, key_data, key_size, &reader);
++   u_eden_long_lived_leave();
+ 
+    if (object == NULL)
+       return NULL;
+diff --git a/src/amd/vulkan/radv_descriptor_update_template.c b/src/amd/vulkan/radv_descriptor_update_template.c
+index 4b75cac..a3c3d58 100644
+--- a/src/amd/vulkan/radv_descriptor_update_template.c
++++ b/src/amd/vulkan/radv_descriptor_update_template.c
+@@ -10,6 +10,7 @@
+ #include "radv_descriptors.h"
+ #include "radv_device.h"
+ #include "radv_entrypoints.h"
++#include "util/u_eden_long_lived.h" /* lead-mesh-42 */
+ 
+ VKAPI_ATTR VkResult VKAPI_CALL
+ radv_CreateDescriptorUpdateTemplate(VkDevice _device, const VkDescriptorUpdateTemplateCreateInfo *pCreateInfo,
+@@ -24,7 +25,9 @@ radv_CreateDescriptorUpdateTemplate(VkDevice _device, const VkDescriptorUpdateTe
+    struct radv_descriptor_update_template *templ;
+    uint32_t i;
+ 
++   u_eden_long_lived_enter(); /* lead-mesh-42: the template is kept */
+    templ = vk_alloc2(&device->vk.alloc, pAllocator, size, 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
++   u_eden_long_lived_leave();
+    if (!templ)
+       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+ 
+diff --git a/src/amd/vulkan/radv_pipeline_layout.c b/src/amd/vulkan/radv_pipeline_layout.c
+index c2b99d2..f819630 100644
+--- a/src/amd/vulkan/radv_pipeline_layout.c
++++ b/src/amd/vulkan/radv_pipeline_layout.c
+@@ -11,6 +11,7 @@
+ #include "radv_entrypoints.h"
+ 
+ #include "vk_alloc.h"
++#include "util/u_eden_long_lived.h" /* lead-mesh-42 */
+ #include "vk_log.h"
+ 
+ void
+@@ -81,7 +82,9 @@ radv_CreatePipelineLayout(VkDevice _device, const VkPipelineLayoutCreateInfo *pC
+ 
+    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
+ 
++   u_eden_long_lived_enter(); /* lead-mesh-42: the layout is kept */
+    layout = vk_alloc2(&device->vk.alloc, pAllocator, sizeof(*layout), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
++   u_eden_long_lived_leave();
+    if (layout == NULL)
+       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+ 

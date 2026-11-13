@@ -1,0 +1,95 @@
+From: EglantinePS5
+Subject: [PATCH] up: count lines for images of 128 MiB or more that JoinImages makes or refuses, and for their uploads (EDEN_UP_BIG_IMAGE_LOG), off by default
+
+What: every 12 Nov run shows a 12288x12288 target as the largest live image (297 MiB,
+EDEN_REFUSED_IMAGE reports), never refused; first reported by CHI-GETSU (mihawk-99/PS5_Hookshot
+#1), and a PC crash log in Lichii's Discord shows JoinImages making it. What we do not know: when
+it is made, and whether it costs a staging upload of its whole size (PORT-LIST item 3).
+
+With EDEN_UP_BIG_IMAGE_LOG=1 (exact "1", read once) InsertImage gives one HW_GPU line for each
+image of 128 MiB or more of guest memory that JoinImages makes ("made": id, address, format,
+shape, levels, layers, MiB, render target, upload pending (CpuModified), unbacked, frame, count)
+or refuses ("refused"), and RefreshContents one line when such an image's upload is tried
+("upload": staging MiB, "went through" or "waits (refused)"; a bad_alloc keeps its own line).
+Count only: nothing else changes.
+
+Already in the tree and not repeated: EDEN_UP_TC_TRACE=1 + EDEN_UP_TC_TRACE_MIB=128 gives the
+"TCTRACE create/refused" lines for the same images (Lichii #1130); it has no upload half and no
+pending-upload field, which is what this adds. Either can be used alone.
+
+Off: one static bool test per image made, one per upload tried, no line.
+
+Origin and credit: the idea is reader 3's (our upstream reading) from a hand-played
+own tree; the 12288 depth target was first reported by CHI-GETSU (mihawk-99/PS5_Hookshot #1).
+---
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index a89d5f9..be3aad7 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -214,6 +214,18 @@ constexpr u64 KeepRemadeWindow = 600;
+ /// (RefusalDownloadEvict), cold (EDEN_UP_FRITCHII_COLD), unmap, join, join-ignored, other). Ours
+ /// also: "TCTRACE refused" when JoinImages makes nothing. EDEN_UP_TC_TRACE_MIB=<N> (digits,
+ /// 0..4096; unset or 0: every image, as upstream): only images of at least N MiB of guest memory.
++/// EDEN_UP_BIG_IMAGE_LOG=1 (exact "1", read once; count only): one HW_GPU line for every image of
++/// BigImageLogBytes or more of guest memory that JoinImages makes or refuses (size, format, shape,
++/// render target, frame, whether an upload from guest memory is pending), and one when such an
++/// image's upload is tried (staging bytes, went through or waits). For the 12288x12288 depth
++/// target (297 MiB, CHI-GETSU's mihawk-99/PS5_Hookshot #1 and a PC crash log in Lichii's Discord):
++/// when it is made and whether it costs a staging upload of its size. Unset: no line.
++constexpr u64 BigImageLogBytes = u64{128} << 20;
++[[nodiscard]] inline bool BigImageLog() {
++    static const bool enabled = Common::PeSwitch("EDEN_UP_BIG_IMAGE_LOG");
++    return enabled;
++}
++
+ [[nodiscard]] inline bool TcTrace() {
+     static const bool enabled = Common::PeSwitch("EDEN_UP_TC_TRACE");
+     return enabled;
+@@ -4864,6 +4876,15 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
+         // the GPU thread, where nothing caught it).
+         KeepContentsAfterBadAlloc(image);
+     }
++    if (BigImageLog() && image.guest_size_bytes >= BigImageLogBytes) {
++        // UploadLater leaves the image CPU-modified; a bad_alloc has its own line above.
++        LOG_WARNING(HW_GPU,
++                    "EDEN_UP_BIG_IMAGE_LOG: upload id={} gpu={:#x} staging={}MiB {} frame={}",
++                    image_id.index, image.gpu_addr, MapSizeBytes(image) >> 20,
++                    True(image.flags & ImageFlagBits::CpuModified) ? "waits (refused)"
++                                                                   : "went through",
++                    frame_tick);
++    }
+     // The host GPU has its own copy now and the guest rarely reads this memory again: TickFrame
+     // marks it cold, so the OS pages it out before anything else when it needs RAM (title 1
+     // streams several GB of textures through it).
+@@ -6302,9 +6323,31 @@ ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
+                         info.size.width, info.size.height, info.size.depth, info.resources.levels,
+                         info.resources.layers, CalculateGuestSizeInBytes(info) / 1024, frame_tick);
+         }
++        if (BigImageLog() && CalculateGuestSizeInBytes(info) >= BigImageLogBytes) {
++            LOG_WARNING(HW_GPU,
++                        "EDEN_UP_BIG_IMAGE_LOG: refused gpu={:#x} fmt={} {}x{}x{} lv={} ly={} "
++                        "guest={}MiB rt={} frame={}",
++                        gpu_addr, static_cast<u32>(info.format), info.size.width,
++                        info.size.height, info.size.depth, info.resources.levels,
++                        info.resources.layers, CalculateGuestSizeInBytes(info) >> 20,
++                        render_target ? 1 : 0, frame_tick);
++        }
+         return ImageId{}; // Refused (JoinImages): nothing was made.
+     }
+     const Image& image = slot_images[image_id];
++    if (BigImageLog() && image.guest_size_bytes >= BigImageLogBytes) {
++        static u64 big_made = 0; // under the texture cache lock
++        ++big_made;
++        LOG_WARNING(HW_GPU,
++                    "EDEN_UP_BIG_IMAGE_LOG: made id={} gpu={:#x} fmt={} {}x{}x{} lv={} ly={} "
++                    "guest={}MiB rt={} upload_pending={} unbacked={} frame={} ({} so far)",
++                    image_id.index, image.gpu_addr, static_cast<u32>(image.info.format),
++                    image.info.size.width, image.info.size.height, image.info.size.depth,
++                    image.info.resources.levels, image.info.resources.layers,
++                    image.guest_size_bytes >> 20, render_target ? 1 : 0,
++                    True(image.flags & ImageFlagBits::CpuModified) ? 1 : 0,
++                    True(image.flags & ImageFlagBits::Unbacked) ? 1 : 0, frame_tick, big_made);
++    }
+     if (TcTrace() && image.guest_size_bytes >= TcTraceMinBytes()) {
+         const double ms = std::chrono::duration<double, std::milli>(
+                               std::chrono::steady_clock::now() - trace_start)

@@ -1,0 +1,88 @@
+From: EglantinePS5
+Subject: [PATCH] up: with EDEN_UP_INSTANCE_RUNS=1, a line says how many draw.begin runs the back merged and how many instances it added
+
+Ours, on top of 0837 (the zortos293/Lichii PR #1597 port, by sanchodecuba11-del). Upstream had no
+count of its own; it measured with its GPU profile.
+
+What: GpuSplit::Execute counts, per back thread, the runs RepeatDrawBegin took, the instances it
+added (= CallMethod calls saved), the longest run, and the runs it refused (their entries ran
+CallMethod each). One line at the first merge, then every 4 Mi instances added:
+"EDEN_UP_INSTANCE_RUNS: <n> runs of identical draw.begin merged, <n> instances added without
+CallMethod (<n> a second since the last line), longest run <n>; <n> runs refused (<n> entries ran
+CallMethod each)". While nothing is merged, also at each power of two of refused runs.
+Reading it: the per-second figure is the work taken off the back. The watcher's bar: under about
+100,000 a second there is nothing to win. Many refused runs and no merged ones = a guard holds
+every time (look at RepeatDrawBegin).
+Off: nothing; the counts sit inside the merge branch, which needs the switch.
+
+---
+diff --git a/src/video_core/gpu_split.cpp b/src/video_core/gpu_split.cpp
+index bb27e143b6..24dd8f4e0b 100644
+--- a/src/video_core/gpu_split.cpp
++++ b/src/video_core/gpu_split.cpp
+@@ -923,6 +923,38 @@ void GpuSplit::DeferFunction(std::function<void()>&& func) {
+     });
+ }
+ 
++namespace {
++/// EDEN_UP_INSTANCE_RUNS (0837): what the merge did, per back thread.
++struct InstanceRunStats {
++    u64 runs{};       ///< runs of identical draw.begin entries merged (RepeatDrawBegin took them)
++    u64 added{};      ///< instances RepeatDrawBegin added (entries that skipped CallMethod)
++    u64 refused{};    ///< runs RepeatDrawBegin refused (each entry ran CallMethod)
++    u64 refused_entries{};
++    u64 longest{};    ///< the longest run seen, in entries
++    u64 report_at{1}; ///< `added` at the next line
++    u64 reported{};
++    std::chrono::steady_clock::time_point report_time{std::chrono::steady_clock::now()};
++};
++
++/// At the first merge, then every 4 Mi instances added.
++void ReportInstanceRuns(InstanceRunStats& stats) {
++    const auto now = std::chrono::steady_clock::now();
++    const double seconds = std::chrono::duration<double>(now - stats.report_time).count();
++    const u64 since = stats.added - stats.reported;
++    LOG_INFO(HW_GPU,
++             "EDEN_UP_INSTANCE_RUNS: {} runs of identical draw.begin merged, {} instances added "
++             "without CallMethod ({:.0f} a second since the last line), longest run {}; {} runs "
++             "refused ({} entries ran CallMethod each)",
++             stats.runs, stats.added, seconds > 0.0 ? static_cast<double>(since) / seconds : 0.0,
++             stats.longest, stats.refused, stats.refused_entries);
++    stats.reported = stats.added;
++    if (stats.added >= stats.report_at) {
++        stats.report_at = stats.added + (u64{1} << 22);
++    }
++    stats.report_time = now;
++}
++} // Anonymous namespace
++
+ size_t GpuSplit::Execute(const u64* entry, size_t words) {
+     const u64 head = entry[0];
+     switch (static_cast<Kind>(head & 0xf)) {
+@@ -987,11 +1019,25 @@ size_t GpuSplit::Execute(const u64* entry, size_t words) {
+             Nx2Profile::Scope method_scope{Nx2Profile::Zone::Method};
+             engine->ConsumeSink(*system);
+             engine->CallMethod(*system, method, argument, is_last);
+-            if (!maxwell3d->RepeatDrawBegin(count - 1, argument)) {
++            static thread_local InstanceRunStats stats;
++            stats.longest = (std::max<u64>)(stats.longest, count);
++            if (maxwell3d->RepeatDrawBegin(count - 1, argument)) {
++                ++stats.runs;
++                stats.added += count - 1;
++            } else {
++                ++stats.refused;
++                stats.refused_entries += count - 1;
+                 for (u32 i = 1; i < count; ++i) {
+                     engine->CallMethod(*system, method, argument, is_last);
+                 }
+             }
++            // Also at each power of two of refused runs while none was merged: the merge never
++            // takes (a guard in RepeatDrawBegin holds for every run).
++            const bool refused_only = stats.runs == 0 && stats.refused != 0 &&
++                                      (stats.refused & (stats.refused - 1)) == 0;
++            if (stats.added >= stats.report_at || refused_only) [[unlikely]] {
++                ReportInstanceRuns(stats);
++            }
+             return count;
+         }
+         if ((head & Direct) != 0) {

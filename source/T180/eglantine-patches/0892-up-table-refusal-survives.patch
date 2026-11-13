@@ -1,0 +1,150 @@
+From: EglantinePS5
+Subject: [PATCH] up: a heap refusal of an image's or a buffer's slot is a refusal like the device's, not the end (KEEPS THE STORE)
+
+Store: KEEPS THE STORE. vk_texture_cache.h and buffer_cache.h change; neither is among the
+translation id's inputs; no switch name is added to TranslationSwitches (EDEN_NX2_IMAGE_REFUSED_ENDS
+is read as before, unchanged).
+
+A pure fix, no switch: where the program ended, an image or a buffer is now left out.
+
+Why: run1395's std::bad_alloc came out of SlotVector<Image>::insert inside
+TextureCacheRuntime::SurvivesImageRefusal (JoinImages' make_image; symbols of T166's llvm-pie.elf),
+which catches only the device's VK_ERROR_OUT_OF_DEVICE_MEMORY. With the console's SlotVector now
+letting a refused growth out with nothing changed (0890 + front slot_vector_recovery.cmake), the
+two places that already have a refusal path take it:
+- SurvivesImageRefusal: std::bad_alloc (the slot, or what the image's constructor asks of the heap)
+  is a refusal like the device's: the image is left out ("No memory for the image ... left out",
+  1 s pause for that size and larger), and EDEN_NX2_REFUSAL_EVICT, when on, deletes old images
+  (which frees slots) and tries once more. With EDEN_NX2_IMAGE_REFUSED_ENDS (or UNBACKED_LIMIT) it
+  ends the session as before.
+- BufferCache::JoinBuffer: a refused slot destroys the buffer just made and returns the refusal
+  (CreateRefusedBuffer, as when the device says no); the holes path drops that buffer (counted in
+  buffers_dropped, as now).
+Lines (stderr): "EDEN_UP_TABLE_REFUSED image <n>: ..." / "... buffer <n>: ..." for the first 8 of each,
+then every 64th.
+
+What it does not cover: the other tables (views, allocations, framebuffers, samplers, map views)
+have no refusal path; a refused growth there still ends the program (0891 reserves them).
+Not checked: a build, the console, a run where the heap refuses an image's slot.
+---
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index 1e09175c30..48c8ddf5c1 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -15,6 +15,7 @@
+ #include <cstdio>
+ #include <cstdlib>
+ #include <memory>
++#include <new>
+ #include <numeric>
+ #include <stdexcept>
+ #include <utility>
+@@ -44,6 +45,18 @@ namespace VideoCommon {
+ 
+ using Core::DEVICE_PAGESIZE;
+ 
++// 0892: a stderr line for the first 8 buffers whose slot the heap refused, then every 64th.
++inline void NoteHeapRefusedBuffer() noexcept {
++    static std::atomic<u64> refused{0};
++    const u64 count = refused.fetch_add(1, std::memory_order_relaxed) + 1;
++    if (count <= 8 || (count & 63) == 0) {
++        std::fprintf(stderr,
++                     "EDEN_UP_TABLE_REFUSED buffer %llu: the heap refused its slot; refused as "
++                     "the device's\n",
++                     static_cast<unsigned long long>(count));
++    }
++}
++
+ template <class P>
+ BufferCache<P>::BufferCache(Tegra::MaxwellDeviceMemoryManager& device_memory_, Runtime& runtime_)
+     : runtime{runtime_}, device_memory{device_memory_}, memory_tracker{device_memory} {
+@@ -5081,6 +5094,18 @@ BufferId BufferCache<P>::JoinBuffer(DAddr device_addr, u32 wanted_size, bool spa
+                 buffer_refused_size = size;
+             }
+         }
++        if (made) [[likely]] {
++            // 0892: the heap may refuse the slot (the table doubling in one allocation; on the
++            // console SlotVector lets that out with nothing changed, as in run1395's image
++            // table, headless/slot_vector_recovery.cmake). Then the buffer goes (its memory with
++            // it) and this is a refusal like the device's: CreateRefusedBuffer.
++            try {
++                new_buffer_id = slot_buffers.insert(std::move(*made));
++            } catch (const std::bad_alloc&) {
++                made.reset();
++                NoteHeapRefusedBuffer();
++            }
++        }
+         if (!made) [[unlikely]] {
+             // Nothing else has changed: the buffers stay as they are, and they stay findable.
+             for (const BufferId overlap_id : overlap.ids) {
+@@ -5088,7 +5113,6 @@ BufferId BufferCache<P>::JoinBuffer(DAddr device_addr, u32 wanted_size, bool spa
+             }
+             return BufferId{};
+         }
+-        new_buffer_id = slot_buffers.insert(std::move(*made));
+     } else {
+         new_buffer_id = slot_buffers.insert(runtime, overlap.begin, size, sparse_compatible);
+     }
+@@ -5187,7 +5211,13 @@ BufferId BufferCache<P>::CreateRefusedBuffer(DAddr device_addr, u32 wanted_size,
+             buffer_hole_refused = bytes;
+             continue;
+         }
+-        const BufferId id = slot_buffers.insert(std::move(*made));
++        BufferId id;
++        try {
++            id = slot_buffers.insert(std::move(*made)); // 0892: as in JoinBuffer
++        } catch (const std::bad_alloc&) {
++            NoteHeapRefusedBuffer();
++            break;
++        }
+         Churn::Add(Churn::BuffersCreated);
+         Buffer& buffer = slot_buffers[id];
+         runtime.ClearBuffer(buffer, 0, bytes, 0);
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.h b/src/video_core/renderer_vulkan/vk_texture_cache.h
+index 6ad558c09a..22d2da4afa 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.h
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.h
+@@ -6,9 +6,12 @@
+ 
+ #pragma once
+ 
++#include <atomic>
+ #include <chrono>
++#include <cstdio>
+ #include <deque>
+ #include <memory>
++#include <new>
+ #include <optional>
+ #include <span>
+ #include <utility>
+@@ -92,6 +95,30 @@ public:
+                 throw;
+             }
+             return false;
++        } catch (const std::bad_alloc&) {
++            // 0892: the heap refused the image's slot (the table doubling: run1395, 13 Nov, one
++            // 10,354,696 byte request on GPUBack) or something the image's constructor asks for.
++            // On the console SlotVector lets that out with nothing changed
++            // (headless/slot_vector_recovery.cmake); it is the same as a device refusal: the image
++            // is left out, and the caller's EDEN_NX2_REFUSAL_EVICT, if on, frees slots and tries
++            // once more. Ends the session as before with EDEN_NX2_IMAGE_REFUSED_ENDS.
++            if (ImageRefusalEnds()) {
++                throw;
++            }
++            NoteHeapRefusedImage();
++            return false;
++        }
++    }
++
++    /// 0892: a stderr line for the first 8 images the heap refused, then every 64th (count only).
++    static void NoteHeapRefusedImage() noexcept {
++        static std::atomic<u64> refused{0};
++        const u64 count = refused.fetch_add(1, std::memory_order_relaxed) + 1;
++        if (count <= 8 || (count & 63) == 0) {
++            std::fprintf(stderr,
++                         "EDEN_UP_TABLE_REFUSED image %llu: the heap refused it (its slot or its "
++                         "records); left out\n",
++                         static_cast<unsigned long long>(count));
+         }
+     }
+ 

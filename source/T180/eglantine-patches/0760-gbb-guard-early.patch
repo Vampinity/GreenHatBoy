@@ -1,0 +1,117 @@
+From: EglantinePS5
+Subject: [PATCH] nx2: the copy guard is armed before the present's second wait (GrowingBlackBeans' 0919, EDEN_GBB_GUARD_EARLY), off by default
+
+What: with EDEN_NX2_FRAMES_AHEAD=1, a present whose previous frame is still on the GPU side also
+waits for its own frame (gpu_behind), and so does EDEN_UP_AHEAD_LOAD_WAIT while the game loads.
+During that second wait only the present thread is blocked. The game's job threads go on writing
+the next frame's data into pages this frame still reads. The copy guard (EDEN_UP_AHEAD_GUARD) is
+armed after that wait, when the fence is already reached, so it arms nothing and those writes land
+unguarded. GrowingBlackBeans' audit (his 0918) counted 900-1850 stale buffer uploads and up to 8400
+stale streamed uniforms per 5 s in heavy walking windows: the frames where the GPU side is behind.
+Our play file (FRAMES_AHEAD=1, AHEAD_GUARD=3) has exactly this setup.
+
+Where: src/core/hle/service/nx2_gsv.h, PresentClientBuffer, the gpu_behind / load-wait branch.
+
+Switch: EDEN_GBB_GUARD_EARLY (his name, so his settings files work), read once.
+  =1  with EDEN_UP_AHEAD_GUARD on: arm the guard before the second wait (=3 gathers first, as the
+      block after the wait does)
+  =2  count only: how many second waits start with the fence not reached
+  unset or anything else: off, one cached static read inside the second-wait branch; no other
+      change. No change either with the guard off or with EDEN_UP_AHEAD_ALWAYS=1 (no second wait).
+Not in the kept-store stamp: it changes no translation.
+
+Changed from his: previous_reached is computed (as the block after the wait does) instead of
+passed as true, because with EDEN_UP_AHEAD_TWO the first wait was for the frame two back. A count
+mode (=2) and a counter line, from our 11 Nov draft (our drafts).
+Line every 600 second waits with the guard on (Service log):
+  EDEN_GBB_GUARD_EARLY=<v>: last 600 second waits for a frame's own fence (to present #n): <a> with
+  the fence not reached at the wait, <b> with a guard armed before it
+Side effects, by reading: the guard block after the wait then finds the fence reached and arms
+nothing more; the frame's fence action is registered twice (the second finds the frame ended);
+the guard's own 300-present line counts such a present twice.
+
+Risk: low to medium. A writer that meets a full copy pool waits until the fence (500 ms at most);
+that can now happen while the present also waits, in the heaviest frames. No new wait for the
+present itself.
+
+What a test should look at: one walking-loop start with =2 first (how many heavy frames take the
+second wait unguarded: the "fence not reached" count). Then the village walking loop, guard =3,
+control vs =1, three starts each, interleaved: HUD-icon counter, flash meter, bright-glitch scan,
+side-by-side clip; fps for the cost. Expect fewer small flashes while walking, nothing standing
+still. It does not touch the too-bright second after a door (a read-back: EDEN_UP_AHEAD_READ_SYNC).
+
+Origin and credit: GrowingBlackBeans, patch 0919 "guard early" (finding and fix), in
+Vampinity/GreenHatBoy patches/GrowingBlackBeans/0919-gbb-guard-early.patch, commit e4dab06.
+Not compiled on its own (the integrator builds once).
+---
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index 510d97a769459e11e7051068e4a2ce38322ccafe..a98e2ff046cc7c84ae11883d0db76f680bc064e9 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -2134,6 +2134,55 @@ private:
+                                         m_previous_fence_id, m_previous_fence_value);
+             WaitForFrame(wait_id, wait_value);
+             if (gpu_behind || ahead_load_wait) {
++                // 0760 EDEN_GBB_GUARD_EARLY (GrowingBlackBeans' 0919; needs EDEN_UP_AHEAD_GUARD):
++                // while this present waits for its own fence, the game's job threads go on with
++                // the next frame, and their writes to pages this frame still reads land
++                // unguarded: the guard block below arms after this wait, when the fence is
++                // reached and nothing is left to guard. =1 arms the guard before the wait; =2
++                // only counts. The block below then finds the fence reached and arms nothing
++                // more; the frame's fence action runs twice (the second finds the frame ended),
++                // and the guard's own 300-present line counts such a present twice.
++                // Off (unset): one cached static read in this branch.
++                static const int guard_early = [] {
++                    const char* const value = std::getenv("EDEN_GBB_GUARD_EARLY");
++                    return value != nullptr && (value[0] == '1' || value[0] == '2') &&
++                                   value[1] == '\0'
++                               ? value[0] - '0'
++                               : 0;
++                }();
++                if (guard_early != 0 && VideoCommon::AheadGuard::Enabled() && ~w[22] < 192)
++                    [[unlikely]] {
++                    auto& syncpoints = system.Host1x().GetSyncpointManager();
++                    if (!syncpoints.IsReadyGuest(~w[22], w[24])) {
++                        ++m_guard_early.second_waits;
++                        if (guard_early == 1) {
++                            // As the block below computes it (with EDEN_UP_AHEAD_TWO the wait
++                            // above was for the frame two back, so the previous one may still run).
++                            const bool previous_reached =
++                                m_previous_fence_id < 192 &&
++                                syncpoints.IsReadyGuest(m_previous_fence_id, m_previous_fence_value);
++                            if (VideoCommon::AheadGuard::Mode() == 3) {
++                                system.GPU().GatherForAheadGuard();
++                            }
++                            const u64 serial_before = VideoCommon::AheadGuard::GuardNow().serial;
++                            VideoCommon::AheadGuard::AtPresent(m_presents, ~w[22], w[24],
++                                                               previous_reached, syncpoints,
++                                                               system.Host1x().MemoryManager());
++                            if (VideoCommon::AheadGuard::GuardNow().serial != serial_before) {
++                                ++m_guard_early.armed;
++                            }
++                        }
++                    }
++                    if (++m_guard_early.presents >= 600) {
++                        LOG_INFO(Service,
++                                 "EDEN_GBB_GUARD_EARLY={}: last 600 second waits for a frame's "
++                                 "own fence (to present #{}): {} with the fence not reached at "
++                                 "the wait, {} with a guard armed before it",
++                                 guard_early, m_presents, m_guard_early.second_waits,
++                                 m_guard_early.armed);
++                        m_guard_early = {};
++                    }
++                }
+                 WaitForFrame(~w[22], w[24]);
+             }
+         } else if (slack_wait) {
+@@ -2335,6 +2384,10 @@ private:
+     // Eden's GPU thread has processed the frame. Otherwise the game laps the GPU thread and
+     // rewrites command memory it hasn't read yet.
+     u32 m_wait_timeouts{};
++    // 0760 EDEN_GBB_GUARD_EARLY: per 600 second waits (gpu_behind or the load wait), guard on.
++    struct GuardEarlyStats {
++        u32 presents{}, second_waits{}, armed{};
++    } m_guard_early{};
+     // EDEN_UP_FRAME_WAIT_PROGRESS (common/frame_wait_progress.h): what the waited fence, the
+     // split's back and the GPU-side beats were at the last look, and when one last moved.
+     struct WaitProgress {

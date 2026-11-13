@@ -1,0 +1,163 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_VMA_SLACK_MAP=<MiB>: in a quiet moment with the pool short and the allocator's block slack over <MiB>, one line with the slack by memory type and separate pool and the allocator's map (at most 3 a session); count only, off by default
+
+Switches: EDEN_UP_VMA_SLACK_MAP=<MiB> (1 to 65535, digits only; unset, 0 or anything else: off),
+EDEN_UP_VMA_SLACK_MAP_LARGEST_MIB=<MiB> (unset or 0: 256). Needs
+EDEN_UP_MEM_CENSUS=1 (it runs in the census's GPU-thread step, PublishMemoryCensus). Line (stderr):
+"EDEN_UP_VMA_SLACK_MAP <n>: blocks ... used ... slack ...; largest free block ...; by memory type
+...; separate pools ...", then the port's "MKW_VMA_MAP tag=90001<n> ...";
+the map is /data/eglantineps5/logs/mkw-vma-<pid>-90001<n>.json. Reader: t170g/vma_slack.py
+(per memory type: blocks, used, slack, empty blocks, dedicated; blocks by fill; free ranges by size).
+
+Why (READ, a hand-played session): census n=406 to 411 (stderr 8249-8366) held
+vma_blocks=1136 vma_used=808 vma_slack=328 MiB in the 12 s before the load into the area past the
+field, the third-largest unused memory after the heap's (571 fragmented + 108 free pages) and the
+stale images (366). The session's two maps (tags 900002/900003, EDEN_UP_AREA_VMA_SNAPSHOT, written
+right after earlier loads, census n=133 and n=185) show 83 and 28 MiB of slack: 8 MiB default
+blocks (78 and 60), the DeviceBuffers/SparsePages pools in 16 MiB blocks (20 and 14), everything
+over 4 MiB in memory of its own (106 and 74 allocations, 1,910 and 1,483 MiB). Nothing says where
+the 328 MiB sat at n=406, so nothing says which of the remedies (smaller blocks, the separate
+pools' block size, deleting the stale images that hold the blocks, a defragmentation pass) would
+give it back. The snapshot's own trigger (unnamed use over 512 MiB, at most 3) had spent its
+maps on earlier loads.
+
+What: in PublishMemoryCensus, after the snapshot: when blocks - used >= <MiB>, the blocks read the
+same in three census answers in a row (a quiet moment, no allocation churn: n=406 to 410), and the
+pool's largest free block (MemoryCensus::FreeLargest) is known and under _LARGEST_MIB (256), at
+most three times a session and 60 s apart: vmaCalculateStatistics (a walk of the blocks), the three separate pools'
+statistics, one stderr line, and eden_vma_probe(800010 + n) (the front's tag: 900010 + n). On the
+GPU thread, which owns the allocator (externally synchronized), as the snapshot. Off: one test of a
+static per census answer.
+
+Expected: no memory back; the next session says where the slack is. Replayed on the 10:17
+census (vma_blocks, vma_slack, largest; our notes): with 256 (or 200 or 300) and the default
+256 it fires at n=296 (t 763.6 s, slack 545, largest 207) and n=408 (t 977.1 s, slack 328, largest
+176: the moment before the load). Without the "same three times" rule it spent its maps in the
+first minutes (n=2, n=32, largest 702-736).
+Translation id: vk_texture_cache.cpp (rewritten as the port's vk_texture_cache_cost.cpp) is not in
+gen-translation-id.py's inputs and the name is not in TranslationSwitches: KEEPS THE STORE.
+
+---
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index 653fb21d928c6aefbacec0c69434704b01c17a8a..08fcecfa8edd73f882c965f72eb1c236affb75a2 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -3388,6 +3388,118 @@ void TextureCacheRuntime::PublishMemoryCensus() {
+             if (can_map) {
+                 eden_vma_probe(800000U + snapshots);
+             }
++#endif
++        }
++    }
++    // EDEN_UP_VMA_SLACK_MAP=<MiB> (digits, 1 to 65535; unset, 0 or anything else: off; one test
++    // of a static). Where the allocator's block slack sits when it matters. In the 10:17 session
++    // of 13 Nov (a hand-played session) the census read vma_slack=328 MiB of 1136 from n=406 to 411,
++    // the 12 s before the load into the area past the field, with the pool's largest free block
++    // at 176 MiB; the only two maps of that session (EDEN_UP_AREA_VMA_SNAPSHOT, tags 900002 and
++    // 900003) were taken right after earlier loads, with 83 and 28 MiB of slack, so nothing says
++    // which blocks held the 328 (images or the buffer pool, how full, which sizes). With the
++    // switch: when the blocks hold at least <MiB> more than their allocations, the allocator's
++    // blocks read the same in three census answers in a row (a quiet moment, as n=406 to 410),
++    // and the pool's largest free block is known and under EDEN_UP_VMA_SLACK_MAP_LARGEST_MIB
++    // (unset or 0: 256), at most three times a session and 60 s apart, one stderr line with the slack by memory type and by separate pool (VMA's statistics, a
++    // walk of the blocks), and the allocator's detailed map (eden_vma_probe, tag 900010 + n;
++    // tools: vma_slack.py reads it). Here, on the GPU thread, which owns the allocator, as the
++    // snapshot above.
++    static const u64 slack_map_bytes = [] {
++        const char* const value = std::getenv("EDEN_UP_VMA_SLACK_MAP");
++        if (value == nullptr || value[0] == '\0') {
++            return u64{0};
++        }
++        u64 mib = 0;
++        for (const char* digit = value; *digit != '\0'; ++digit) {
++            if (*digit < '0' || *digit > '9') {
++                return u64{0};
++            }
++            mib = mib * 10 + static_cast<u64>(*digit - '0');
++            if (mib > 65535) {
++                return u64{0};
++            }
++        }
++        return mib << 20;
++    }();
++    if (slack_map_bytes != 0) [[unlikely]] {
++        static const u64 slack_map_largest = [] {
++            const char* const value = std::getenv("EDEN_UP_VMA_SLACK_MAP_LARGEST_MIB");
++            const u64 mib = value != nullptr ? std::strtoull(value, nullptr, 10) : 0ULL;
++            return (mib != 0 && mib <= 65535 ? mib : 256ULL) << 20;
++        }();
++        static u32 slack_maps = 0;
++        static std::chrono::steady_clock::time_point slack_map_last{};
++        static u64 slack_blocks_seen[2]{~u64{0}, ~u64{1}};
++        const bool steady = slack_blocks_seen[0] == blocks && slack_blocks_seen[1] == blocks;
++        slack_blocks_seen[1] = slack_blocks_seen[0];
++        slack_blocks_seen[0] = blocks;
++        const u64 slack = blocks > used ? blocks - used : 0;
++        const u64 largest = Census::FreeLargest();
++        const auto now = std::chrono::steady_clock::now();
++        if (steady && slack >= slack_map_bytes && largest != 0 && largest < slack_map_largest &&
++            slack_maps < 3 &&
++            (slack_maps == 0 || now - slack_map_last >= std::chrono::seconds(60))) {
++            ++slack_maps;
++            slack_map_last = now;
++            const VmaAllocator allocator = device.GetAllocator();
++            VmaTotalStatistics statistics{};
++            vmaCalculateStatistics(allocator, &statistics);
++            char types[640] = "";
++            size_t types_len = 0;
++            for (u32 type = 0; type < VK_MAX_MEMORY_TYPES && types_len + 64 < sizeof(types);
++                 ++type) {
++                const VmaStatistics& t = statistics.memoryType[type].statistics;
++                if (t.blockBytes == 0) {
++                    continue;
++                }
++                const int n = std::snprintf(
++                    types + types_len, sizeof(types) - types_len, " type%u %ux%llu/%llu/%llu",
++                    type, t.blockCount, static_cast<unsigned long long>(t.blockBytes >> 20),
++                    static_cast<unsigned long long>(t.allocationBytes >> 20),
++                    static_cast<unsigned long long>(
++                        (t.blockBytes - (std::min)(t.allocationBytes, t.blockBytes)) >> 20));
++                if (n > 0) {
++                    types_len = (std::min)(types_len + static_cast<size_t>(n), sizeof(types) - 1);
++                }
++            }
++            struct PoolText {
++                char text[48];
++            };
++            const auto pool_text = [this](Device::SeparatePool kind) {
++                u64 pool_blocks = 0, pool_used = 0;
++                device.AddSeparatePoolUsage(kind, pool_blocks, pool_used);
++                PoolText out{};
++                std::snprintf(out.text, sizeof(out.text), "%llu/%llu/%llu",
++                              static_cast<unsigned long long>(pool_blocks >> 20),
++                              static_cast<unsigned long long>(pool_used >> 20),
++                              static_cast<unsigned long long>(
++                                  (pool_blocks - (std::min)(pool_used, pool_blocks)) >> 20));
++                return out;
++            };
++            const PoolText sparse_text = pool_text(Device::SeparatePool::SparsePages);
++            const PoolText buffer_text = pool_text(Device::SeparatePool::DeviceBuffers);
++            const PoolText trimmed_text = pool_text(Device::SeparatePool::TrimmedImages);
++            bool can_map = false;
++#if VIDEO_CORE_CENSUS_FRONT
++            can_map = eden_vma_probe != nullptr;
++#endif
++            std::fprintf(stderr,
++                         "EDEN_UP_VMA_SLACK_MAP %u: blocks %llu MiB, used %llu, slack %llu; "
++                         "largest free block %llu MiB; by memory type (blocks x MiB/used/slack, "
++                         "dedicated memory counts as a block with no slack):%s; separate pools "
++                         "(MiB blocks/used/slack): sparse pages %s, buffers %s, trimmed images "
++                         "%s%s\n",
++                         slack_maps, static_cast<unsigned long long>(blocks >> 20),
++                         static_cast<unsigned long long>(used >> 20),
++                         static_cast<unsigned long long>(slack >> 20),
++                         static_cast<unsigned long long>(largest >> 20), types,
++                         sparse_text.text, buffer_text.text, trimmed_text.text,
++                         can_map ? "; map: the MKW_VMA_MAP line below" : "; no map here");
++#if VIDEO_CORE_CENSUS_FRONT
++            if (can_map) {
++                eden_vma_probe(800010U + slack_maps);
++            }
+ #endif
+         }
+     }

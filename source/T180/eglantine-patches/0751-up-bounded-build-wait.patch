@@ -1,0 +1,252 @@
+From: EglantinePS5
+Subject: [PATCH] up: a draw whose pipeline is still building waits at most a per-frame budget, then is skipped (after zortos293/Lichii #465 "Bounded"), off by default
+
+Switch: EDEN_UP_BOUNDED_BUILD_WAIT_MS=<1-100> (milliseconds a frame; a live switch, Id
+BoundedBuildWait, not armed). Unset, 0 or anything else (a sign, blanks, trailing text, more
+than 100): off. Suggested first value: 8 (Lichii #465's default).
+
+What: on the PS5 the asynchronous shaders setting is off. So a draw whose driver build is not done
+is recorded anyway, and the scheduler worker waits for the build before it goes on
+(GraphicsPipeline::ConfigureImpl, "worker: waiting for a pipeline build"). The frame cannot finish
+until the build does: on a first sight that is the hard freeze. With the switch on, in
+PipelineCache::BuiltPipeline, a Switch 2 draw that may be skipped (CanSkipDraw: depth in use, or
+more than a full screen quad, and not kept by EDEN_UP_ASYNC_DRAW_WAITS) waits on the GPU thread for
+its build, within what is left of this frame's budget (GraphicsPipeline::WaitBuiltFor, which asks
+the builder for it first when EDEN_UP_FAST_CFG is on). Built in time: drawn as before. Not built:
+the draw is skipped this frame, the build goes on, and the game's next frame draws it again. Once
+the frame's budget is spent, every draw with an unbuilt pipeline in that frame is skipped at once.
+Draws that may not be skipped (a full screen quad without depth, or kept by
+EDEN_UP_ASYNC_DRAW_WAITS) wait as before.
+
+How it compares with what we have:
+- 0540 EDEN_UP_ASYNC_DRAW_WAITS (rdenno 7a940ca) is the opposite: it makes MORE draws wait (Switch 2
+  draws without depth), so font glyphs are never skipped. It has no budget. It does not do #465.
+- 0508 EDEN_UP_ASYNC_TRANSLATION already has a per-frame budget (EDEN_UP_ASYNC_TRANSLATION_WAIT_MS,
+  default 2 per pipeline, and _FRAME_MS, default 4 a frame), but only for the shader TRANSLATION on
+  worker threads. Once a translated pipeline is adopted, its driver build is waited for in full by
+  the scheduler worker (0508's own comment says so). This patch bounds that second wait. The two
+  budgets are separate.
+
+Also in this patch: the three build_condvar.notify_one() calls in vk_graphics_pipeline.cpp become
+notify_all(). The scheduler worker and (with this switch) the GPU thread can now wait on the same
+pipeline at once; notify_one could wake only one of them and leave the worker waiting for ever.
+With one waiter, notify_all does the same as before.
+
+Where it comes from (credit): zortos293/Lichii PR #465 by Mario Matheus Pombal (MarioMatheusPombal),
+"native_async_draws = Bounded" with "native_pipeline_wait_ms" (default 8): PipelineBuild::WaitFor,
+DecideNativePending, a budget reset per frame, and the "Bounded pipeline wait" log line. His
+numbers (RX 6700 XT, Ocarina, first visit to the village): draws held for unbuilt pipelines in the
+worst 10 s went from 14,656 ms to 229 ms; his FPS row is not a clean A/B (his words). His visible
+side effect: a one-frame white flash on the player the first time he stepped into water. Our port
+is smaller: no settings, no UI, no test file; an env switch instead, and our CanSkipDraw rule
+decides which draws may be skipped (his CanDiscardPendingDraw kept native draws; in our tree 0508
+already skips native draws while they translate, so the skip path is known to work).
+
+Off: one live-switch load per draw whose pipeline is not built yet (built pipelines return before
+it). notify_all instead of notify_one once per pipeline build. Changes no shader translation, and
+the switch is not in the stamp's switch list (the name is only in common/live_switch.h). It does
+change the source-stamp translation id: the build makes a derived copy of vk_pipeline_cache.cpp
+(vk_pipeline_cache_cost.cpp) that is in the translation id's file list, so with
+EDEN_UP_SHADER_PREP_SOURCE_STAMP=1 a build with this patch does not reuse an older build's kept
+store (corrected in T160 after the T156 review; the first text said the id stays).
+
+Risk when on: a draw missing for a frame or a few (a flash, a missing object, a missing effect)
+while its pipeline builds. A draw that writes something the game reads later (a render to texture
+that is not cleared each frame) could leave it stale for longer. The budget is spent on the GPU
+thread, so up to the budget a frame is added to frames that build; a budget of 100 ms would undo
+the point.
+
+What a test should look at: the same cold-ish route (house -> door -> village, first sight of the
+area past the field), on vs off, or live A/B with EDEN_UP_LIVE_SWITCHES=1. Look at the longest
+frames and frames over 100 ms at first sights, the "worker: waiting for a pipeline build" hang
+site if the hang watch logs it, and the new line every 10 s: "Bounded build wait (0751) in the
+last 10 s: X ms waited, N draws got their pipeline in time, M skipped (budget B ms a frame)". M is
+how many draws were missing for a frame. Picture: record and look for one-frame flashes or
+missing pieces at first sights (reel.py side by side). Also try 4 and 16 if 8 helps.
+---
+diff --git a/src/common/live_switch.h b/src/common/live_switch.h
+index 647fa9d..45a0325 100644
+--- a/src/common/live_switch.h
++++ b/src/common/live_switch.h
+@@ -230,6 +230,11 @@ enum class Id : u8 {
+     /// the scheduler recorded nothing since the last Flush or Finish. The count runs whatever the
+     /// value, so each flush decides on its own, and a skipped one leaves nothing unsent.
+     ExactEmptySubmits,
++    /// EDEN_UP_BOUNDED_BUILD_WAIT_MS (0751, after zortos293/Lichii #465). Read by each draw whose
++    /// pipeline's driver build is not done (PipelineCache::BuiltPipeline): it waits for the build
++    /// within what is left of the frame's budget, or is skipped. Each draw decides on its own;
++    /// a skipped draw is drawn again by the game's next frame.
++    BoundedBuildWait,
+     Count,
+ };
+ 
+@@ -290,6 +295,17 @@ inline constexpr size_t NumSwitches = static_cast<size_t>(Id::Count);
+     return static_cast<u32>(std::clamp(parsed, 32UL, 1'048'576UL));
+ }
+ 
++/// EDEN_UP_BOUNDED_BUILD_WAIT_MS: milliseconds a frame, decimal digits only, 1 to 100. Unset,
++/// 0, or anything else (a sign, blanks, trailing text, more than 100) is 0: off.
++[[nodiscard]] inline s64 ParseBuildWaitMs(const char* text) noexcept {
++    if (text == nullptr || text[0] < '0' || text[0] > '9') {
++        return 0;
++    }
++    char* end = nullptr;
++    const unsigned long parsed = std::strtoul(text, &end, 10);
++    return *end == '\0' && parsed <= 100 ? static_cast<s64>(parsed) : 0;
++}
++
+ /// EDEN_NX2_PIPELINE_CLEAN, EDEN_NX2_RANGE_PREFIX: starting with '1' is 1, anything else 0.
+ [[nodiscard]] inline s64 ParseLeadingOne(const char* text) noexcept {
+     return text != nullptr && text[0] == '1' ? 1 : 0;
+@@ -373,6 +389,7 @@ inline constexpr std::array<Def, NumSwitches> kDefs{{
+     {"EDEN_UP_REG_WRITE_ONE_CALL", ParseExactOne, false, -1},
+     {"EDEN_UP_DMA_UNWRITTEN_FAST", ParseExactOne, false, -1},
+     {"EDEN_UP_EXACT_EMPTY_SUBMITS", ParseExactOne, false, -1},
++    {"EDEN_UP_BOUNDED_BUILD_WAIT_MS", ParseBuildWaitMs, false, -1},
+ }};
+ 
+ static_assert(kDefs[static_cast<size_t>(Id::PollBackoffUs)].needs ==
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+index eaae004..56d512c 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -541,7 +541,7 @@ GraphicsPipeline::GraphicsPipeline(
+             Common::FrameWaitProgress::Beat();
+             std::scoped_lock lock{build_mutex};
+             is_built = true;
+-            build_condvar.notify_one();
++            build_condvar.notify_all(); // patch 0751: a GPU thread may wait too
+             if (shader_notify) {
+                 shader_notify->MarkShaderComplete();
+             }
+@@ -566,7 +566,7 @@ GraphicsPipeline::GraphicsPipeline(
+ 
+         std::scoped_lock lock{build_mutex};
+         is_built = true;
+-        build_condvar.notify_one();
++        build_condvar.notify_all(); // patch 0751: a GPU thread may wait too
+         if (shader_notify) {
+             shader_notify->MarkShaderComplete();
+         }
+@@ -606,7 +606,7 @@ void GraphicsPipeline::RunBuild() {
+         {
+             std::scoped_lock lock{build_mutex};
+             is_built = true;
+-            build_condvar.notify_one();
++            build_condvar.notify_all(); // patch 0751: a GPU thread may wait too
+         }
+         build_task = {};
+         throw;
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
+index b2c3af7..ecb5f9d 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
+@@ -9,6 +9,7 @@
+ #include <algorithm>
+ #include <array>
+ #include <atomic>
++#include <chrono>
+ #include <condition_variable>
+ #include <memory>
+ #include <mutex>
+@@ -207,6 +208,20 @@ public:
+         return is_built.load(std::memory_order::relaxed);
+     }
+ 
++    /// Patch 0751 (after zortos293/Lichii #465 PipelineBuild::WaitFor): waits at most `timeout`
++    /// for the driver build, asking the builder for it first (BuildFirst, with its switch).
++    /// Returns whether it is built. The builds wake every waiter (notify_all), so this wait never
++    /// takes the scheduler worker's wake-up.
++    [[nodiscard]] bool WaitBuiltFor(std::chrono::microseconds timeout) {
++        if (IsBuilt()) {
++            return true;
++        }
++        BuildFirst();
++        std::unique_lock lock{build_mutex};
++        return build_condvar.wait_for(
++            lock, timeout, [this] { return is_built.load(std::memory_order::relaxed); });
++    }
++
+     /// Writes storage images or image buffers (their images are marked modified when resolved).
+     [[nodiscard]] bool WritesImages() const noexcept {
+         return writes_images;
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 819c9da..ea20b04 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -2614,12 +2614,74 @@ void PipelineCache::EvictUnusedPipelines() {
+              EvictAfterFrames, graphics_cache.size());
+ }
+ 
++namespace {
++// Patch 0751 (after zortos293/Lichii #465 "Bounded" native async draws, Mario Matheus Pombal):
++// the GPU thread's per-frame budget for waiting on driver builds, and its 10 s report.
++struct BoundedBuildWaitState {
++    u64 frame{~u64{0}};
++    std::chrono::microseconds left{};
++    u32 ready{};   ///< Built within the budget (or already built when looked at again)
++    u32 skipped{}; ///< Not built when the budget ran out: the draw was skipped
++    std::chrono::steady_clock::duration waited{};
++    std::chrono::steady_clock::time_point window{std::chrono::steady_clock::now()};
++};
++
++bool WaitBuiltWithinBudget(GraphicsPipeline* pipeline, s64 budget_ms, u64 frame) {
++    static BoundedBuildWaitState state; // the GPU thread only, as the rest of BuiltPipeline
++    if (state.frame != frame) {
++        state.frame = frame;
++        state.left = std::chrono::milliseconds{budget_ms};
++    }
++    bool built = false;
++    if (state.left.count() > 0) {
++        const auto begin = std::chrono::steady_clock::now();
++        built = pipeline->WaitBuiltFor(state.left);
++        const auto spent = std::chrono::steady_clock::now() - begin;
++        state.left -= std::min(state.left,
++                               std::chrono::duration_cast<std::chrono::microseconds>(spent));
++        state.waited += spent;
++    } else {
++        built = pipeline->IsBuilt();
++    }
++    ++(built ? state.ready : state.skipped);
++    const auto now = std::chrono::steady_clock::now();
++    if (now - state.window >= std::chrono::seconds{10}) {
++        LOG_INFO(Render_Vulkan,
++                 "Bounded build wait (0751) in the last 10 s: {:.1f} ms waited, {} draws got "
++                 "their pipeline in time, {} skipped (budget {} ms a frame)",
++                 std::chrono::duration<double, std::milli>(state.waited).count(), state.ready,
++                 state.skipped, budget_ms);
++        state.waited = {};
++        state.ready = 0;
++        state.skipped = 0;
++        state.window = now;
++    }
++    return built;
++}
++} // Anonymous namespace
++
+ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const noexcept {
+     if (pipeline->IsBuilt()) {
+         return pipeline;
+     }
+     if (!use_asynchronous_shaders) {
+-        return pipeline;
++        // Patch 0751 (live switch BoundedBuildWait, 1 to 100 ms a frame; off: one load). The
++        // asynchronous shaders setting is off on the PS5, so a draw whose driver build is not
++        // done is recorded and the scheduler worker waits for the build: the frame stalls for as
++        // long as the build takes (up to seconds on a first sight). With the budget, a Switch 2
++        // draw that may be skipped (CanSkipDraw: depth in use, or more than a full screen quad,
++        // and not kept by the async draw waits switch) waits here within what is left of this
++        // frame's budget; not built by then, it is skipped, and the build goes on.
++        const s64 budget_ms =
++            Common::LiveSwitch::Value<Common::LiveSwitch::Id::BoundedBuildWait>();
++        if (budget_ms == 0 || !Settings::CurrentProgramIsSwitch2() || !CanSkipDraw()) {
++            return pipeline;
++        }
++        if (WaitBuiltWithinBudget(pipeline, budget_ms, frame_count)) {
++            return pipeline;
++        }
++        VideoCommon::EmptyDrawStats::Building();
++        return nullptr;
+     }
+     // If something is using depth, we can assume that games are not rendering anything which
+     // will be used one time.

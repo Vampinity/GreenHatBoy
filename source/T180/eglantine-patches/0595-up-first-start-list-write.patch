@@ -1,0 +1,269 @@
+From: EglantinePS5
+Subject: up: write the pipelines a session used, in first-use order, as key hashes (EDEN_UP_FIRST_START_LIST_WRITE), off by default
+
+What: with EDEN_UP_FIRST_START_LIST_WRITE=1 (and EDEN_UP_CANONICAL_KEYS=1) the first use
+of every graphics pipeline (CurrentGraphicsPipelineSlowPath, after a pipeline exists; M when it
+has a task/mesh stage, else G) and of every compute pipeline (a new one when it is made, a known
+one at its first dispatch; C) is noted on the GPU thread as kind + the key's CityHash64. The list
+goes to <title>/first_start.list every 30 s while it grows and at shutdown, on the serialization
+thread (written beside and renamed over). The previous session's list is kept as
+first_start.prev.list, so a short run does not wipe a useful one. At most 65,536 rows.
+
+Header: "EDEN_FIRST_START_2 cache= driver= canonical= static_vertex= title= lowering=": what the
+hashes depend on, so a reader can refuse a list of another build or key policy (review S1-B);
+lowering= comes from the same constant as the shader set's identity. Not in it: the game version
+(the video core has only the title id here). Rows: "G|M|C <16 hex>", and
+"T <seconds> <rows before>" at each write, so a list made on a warm start can be cut by hand at
+the door's time. No area marks: S1b's NotifyFirstStartAreaLoad had no caller (both reviews) and is
+not ported. Contents: only fixed tags, decimal numbers and 64-bit key hashes; no code, no state
+bytes, no answers, no addresses.
+
+Off: one switch read in the constructor, one bool test per first use of a pipeline and per compute dispatch of a known one; nothing
+allocated, written or logged. It changes nothing that is built or drawn. Nothing reads the list
+in this build (the preparation from it, S1c, is left out: see our notes).
+
+Credits: the list idea and the first draft (S1b): our own draft, reviewed twice;
+first-start build rule: hckrman101 (NotRexed/Hookshot #2865, #2869).
+---
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index c890b5d..0768556 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -1033,6 +1033,16 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
+                      ? "on (fair count of live keys against the set's records)"
+                      : "asked, but off: it needs EDEN_UP_SHADER_SET=1 and EDEN_UP_CANONICAL_KEYS=1");
+     }
++    // EDEN_UP_FIRST_START_LIST_WRITE=1 (off by default; needs EDEN_UP_CANONICAL_KEYS=1).
++    const bool first_start_asked = Common::PeSwitch("EDEN_UP_FIRST_START_LIST_WRITE");
++    first_start_write = canonical_keys && first_start_asked;
++    if (first_start_asked) {
++        LOG_INFO(Render_Vulkan, "EDEN_UP_FIRST_START_LIST_WRITE: {}", first_start_write
++                     ? "on (first_start.list: key hashes in first-use order, no code)"
++                     : "asked, but off: it needs EDEN_UP_CANONICAL_KEYS=1");
++        first_start_begin = std::chrono::steady_clock::now();
++        first_start_saved = first_start_begin;
++    }
+     // (Before the last statement: tools/prepare-vulkan-port.py anchors on the constructor's end.)
+     dynamic_features.has_provoking_vertex_tf_preserve =
+         device.SupportsTransformFeedbackProvokingVertexPreservation();
+@@ -1277,6 +1287,9 @@ PipelineCache::~PipelineCache() {
+     if (shader_set_enabled) {
+         LogShaderSetAudit(true);
+     }
++    if (first_start_write) {
++        WriteFirstStartList(true);
++    }
+     serialization_thread.WaitForRequests();
+     SaveUsedPipelines();
+     static const bool skip_unchanged = Common::PeSwitch("EDEN_PE_PIPELINE_CACHE_EXIT");
+@@ -1853,6 +1866,9 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
+     };
+     const auto [pair, is_new]{compute_cache.try_emplace(key)};
+     auto& pipeline{pair->second};
++    if (first_start_write && !is_new && pipeline) {
++        NoteFirstStartPipeline('C', key.Hash());
++    }
+     static const bool up_null_slots = Common::PeSwitch("EDEN_UP_NULL_POINTER_SLOTS");
+     if (!is_new && !up_null_slots && NullSlotsMode() != 0 && pipeline) {
+         RecheckNullPointerSlots(key, shader, pipeline);
+@@ -2431,6 +2447,9 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
+     if (!pipeline) {
+         return nullptr;
+     }
++    if (first_start_write) {
++        NoteFirstStartPipeline(pipeline->IsMeshPipeline() ? 'M' : 'G', graphics_key.Hash());
++    }
+     if (PipelineSave20s()) {
+         if (used_this_session.insert(pipeline.get()).second) {
+             used_pipelines_dirty = true;
+@@ -2474,6 +2493,12 @@ void PipelineCache::TickFrame() {
+     if (shader_set_enabled && frame_count % 60 == 0) {
+         LogShaderSetAudit(false);
+     }
++    // EDEN_UP_FIRST_START_LIST_WRITE: a start that dies at the door still leaves its list.
++    if (first_start_write && frame_count % 60 == 0 &&
++        first_start_rows.size() != first_start_written &&
++        std::chrono::steady_clock::now() - first_start_saved > std::chrono::seconds{30}) {
++        WriteFirstStartList(false);
++    }
+ }
+ 
+ void PipelineCache::EvictUnusedPipelines() {
+@@ -3751,6 +3776,9 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
+         if (up_collect) env.StoragePointerSlots(pipeline->pointer_slots, pipeline->null_pointer_slots);
+         pipeline->pointer_rebuilds = previous ? previous->pointer_rebuilds + 1 : 0;
+     }
++    if (pipeline && first_start_write) {
++        NoteFirstStartPipeline('C', key.Hash());
++    }
+     if (!pipeline || pipeline_cache_filename.empty()) {
+         return pipeline;
+     }
+@@ -5207,6 +5235,12 @@ bool PipelineCache::MapShaderSetState(std::span<const u8> state, std::array<u64,
+     return true;
+ }
+ 
++namespace {
++// The lowering tag of shader_environment.cpp's Analyze: the shader set's identity and the
++// first_start.list header (EDEN_UP_FIRST_START_LIST_WRITE) both name it from here.
++constexpr u64 ShaderSetLoweringTag = 0x4f554e4345000003ULL;
++} // namespace
++
+ void PipelineCache::StartShaderSet(const std::filesystem::path& title_dir) {
+     if (shader_set_thread.joinable()) {
+         return;
+@@ -5214,7 +5248,7 @@ void PipelineCache::StartShaderSet(const std::filesystem::path& title_dir) {
+     audit_logged = std::chrono::steady_clock::now();
+     VideoCommon::ShaderSet::Identity identity;
+     identity.cache_version = CACHE_VERSION;
+-    identity.lowering_tag = 0x4f554e4345000003ULL; // shader_environment.cpp Analyze
++    identity.lowering_tag = ShaderSetLoweringTag; // shader_environment.cpp Analyze
+     identity.device = ShaderSetDeviceIdentity();
+     // The prepared store's own stamp: the installed build (its eboot), the settings and every
+     // switch the translation and the lowerer read (EDEN_UP_SHADOW_REGISTERS,
+@@ -5721,6 +5755,112 @@ bool PipelineCache::PrepareShaderSet(const std::filesystem::path& file, std::sto
+     return paused;
+ }
+ 
++// EDEN_UP_FIRST_START_LIST_WRITE=1 -----------------------------------------------------------
++// Ported from a draft (12 Nov 2026), remade after two reviews: the
++// list is also written every 30 s (a start that dies at the door leaves one), the header names
++// what the hashes depend on so a reader can refuse a list of another build or key policy, mesh
++// pipelines are marked M (the set cannot prepare them), and T rows mark time so a list can be cut
++// by hand at the door. No area marks: there is no area-load event to call (S1b's
++// NotifyFirstStartAreaLoad had no caller and is not ported). The previous session's list is kept
++// as first_start.prev.list.
++
++namespace {
++constexpr size_t FirstStartMaxRows = 65536;
++} // namespace
++
++void PipelineCache::NoteFirstStartPipeline(char kind, u64 hash) noexcept {
++    if (!first_start_valid) {
++        return;
++    }
++    try {
++        auto& seen = kind == 'C' ? first_start_compute : first_start_graphics;
++        if (seen.contains(hash)) {
++            return;
++        }
++        if (first_start_rows.size() >= FirstStartMaxRows) {
++            first_start_valid = false;
++            LOG_WARNING(Render_Vulkan, "EDEN_UP_FIRST_START_LIST_WRITE: {} rows, the list stops "
++                                       "growing (what it holds is still written)",
++                        FirstStartMaxRows);
++            return;
++        }
++        seen.insert(hash);
++        first_start_rows.push_back({kind, hash, 0});
++    } catch (const std::bad_alloc&) {
++        first_start_valid = false;
++    }
++}
++
++void PipelineCache::WriteFirstStartList(bool final) try {
++    const auto now = std::chrono::steady_clock::now();
++    first_start_saved = now;
++    if (pipeline_cache_filename.empty()) {
++        return;
++    }
++    const u64 seconds = static_cast<u64>(
++        std::chrono::duration_cast<std::chrono::seconds>(now - first_start_begin).count());
++    if (first_start_rows.size() < FirstStartMaxRows + 64) {
++        first_start_rows.push_back({'T', seconds, first_start_rows.size()});
++    }
++    first_start_written = first_start_rows.size();
++    // What the hashes depend on: a list made under other values names other pipelines.
++    std::string text = fmt::format(
++        "EDEN_FIRST_START_2 cache={} driver={:x}.{:x} canonical={} static_vertex={} "
++        "title={:016x} lowering={:016x}\n"
++        "# G/M/C <CityHash64 of the pipeline key>: first use (M: task/mesh stage); "
++        "T <seconds since start> <rows before>. No code, no state bytes.\n",
++        CACHE_VERSION, static_cast<u32>(device.GetDriverID()), device.GetDriverVersion(),
++        canonical_keys ? 1 : 0, StaticVertexInputEnabled() ? 1 : 0, visual_workaround_title,
++        ShaderSetLoweringTag);
++    size_t graphics = 0, mesh = 0, compute = 0;
++    for (const FirstStartRow& row : first_start_rows) {
++        if (row.kind == 'T') {
++            text += fmt::format("T {} {}\n", row.value, row.count);
++            continue;
++        }
++        graphics += row.kind == 'G' ? 1 : 0;
++        mesh += row.kind == 'M' ? 1 : 0;
++        compute += row.kind == 'C' ? 1 : 0;
++        text += fmt::format("{} {:016x}\n", row.kind, row.value);
++    }
++    const auto path = pipeline_cache_filename.parent_path() / "first_start.list";
++    const bool rotate = !std::exchange(first_start_rotated, true);
++    serialization_thread.QueueWork([path, rotate, final, graphics, mesh, compute,
++                                    complete = first_start_valid, text = std::move(text)] {
++        std::error_code error;
++        if (rotate && std::filesystem::exists(path, error)) {
++            auto previous = path;
++            previous.replace_filename("first_start.prev.list");
++            std::filesystem::rename(path, previous, error);
++        }
++        auto partial = path;
++        partial += ".part";
++        bool written = false;
++        {
++            std::ofstream out{partial, std::ios::binary | std::ios::trunc};
++            written = static_cast<bool>(out.write(text.data(),
++                                                  static_cast<std::streamsize>(text.size()))) &&
++                      static_cast<bool>(out.flush());
++        }
++        if (written) {
++            std::filesystem::rename(partial, path, error);
++        }
++        if (!written || error) {
++            std::filesystem::remove(partial, error);
++        }
++        if (final || !written || error) {
++            LOG_INFO(Render_Vulkan,
++                     "EDEN_UP_FIRST_START_LIST_WRITE: {} graphics, {} mesh, {} compute{}{}{}",
++                     graphics, mesh, compute, final ? " (shutdown)" : "",
++                     complete ? "" : " (incomplete: the row cap or memory stopped it)",
++                     written && !error ? "" : " (NOT written)");
++        }
++    });
++} catch (const std::exception&) {
++    first_start_valid = false;
++    LOG_WARNING(Render_Vulkan, "EDEN_UP_FIRST_START_LIST_WRITE: the list could not be made");
++}
++
+ // EDEN_UP_SHADER_SET_WHY=1 ------------------------------------------------------------------
+ // Ported from a draft (12 Nov 2026), remade after two reviews: no full
+ // keys are kept (per-field digests instead), near-miss candidates are capped, totals print with
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.h b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+index 02adca4..bf340cd 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.h
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+@@ -549,6 +549,28 @@ private:
+     /// the audit line every 60 s and at shutdown, not per pipeline).
+     void DrainShaderSetWhy(bool final, bool print = true);
+ 
++    /// EDEN_UP_FIRST_START_LIST_WRITE=1 (needs EDEN_UP_CANONICAL_KEYS=1; off: one bool test per
++    /// first use of a pipeline and per compute dispatch of a known one): the pipelines this
++    /// session used, in first-use order, as kind + 64-bit key hash (CityHash64 of the key; no
++    /// code, no state bytes), written to <title>/first_start.list every 30 s while it grows and
++    /// at shutdown. GPU thread only; the file is written on the serialization thread.
++    struct FirstStartRow {
++        char kind; ///< G graphics, M graphics with a task/mesh stage, C compute, T time mark
++        u64 value; ///< key hash, or for T the seconds since this cache was made
++        u64 count; ///< for T: rows before it
++    };
++    bool first_start_write{};
++    bool first_start_valid{true};
++    bool first_start_rotated{};
++    size_t first_start_written{};
++    std::vector<FirstStartRow> first_start_rows;
++    std::unordered_set<u64> first_start_graphics;
++    std::unordered_set<u64> first_start_compute;
++    std::chrono::steady_clock::time_point first_start_begin{};
++    std::chrono::steady_clock::time_point first_start_saved{};
++    void NoteFirstStartPipeline(char kind, u64 hash) noexcept;
++    void WriteFirstStartList(bool final);
++
+     [[no_unique_address]] BuildBurst::Lifetime burst_lifetime;
+     Common::ThreadWorker workers;
+     Common::ThreadWorker serialization_thread;

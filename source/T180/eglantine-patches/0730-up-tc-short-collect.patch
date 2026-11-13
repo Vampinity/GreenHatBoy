@@ -1,0 +1,205 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_TC_SHORT_COLLECT=<MiB>: with the pool short and the images under the collector's 1024 MiB floor, clean idle images still go (32 a frame, unused 120 frames); off by default
+
+Switches: EDEN_UP_TC_SHORT_COLLECT=<MiB> (1 to 65535, digits only; unset, 0 or anything else: off).
+EDEN_UP_TC_SHORT_COLLECT_AGE=<frames> (unset, 0 or not a number: 120; at least 10). Line (log
+macro, HW.GPU, eden_log): "EDEN_UP_TC_SHORT_COLLECT 600 frames: ..." when the case came up.
+
+Why (READ, a hand-played session and a hand-played session, T151, the load
+into the area past the field): TextureCache::TickFrame calls RunGarbageCollector only while
+total_used_memory > minimum_memory, and minimum_memory is 1024 MiB on the console ("Texture cache
+thresholds: expected 2560 MiB, critical 3328 MiB, minimum 1024 MiB"). The Vulkan port's pool signal
+(PoolPressure: largest free block under 256 MiB = aggressive) lives inside RunGarbageCollector, so
+with the images under 1024 MiB nothing reads it. On the console the guest (5.7-6.3 GB), the heap
+(1.5-2.0 GB) and the JIT (0.5 GB) leave the pool empty while the images are under that floor:
+- handheld: EDEN_MEM_CENSUS n=37..50, largest free block 0-192 MiB, images 932-1013 MiB, at n=42
+  664 MiB of them unused for 120 frames and clean; not one deleted until the load (images=964/968
+  for 16 s). The load then needed +2.2 GB of graphics memory in 7 s and the session died at 0 MiB.
+- docked: n=265..296 (two minutes), largest 0-182 MiB, images 925-1019 MiB, 592 MiB clean stale.
+What: ShortPoolCollect(), at the end of the frame after AreaEvict and before the collector. The
+pool's largest free block (MemoryCensus::FreeLargest, the front's kernel query the census thread
+makes every 250 ms) is read every 30 frames. While it is under <MiB> and the collector is
+skipped (images <= minimum_memory), up to 32 images a frame that have not been used for the age
+go, oldest first: only what AreaEvict would delete too (no copy back, no staging, no GPU wait),
+less the costly ones (CostlyLoad, CPU-decoded, decoding, kept as re-made). A deleted image is
+uploaded again from guest memory if the game uses it again. Above the floor the collector runs as
+before and this does nothing. Off: one test of a static per frame. Where FreeLargest is 0 (no
+front figure) it does nothing.
+Expected (log replay, t155/check/host/replay.log): with 1024 it acts at 20 of 57 handheld censuses
+(n=37..50 with up to 664 MiB to delete) and 42 of 339 docked ones (n=265..296, up to 592 MiB).
+Risk: textures unused for 2 s (120 frames) that come back into view are uploaded again (a frame
+or a few of a late texture). Not on the console yet.
+Timing correction (checker, our notes, put in at T160): the clean
+stale part was 0-134 MiB through the field (handheld n=21-41, docked n=260-268) and rose to 664 / 592
+MiB only at n=42 / n=270, the start of the area change, not "for 1-2 minutes". This pass therefore
+has a window of about 10 s handheld and 5-8 s docked before the load's long frame, while frames
+still tick; the window is not guaranteed. The code comment says the same since T160.
+
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index be3aad7673..fdffc7d88f 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -1169,6 +1169,121 @@ void TextureCache<P>::CensusTick() {
+     MemoryCensus::ImagesPublished(request);
+ }
+ 
++// EDEN_UP_TC_SHORT_COLLECT=<MiB> (1 to 65535, digits only; unset, 0 or anything else: off, as
++// before). The collector runs only while the images add up to more than minimum_memory (1024 MiB
++// on the console), and its own pool signal (the Vulkan port's PoolPressure) lives inside it. On
++// the console the guest, the heap and the JIT take 8 to 8.5 GB of the 12.3 GB pool, so the pool
++// can be empty with the images under that floor, and then nothing is collected at all. Ocarina
++// of Time, the field before the load into the area past it (crash-20261113-064906 handheld,
++// crash-20261113-063844 docked): the largest free block under 200 MiB, the images at about 930 to
++// 1020 MiB. Through the field only 0 to 134 MiB of them were clean and unused for 120 frames
++// (EDEN_MEM_CENSUS n=21 to 41 handheld, n=260 to 268 docked); that jumped to 664 MiB (n=42) and
++// 592 MiB (n=270) only when the area change began. So this pass has a window of about 10 s
++// handheld and 5 to 8 s docked before the load's long frame, and only while frames keep ticking
++// (it runs in TickFrame); a faster load gives a shorter window. The load then asked for 2.2 GB of
++// graphics memory in 7 s and the session died with 0 MiB free.
++// With the switch: the pool's largest free block (MemoryCensus::FreeLargest, the census thread's
++// kernel query) is read every 30 frames; while it is under <MiB> and the collector is skipped,
++// images unused for EDEN_UP_TC_SHORT_COLLECT_AGE frames (unset: 120, at least 10) go at the end of
++// the frame, 32 a frame, oldest first. Only images AreaEvict would also delete, less the costly
++// ones: nothing the GPU wrote (no copy back, no staging, no wait), nothing decoding or decoded on
++// the CPU (the 1365x1365x90 arrays take 4.5 s each), nothing the collector keeps as re-made, no
++// CostlyLoad image. A deleted image is uploaded again from guest memory if it is used again.
++// Line: "EDEN_UP_TC_SHORT_COLLECT 600 frames: ..." when anything was short in the last 600 frames.
++// When the images pass the floor, the collector itself runs (with PoolPressure) and this does
++// nothing. Where the front has no pool figure (FreeLargest 0) it does nothing either.
++[[nodiscard]] inline u64 ShortCollectBytes() {
++    static const u64 bytes = [] {
++        const char* const value = std::getenv("EDEN_UP_TC_SHORT_COLLECT");
++        if (value == nullptr || value[0] == '\0') {
++            return u64{0};
++        }
++        u64 mib = 0;
++        for (const char* digit = value; *digit != '\0'; ++digit) {
++            if (*digit < '0' || *digit > '9') {
++                return u64{0};
++            }
++            mib = mib * 10 + static_cast<u64>(*digit - '0');
++            if (mib > 65535) {
++                return u64{0};
++            }
++        }
++        return mib << 20;
++    }();
++    return bytes;
++}
++
++[[nodiscard]] inline u64 ShortCollectAge() {
++    static const u64 frames = [] {
++        const char* const value = std::getenv("EDEN_UP_TC_SHORT_COLLECT_AGE");
++        const u64 age = value != nullptr ? std::strtoull(value, nullptr, 10) : 0ULL;
++        return age == 0 ? u64{120} : (std::max)(age, u64{10}); // unset, 0 or not a number: 120
++    }();
++    return frames;
++}
++
++template <class P>
++void TextureCache<P>::ShortPoolCollect() {
++    const u64 limit = ShortCollectBytes();
++    if (limit == 0) {
++        return;
++    }
++    constexpr u64 SampleFrames = 30;
++    constexpr u64 LogFrames = 600;
++    constexpr size_t MaxPerFrame = 32;
++    if (short_collect_sample_frame == 0 || frame_tick - short_collect_sample_frame >= SampleFrames) {
++        short_collect_sample_frame = frame_tick != 0 ? frame_tick : 1;
++        short_collect_largest = MemoryCensus::FreeLargest();
++        short_collect_short = short_collect_largest != 0 && short_collect_largest < limit;
++    }
++    if (frame_tick - short_collect_logged >= LogFrames) {
++        if (short_collect_frames != 0) {
++            LOG_INFO(HW_GPU,
++                     "EDEN_UP_TC_SHORT_COLLECT {} frames: {} frames with the pool under {} MiB and "
++                     "the images under the collector's {} MiB floor; {} images, {} MiB deleted "
++                     "(unused for {} frames, clean); now: largest free block {} MiB, images {} MiB",
++                     frame_tick - short_collect_logged, short_collect_frames, limit >> 20,
++                     minimum_memory >> 20, short_collect_images, short_collect_bytes >> 20,
++                     ShortCollectAge(), short_collect_largest >> 20, total_used_memory >> 20);
++        }
++        short_collect_logged = frame_tick;
++        short_collect_frames = short_collect_images = short_collect_bytes = 0;
++    }
++    if (!short_collect_short || total_used_memory > minimum_memory) {
++        return; // not short, or the collector runs this frame anyway
++    }
++    ++short_collect_frames;
++    const u64 age = ShortCollectAge();
++    if (frame_tick <= age) {
++        return;
++    }
++    boost::container::small_vector<ImageId, MaxPerFrame> doomed;
++    u64 bytes = 0;
++    lru_cache.ForEachItemBelow(frame_tick - age, [&](ImageId image_id) {
++        const Image& image = slot_images[image_id];
++        if (True(image.flags & ImageFlagBits::IsDecoding) ||
++            True(image.flags & ImageFlagBits::AsynchronousDecode) ||
++            True(image.flags & ImageFlagBits::CostlyLoad) || KeptRemade(image) ||
++            (IsDownloadable(image) && False(image.flags & ImageFlagBits::BadOverlap))) {
++            return false;
++        }
++        bytes += ImageMemoryBytes(image) + (image.HasScaled() ? GetScaledImageSizeBytes(image) : 0);
++        doomed.push_back(image_id);
++        return doomed.size() == MaxPerFrame;
++    });
++    for (const ImageId image_id : doomed) {
++        Image& image = slot_images[image_id];
++        if (True(image.flags & ImageFlagBits::Tracked)) {
++            UntrackImage(image, image_id);
++        }
++        UnregisterImage(image_id);
++        trace_delete_reason = "short-pool";
++        DeleteImage(image_id, image.scale_tick > frame_tick + 5);
++    }
++    short_collect_images += doomed.size();
++    short_collect_bytes += bytes;
++}
++
+ // EDEN_NX2_AREA_EVICT=<frames> (unset or 0: off, as before): when the game changes area, the
+ // images of the area it left go before the pool runs dry. The collector keys on its marks and
+ // on the pool's largest free block, and on the PS5 both can sit quiet until the pool is gone:
+@@ -2234,6 +2349,7 @@ void TextureCache<P>::TickFrame() {
+     RetireStaleTargets();
+     DeleteSupersededImages(); // EDEN_NX2_TC_SUPERSEDED
+     AreaEvict();
++    ShortPoolCollect();
+     if (total_used_memory > minimum_memory) {
+         HitchTrace::Op collector_trace{HitchTrace::Kind::Collector, total_used_memory, {}};
+         RunGarbageCollector();
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index ec8dd62031..b218cbbdbd 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -339,6 +339,15 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
+     u64 census_window_frame{};
+     u64 census_window_created{};
+     u64 census_quiet_until{}; ///< One area note per load: none again before this frame
++    /// EDEN_UP_TC_SHORT_COLLECT (ShortPoolCollect): the last sample of the pool and the counts
++    /// for its 600-frame line.
++    u64 short_collect_sample_frame{};
++    u64 short_collect_largest{};
++    bool short_collect_short{};
++    u64 short_collect_frames{};  ///< Frames short with the collector skipped (under its floor)
++    u64 short_collect_images{};  ///< Images it deleted
++    u64 short_collect_bytes{};   ///< What they held
++    u64 short_collect_logged{};  ///< frame_tick of the last line
+     /// EDEN_NX2_CLEAN_BY_TIME / EDEN_NX2_REFUSAL_EVICT: when each frame ended (TickFrame).
+     FrameClock frame_clock;
+     /// EDEN_NX2_REFUSAL_EVICT: allocator refusals already answered at a frame's end.
+@@ -512,6 +521,13 @@ public:
+     /// of a frame, with mutex held, before the collector.
+     void AreaEvict();
+ 
++    /// EDEN_UP_TC_SHORT_COLLECT=<MiB>: while the pool's largest free block is under <MiB> and the
++    /// images add up to no more than minimum_memory (so the collector does not run), deletes
++    /// images unused for EDEN_UP_TC_SHORT_COLLECT_AGE frames (120) that need no copy back and
++    /// are cheap to make again, 32 a frame. At the end of a frame, with mutex held, before the
++    /// collector. Off: one test of a static.
++    void ShortPoolCollect();
++
+     /// EDEN_UP_MEM_CENSUS=1 (video_core/memory_census.h): starts the census thread, tells it when an
+     /// area load begins, and when a census asks, hands it what the images hold by kind. At the end
+     /// of a frame, with mutex held, before the relocation sweep and AreaEvict.

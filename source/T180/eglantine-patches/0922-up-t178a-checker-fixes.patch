@@ -1,0 +1,253 @@
+From: EglantinePS5
+Subject: [PATCH] up: T178a checker fixes to 0920/0921: stripes add one invalidation range, cover only scratch growth, depth 0 and 64-bit column test; the backstop does not catch deferred functions; TickWork keeps its fence and lock when a request throws (backstop on)
+
+T178a checker. Always on (0920's stripe path only, which runs only where the session used to end):
+- The stripes wrote each GOB with WriteBlockCached: one accumulator entry per GOB, not adjacent
+  when the block height is above 0 (~20,000 for a 2304x1152 copy), grown inside the noexcept
+  InvalidationAccumulator::Add (std::terminate when that growth fails, in the low-memory state the
+  stripes exist for) and replayed one by one at the next FlushCaching. Now WriteBlockUnsafe (the
+  same write without the entry) and one AccumulateInvalidation of the range the whole copy added
+  (destination address, destination size).
+- The catch stripes only when a scratch was smaller than the copy needed; with both (all three
+  for block to block) already big enough the std::bad_alloc came from elsewhere (a flush) and is
+  rethrown as in T177.
+- depth 0: SwizzleSubrectImpl copies nothing; the stripes copied the lines. Now nothing.
+- The column test is done in 64 bits (x + count could wrap in 32).
+With EDEN_UP_GPU_BADALLOC_BACKSTOP=1 only:
+- GpuSplit::ExecuteCaught no longer catches a throw out of a deferred function (Call entry):
+  many end in a signal something waits for (SignalFence's synced, MapInOrder's pending map,
+  a composite's fences, the list-end flush); dropped half way the waiter waits for ever. Those
+  end the session as in T177.
+- GPU::TickWork (run inside draws, which the backstop catches): a request that throws still
+  advances current_sync_fence and takes sync_request_mutex again before the throw goes on (it
+  had been unlocked by hand under a unique_lock, which would unlock it a second time, and every
+  later WaitForSyncOperation would wait one request behind).
+Off: identical to T177 apart from 0920's catch. maxwell_dma.cpp, gpu_split.cpp and gpu.cpp are not
+translation id inputs and no name is added to TranslationSwitches: KEEPS THE STORE.
+
+---
+diff --git a/src/video_core/engines/maxwell_dma.cpp b/src/video_core/engines/maxwell_dma.cpp
+index ee307356d5050a07052487411ea9aa6be746ba2b..665ee281e9e4329d677286da336ad2ba96a3b4b8 100644
+--- a/src/video_core/engines/maxwell_dma.cpp
++++ b/src/video_core/engines/maxwell_dma.cpp
+@@ -117,8 +117,12 @@ struct BlockSide {
+         if (u64{gobs_in_x} * GobBytes > StripeBytes) {
+             return false;
+         }
++        // 0922: in 64 bits (x + count wrapped in 32 and passed a garbage row as a short one).
+         const u64 begin_byte = u64{x} * bytes_per_pixel;
+-        const u64 end_byte = u64{x + count} * bytes_per_pixel;
++        const u64 end_byte = (u64{x} + count) * bytes_per_pixel;
++        if (end_byte > u64{gobs_in_x} << GOB_SIZE_X_SHIFT) {
++            return false;
++        }
+         first = static_cast<u32>(begin_byte >> GOB_SIZE_X_SHIFT);
+         end = static_cast<u32>((end_byte + (1U << GOB_SIZE_X_SHIFT) - 1) >> GOB_SIZE_X_SHIFT);
+         return end <= gobs_in_x && first <= end;
+@@ -136,10 +140,14 @@ struct BlockSide {
+         }
+     }
+ 
++    // 0922: WriteBlockUnsafe (WriteBlockCached's write without its accumulator entry); the copy
++    // adds the one range the whole copy added when it is done (AccumulateInvalidation). Per-GOB
++    // entries are not adjacent when the block height is above 0: ~20,000 of them grew the
++    // accumulator's vector inside a noexcept Add (std::terminate if that growth failed).
+     void WriteGobRow(Tegra::MemoryManager& memory, u32 gob_y, u32 first, u32 end,
+                      const u8* compact) const {
+         for (u32 gob_x = first; gob_x < end; ++gob_x) {
+-            memory.WriteBlockCached(address + GobOffset(gob_y, gob_x),
++            memory.WriteBlockUnsafe(address + GobOffset(gob_y, gob_x),
+                                     compact + std::size_t{gob_x} * GobBytes, GobBytes);
+         }
+     }
+@@ -152,6 +160,10 @@ struct BlockSide {
+ /// The lines a subrect copy of `line_count` lines from row `origin_y` touches, as
+ /// SwizzleSubrectImpl counts them, when they all lie in slice 0; false otherwise.
+ bool SliceZeroLines(u32 height, u32 depth, u32 origin_y, u32 line_count, u32& lines) {
++    if (depth == 0) {
++        lines = 0; // 0922: SwizzleSubrectImpl's slice loop copies nothing then
++        return true;
++    }
+     if (origin_y > height) {
+         return false;
+     }
+@@ -204,7 +216,8 @@ void NoteStripe(StripeKind kind, bool done, std::size_t wanted, u32 lines, u32 w
+ /// Block linear to pitch in stripes (CopyBlockLinearToPitch's copy). False: not covered.
+ bool StripeBlockToPitch(Tegra::MemoryManager& memory, const BlockSide& src, u32 height, u32 depth,
+                         u32 x_offset, u32 origin_y, u32 x_elements, u32 line_count,
+-                        GPUVAddr dst_address, u32 pitch, bool native_tiling) {
++                        GPUVAddr dst_address, u32 pitch, std::size_t dst_size,
++                        bool native_tiling) {
+     u32 lines = 0;
+     u32 first = 0;
+     u32 end = 0;
+@@ -228,16 +241,18 @@ bool StripeBlockToPitch(Tegra::MemoryManager& memory, const BlockSide& src, u32
+         UnswizzleSubrect(std::span<u8>(space.linear.data(), bytes), compact, src.bytes_per_pixel,
+                          src.width, 1U << GOB_SIZE_Y_SHIFT, 1, x_offset, in_gob, x_elements, count,
+                          0, 0, pitch, native_tiling);
+-        memory.WriteBlockCached(out, space.linear.data(), bytes);
++        memory.WriteBlockUnsafe(out, space.linear.data(), bytes);
+         line += count;
+     }
++    memory.AccumulateInvalidation(dst_address, dst_size); // 0922: the whole copy's one range
+     return true;
+ }
+ 
+ /// Pitch to block linear in stripes (CopyPitchToBlockLinear's copy). False: not covered.
+ bool StripePitchToBlock(Tegra::MemoryManager& memory, const BlockSide& dst, u32 height, u32 depth,
+                         u32 x_offset, u32 origin_y, u32 x_elements, u32 line_count,
+-                        GPUVAddr src_address, u32 pitch, bool native_tiling) {
++                        GPUVAddr src_address, u32 pitch, std::size_t dst_size,
++                        bool native_tiling) {
+     u32 lines = 0;
+     u32 first = 0;
+     u32 end = 0;
+@@ -263,6 +278,7 @@ bool StripePitchToBlock(Tegra::MemoryManager& memory, const BlockSide& dst, u32
+         dst.WriteGobRow(memory, y >> GOB_SIZE_Y_SHIFT, first, end, compact.data());
+         line += count;
+     }
++    memory.AccumulateInvalidation(dst.address, dst_size); // 0922
+     return true;
+ }
+ 
+@@ -271,7 +287,7 @@ bool StripePitchToBlock(Tegra::MemoryManager& memory, const BlockSide& dst, u32
+ bool StripeBlockToBlock(Tegra::MemoryManager& memory, const BlockSide& src, u32 src_height,
+                         u32 src_depth, u32 src_x, u32 src_y, const BlockSide& dst, u32 dst_height,
+                         u32 dst_depth, u32 dst_x, u32 dst_y, u32 x_elements, u32 line_count,
+-                        bool native_tiling) {
++                        std::size_t dst_size, bool native_tiling) {
+     u32 src_lines = 0;
+     u32 dst_lines = 0;
+     u32 src_first = 0;
+@@ -312,6 +328,7 @@ bool StripeBlockToBlock(Tegra::MemoryManager& memory, const BlockSide& src, u32
+         dst.WriteGobRow(memory, dy >> GOB_SIZE_Y_SHIFT, dst_first, dst_end, dst_compact.data());
+         line += count;
+     }
++    memory.AccumulateInvalidation(dst.address, dst_size); // 0922
+     return true;
+ }
+ 
+@@ -594,11 +611,15 @@ void MaxwellDMA::CopyBlockLinearToPitch() {
+     } catch (const std::bad_alloc&) {
+         // 0920: a scratch could not grow; nothing was written yet (the write side writes back
+         // only when its scope ends, and it is not built or not filled when the growth fails).
++        // 0922: both scratches already big enough: the throw came from elsewhere (a flush), as T177.
++        if (read_buffer.capacity() >= src_size && write_buffer.capacity() >= dst_size) {
++            throw;
++        }
+         const BlockSide src(src_operand.address, width, bytes_per_pixel, block_height,
+                             block_depth);
+         const bool done = StripeBlockToPitch(memory_manager, src, height, depth, x_offset,
+                                              src_params.origin.y, x_elements, regs.line_count,
+-                                             dst_operand.address, dst_operand.pitch,
++                                             dst_operand.address, dst_operand.pitch, dst_size,
+                                              memory_manager.UsesNativeTiling());
+         NoteStripe(StripeKind::BlockToPitch, done, (std::max)(src_size, dst_size),
+                    regs.line_count, width * bytes_per_pixel);
+@@ -674,13 +695,17 @@ void MaxwellDMA::CopyPitchToBlockLinear() {
+                        x_offset, dst_params.origin.y, x_elements, regs.line_count, block_height,
+                        block_depth, regs.pitch_in, memory_manager.UsesNativeTiling());
+     } catch (const std::bad_alloc&) {
+-        // 0920, as in CopyBlockLinearToPitch.
++        // 0920, as in CopyBlockLinearToPitch (0922: the same scratch test).
++        if (read_buffer.capacity() >= src_size && write_buffer.capacity() >= dst_size) {
++            throw;
++        }
+         const BlockSide dst(dst_addr, width, bytes_per_pixel, block_height, block_depth);
+         const bool done =
+             regs.pitch_in > 0 &&
+             StripePitchToBlock(memory_manager, dst, height, depth, x_offset, dst_params.origin.y,
+                                x_elements, regs.line_count, src_addr,
+-                               static_cast<u32>(regs.pitch_in), memory_manager.UsesNativeTiling());
++                               static_cast<u32>(regs.pitch_in), dst_size,
++                               memory_manager.UsesNativeTiling());
+         NoteStripe(StripeKind::PitchToBlock, done, (std::max)(src_size, dst_size),
+                    regs.line_count, width * bytes_per_pixel);
+         if (!done) {
+@@ -749,7 +774,11 @@ void MaxwellDMA::CopyBlockLinearToBlockLinear() {
+                        regs.line_count, dst.block_size.height, dst.block_size.depth, pitch,
+                        memory_manager.UsesNativeTiling());
+     } catch (const std::bad_alloc&) {
+-        // 0920, as in CopyBlockLinearToPitch.
++        // 0920, as in CopyBlockLinearToPitch (0922: the same scratch test).
++        if (intermediate_buffer.capacity() >= mid_buffer_size &&
++            read_buffer.capacity() >= src_size && write_buffer.capacity() >= dst_size) {
++            throw;
++        }
+         const BlockSide src_side(regs.offset_in, src_width, bytes_per_pixel, src.block_size.height,
+                                  src.block_size.depth);
+         const BlockSide dst_side(regs.offset_out, dst_width, bytes_per_pixel,
+@@ -757,7 +786,7 @@ void MaxwellDMA::CopyBlockLinearToBlockLinear() {
+         const bool done = StripeBlockToBlock(
+             memory_manager, src_side, src.height, src.depth, src_x_offset, src.origin.y, dst_side,
+             dst.height, dst.depth, dst_x_offset, dst.origin.y, x_elements, regs.line_count,
+-            memory_manager.UsesNativeTiling());
++            dst_size, memory_manager.UsesNativeTiling());
+         NoteStripe(StripeKind::BlockToBlock, done, (std::max)({src_size, dst_size, mid_buffer_size}),
+                    regs.line_count, src_width * bytes_per_pixel);
+         if (!done) {
+diff --git a/src/video_core/gpu.cpp b/src/video_core/gpu.cpp
+index c981b92e8ed7e9e6486e3bd15b77034c94332a81..1e71f2138c87add8770e3956bf0e30ada54de5af 100644
+--- a/src/video_core/gpu.cpp
++++ b/src/video_core/gpu.cpp
+@@ -56,6 +56,7 @@
+ #include "video_core/nx2_async_readback.h"
+ #include "video_core/nx2_download_landing.h"
+ #include "video_core/nx2_fast_draw.h"
++#include "video_core/gpu_badalloc_backstop.h" // 0922
+ #include "video_core/rasterizer_download_area.h"
+ #include "video_core/renderer_base.h"
+ #include "video_core/shader_notify.h"
+@@ -585,7 +586,22 @@ struct GPU::Impl {
+             sync_requests.pop_front();
+             sync_request_mutex.unlock();
+             VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::TickWork);
+-            request();
++            if (!VideoCommon::GpuBadAllocBackstop::Enabled()) [[likely]] {
++                request();
++            } else {
++                // 0922 EDEN_UP_GPU_BADALLOC_BACKSTOP=1: TickWork runs inside draws, which the
++                // backstop catches. A request that throws still counts as done (its waiter would
++                // otherwise wait for ever, and every later waiter one request behind), and the
++                // mutex is taken again before the throw goes on (`lck` unlocks it).
++                try {
++                    request();
++                } catch (...) {
++                    current_sync_fence.fetch_add(1, std::memory_order_release);
++                    sync_request_mutex.lock();
++                    sync_request_cv.notify_all();
++                    throw;
++                }
++            }
+             current_sync_fence.fetch_add(1, std::memory_order_release);
+             sync_request_mutex.lock();
+             sync_request_cv.notify_all();
+diff --git a/src/video_core/gpu_split.cpp b/src/video_core/gpu_split.cpp
+index 24d73550461c3f7052d209538cd4d5057e40cab3..47d5279da1aa2c11bdcc9891533180268ea47266 100644
+--- a/src/video_core/gpu_split.cpp
++++ b/src/video_core/gpu_split.cpp
+@@ -1171,6 +1171,13 @@ size_t GpuSplit::ExecuteCaught(const u64* entry, size_t words) {
+     } catch (const std::bad_alloc&) {
+         const u64 head = entry[0];
+         const u32 kind = static_cast<u32>(head & 0xf);
++        // 0922: a deferred function (Call) is not caught: the end of a Call is often the signal
++        // something waits for (a fence or sync point, the list-end flush, a GPU memory map's
++        // pending entry that MapInOrder only erases after func(), a composite's fences). Dropped
++        // half way, that waiter would wait for ever: the session ends as in T177 instead.
++        if (kind == static_cast<u32>(Kind::Call)) {
++            throw;
++        }
+         const u32 method = kind == static_cast<u32>(Kind::Method) ||
+                                    kind == static_cast<u32>(Kind::Multi)
+                                ? static_cast<u32>((head >> 8) & 0xffff)
+@@ -1178,9 +1185,7 @@ size_t GpuSplit::ExecuteCaught(const u64* entry, size_t words) {
+         if (!GpuBadAllocBackstop::Absorb("back", method, kind)) {
+             throw;
+         }
+-        // A deferred function (Call) is not the engine's: the engine is left alone then.
+-        if (auto* const engine = back_engine;
+-            engine != nullptr && kind != static_cast<u32>(Kind::Call)) {
++        if (auto* const engine = back_engine; engine != nullptr) {
+             // Register writes a throw in ConsumeSink left queued would run again with the next
+             // method: drop them with the call. A Maxwell3D binds all of its state again at the
+             // next draw (its dirty flags may have been cleared for state it never bound).

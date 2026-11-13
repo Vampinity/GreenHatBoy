@@ -1,0 +1,119 @@
+From: EglantinePS5
+Subject: up: count the run-time pipeline build jobs in flight for operator new's door wait and the heap give-back (EDEN_UP_DOOR_WAIT, EDEN_UP_BUILD_GIVE_BACK), off by default
+
+What: on a cold first start one or two builder jobs take 400-800 MiB of heap within about 2 s, twice,
+at the house door, and the memory is free again about 2 s later. A refused operator new on the
+file-service thread meanwhile waited 2000 ms and ended the session (v13 run1342: "EDEN_NEW_WAIT gave
+up after 2000 ms", big_grew=VkPipelineBuild:320; 6 of 12 earlier door deaths). The front (headless/
+main.cpp, operator new's handler) keeps such a refusal waiting while a builder job is in flight, and
+(EDEN_UP_BUILD_GIVE_BACK) the heap gives its empty spaces back to the pool when the last job ends.
+Both need to know when a job is in flight; this patch tells the front.
+
+How: vk_door_job.h, a scope that calls the front's eden_door_job(1) at its start and (0) at its end
+(headless/heap_arenas.inc: an atomic in-flight count, an "ended" generation and the time of the last
+end). It sits beside 0592's BuildBurst::Job in the graphics and compute build lambdas, only for a
+build on a VkPipelineBuilder (on_worker): the whole job, the render pass, Validate, the driver
+compile and its OOM retry and the mesh compute passes, not each driver call (a mesh pipeline is up
+to four calls in a row). It ends by RAII on return, on the failed-build return and on an exception,
+after the build_mutex block (the waiting draw is told first). It only counts: no wait, no lock, no
+log line, no allocation, nothing hashed.
+
+Switch: on when EDEN_UP_DOOR_WAIT or EDEN_UP_BUILD_GIVE_BACK is exactly "1" and the front defines
+eden_door_job (weak); read once at the first run-time build job. Off: one relaxed load of the cached
+state per build job; no call. Not in the shader prep stamp: nothing built changes.
+
+Origin and credit: our own (G1a-min of REVIEW-G1-A/B, our drafts).
+---
+diff --git a/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp b/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
+index 447733b..97517d9 100644
+--- a/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
+@@ -16,6 +16,7 @@
+ #include "video_core/renderer_vulkan/vk_buffer_cache.h"
+ #include "video_core/renderer_vulkan/vk_driver_build_report.h"
+ #include "video_core/renderer_vulkan/vk_build_burst.h"
++#include "video_core/renderer_vulkan/vk_door_job.h"
+ #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
+ #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
+ #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
+@@ -98,6 +99,8 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
+         }
+         std::optional<BuildBurst::Job> burst_job;
+         if (BuildBurst::Enabled() && on_worker) burst_job.emplace(this, shader_hash, 1);
++        // EDEN_UP_DOOR_WAIT / EDEN_UP_BUILD_GIVE_BACK (0597), as for a graphics pipeline.
++        const DoorJob::Scope door_job{on_worker && DoorJob::On()};
+         const VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT subgroup_size_ci{
+             .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO_EXT,
+             .pNext = nullptr,
+diff --git a/src/video_core/renderer_vulkan/vk_door_job.h b/src/video_core/renderer_vulkan/vk_door_job.h
+new file mode 100644
+index 0000000..ddaf116
+--- /dev/null
++++ b/src/video_core/renderer_vulkan/vk_door_job.h
+@@ -0,0 +1,44 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#pragma once
++// EglantinePS5 0597 (our own): a count of the run-time pipeline build JOBS in flight on a
++// VkPipelineBuilder thread (the whole job: render pass, the driver compile, its OOM retry and the
++// mesh compute passes), kept in the heap module (headless/heap_arenas.inc, eden_door_job) so that
++// operator new's handler (headless/main.cpp, EDEN_UP_DOOR_WAIT) and the heap's give-back
++// (EDEN_UP_BUILD_GIVE_BACK) can read it without calling into the video core.
++// On when EDEN_UP_DOOR_WAIT or EDEN_UP_BUILD_GIVE_BACK is exactly "1" and the front has the hook.
++// Off: one relaxed load of a cached state per build job (read once at the first job), no call, no
++// hash, no log line, no allocation. The scope only counts: it never waits, locks or prints.
++#include <atomic>
++#include "common/pe_switch.h"
++
++extern "C" void eden_door_job(int enter) __attribute__((weak));
++
++namespace Vulkan::DoorJob {
++// 0: not read yet, 1: off, 2: on.
++inline std::atomic<int> state{0};
++inline bool On() noexcept {
++    int value = state.load(std::memory_order_relaxed);
++    if (value == 0) [[unlikely]] {
++        value = eden_door_job != nullptr && (Common::PeSwitch("EDEN_UP_DOOR_WAIT") ||
++                                             Common::PeSwitch("EDEN_UP_BUILD_GIVE_BACK"))
++                    ? 2
++                    : 1;
++        state.store(value, std::memory_order_relaxed);
++    }
++    return value == 2;
++}
++class Scope {
++public:
++    explicit Scope(bool on) noexcept : on_{on} {
++        if (on_) eden_door_job(1);
++    }
++    ~Scope() {
++        if (on_) eden_door_job(0);
++    }
++    Scope(const Scope&) = delete;
++    Scope& operator=(const Scope&) = delete;
++
++private:
++    bool on_;
++};
++} // namespace Vulkan::DoorJob
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+index 0e0a690..eaae004 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -32,6 +32,7 @@
+ #include "video_core/renderer_vulkan/vk_buffer_cache.h"
+ #include "video_core/renderer_vulkan/vk_driver_build_report.h"
+ #include "video_core/renderer_vulkan/vk_build_burst.h"
++#include "video_core/renderer_vulkan/vk_door_job.h"
+ #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
+ #include "video_core/renderer_vulkan/vk_mesh_compute.h"
+ #include "shader_recompiler/backend/spirv/mesh_compute_layout.h"
+@@ -518,6 +519,9 @@ GraphicsPipeline::GraphicsPipeline(
+         }
+         std::optional<BuildBurst::Job> burst_job;
+         if (BuildBurst::Enabled() && on_worker) burst_job.emplace(this, key.Hash(), 0, IsMeshPipeline() || RunsMeshAsCompute());
++        // EDEN_UP_DOOR_WAIT / EDEN_UP_BUILD_GIVE_BACK (0597): this job counts as in flight until it
++        // returns (vk_door_job.h). Off: one cached flag load.
++        const DoorJob::Scope door_job{on_worker && DoorJob::On()};
+         const VkRenderPass render_pass{render_pass_cache.Get(MakeRenderPassKey(key.state, device))};
+         Validate();
+         try {

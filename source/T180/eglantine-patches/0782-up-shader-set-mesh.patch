@@ -1,0 +1,254 @@
+From: EglantinePS5
+Subject: [PATCH] up: the shader set converts the recipe's task/mesh records too, keyed with this core's mesh state hash (EDEN_UP_SHADER_SET_MESH=1), off by default
+
+Switch: EDEN_UP_SHADER_SET_MESH=1 (exact "1", read once). Needs EDEN_UP_SHADER_SET=1 and so
+EDEN_UP_CANONICAL_KEYS=1. Off: nothing changes (same records, same file bytes, same stamp).
+
+Why: the d4 cold start dropped all 2,874 task/mesh records of the recipe
+("mesh-predicted-unsupported"), by design of the first port; that start asked for 59 mesh
+pipelines (first_start.list, M rows), all translated on the GPU thread (18 ms each on average in
+T151, up to 112 ms).
+
+What a mesh pipeline key is here (ShaderCache::RefreshStages, VertexAttributeMaskOf): the task
+program in the vertex B slot and the mesh program in the tessellation slot (a lone mesh program
+in the vertex B slot); each of those two hashes is the lowered program hash XOR MeshStateHash =
+CityHash64(mesh registers A, B, init, and the 80-byte pass-through header when the geometry slot
+is on, else zeros) | 1; the drawing state is the usual 1,008 bytes, and with
+EDEN_UP_CANONICAL_KEYS=1 its vertex attribute types are cleared (task/mesh programs have no vertex
+input). Checked on the Mac against this console's vulkan_mesh.bin (602 of 602 records: key =
+lowered ^ MeshStateHash of the record's own registers and header). The recipe holds every part:
+its mesh facts carry the registers and the header (or flag 2 when there is none), its records
+the per-slot XOR, and that XOR is this same hash for 2,868 of its 2,874 mesh records
+(t158/recipe_check.py).
+
+Why mesh keys did not repeat between sessions (0 of 97 in T151): the attribute types field
+(FixedPipelineState +64). With canonical keys off (the T151 play env), a mesh pipeline's key keeps
+whatever vertex attribute types the game last left in the registers; in this console's
+vulkan_mesh.bin, 602 records are 175 keys once that field is cleared. EDEN_UP_CANONICAL_KEYS=1
+clears it already (Fritchii v5.5's rule, in this tree since 0501): no new canonical form is
+needed. Every one of d4's 59 M rows (canonical keys on) is a record of this console's earlier
+sessions keyed that way. The init register (0x00802020 or 0x06419020) and the mask components bit
+also differ between records, but they are drawing state and a switch, not session noise.
+
+What, with the switch:
+- Lower() lowers task and mesh programs too, as the vertex/tessellation slots lower them (128-byte
+  header area, no geometry option); their read mask is 0.
+- A task/mesh record is converted when, besides the usual checks, this core's mesh state hash
+  made from the record's mesh fact equals the recipe's XOR in each task/mesh slot (and the other
+  slots' XOR is 0); else dropped as "mesh-state-differs" (6 records). Those slots' hashes are the
+  lowered hash XOR that state hash; the .programs sidecar keeps the plain lowered hashes.
+- Task and mesh facts are stored whole; AppendEnvironment writes them as Serialize with mesh state
+  does (tables, program header, registers, pass-through header, zeros when the fact has none),
+  and ReadRecords reads every environment with mesh state (only task and mesh environments read
+  it, so files of vertex and pixel records read as before).
+- The stamp gets "mesh 1". One log line: how many converted records are task/mesh.
+- The preparation does not take them without 0783.
+
+T161s: applies after 0770-0772 (T157); the code is T158's, only the context lines are new.
+---
+diff --git a/src/video_core/shader_set.cpp b/src/video_core/shader_set.cpp
+index 87f8601..2431e43 100644
+--- a/src/video_core/shader_set.cpp
++++ b/src/video_core/shader_set.cpp
+@@ -201,6 +201,7 @@ std::string ExtractorLines() {
+     lines += "records layout 3\n"; // each program's code once, with its hash (ReadRecords)
+     // 0780: a set with compute records is another file (off: no line, the stamp as before).
+     if (ComputeAsked()) lines += "compute 1\n";
++    if (MeshAsked()) lines += "mesh 1\n"; // 0782
+     // EDEN_UP_SHADER_SET_RECONVERT=<n> (a test aid): a number in the stamp, so a set made with
+     // another number (or none) is converted again once, e.g. to time the conversion.
+     if (const size_t again = SwitchNumber("EDEN_UP_SHADER_SET_RECONVERT", 0); again != 0) {
+@@ -294,7 +295,10 @@ std::optional<Lowered> Lower(const Guest& p, std::stop_token stop) {
+     using namespace Shader::Ampere;
+     // Ordinary graphics (vertex, pixel); with EDEN_UP_SHADER_SET_COMPUTE=1 (0780) compute too.
+     const bool compute = p.stage == 5 && ComputeAsked();
+-    if (p.stage != 0 && p.stage != 4 && !compute) return {};
++    // 0782, EDEN_UP_SHADER_SET_MESH=1: task and mesh programs, lowered as GraphicsEnvironment
++    // lowers them in the vertex and tessellation slots (128-byte header area, no geometry).
++    const bool mesh = (p.stage == 7 || p.stage == 8) && MeshAsked();
++    if (p.stage != 0 && p.stage != 4 && !compute && !mesh) return {};
+     // A graphics program's code area starts with 128 bytes, the first 80 its program header
+     // (GraphicsEnvironment lowers from +128). A native compute program has no header: the live
+     // path lowers from its first byte and puts a zero header in front (ComputeEnvironment:
+@@ -331,6 +335,9 @@ std::optional<Lowered> Lower(const Guest& p, std::stop_token stop) {
+     // v3: the canonical key keeps only the attribute types the vertex program's header lists
+     // (VideoCommon::GenericReadMask, as the live key is masked).
+     out.read_mask = p.stage == 0 ? VideoCommon::GenericReadMask(sph) : ~0U;
++    if (mesh) {
++        out.read_mask = 0; // VertexAttributeMaskOf: task and mesh programs have no vertex input
++    }
+     out.code.resize(sizeof(sph) / 8);
+     std::memcpy(out.code.data(), &sph, sizeof(sph));
+     for (u64 instruction : lowered.instructions) {
+@@ -370,7 +377,37 @@ bool ComputeFactOk(const Facts& f, const Lowered& p) {
+ /// What a records file keeps of a fact: graphics facts up to their tables' end (nothing follows
+ /// them for the vertex and pixel stages), compute facts whole (0780: workgroup and shared memory).
+ size_t StoredFactBytes(const Facts& f) {
+-    return f.bytes.size() >= 76 && Load<u32>(f.bytes, 72) == 5 ? f.bytes.size() : f.tables_end;
++    if (f.bytes.size() < 76) return f.tables_end;
++    const u32 stage = Load<u32>(f.bytes, 72);
++    // 0782: task and mesh facts end with the mesh registers (and the pass-through header).
++    return stage == 5 || stage == 7 || stage == 8 ? f.bytes.size() : f.tables_end;
++}
++
++/// 0782: ShaderCache::MeshStateHash of a task/mesh pipeline from its mesh program's fact: the mesh
++/// registers A, B and init (12 bytes after the tables) and the pass-through header (80 bytes,
++/// absent from the fact when its flag 2 is set: then zero, as with no geometry slot).
++std::optional<u64> FactMeshStateHash(const Facts& f) {
++    if (f.tables_end + 12 > f.bytes.size()) return std::nullopt;
++    std::array<u8, 12 + 80> state{};
++    const size_t have = std::min<size_t>(state.size(), f.bytes.size() - f.tables_end);
++    if (have != 12 && have != state.size()) return std::nullopt;
++    std::memcpy(state.data(), f.bytes.data() + f.tables_end, have);
++    return Common::CityHash64(reinterpret_cast<const char*>(state.data()), state.size()) | 1;
++}
++
++/// 0782: where a fact's five answer tables end (counts at +8, entries of 8, 8, 12, 9, 12 bytes).
++size_t TablesEnd(std::span<const char> fact) {
++    static constexpr std::array<size_t, 5> widths{8, 8, 12, 9, 12};
++    size_t at = 76;
++    for (size_t i = 0; i < widths.size(); ++i) {
++        u64 count{};
++        std::memcpy(&count, fact.data() + 8 + i * 8, sizeof(count));
++        if (count > (fact.size() - at) / widths[i]) throw std::runtime_error("short shader data");
++        at += static_cast<size_t>(count) * widths[i];
++    }
++    if (fact.size() - at != 12 && fact.size() - at != 12 + 80)
++        throw std::runtime_error("mesh state size");
++    return at;
+ }
+ 
+ /// One environment as FileEnvironment::Deserialize reads it: the fact's bytes (up to its tables'
+@@ -393,6 +430,16 @@ void AppendEnvironment(std::vector<char>& out, std::span<const char> fact,
+     if (stage == 5) {
+         return; // 0780: compute: the fact's workgroup and shared memory end it, no program header
+     }
++    if (stage == 7 || stage == 8) {
++        // 0782: tables, the program header, then the mesh registers and the pass-through header
++        // (Serialize with mesh state); the fact holds the last two after its tables.
++        const size_t mesh_at = TablesEnd(fact);
++        out.resize(out.size() - (fact.size() - mesh_at));
++        out.insert(out.end(), code.begin(), code.begin() + 80);
++        out.insert(out.end(), fact.begin() + mesh_at, fact.end());
++        out.resize(out.size() + (12 + 80) - (fact.size() - mesh_at)); // a header left out: zero
++        return;
++    }
+     out.insert(out.end(), code.begin(), code.begin() + 80); // graphics ProgramHeader is absent from facts
+ }
+ 
+@@ -470,6 +517,11 @@ bool ComputeAsked() {
+     return asked;
+ }
+ 
++bool MeshAsked() {
++    static const bool asked = Common::PeSwitch("EDEN_UP_SHADER_SET_MESH");
++    return asked;
++}
++
+ bool Rest(std::stop_token stop, std::chrono::steady_clock::duration rest) {
+     if (rest <= std::chrono::steady_clock::duration::zero()) {
+         return !stop.stop_requested();
+@@ -759,6 +811,7 @@ Outputs Prepare(u64 title, const std::filesystem::path& title_dir,
+         std::unordered_set<u64> used_seen;
+         size_t converted = 0;
+         size_t compute_converted = 0; // 0780
++        size_t mesh_converted = 0;    // 0782
+         u64 next_report = u64{512} << 20;
+         std::vector<u8> used_fact(r.facts.size());
+         for (const auto& p : r.records) {
+@@ -798,10 +851,27 @@ Outputs Prepare(u64 title, const std::filesystem::path& title_dir,
+                 absent |= !have.contains(r.programs[pi].fingerprint);
+                 lower_failed |= !lowered[pi].has_value();
+             }
+-            if (mesh) { ++dropped["mesh-predicted-unsupported"]; continue; }
++            if (mesh && !MeshAsked()) { ++dropped["mesh-predicted-unsupported"]; continue; }
+             if (absent) { ++dropped["fingerprint-not-found"]; continue; }
+             if (lower_failed) { ++dropped["stage-or-lowering"]; continue; }
+-            if (std::ranges::any_of(p.xors, [](u64 x) { return x != 0; })) {
++            // 0782: a task/mesh key's program hashes in the task/mesh slots carry the mesh state
++            // (ShaderCache::RefreshStages: unique hash ^ MeshStateHash). Ours is made from the
++            // mesh program's fact and must be the recipe's XOR in those slots, zero elsewhere.
++            std::array<u64, 6> mesh_xor{};
++            if (mesh) {
++                std::optional<u64> state_hash;
++                for (auto id : p.facts) {
++                    if (r.programs[r.facts[id].program].stage == 8) state_hash = FactMeshStateHash(r.facts[id]);
++                }
++                bool same = state_hash.has_value();
++                for (size_t s = 0; same && s < 6; ++s) {
++                    if (p.slots[s] == 0xff) continue;
++                    const auto stage = r.programs[r.facts[p.facts[p.slots[s]]].program].stage;
++                    mesh_xor[s] = stage == 7 || stage == 8 ? *state_hash : 0;
++                    same = p.xors[s] == mesh_xor[s];
++                }
++                if (!same) { ++dropped["mesh-state-differs"]; continue; }
++            } else if (std::ranges::any_of(p.xors, [](u64 x) { return x != 0; })) {
+                 ++dropped["unexpected-hash-xor"]; continue;
+             }
+             std::array<u64, 6> hashes{};
+@@ -812,10 +882,12 @@ Outputs Prepare(u64 title, const std::filesystem::path& title_dir,
+             }
+             if (!valid) { ++dropped["incompatible-facts"]; continue; }
+             u32 read_mask = ~0U;
++            std::array<u64, 6> program_hashes{}; // without the mesh state (the .programs sidecar)
+             for (size_t s = 0; s < 6; ++s) {
+                 if (p.slots[s] == 0xff) continue;
+                 const auto& program = *lowered[r.facts[p.facts[p.slots[s]]].program];
+-                hashes[s] = program.hash;
++                hashes[s] = program.hash ^ mesh_xor[s];
++                program_hashes[s] = program.hash;
+                 if (s == 1) read_mask = program.read_mask; // the vertex B slot
+             }
+             std::vector<u8> key;
+@@ -834,8 +906,10 @@ Outputs Prepare(u64 title, const std::filesystem::path& title_dir,
+                 LOG_INFO(Render_Vulkan, "Shader set: converting: {} records, {} MB written, "
+                          "{:.1f} s so far", converted, file.Written() >> 20, seconds());
+             }
++            if (mesh) ++mesh_converted;
+             for (size_t s = 0; s < 6; ++s) {
+-                if (hashes[s] != 0 && used_seen.insert(hashes[s]).second) used_programs.push_back(hashes[s]);
++                if (program_hashes[s] != 0 && used_seen.insert(program_hashes[s]).second)
++                    used_programs.push_back(program_hashes[s]);
+             }
+         }
+         size_t total_dropped = 0;
+@@ -849,6 +923,10 @@ Outputs Prepare(u64 title, const std::filesystem::path& title_dir,
+             LOG_INFO(Render_Vulkan, "Shader set: EDEN_UP_SHADER_SET_COMPUTE=1: {} of the converted records "
+                      "are compute pipelines", compute_converted);
+         }
++        if (MeshAsked()) {
++            LOG_INFO(Render_Vulkan, "Shader set: EDEN_UP_SHADER_SET_MESH=1: {} of the converted records "
++                     "are task/mesh pipelines", mesh_converted);
++        }
+         if (!converted || stop.stop_requested()) return out;
+         // The facts and the programs the records name, each once, and the trailer.
+         const u64 facts_at = file.Written();
+@@ -1091,7 +1169,9 @@ bool ReadRecords(
+                 continue;
+             }
+             std::vector<FileEnvironment> envs(num_envs);
+-            for (FileEnvironment& env : envs) env.Deserialize(in);
++            // With mesh state (0782): read only for task and mesh environments, so a file of
++            // vertex and pixel records reads as before.
++            for (FileEnvironment& env : envs) env.Deserialize(in, true);
+             on_graphics(in, std::move(envs));
+         }
+         return true;
+diff --git a/src/video_core/shader_set.h b/src/video_core/shader_set.h
+index 6b635b0..f747003 100644
+--- a/src/video_core/shader_set.h
++++ b/src/video_core/shader_set.h
+@@ -115,6 +115,13 @@ void OverrideDuty(unsigned percent);
+ /// before ("compute-predicted-unsupported") and the stamp is as before.
+ [[nodiscard]] bool ComputeAsked();
+ 
++/// EDEN_UP_SHADER_SET_MESH=1 (0782; exact "1", read once; off by default): the recipe's task/mesh
++/// records are converted too: their programs lowered as the vertex/tessellation slots lower them,
++/// their key's task/mesh slots XORed with this core's mesh state hash (made from the mesh fact and
++/// required to equal the recipe's XOR), their environments with mesh state. Off: dropped as before
++/// ("mesh-predicted-unsupported") and the stamp is as before.
++[[nodiscard]] bool MeshAsked();
++
+ /// Sleeps `rest` unless the stop token is signalled first; false when it was.
+ [[nodiscard]] bool Rest(std::stop_token stop, std::chrono::steady_clock::duration rest);
+ 

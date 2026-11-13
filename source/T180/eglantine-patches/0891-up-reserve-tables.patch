@@ -1,0 +1,232 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_RESERVE_TABLES=1|<slots>: the texture and buffer caches' slot tables at full size at boot; EDEN_UP_RESERVE_SCRATCH_MIB=<n>: the upload scratch too; off by default (KEEPS THE STORE)
+
+Store: KEEPS THE STORE. texture_cache.h, texture_cache_base.h and buffer_cache.h change; none is among
+the translation id's 418 inputs (the 292 core-source inputs compared byte for byte, T172 core against
+this one, in the VM: 0 differ; the rewritten vk_pipeline_cache_cost.cpp is byte for byte T172's), and
+the two switch names are new, not in TranslationSwitches.
+
+Switches: EDEN_UP_RESERVE_TABLES=1 (4096 slots) or =<slots> (1024 to 65536; unset, 0 or anything
+else: off). EDEN_UP_RESERVE_SCRATCH_MIB=<n> (9 to 64; unset or anything else: off, 8 MiB as before).
+Lines (stderr, once at boot): "EDEN_UP_RESERVE_TABLES texture cache: ..." and "... buffer cache: ...".
+
+Why: every slot table doubles in one allocation of the whole new table, inside the frame that wants
+the slot. run1395 died on the image table's 2048 -> 4096 doubling at the load into the area past the
+field (one 10,354,696 byte request, the pool at 1-2 MiB in one piece). run1397 (the survivor) passed
+2048 images in the same window (1606 at census t 170.3, 2143 at 173.4) and found the room. Most
+images the censuses of 13 Nov counted: 2302 (run1397), 2071-2162 in run1395/1398/1399/1400. Most
+buffers counted alive: 931 (EDEN_REFUSED_BUFFERS, run1395). The heap site tables show the image
+table's block (9 MiB, Reserve at 0x174ff1c) in run1399; no other table is large enough to be listed
+(the list starts at 8 MiB).
+
+What (at boot, TextureCache and BufferCache constructors, right after the null entries):
+- images, views, allocations, map views: <slots>; samplers, framebuffers: <slots>/4; buffers <slots>/2.
+- At 4096, with T166's slot sizes (disassembly of each Reserve): images 4096 x 2528 B = 9.9 MiB,
+  views 4096 x 936 B = 3.7 MiB, framebuffers 1024 x 656 B = 0.64 MiB, samplers 1024 x 176 B = 0.17
+  MiB, allocations 4096 x 24 B = 0.09 MiB, map views 4096 x 32 B = 0.13 MiB, buffers 2048 x 320 B =
+  0.63 MiB: about 15.3 MiB of heap at boot, plus 4 bytes a slot of free list. Without the switch the
+  image table alone reaches 4096 slots (9.9 MiB) at this load anyway, and 2048 (4.9 MiB) in the
+  field; the line gives the sizes of this build.
+- A table that fills up still doubles as before (0892 then makes the image and buffer cases a
+  refusal instead of the end).
+- The upload scratch (swizzle_data_buffer: UploadImageContents reads guest memory into it) starts at
+  EDEN_UP_RESERVE_SCRATCH_MIB. It grows to the largest image uploaded, releasing first with
+  EDEN_AREA_CHANGE_SCRATCH_RELEASE=1 (on in our settings): one heap request of that size when
+  a large image comes. Seen: 15-16 MiB in run1395's site table before the load (stderr 572), a 32
+  MiB block at the load in run1399 (its crash log 1060). TickFrame's trims are
+  unchanged below the reserve; the scratch keeps its reserved size through them (with our
+  EDEN_TC_SCRATCH_KEEP_MIB=16 a 32 MiB scratch was freed at the first frame; that name is in
+  TranslationSwitches, so raising it instead would RESET THE STORE).
+
+Review fix (13 Nov, reviewer): the first version reserved before the null entries. A table reserved
+while empty hands out its last slot first (the free list pops from the back), so the null image,
+view, sampler and buffer went to slot 4095/1023/2047 while NULL_IMAGE_ID, NULL_IMAGE_VIEW_ID,
+NULL_SAMPLER_ID and NULL_BUFFER_ID (types.h line 28-32, buffer_cache_base.h line 108) name slot 0:
+an empty slot. Native test of the console's slot_vector.h: reserve first, null at 4095; null first,
+null at 0. Now the tables are reserved after the null entries.
+
+Not checked: the view, sampler and framebuffer counts (not in any log); a build; the console.
+T173 note: 0885 also changes texture_cache.h and texture_cache_base.h; this patch's hunks are the
+constructor (and two functions before it) and a declaration after ApplyThresholdOverrides, away from
+0885's (ShortPoolCollect, AreaEvict's end, TickFrame, UnmapMemory, JoinImages, the members).
+---
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index cf7092a3e2..c543d5fde0 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -59,6 +59,22 @@ BufferCache<P>::BufferCache(Tegra::MaxwellDeviceMemoryManager& device_memory_, R
+     }
+     // Ensure the first slot is used for the null buffer
+     void(slot_buffers.insert(runtime, NullBufferParams{}));
++    // EDEN_UP_RESERVE_TABLES (0891, texture_cache.h ReserveTableSlots): the buffer table at half
++    // the texture cache's size (the most buffers counted alive in the 13 Nov loads: 931,
++    // EDEN_REFUSED_BUFFERS in run1395), so it does not double during an area load. After the null
++    // buffer: a table reserved while empty hands out its last slot first; NULL_BUFFER_ID is slot 0.
++    if (const char* const value = std::getenv("EDEN_UP_RESERVE_TABLES");
++        value != nullptr && value[0] >= '1' && value[0] <= '9') {
++        char* end = nullptr;
++        const unsigned long long asked = std::strtoull(value, &end, 10);
++        const unsigned long long slots = asked == 1 ? 4096 : asked;
++        if (end != value && *end == '\0' && slots >= 1024 && slots <= 65536) {
++            slot_buffers.reserve(static_cast<size_t>(slots / 2));
++            std::fprintf(stderr, "EDEN_UP_RESERVE_TABLES buffer cache: buffers %zu x %zu B: %zu KiB\n",
++                         slot_buffers.capacity(), sizeof(Buffer),
++                         (slot_buffers.capacity() * sizeof(Buffer)) >> 10);
++        }
++    }
+     gpu_modified_ranges.Clear();
+     inline_buffer_id = NULL_BUFFER_ID;
+ #ifdef YUZU_LEGACY
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index dc0c9b0a39..770a7dd3c1 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -437,6 +437,95 @@ template <typename Runtime>
+     return std::optional{runtime.UploadStagingBuffer(size)};
+ }
+ 
++// EDEN_UP_RESERVE_TABLES=1 or =<slots> (0891; 1024 to 65536, digits only; 1 means 4096; unset, 0
++// or anything else: off, the tables grow by doubling as before). The texture cache's slot tables
++// start at that size instead of growing 1, 2, 4, ... slots: each doubling is one allocation of the
++// whole new table, inside the frame that needed the slot. run1395 (13 Nov, T166, the load into the
++// area past the field) ended there: the image table went from 2048 to 4096 slots, one 10,354,696
++// byte request (2528 bytes a slot), with the pool's largest free piece at 1-2 MiB; EDEN_NEW_WAIT gave
++// up after 2000 ms and the program ended (SlotVector::Reserve is noexcept upstream). The censuses of
++// the six starts of that batch and the next counted at most 2302 images (run1397, t 177.6), 2071-2162
++// in the others. Images, views, allocations and map views get <slots>, samplers and framebuffers a
++// quarter (their counts are not in the logs; not checked). The buffer cache reads the same switch
++// (buffer_cache.h). Slot sizes in T166's build: image 2528, view 936, framebuffer 656, sampler 176,
++// allocation 24, map view 32 bytes: about 14.6 MiB at 4096 (images 9.9, views 3.7), taken once at
++// boot. A table that fills up still doubles as before. One line at boot.
++inline u32 ReserveTableSlots() {
++    static const u32 slots = [] {
++        const char* const value = std::getenv("EDEN_UP_RESERVE_TABLES");
++        if (value == nullptr || value[0] < '0' || value[0] > '9') {
++            return u32{0};
++        }
++        char* end = nullptr;
++        const unsigned long long asked = std::strtoull(value, &end, 10);
++        if (end == value || *end != '\0' || asked == 0) {
++            return u32{0};
++        }
++        if (asked == 1) {
++            return u32{4096};
++        }
++        if (asked < 1024 || asked > 65536) {
++            std::fprintf(stderr, "EDEN_UP_RESERVE_TABLES=%s is not 1 or 1024 to 65536: off\n", value);
++            return u32{0};
++        }
++        return static_cast<u32>(asked);
++    }();
++    return slots;
++}
++
++// EDEN_UP_RESERVE_SCRATCH_MIB=<n> (0891; 9 to 64, digits only; unset or anything else: off, 8 MiB as
++// before): the upload scratch (swizzle_data_buffer, which UploadImageContents reads guest memory
++// into) starts at n MiB. It grows to the largest image the game uploads, releasing first with
++// EDEN_AREA_CHANGE_SCRATCH_RELEASE=1: a heap request of that size at the moment a large image comes,
++// often an area load. Seen in the heap's site table: 15-16 MiB (run1395, before the load) and one
++// 32 MiB block at the load (run1399, its crash log line 1060). The trims in
++// TickFrame are unchanged (EDEN_TC_SCRATCH_KEEP_MIB, EDEN_UP_HEAP_HOLDERS may free it again).
++inline size_t ReserveScratchBytes() {
++    static const size_t bytes = [] {
++        const char* const value = std::getenv("EDEN_UP_RESERVE_SCRATCH_MIB");
++        if (value == nullptr || value[0] < '0' || value[0] > '9') {
++            return size_t{0};
++        }
++        char* end = nullptr;
++        const unsigned long long mib = std::strtoull(value, &end, 10);
++        if (end == value || *end != '\0' || mib < 9 || mib > 64) {
++            return size_t{0};
++        }
++        return static_cast<size_t>(mib) << 20;
++    }();
++    return bytes;
++}
++
++template <class P>
++void TextureCache<P>::ReserveTables() {
++    const u32 slots = ReserveTableSlots();
++    if (slots == 0) {
++        return;
++    }
++    const u32 quarter = slots / 4;
++    slot_images.reserve(slots);
++    slot_image_views.reserve(slots);
++    slot_image_allocs.reserve(slots);
++    slot_map_views.reserve(slots);
++    slot_samplers.reserve(quarter);
++    slot_framebuffers.reserve(quarter);
++    const size_t bytes = slot_images.capacity() * sizeof(Image) +
++                         slot_image_views.capacity() * sizeof(ImageView) +
++                         slot_image_allocs.capacity() * sizeof(ImageAlloc) +
++                         slot_map_views.capacity() * sizeof(ImageMapView) +
++                         slot_samplers.capacity() * sizeof(Sampler) +
++                         slot_framebuffers.capacity() * sizeof(Framebuffer);
++    std::fprintf(stderr,
++                 "EDEN_UP_RESERVE_TABLES texture cache: images %zu x %zu B, views %zu x %zu B, "
++                 "allocations %zu, map views %zu, samplers %zu x %zu B, framebuffers %zu x %zu B: "
++                 "%zu KiB; upload scratch %zu KiB\n",
++                 slot_images.capacity(), sizeof(Image), slot_image_views.capacity(),
++                 sizeof(ImageView), slot_image_allocs.capacity(), slot_map_views.capacity(),
++                 slot_samplers.capacity(), sizeof(Sampler), slot_framebuffers.capacity(),
++                 sizeof(Framebuffer), bytes >> 10,
++                 (std::max)(size_t{8} << 20, ReserveScratchBytes()) >> 10);
++}
++
+ template <class P>
+ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManager& device_memory_)
+     : runtime{runtime_}, device_memory{device_memory_} {
+@@ -468,7 +557,8 @@ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManag
+     // These values were chosen based on typical peak swizzle data sizes seen in some titles
+     constexpr size_t SWIZZLE_DATA_BUFFER_INITIAL_CAPACITY = 8_MiB;
+     constexpr size_t UNSWIZZLE_DATA_BUFFER_INITIAL_CAPACITY = 1_MiB;
+-    swizzle_data_buffer.resize_destructive(SWIZZLE_DATA_BUFFER_INITIAL_CAPACITY);
++    swizzle_data_buffer.resize_destructive(
++        (std::max)(SWIZZLE_DATA_BUFFER_INITIAL_CAPACITY, ReserveScratchBytes()));
+     unswizzle_data_buffer.resize_destructive(UNSWIZZLE_DATA_BUFFER_INITIAL_CAPACITY);
+     // EDEN_UP_WRITEBACK_BANDS (util.cpp): its kept write-back buffer, made once here when the
+     // switch is on at boot. It is not a ScratchBuffer, so the trims in TickFrame never free it.
+@@ -480,6 +570,12 @@ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManag
+     void(slot_image_views.insert(runtime, NullImageViewParams{}));
+     void(slot_samplers.insert(runtime, sampler_descriptor));
+ 
++    // EDEN_UP_RESERVE_TABLES (0891): the slot tables at their full size now, while the pool has
++    // room, so none of them doubles in one large allocation during an area load. After the null
++    // resources: a table reserved while empty hands out its last slot first, and NULL_IMAGE_ID,
++    // NULL_IMAGE_VIEW_ID and NULL_SAMPLER_ID are slot 0.
++    ReserveTables();
++
+     // EDEN_UP_AREA_BUDGET: its first use, so AreaEvict and JoinImages can Peek it.
+     static_cast<void>(Common::LiveSwitch::Value<Common::LiveSwitch::Id::AreaBudget>());
+ 
+@@ -2018,8 +2114,12 @@ void TextureCache<P>::TickFrame() {
+     }();
+     for (auto* const scratch : {&swizzle_data_buffer, &unswizzle_data_buffer}) {
+         static const bool trim = Common::PeSwitch("EDEN_UP_HEAP_HOLDERS");
+-        if (scratch->capacity() > scratch_keep ||
+-            (trim && (frame_tick & 255) == 0 && scratch->capacity() > (size_t{8} << 20))) {
++        // EDEN_UP_RESERVE_SCRATCH_MIB (0891): the upload scratch keeps its boot size between
++        // frames; else EDEN_TC_SCRATCH_KEEP_MIB=16 (ours) frees a 32 MiB one at once.
++        const size_t reserved = scratch == &swizzle_data_buffer ? ReserveScratchBytes() : 0;
++        if (scratch->capacity() > (std::max)(scratch_keep, reserved) ||
++            (trim && (frame_tick & 255) == 0 &&
++             scratch->capacity() > (std::max)(size_t{8} << 20, reserved))) {
+             scratch->release();
+         }
+     }
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index 88afd7d373..e551c189b7 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -1183,6 +1183,10 @@ private:
+     /// Applies EDEN_NX2_TC_EXPECTED_MIB / EDEN_NX2_TC_CRITICAL_MIB and logs the thresholds.
+     void ApplyThresholdOverrides(bool log = true);
+ 
++    /// EDEN_UP_RESERVE_TABLES (0891, texture_cache.h ReserveTableSlots): the slot tables at their
++    /// full size at boot. Off: nothing.
++    void ReserveTables();
++
+     /// EDEN_UP_NO_STALE_UPLOAD (zortos293/Lichii 451f309925, #818): a GPU-written image the
+     /// collector drops without writing it back leaves its guest memory stale (the GPU's data is
+     /// gone). Its whole pages are marked here and kept tracked, so CPU writes, unmaps and

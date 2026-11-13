@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: EglantinePS5
+Date: Fri, 13 Nov 2026 23:59:00 +0100
+Subject: [PATCH] radv: a pipeline cache object's shader lookups run outside the long-lived scope (lead-mesh-42 review)
+
+lead-mesh-42 put ops->deserialize in vk_pipeline_cache_object_deserialize inside
+a long-lived scope. For a pipeline cache object that call also looks up each of
+its shaders (vk_pipeline_cache_lookup_object), and on a memory miss the lookup
+reads and inflates the shader from the disk cache into buffers it frees at once:
+with RADV_PS5_LONGLIVED_ARENA=1 those short-lived blocks went to the app's
+long-lived arenas. The scope is left around the lookup and entered again after
+it. The shader object the lookup makes stays kept: its own deserialize enters
+the scope. The depth there is exactly 1 (the scope above is the only one on
+this path), so one leave ends it. Without the app's hooks: no-ops, as before.
+
+diff --git a/src/amd/vulkan/radv_pipeline_cache.c b/src/amd/vulkan/radv_pipeline_cache.c
+index 685f5fc..a0abf08 100644
+--- a/src/amd/vulkan/radv_pipeline_cache.c
++++ b/src/amd/vulkan/radv_pipeline_cache.c
+@@ -303,8 +303,14 @@ radv_pipeline_cache_object_deserialize(struct vk_pipeline_cache *cache, const vo
+ 
+    for (unsigned i = 0; i < num_shaders; i++) {
+       const uint8_t *hash = blob_read_bytes(blob, sizeof(blake3_hash));
++      /* lead-mesh-43: out of the long-lived scope vk_pipeline_cache_object_deserialize put this
++       * call in (lead-mesh-42; it is the only one here, so one leave ends it): the lookup may read
++       * and inflate the shader from the disk cache into buffers it frees at once. The shader object
++       * it makes is still kept: its own deserialize enters the scope again. */
++      u_eden_long_lived_leave();
+       struct vk_pipeline_cache_object *shader =
+          vk_pipeline_cache_lookup_object(cache, hash, sizeof(blake3_hash), &radv_shader_ops, NULL);
++      u_eden_long_lived_enter();
+ 
+       if (!shader) {
+          /* If some shader could not be created from cache, better return NULL here than having

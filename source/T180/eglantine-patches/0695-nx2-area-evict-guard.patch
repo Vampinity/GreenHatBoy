@@ -1,0 +1,105 @@
+From: EglantinePS5
+Subject: [PATCH] nx2: small image bursts open the area-eviction window only while memory is short (waveydude's 0915, EDEN_NX2_AREA_EVICT_GUARD), off by default
+
+What: with EDEN_NX2_AREA_EVICT=<frames> a burst of EDEN_NX2_AREA_EVICT_BURST (100) new images in
+30 frames opens a 120-frame window that deletes images unused for <frames> frames. A pause menu or
+a text box makes such a burst too, and the window then throws away the area's textures, which come
+back as uploads (and ASTC decodes) when the menu closes: hitches and refused uploads for nothing.
+
+With EDEN_NX2_AREA_EVICT_GUARD=1 (exact "1", read once, PS5 only, and only when the wrapper gives
+the pool's largest free block, eden_pool_largest_free): a burst of 400 images or more opens or
+extends the window as before. A smaller one opens it only while the largest free block is known and
+under 512 MiB; a window opened that way deletes nothing in frames where the block is back at 512
+MiB or more. A burst held back keeps counting in its 30-frame window, so it can still grow past 400
+or meet the shortage there. With EDEN_UP_AREA_BUDGET's rule the burst test is that rule's (fresh
+images), and its "return: no window" line is unchanged: a burst the guard holds back is not a
+return.
+
+Changed from his: placed in our AreaEvict, which has EDEN_UP_AREA_BUDGET's rule around the same
+test (his tree had the plain count); the guard is a separate static, so his inline lambda became
+two plain tests; numbers (400 images, 512 MiB) as his.
+
+Off: one static bool, a local false, one test per frame in AreaEvict and one per open; the
+pool is never asked. One bool in TextureCache. Not in the kept-store stamp (not a translation
+switch; TranslationSwitches unchanged).
+
+Origin and credit: waveydude, ocarina-private patch 0915 ("pressure guard for area eviction"),
+commit 4c2e760.
+---
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 8082a3f..7f9cc25 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -1151,6 +1151,11 @@ void TextureCache<P>::CensusTick() {
+ // writes it again is lost. An image in use is touched every frame it is bound or sampled
+ // (PrepareImage), so it is never <frames> old and never a candidate.
+ // Lines in stderr: EDEN_AREA_EVICT burst/done, and one per frame with EDEN_NX2_TC_LOG.
++// EDEN_NX2_AREA_EVICT_GUARD=1 (exact "1", PS5 only; waveydude's 0915): a pause menu makes a burst
++// too. With the guard a burst of 400 images or more opens the window as before; a smaller one opens
++// it only while the pool's largest free block is known and under 512 MiB, and such a window deletes
++// nothing in the frames that headroom is back. A deferred burst still counts in its 30 frames, so it
++// can grow past 400 or meet the shortage there. Off (or no pool number in the wrapper): as before.
+ // EDEN_NX2_CLEAN_BY_TIME=1 changes two things. Ages: an image also counts as <frames> old after
+ // <frames> frames' time at 60 fps (OldCutoff: 120 frames = 2 s, i.e. 20 frames at 10 fps, never
+ // under max(3, frames / 8) frames), and up to 64 x (frame time in 60 fps frames, at most 4) images
+@@ -1343,8 +1348,26 @@ void TextureCache<P>::AreaEvict() {
+         // return.
+         new_opens = fresh >= burst || (area_window_refused && area_window_created >= burst);
+     }
+-    const bool open_now = budget_rule ? new_opens : area_window_created >= burst;
+-    if (budget_rule && !open_now && area_window_created >= burst) {
++    const bool burst_now = budget_rule ? new_opens : area_window_created >= burst;
++    // EDEN_NX2_AREA_EVICT_GUARD=1: a burst under GuardLargeBurst images opens or extends the window
++    // only while the pool is short; a window such a burst opened deletes only while it still is.
++#ifdef PS5_NATIVE
++    static const bool guard =
++        Common::PeSwitch("EDEN_NX2_AREA_EVICT_GUARD") && eden_pool_largest_free != nullptr;
++#else
++    constexpr bool guard = false;
++#endif
++    constexpr u64 GuardLargeBurst = 400;
++    const bool needs_pressure = guard && area_window_created < GuardLargeBurst;
++    bool pressure = false;
++#ifdef PS5_NATIVE
++    if (guard && ((needs_pressure && burst_now) || (area_evict_pressure_only && window_open()))) {
++        const u64 largest_free = eden_pool_largest_free();
++        pressure = largest_free != 0 && largest_free < 512_MiB;
++    }
++#endif
++    const bool open_now = burst_now && (!needs_pressure || pressure);
++    if (budget_rule && !burst_now && area_window_created >= burst) {
+         // Mostly images this pass deleted being made again (a menu closing over the area it hid):
+         // no window, and the count starts again as after a burst.
+         ++budget_bursts_returns;
+@@ -1362,6 +1385,9 @@ void TextureCache<P>::AreaEvict() {
+     }
+     if (open_now) {
+         const bool opening = !window_open();
++        if (guard && (opening || !needs_pressure)) {
++            area_evict_pressure_only = needs_pressure;
++        }
+         if (budget_on) {
+             if (opening) {
+                 // A window this rule opens may delete what the burst brought in (more each frame
+@@ -1418,6 +1444,9 @@ void TextureCache<P>::AreaEvict() {
+     } else if (frame_tick >= area_evict_until || frame_tick <= age) {
+         return;
+     }
++    if (guard && area_evict_pressure_only && !pressure) {
++        return;
++    }
+     const std::optional<u64> below =
+         by_time ? OldCutoff(age) : std::optional<u64>{frame_tick - age};
+     if (!below) {
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index b005dd2..9b24c51 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -280,6 +280,7 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
+     std::chrono::steady_clock::time_point area_evict_until_time{};
+     u64 area_evict_min_until{}; ///< ...but not before this frame (very low frame rates)
+     bool area_window_open{};    ///< The window was open last frame (the done line, time mode)
++    bool area_evict_pressure_only{}; ///< EDEN_NX2_AREA_EVICT_GUARD: a small burst's window
+     size_t area_kept_last{};    ///< GPU-written images kept in the last pass (the done line)
+     /// EDEN_UP_AREA_BUDGET (AreaEvict): all of it GPUBack's (the GPU thread with the split off),
+     /// written in JoinImages on the draw path and in TickFrame, both under texture_cache.mutex.

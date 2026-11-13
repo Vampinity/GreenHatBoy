@@ -1,0 +1,46 @@
+From: EglantinePS5
+Subject: [PATCH] up: the before-play pass makes room for its pool's hand-over before any job runs, so the hand-over cannot fail (review of 0786)
+
+Switch: none of its own (EDEN_UP_SHADER_SET_PREPASS=1 with EDEN_UP_SHADER_SET_PREPASS_JOB_WAIT_S,
+as 0786). Prepass off: nothing changes.
+
+Why (T161s review): 0786 hands the pool of builds it stopped waiting for to
+PipelineCache::shader_set_abandoned_pools when RunShaderSetPrepass ends. If that push_back threw
+(no memory for one pointer), the pool was released unjoined, and a build that came back during the
+exit could touch a destroyed cache.
+
+What: RunShaderSetPrepass reserves one more place in shader_set_abandoned_pools before the pool's
+first job. The hand-over then moves a unique_ptr into reserved room, which does not throw. If the
+reserve itself throws, it does so before any job exists: the prepass ends there and the game
+starts, as for any other prepass error. The old catch stays as a last resort.
+
+Needs 0786. Not checked: a run.
+---
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 96b7f26..db3de7d 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -6906,6 +6906,12 @@ void PipelineCache::RunShaderSetPrepass(const std::filesystem::path& title_dir,
+     ShaderSetPass& pass = *pass_owner;
+     // Builds the pass stopped waiting for keep their pool: it is handed to the cache (whose
+     // destructor waits for it) instead of being joined here, also when this function throws.
++    // 0788: the room for that hand-over is made now, before any job runs, so the push_back
++    // below cannot throw (a throw here ends the prepass before it starts; the game starts).
++    {
++        std::scoped_lock lock{shader_set_abandoned_mutex};
++        shader_set_abandoned_pools.reserve(shader_set_abandoned_pools.size() + 1);
++    }
+     struct KeepAbandonedPool {
+         PipelineCache& cache;
+         std::unique_ptr<Common::ThreadWorker>& pool;
+@@ -6918,7 +6924,9 @@ void PipelineCache::RunShaderSetPrepass(const std::filesystem::path& title_dir,
+                 std::scoped_lock lock{cache.shader_set_abandoned_mutex};
+                 cache.shader_set_abandoned_pools.push_back(std::move(pool));
+             } catch (...) {
+-                (void)pool.release(); // never joined: its jobs hold what they use, `this` aside
++                // (0788: not reached: the room was reserved before the jobs ran. Kept as the
++                // last resort: the pool is never joined, its jobs hold what they use.)
++                (void)pool.release();
+             }
+         }
+     } keep_abandoned_pool{*this, pool, pass};

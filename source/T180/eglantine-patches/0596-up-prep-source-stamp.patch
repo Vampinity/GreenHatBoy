@@ -1,0 +1,499 @@
+From: EglantinePS5
+Subject: up: kept translations survive a reinstall and a build that did not change the translator (EDEN_UP_SHADER_PREP_SOURCE_STAMP), off by default
+
+What: the kept-translation store (EDEN_UP_SHADER_PREP) and the converted shader set are
+stamped with the eboot's size and write time, so every install and every build starts them cold.
+With EDEN_UP_SHADER_PREP_SOURCE_STAMP=1, when EDEN_UP_SHADER_PREP_EXE is unset and the build
+carries a translation id, that field becomes src<32 hex> (SHA-256 of the translator as compiled:
+src/shader_recompiler/** with every quoted include it reaches, the per-pipeline inputs
+(_cost.cpp, the rewritten shader_environment.cpp, vk_pipeline_prep, vk_pipeline_cache.h,
+pipeline_helper.h, fixed_pipeline_state, maxwell_to_vk, surface, transform_feedback), sirit, the
+SPIR-V headers, the compiler and flags; made at build time by tools/gen-translation-id.py, wrapper
+side) plus dev<16 hex> (CityHash64 of every field of Shader::Profile and HostTranslateInfo and four
+device answers: transform feedback, MoltenVK, tessellation, max patch size; static_asserts and
+t138/check/check-core.py keep the lists whole), and EDEN_NX2_TRANSCODE_WAIT and
+EDEN_NX2_PRELOAD_ALL_PIPELINES (scheduling only) leave the switch hash. Without the id, or with
+the switch off, the stamp is today's string byte for byte.
+
+Safety net: the boot comparison, the 48 probes and EDEN_UP_SHADER_PREP_VERIFY stay. New: on the
+first boot after the installed build changed under a reused store (sidecar prep_<hash>.build,
+evicted with the store), up to EDEN_UP_SHADER_PREP_SOURCE_STAMP_PROBES (256) kept records, not 1
+in 8, are translated afresh with no stage cache and their SPIR-V and infos compared; any
+difference resets the whole store (the existing reset). A refused or failed probe is no
+difference. The sidecar is written only when the check is done (not stopped; on a crossing boot
+only when at least one probe was made). Lines: "EDEN_UP_SHADER_PREP_SOURCE_STAMP: id src... (files
+N) dev..., store prep_xxxxxxxx reused|new (N pipelines), build <eboot>" and "...: store
+reused|new|reset, crossed build yes|no, probes P (up to N, ...)".
+
+Off: the stamp, the store name and the probes are T137's; the device digest is not made and the
+installed build is not looked up (CurrentBuild runs only in source mode).
+
+Build step (wrapper side, headless/vulkan.cmake): the context file is written by file(GENERATE)
+for the CXX evaluation only (CONDITION $<COMPILE_LANGUAGE:CXX>); the target options carry
+per-language parts, and one text per language failed the CMake generate step (13 Nov).
+
+Credits: the mechanism, the switch names and the 0926 list are waveydude's (patches 0925 and 0926,
+fork waveydude/Eglantine-PS5-, branch w11-two-frame-guard, commits 2ca0fdb and 07a1fb0); off by
+default, fail-closed fallback and the Info+SPIR-V compare from our earlier drafts; two reviews
+found the gaps our notes (12 Nov) answer.
+---
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 0768556..9988e19 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -2060,8 +2060,18 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
+         (ShaderPrep::Enabled() || shader_set_enabled) &&
+         prep_store.Open(base_dir, ShaderPrep::MakeStamp(CACHE_VERSION,
+                                                         static_cast<u32>(device.GetDriverID()),
+-                                                        device.GetDriverVersion()) +
++                                                        device.GetDriverVersion(),
++                                                        PrepDeviceDigest()) +
+                                       (canonical_keys ? " canonical1" : ""));
++    if (ShaderPrep::SourceStampAsked()) {
++        LOG_INFO(Render_Vulkan,
++                 "EDEN_UP_SHADER_PREP_SOURCE_STAMP: id {} dev{}, store {} {} ({} pipelines), "
++                 "build {}",
++                 ShaderPrep::SourceIdentityText(), PrepDeviceDigest(),
++                 prep ? prep_store.Sidecar("").filename().string() : std::string{"none"},
++                 prep_store.Size() != 0 ? "reused" : "new", prep_store.Size(),
++                 ShaderPrep::CurrentBuild());
++    }
+     std::atomic<size_t> prep_compared{};
+     std::atomic<size_t> prep_differed{};
+     size_t skipped_pipelines = 0;
+@@ -4319,6 +4329,18 @@ void PipelineCache::PrepareKept(std::stop_token stop_loading,
+     // each boot: the boot above only compared the pipelines it built, and a translation that
+     // changed without the stamp noticing may have changed only others.
+     constexpr size_t MaxProbes = 48;
++    // EDEN_UP_SHADER_PREP_SOURCE_STAMP: on the first boot after the installed build changed under
++    // a reused store, up to SourceStampProbes() kept records (not 1 in 8) are translated afresh
++    // (no stage cache) and their SPIR-V and infos compared; any difference resets the store, as
++    // below. A boot that probed nothing, or was stopped, checks again at the next. Off: the
++    // build is not looked up (current_build stays empty and is read only in source mode).
++    const bool source_identity = ShaderPrep::SourceIdentityActive();
++    const std::string current_build =
++        source_identity ? ShaderPrep::CurrentBuild() : std::string{};
++    const bool crossed = source_identity && prep_store.Size() != 0 &&
++                         prep_store.LastBuild() != current_build;
++    const size_t max_probes = crossed ? ShaderPrep::SourceStampProbes() : MaxProbes;
++    bool probes_reset = false;
+     const u64 salt =
+         static_cast<u64>(std::chrono::steady_clock::now().time_since_epoch().count() >> 10);
+     std::atomic<size_t> probed{};
+@@ -4392,7 +4414,8 @@ void PipelineCache::PrepareKept(std::stop_token stop_loading,
+             if (prep_store.Contains(hash)) {
+                 const bool kept = prep_store.IsKept(hash);
+                 ++(kept ? seen.kept : seen.not_keepable);
+-                if (probes_queued >= MaxProbes || ((hash ^ salt) & 7) != 0 || !kept) {
++                if (probes_queued >= max_probes || (!crossed && ((hash ^ salt) & 7) != 0) ||
++                    !kept) {
+                     return;
+                 }
+                 ++probes_queued;
+@@ -4402,10 +4425,11 @@ void PipelineCache::PrepareKept(std::stop_token stop_loading,
+                 }
+                 try {
+                     workers.QueueWork([this, key, hash, envs_ = std::move(envs), &state, &probed,
+-                                       &probe_differed]() mutable {
++                                       &probe_differed, crossed]() mutable {
+                         try {
+                             ShaderPrep::Stages stages;
+                             stages.driver_cache_only = true;
++                            stages.no_stage_cache = crossed;
+                             ShaderPools pools;
+                             boost::container::static_vector<Shader::Environment*, 5> env_ptrs;
+                             for (auto& env : envs_) {
+@@ -4415,7 +4439,8 @@ void PipelineCache::PrepareKept(std::stop_token stop_loading,
+                                 pools, key, MakeSpan(env_ptrs), nullptr, false, &stages)};
+                             if (pipeline != nullptr && !stages.unsuitable) {
+                                 probed.fetch_add(1, std::memory_order_relaxed);
+-                                if (!prep_store.SameSpirv(hash, stages)) {
++                                if (!prep_store.SameSpirv(hash, stages) ||
++                                    (crossed && !prep_store.SameInfo(hash, stages))) {
+                                     probe_differed.fetch_add(1, std::memory_order_relaxed);
+                                 }
+                             }
+@@ -4472,13 +4497,29 @@ void PipelineCache::PrepareKept(std::stop_token stop_loading,
+                     "translation changed, everything is prepared again",
+                     probe_differed.load(), probed.load());
+         prep_store.Reset();
++        probes_reset = true;
+         probe_differed.store(0);
+-        probes_queued = MaxProbes;
++        probes_queued = max_probes;
+         if (!prep_store.IsOpen()) {
+             state.journal.close();
+             return;
+         }
+     }
++    if (ShaderPrep::SourceStampAsked()) {
++        LOG_INFO(Render_Vulkan,
++                 "EDEN_UP_SHADER_PREP_SOURCE_STAMP: store {}, crossed build {}, probes {} "
++                 "(up to {}{})",
++                 probes_reset ? "reset" : prep_store.Size() != 0 ? "reused" : "new",
++                 crossed ? "yes" : "no", probed.load(), max_probes,
++                 crossed ? ", fresh translation, SPIR-V and infos" : ", 1 in 8, SPIR-V");
++    }
++    // The build that checked this store: written only when that check is done (not stopped,
++    // and on a crossing boot only when at least one probe was made).
++    if (source_identity && prep_store.IsOpen() &&
++        !stop_loading.stop_requested() && (!crossed || probed.load() != 0 || probes_reset) &&
++        prep_store.LastBuild() != current_build) {
++        prep_store.NoteBuild(current_build);
++    }
+     const size_t left = todo.size();
+     const size_t limit = std::min(left, ShaderPrep::MaxPerBoot());
+     state.total = limit;
+@@ -5256,7 +5297,7 @@ void PipelineCache::StartShaderSet(const std::filesystem::path& title_dir) {
+     // flipped switch changes the lowered hashes, so the generated file is made again with it.
+     identity.translation =
+         ShaderPrep::MakeStamp(CACHE_VERSION, static_cast<u32>(device.GetDriverID()),
+-                              device.GetDriverVersion()) +
++                              device.GetDriverVersion(), PrepDeviceDigest()) +
+         (canonical_keys ? " canonical1" : "");
+     const auto output_dir = pipeline_cache_filename.parent_path();
+     shader_set_thread = std::jthread([this, title = visual_workaround_title, title_dir, output_dir,
+@@ -5861,6 +5902,17 @@ void PipelineCache::WriteFirstStartList(bool final) try {
+     LOG_WARNING(Render_Vulkan, "EDEN_UP_FIRST_START_LIST_WRITE: the list could not be made");
+ }
+ 
++std::string PipelineCache::PrepDeviceDigest() const {
++    // EDEN_UP_SHADER_PREP_SOURCE_STAMP: only made when the switch is set (the stamp ignores it
++    // otherwise). profile and host_info are set in the constructor, before either call.
++    if (!ShaderPrep::SourceStampAsked()) {
++        return {};
++    }
++    return ShaderPrep::DeviceDigest(profile, host_info, device.IsExtTransformFeedbackSupported(),
++                                    device.IsMoltenVK(), device.IsTessellationSupported(),
++                                    device.GetMaxTessellationPatchSize());
++}
++
+ // EDEN_UP_SHADER_SET_WHY=1 ------------------------------------------------------------------
+ // Ported from a draft (12 Nov 2026), remade after two reviews: no full
+ // keys are kept (per-field digests instead), near-miss candidates are capped, totals print with
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.h b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+index bf340cd..3eaea99 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.h
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+@@ -569,6 +569,9 @@ private:
+     std::chrono::steady_clock::time_point first_start_begin{};
+     std::chrono::steady_clock::time_point first_start_saved{};
+     void NoteFirstStartPipeline(char kind, u64 hash) noexcept;
++    /// EDEN_UP_SHADER_PREP_SOURCE_STAMP: ShaderPrep::DeviceDigest of this cache's device ("" when
++    /// the switch is not set).
++    [[nodiscard]] std::string PrepDeviceDigest() const;
+     void WriteFirstStartList(bool final);
+ 
+     [[no_unique_address]] BuildBurst::Lifetime burst_lifetime;
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp b/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp
+index d190b4f..663bac2 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_prep.cpp
+@@ -25,6 +25,20 @@
+ #include "common/logging.h"
+ #include "common/settings.h"
+ #include "common/zstd_compression.h"
++#include "shader_recompiler/host_translate_info.h"
++#include "shader_recompiler/profile.h"
++
++// EDEN_UP_SHADER_PREP_SOURCE_STAMP: written into the build's include folder by
++// tools/gen-translation-id.py (headless/vulkan.cmake); a build without it has no id.
++#if __has_include("video_core/renderer_vulkan/translation_id.h")
++#include "video_core/renderer_vulkan/translation_id.h"
++#endif
++#ifndef EDEN_TRANSLATION_ID
++#define EDEN_TRANSLATION_ID ""
++#endif
++#ifndef EDEN_TRANSLATION_FILE_COUNT
++#define EDEN_TRANSLATION_FILE_COUNT 0
++#endif
+ 
+ namespace Vulkan::ShaderPrep {
+ namespace {
+@@ -210,6 +224,70 @@ constexpr const char* TranslationSwitches[] = {
+     return "?";
+ }
+ 
++// EDEN_UP_SHADER_PREP_SOURCE_STAMP ------------------------------------------------------------
++// The mechanism, the switch names and the two scheduling switches are waveydude's (patches 0925
++// and 0926, fork waveydude/Eglantine-PS5-, branch w11-two-frame-guard); off by default and the
++// fall back to today's stamp as in our earlier drafts; reworked per our notes (12 Nov
++// 2026): a build-time id of the translator as compiled, plus the device's answers.
++
++// Every field of Shader::Profile and Shader::HostTranslateInfo, in declaration order
++// (t138/check/check-device-digest.py compares these lists with the headers).
++#define EDEN_PREP_PROFILE_FIELDS(F) \
++    F(supported_spirv) F(unified_descriptor_binding) F(support_descriptor_aliasing) F(support_int8) \
++    F(support_uniform_and_storage_buffer_8bit) F(support_storage_buffer_8bit) F(support_int16) \
++    F(support_uniform_and_storage_buffer_16bit) F(support_storage_buffer_16bit) F(support_int64) \
++    F(support_vertex_instance_id) F(support_float_controls) F(support_separate_denorm_behavior) \
++    F(support_separate_rounding_mode) F(support_fp16_denorm_preserve) \
++    F(support_fp32_denorm_preserve) F(support_fp16_denorm_flush) F(support_fp32_denorm_flush) \
++    F(support_fp16_signed_zero_nan_preserve) F(support_fp32_signed_zero_nan_preserve) \
++    F(support_fp64_signed_zero_nan_preserve) F(support_explicit_workgroup_layout) \
++    F(support_workgroup_layout_8bit_access) F(support_workgroup_layout_16bit_access) \
++    F(support_shader_quad_control) F(support_quad_shuffles) F(support_vote) \
++    F(support_shuffle_relative) F(supported_subgroup_stages) \
++    F(support_viewport_index_layer_non_geometry) F(support_viewport_mask) \
++    F(support_typeless_image_loads) F(support_demote_to_helper_invocation) F(support_int64_atomics) \
++    F(support_shared_int64_atomics) F(support_derivative_control) \
++    F(support_geometry_shader_passthrough) F(support_native_ndc) F(support_gl_nv_gpu_shader_5) \
++    F(support_gl_amd_gpu_shader_half_float) F(support_gl_texture_shadow_lod) \
++    F(support_gl_warp_intrinsics) F(support_gl_variable_aoffi) F(support_gl_sparse_textures) \
++    F(support_gl_derivative_control) F(support_scaled_attributes) F(support_multi_viewport) \
++    F(support_geometry_streams) F(support_sampled_image_array_nonuniform_indexing) \
++    F(support_storage_image_array_nonuniform_indexing) \
++    F(support_uniform_texel_buffer_array_nonuniform_indexing) \
++    F(support_storage_texel_buffer_array_nonuniform_indexing) \
++    F(warp_size_potentially_larger_than_guest) F(lower_left_origin_mode) \
++    F(need_declared_frag_colors) F(need_fastmath_off) F(need_gather_subpixel_offset) \
++    F(has_broken_spirv_clamp) F(has_broken_spirv_position_input) \
++    F(has_broken_unsigned_image_offsets) F(has_broken_signed_operations) \
++    F(has_broken_fp16_float_controls) F(has_broken_fp32_denorm_flush) \
++    F(has_gl_component_indexing_bug) F(has_gl_precise_bug) F(has_gl_cbuf_ftou_bug) \
++    F(has_gl_bool_ref_bug) F(ignore_nan_fp_comparisons) \
++    F(has_broken_spirv_subgroup_mask_vector_extract_dynamic) F(has_broken_spirv_subgroup_shuffle) \
++    F(invariant_position) F(guard_frag_color_nan) F(has_broken_spirv_fragment_shuffle) \
++    F(max_subgroup_size) F(gl_max_compute_smem_size) F(has_broken_robust) F(min_ssbo_alignment) \
++    F(max_user_clip_distances)
++#define EDEN_PREP_HOST_FIELDS(F) \
++    F(min_ssbo_alignment) F(max_per_stage_descriptor_sampled_images) F(max_per_stage_resources) \
++    F(max_descriptor_set_samplers) F(max_descriptor_set_uniform_buffers) \
++    F(max_descriptor_set_uniform_buffers_dynamic) F(max_descriptor_set_storage_buffers) \
++    F(max_descriptor_set_storage_buffers_dynamic) F(max_descriptor_set_sampled_images) \
++    F(max_descriptor_set_storage_images) F(max_descriptor_set_input_attachements) \
++    F(support_float64) F(support_float16) F(support_int64) F(needs_demote_reorder) \
++    F(support_snorm_render_buffer) F(support_viewport_index_layer) F(support_viewport_mask) \
++    F(support_geometry_shader_passthrough) F(support_conditional_barrier) \
++    F(single_lane_geometry_subgroups)
++#if defined(__x86_64__) && defined(__LP64__) && !defined(_WIN32)
++static_assert(sizeof(Shader::Profile) == 112,
++              "Shader::Profile changed: list the new field in EDEN_PREP_PROFILE_FIELDS");
++static_assert(sizeof(Shader::HostTranslateInfo) == 64,
++              "Shader::HostTranslateInfo changed: list the new field in EDEN_PREP_HOST_FIELDS");
++#endif
++
++[[nodiscard]] bool SkippedInSourceMode(std::string_view name) {
++    // waveydude 0926: they change when work is scheduled, not what a translation gives.
++    return name == "EDEN_NX2_TRANSCODE_WAIT" || name == "EDEN_NX2_PRELOAD_ALL_PIPELINES";
++}
++
+ [[nodiscard]] u64 HashBytes(std::span<const u8> bytes) {
+     return Common::CityHash64(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+ }
+@@ -652,7 +730,8 @@ void RememberStore(const std::filesystem::path& dir, const std::string& name) {
+     }
+     std::error_code error;
+     while (names.size() > StoresKept) {
+-        for (const char* const extension : {".bin", ".idx", ".idx.part", ".inflight", ".strikes"}) {
++        for (const char* const extension :
++             {".bin", ".idx", ".idx.part", ".inflight", ".strikes", ".build"}) {
+             std::filesystem::remove(dir / (names.back() + extension), error);
+         }
+         names.pop_back();
+@@ -737,7 +816,63 @@ u64 HashSpirv(std::span<const u32> words) {
+                               words.size() * sizeof(u32));
+ }
+ 
+-std::string MakeStamp(u32 cache_version, u32 driver_id, u32 driver_version) {
++bool SourceStampAsked() {
++    static const bool asked = SwitchIs("EDEN_UP_SHADER_PREP_SOURCE_STAMP", '1');
++    return asked;
++}
++
++bool SourceIdentityActive() {
++    return SourceStampAsked() && std::getenv("EDEN_UP_SHADER_PREP_EXE") == nullptr &&
++           std::string_view{EDEN_TRANSLATION_ID}.size() == 32;
++}
++
++std::string SourceIdentityText() {
++    if (!SourceStampAsked()) {
++        return "off";
++    }
++    if (std::getenv("EDEN_UP_SHADER_PREP_EXE") != nullptr) {
++        return "fallback: EDEN_UP_SHADER_PREP_EXE is set";
++    }
++    if (std::string_view{EDEN_TRANSLATION_ID}.size() != 32) {
++        return "fallback: this build has no translation id (see the generator's build log line)";
++    }
++    return fmt::format("src{} (files {})", EDEN_TRANSLATION_ID, EDEN_TRANSLATION_FILE_COUNT);
++}
++
++std::string CurrentBuild() {
++    return BuildIdentity();
++}
++
++size_t SourceStampProbes() {
++    static const size_t probes = std::clamp<size_t>(
++        SwitchNumber("EDEN_UP_SHADER_PREP_SOURCE_STAMP_PROBES", 256), 1, 1U << 20);
++    return probes;
++}
++
++std::string DeviceDigest(const Shader::Profile& profile,
++                         const Shader::HostTranslateInfo& host_info, bool transform_feedback,
++                         bool molten_vk, bool tessellation, u32 max_patch_size) {
++    // Field by field (no padding bytes), each as a u64.
++    std::vector<u64> values;
++#define EDEN_PREP_VALUE(field) values.push_back(static_cast<u64>(profile.field));
++    EDEN_PREP_PROFILE_FIELDS(EDEN_PREP_VALUE)
++#undef EDEN_PREP_VALUE
++#define EDEN_PREP_VALUE(field) values.push_back(static_cast<u64>(host_info.field));
++    EDEN_PREP_HOST_FIELDS(EDEN_PREP_VALUE)
++#undef EDEN_PREP_VALUE
++    values.push_back(transform_feedback ? 1 : 0);
++    values.push_back(molten_vk ? 1 : 0);
++    values.push_back(tessellation ? 1 : 0);
++    values.push_back(max_patch_size);
++    values.push_back(values.size()); // a field added on both sides still moves the digest
++    return fmt::format("{:016x}",
++                       Common::CityHash64(reinterpret_cast<const char*>(values.data()),
++                                          values.size() * sizeof(u64)));
++}
++
++std::string MakeStamp(u32 cache_version, u32 driver_id, u32 driver_version,
++                      std::string_view device) {
++    const bool source = SourceIdentityActive() && !device.empty();
+     // FNV-1a over NAME=VALUE of the switches that are set.
+     u64 hash = 0xcbf29ce484222325ULL;
+     const auto mix = [&hash](std::string_view text) {
+@@ -747,6 +882,9 @@ std::string MakeStamp(u32 cache_version, u32 driver_id, u32 driver_version) {
+     };
+     u32 set = 0;
+     for (const char* const name : TranslationSwitches) {
++        if (source && SkippedInSourceMode(name)) {
++            continue;
++        }
+         if (const char* const value = std::getenv(name)) {
+             mix(name);
+             mix("=");
+@@ -767,6 +905,12 @@ std::string MakeStamp(u32 cache_version, u32 driver_id, u32 driver_version) {
+                     static_cast<bool>(values.fix_bloom_effects.GetValue()) ? 1 : 0,
+                     static_cast<bool>(values.disable_shader_loop_safety_checks) ? 1 : 0,
+                     static_cast<bool>(values.renderer_debug) ? 1 : 0);
++    if (source) {
++        return fmt::format(
++            "prep{} cache{} driver{:x}.{:x} info{} src{} dev{} settings{} switches{}:{:016x}",
++            FormatVersion, cache_version, driver_id, driver_version, sizeof(Shader::Info),
++            EDEN_TRANSLATION_ID, device, settings, set, hash);
++    }
+     return fmt::format("prep{} cache{} driver{:x}.{:x} info{} exe{} settings{} switches{}:{:016x}",
+                        FormatVersion, cache_version, driver_id, driver_version,
+                        sizeof(Shader::Info), BuildIdentity(), settings, set, hash);
+@@ -1081,6 +1225,45 @@ bool KeptStore::SameSpirv(u64 key_hash, const Stages& stages) const {
+     return true;
+ }
+ 
++bool KeptStore::SameInfo(u64 key_hash, const Stages& stages) const {
++    std::array<u64, NumStages> fresh{};
++    for (size_t stage = 0; stage < NumStages; ++stage) {
++        if (stages.present[stage]) {
++            std::vector<u8> bytes;
++            SerializeInfo(stages.infos[stage], bytes);
++            fresh[stage] = HashBytes(bytes);
++        }
++    }
++    std::scoped_lock lock{mutex};
++    const auto it = records.find(key_hash);
++    if (it == records.end() || (it->second.flags & FlagNotKeepable) != 0) {
++        return false;
++    }
++    for (size_t stage = 0; stage < NumStages; ++stage) {
++        const u32 id = it->second.infos[stage];
++        if ((id != NoBlob) != stages.present[stage]) {
++            return false;
++        }
++        if (id != NoBlob && (id >= blobs.size() || blobs[id].hash != fresh[stage])) {
++            return false;
++        }
++    }
++    return true;
++}
++
++std::string KeptStore::LastBuild() const {
++    std::ifstream file{Sidecar(".build")};
++    std::string line;
++    std::getline(file, line);
++    return line;
++}
++
++void KeptStore::NoteBuild(const std::string& build) const {
++    const std::string text = build + "\n";
++    (void)WriteWholeFile(Sidecar(".build"),
++                         std::span<const u8>{reinterpret_cast<const u8*>(text.data()), text.size()});
++}
++
+ u32 KeptStore::Keep(u32 kind, u64 hash, std::span<const u8> bytes, u32 raw_size) {
+     const u64 key = hash + u64{raw_size} * 0x9E3779B97F4A7C15ULL;
+     if (const auto it = by_hash[kind].find(key); it != by_hash[kind].end()) {
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_prep.h b/src/video_core/renderer_vulkan/vk_pipeline_prep.h
+index 546e8c4..d5953d2 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_prep.h
++++ b/src/video_core/renderer_vulkan/vk_pipeline_prep.h
+@@ -32,12 +32,18 @@
+ #include <mutex>
+ #include <span>
+ #include <string>
++#include <string_view>
+ #include <unordered_map>
+ #include <vector>
+ 
+ #include "common/common_types.h"
+ #include "shader_recompiler/shader_info.h"
+ 
++namespace Shader {
++struct Profile;
++struct HostTranslateInfo;
++} // namespace Shader
++
+ namespace Vulkan::ShaderPrep {
+ 
+ /// Pipeline stages of a graphics pipeline (vertex B to fragment).
+@@ -97,7 +103,34 @@ void SerializeInfo(const Shader::Info& info, std::vector<u8>& out);
+ /// settings the translation reads (resolution scaling, bloom fix, loop safety checks, renderer
+ /// debug) and every EDEN_ switch the translation sources and the video core name. Another stamp is
+ /// another store (the last three are kept, so test arms do not wipe each other's).
+-[[nodiscard]] std::string MakeStamp(u32 cache_version, u32 driver_id, u32 driver_version);
++///
++/// EDEN_UP_SHADER_PREP_SOURCE_STAMP=1 (off by default; off: the stamp is the line above, byte for
++/// byte): `device` (DeviceDigest) is used, and when the build carries a translation id
++/// (translation_id.h, made by tools/gen-translation-id.py at build time) and
++/// EDEN_UP_SHADER_PREP_EXE is unset, the eboot's size and write time are replaced by that id
++/// (src<32 hex>) and the device digest (dev<16 hex>), and EDEN_NX2_TRANSCODE_WAIT and
++/// EDEN_NX2_PRELOAD_ALL_PIPELINES (scheduling only) leave the switch hash. So a reinstall, or a
++/// build that changed nothing the translation is made of, keeps its store.
++[[nodiscard]] std::string MakeStamp(u32 cache_version, u32 driver_id, u32 driver_version,
++                                    std::string_view device = {});
++/// EDEN_UP_SHADER_PREP_SOURCE_STAMP=1 (exact "1").
++[[nodiscard]] bool SourceStampAsked();
++/// Asked, no EDEN_UP_SHADER_PREP_EXE, and this build has a translation id.
++[[nodiscard]] bool SourceIdentityActive();
++/// For the log: "src<id> (files N)", or why source mode is not active.
++[[nodiscard]] std::string SourceIdentityText();
++/// The installed build as the default stamp names it (the eboot's size and write time, or "?").
++[[nodiscard]] std::string CurrentBuild();
++/// EDEN_UP_SHADER_PREP_SOURCE_STAMP_PROBES=<n>: kept records probed on the first boot after
++/// the installed build changed under a reused store (256).
++[[nodiscard]] size_t SourceStampProbes();
++/// CityHash64 (16 hex) of what the translator reads from the device: every field of
++/// Shader::Profile and Shader::HostTranslateInfo, and four device answers the translate paths ask
++/// for directly.
++[[nodiscard]] std::string DeviceDigest(const Shader::Profile& profile,
++                                       const Shader::HostTranslateInfo& host_info,
++                                       bool transform_feedback, bool molten_vk,
++                                       bool tessellation, u32 max_patch_size);
+ 
+ /// The kept translations of one stamp: prep_<stamp hash>.bin holds the blobs, back to back, and is
+ /// only ever appended to; prep_<stamp hash>.idx lists the blobs and the pipelines and is written
+@@ -143,6 +176,12 @@ public:
+ 
+     /// Whether the kept SPIR-V of `key_hash` is `stages`' (false also when it is not kept).
+     [[nodiscard]] bool SameSpirv(u64 key_hash, const Stages& stages) const;
++    /// EDEN_UP_SHADER_PREP_SOURCE_STAMP: whether the kept infos of `key_hash` are `stages`'.
++    [[nodiscard]] bool SameInfo(u64 key_hash, const Stages& stages) const;
++    /// EDEN_UP_SHADER_PREP_SOURCE_STAMP: the build (CurrentBuild) that last checked this store,
++    /// from prep_<stamp hash>.build ("" when none did).
++    [[nodiscard]] std::string LastBuild() const;
++    void NoteBuild(const std::string& build) const;
+ 
+     /// Keeps a pipeline. `answers`: one blob per shader environment, in program order.
+     void Add(u64 key_hash, const Stages& stages, std::span<const std::vector<u8>> answers,

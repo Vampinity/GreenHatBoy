@@ -1,0 +1,109 @@
+From: EglantinePS5
+Subject: [PATCH] up: the runtime pipeline report names a boot pipeline evicted before its first use as such, not "on disk, not built at boot" (log only, always on)
+
+No switch: this changes log text only (see "Why unconditional").
+
+Why: CreateGraphicsPipeline labels a pipeline made at run time "evicted" only when its key is in
+used_and_evicted, and EvictUnusedPipelines puts a key there only when a draw had used the pipeline
+this session. A pipeline the boot built and no draw had used yet, evicted at the first check after
+9000 frames, fell through to "on disk, not built at boot", which says the opposite of what
+happened. In the T151 play session of 13 Nov that was the bulk of the run-time builds: 2,278 boot
+pipelines evicted at 204.9 s ("Evicted 2278 graphics pipelines unused for 9000 frames, 28 left"),
+then 1,490 "on disk, not built at boot" from 227 s on, with EDEN_NX2_PRELOAD_ALL_PIPELINES=1 (every
+record that passes the boot's checks is built; no "built when first needed" line and no failed
+boot build in that log, so these can only be evicted boot pipelines). It made the logs point at the
+boot's preparation instead of at the eviction.
+
+What: a new set evicted_unused (key hashes) gets the key of each pipeline EvictUnusedPipelines
+destroys that was not in used_this_session; used_and_evicted (which feeds the used list the next
+boot reads) is unchanged. The reason test is now: used_and_evicted -> "evicted"; evicted_unused ->
+"built at boot, evicted before its first use" (new RuntimeBuild::EvictedUnused); disk_pipelines ->
+"on disk, not built at boot"; else "new". The per-pipeline line shows the new text. The 10 s line
+keeps its format "(new a, on disk b, evicted c, mesh d)" and counts the new reason under "evicted"
+(it was built and evicted), so tools that read it keep working; comparisons with logs before this
+patch must add earlier "on disk" counts to "evicted" for sessions with PRELOAD_ALL_PIPELINES.
+A task/mesh pipeline is still reported as "mesh, not in the disk cache" unless EDEN_UP_MESH_CACHE=1
+(unchanged). With EDEN_UP_BUILD_BURST_LOG=1 such a pipeline is classed Evicted, not Disk.
+
+Why unconditional: no pipeline, cache file, used list or stamp changes; only the text of the
+per-pipeline line and which column of the 10 s line counts these builds. Cost: one set insert per
+pipeline evicted without a use (2,278 in that session), one more set lookup per run-time build.
+
+T153 integration review: the insert into evicted_unused is wrapped in a std::bad_alloc catch.
+This patch is always on and only labels, so a set that finds no memory now leaves the label out
+(the line says "on disk" again) instead of throwing out of EvictUnusedPipelines on the GPU thread.
+---
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 6559efb..f5132dc 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -2708,6 +2708,13 @@ void PipelineCache::EvictUnusedPipelines() {
+         }
+         if (used_this_session.erase(pipeline) != 0) {
+             used_and_evicted.insert(it->first.Hash());
++        } else {
++            // Built ahead (at boot) and never drawn: for the runtime report only. A label, so a
++            // set that finds no memory leaves it out ("on disk" again) instead of failing here.
++            try {
++                evicted_unused.insert(it->first.Hash());
++            } catch (const std::bad_alloc&) {
++            }
+         }
+         if (EvictKeepSsbo()) {
+             if (const auto* const slots = pipeline->MappedPointers()) {
+@@ -3257,12 +3264,18 @@ namespace {
+ // workers): every one over 2 ms is logged, and the total every 10 s, to tell how much of the
+ // stutter on new content is translation. The reason and the key hash tell two runs' lists apart:
+ // a pipeline with one hash in every run, not "new", is one the disk cache does not keep.
+-enum class RuntimeBuild : size_t { New, OnDisk, Evicted, Mesh, Count };
++// EvictedUnused: a pipeline built ahead of its draws (at boot) and evicted before any draw used it
++// (EvictUnusedPipelines: its "last use" is the boot). Those were reported as "on disk, not built
++// at boot" (1,490 of 2,383 in the T151 play session of 13 Nov, after 2,278 boot pipelines were
++// evicted at 205 s); now each such line says so, and the 10 s line counts them as "evicted" (they
++// were built and evicted), so its format is unchanged.
++enum class RuntimeBuild : size_t { New, OnDisk, Evicted, Mesh, EvictedUnused, Count };
+ 
+ void ReportRuntimePipeline(const char* kind, std::chrono::steady_clock::time_point begin,
+                            RuntimeBuild reason, u64 hash) {
+     static constexpr std::array<const char*, static_cast<size_t>(RuntimeBuild::Count)> names{
+-        "new", "on disk, not built at boot", "evicted", "mesh, not in the disk cache"};
++        "new", "on disk, not built at boot", "evicted", "mesh, not in the disk cache",
++        "built at boot, evicted before its first use"};
+     static std::array<u32, static_cast<size_t>(RuntimeBuild::Count)> reasons{};
+     static std::chrono::steady_clock::duration total{};
+     static u32 count{}, logged{};
+@@ -3282,7 +3295,7 @@ void ReportRuntimePipeline(const char* kind, std::chrono::steady_clock::time_poi
+         LOG_INFO(Render_Vulkan,
+                  "Runtime pipelines in the last 10 s: {} built, {:.1f} ms on the GPU thread "
+                  "(new {}, on disk {}, evicted {}, mesh {})",
+-                 count, ms(total), reasons[0], reasons[1], reasons[2], reasons[3]);
++                 count, ms(total), reasons[0], reasons[1], reasons[2] + reasons[4], reasons[3]);
+         total = {};
+         count = 0;
+         reasons = {};
+@@ -3359,9 +3372,10 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
+     Common::HangSite site{"building a graphics pipeline"};
+     const auto begin = std::chrono::steady_clock::now();
+     const u64 key_hash = graphics_key.Hash();
+-    RuntimeBuild reason = used_and_evicted.contains(key_hash)  ? RuntimeBuild::Evicted
+-                          : disk_pipelines.contains(key_hash) ? RuntimeBuild::OnDisk
+-                                                              : RuntimeBuild::New;
++    RuntimeBuild reason = used_and_evicted.contains(key_hash)   ? RuntimeBuild::Evicted
++                          : evicted_unused.contains(key_hash) ? RuntimeBuild::EvictedUnused
++                          : disk_pipelines.contains(key_hash)  ? RuntimeBuild::OnDisk
++                                                               : RuntimeBuild::New;
+     SCOPE_EXIT {
+         ReportRuntimePipeline("Graphics", begin, reason, key_hash);
+     };
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.h b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+index 3eaea99..f8e121d 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.h
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+@@ -281,6 +281,7 @@ private:
+     u64 frame_count{};
+     std::deque<std::pair<u64, std::unique_ptr<GraphicsPipeline>>> evicted_pipelines; ///< (tick, pipeline)
+     std::unordered_set<u64> used_and_evicted; ///< Key hashes of pipelines used this session, evicted since
++    std::unordered_set<u64> evicted_unused;   ///< ... and of those evicted before any draw used them
+     /// EDEN_UP_EVICT_KEEP_SSBO: storage buffer pointer slots of evicted pipelines, by key hash
+     VideoCommon::EvictedPointerSlots evicted_pointer_slots;
+ 

@@ -1,0 +1,163 @@
+From: EglantinePS5
+Subject: [PATCH] up: the split's back runs an instance loop's run of identical draw.begin entries as one (EDEN_UP_INSTANCE_RUNS=1), off by default
+
+Upstream: zortos293/Lichii PR #1597 (head e6f9107cc5, by sanchodecuba11-del with Claude), +36 lines
+in maxwell_3d.cpp/.h and gpu_split.cpp. Not merged: the author closed it on 13 Nov after a retest
+on nx2 87d84d513c showed no fps difference while moving ("the 27 -> 31 fps in the description was
+run-to-run variation"); it saves about 16 ms/s of the back on his PC (Ryzen 7 5800X), about 2%.
+Ported anyway as a test arm: our frame time is set by the CPU side and our cores are slower.
+
+What: with EDEN_UP_LOOP_SKIP=1 (0600, #178 + #488) the split front sends no draw.end inside an
+instance loop, so the loop's draw.begin writes reach the back as runs of identical one-word Method
+entries; each ran the whole CallMethod path to add one instance (upstream counted ~770,000 a
+second for ~56,000 draws in the village, moving). GpuSplit::Execute now, for a Maxwell3D with
+repeat_draw_begin, finds such a run (same 64-bit head, no DMA segment word, within the words the
+front published and before the ring's end), runs the first entry as before and adds the others'
+instances at once through Maxwell3D::RepeatDrawBegin. That does it only where a begin would do
+nothing else: no macro collecting parameters, regs.draw.instance_id Subsequent and the draw
+manager already in DrawMode::Instance after the first; else it returns false and the back runs
+CallMethod for each entry, as before. Ported differences: our Execute is engine-generic (the
+engine flag repeat_draw_begin marks the Maxwell3D, as batch_constant_words does); upstream's
+fast_maxwell3d and EDEN_NX2_PERF_VERIFY checks have no counterpart here; the write history
+(EDEN_NX2_3D_HISTORY) keeps every write (the switch is off with it); with EDEN_NX2_GPU_PROFILE the
+merged writes are still counted as method writes.
+Read in our tree that a repeated subsequent begin changes nothing else: ProcessShadowRam gives the
+same value (Track stores it, Replay reads it), WriteDirtyRegister flushes no deferred draw for an
+instance-loop method and breaks no fast draw for an unchanged value, ProcessMethodCall breaks no
+fast draw for it and DrawManager::DrawBegin only does instance_count++, mode Instance and topology
+from the unchanged register.
+
+Needs: EDEN_UP_LOOP_SKIP=1 with the split (EDEN_NX2_SPLIT=2) and the same-value skip on; without
+LOOP_SKIP the front sends draw.end between the begins, runs are rare and nothing changes (a line at
+start says so).
+Off (unset or anything but "1"): one plain bool load per Method entry on the back, nothing else.
+
+---
+diff --git a/src/video_core/engines/engine_interface.h b/src/video_core/engines/engine_interface.h
+index eaacf29137..e1605cb1a0 100644
+--- a/src/video_core/engines/engine_interface.h
++++ b/src/video_core/engines/engine_interface.h
+@@ -47,6 +47,9 @@ public:
+     /// A Maxwell3D whose single constant buffer writes GpuSplit's back may take together
+     /// (EDEN_NX2_CB_BATCH=1, Maxwell3D::CallConstBufferWords).
+     bool batch_constant_words{};
++    /// EDEN_UP_INSTANCE_RUNS=1 (zortos293/Lichii PR #1597): a Maxwell3D whose runs of identical
++    /// draw.begin entries GpuSplit's back may run as one (Maxwell3D::RepeatDrawBegin).
++    bool repeat_draw_begin{};
+     std::vector<std::pair<u32, u32>> method_sink{};
+     GPUVAddr current_dma_segment;
+     bool current_dirty{};
+diff --git a/src/video_core/engines/maxwell_3d.cpp b/src/video_core/engines/maxwell_3d.cpp
+index 87b28789dd..2afbbd4c72 100644
+--- a/src/video_core/engines/maxwell_3d.cpp
++++ b/src/video_core/engines/maxwell_3d.cpp
+@@ -85,6 +85,22 @@ Maxwell3D::Maxwell3D(MemoryManager& memory_manager_)
+     }();
+     batch_constant_words = batch_words && !record_write_history &&
+                            !g_trace_first_method_writes && !VideoCommon::Nx2Profile::Enabled();
++    // EDEN_UP_INSTANCE_RUNS=1 (exact "1"; zortos293/Lichii PR #1597): off with the write history,
++    // which wants to see each write.
++    static const bool instance_runs = [] {
++        const bool on = Common::PeSwitch("EDEN_UP_INSTANCE_RUNS");
++        if (on) {
++            const char* const loop_skip = std::getenv("EDEN_UP_LOOP_SKIP");
++            const bool skip_on = loop_skip != nullptr && loop_skip[0] == '1' && loop_skip[1] == '\0';
++            LOG_INFO(HW_GPU,
++                     "EDEN_UP_INSTANCE_RUNS=1: the split's back runs a run of identical draw.begin "
++                     "entries in an instance loop as one{}",
++                     skip_on ? "" : " (EDEN_UP_LOOP_SKIP is not 1: the front sends draw.end "
++                                    "between them, so runs will be rare)");
++        }
++        return on;
++    }();
++    repeat_draw_begin = instance_runs && !record_write_history;
+     // EDEN_UP_REG_WRITE_ONE_CALL: its first read here, so that CallMethod and the sink can Peek.
+     static_cast<void>(Common::LiveSwitch::Value<Common::LiveSwitch::Id::RegWriteOneCall>());
+     one_call_plain = !record_write_history && !g_trace_first_method_writes;
+@@ -946,6 +962,32 @@ void Maxwell3D::CallConstBufferWords(Core::System& system, const u32* methods, c
+     regs.const_buffer.offset += static_cast<u32>(bytes);
+ }
+ 
++// EDEN_UP_INSTANCE_RUNS (zortos293/Lichii PR #1597, sanchodecuba11-del): what CallMethod does for
++// a draw.begin written with the value the first of the run just left. RecordWrite is off
++// (repeat_draw_begin needs no write history); the shadow RAM gives the same value again (Track
++// stores the same argument, Replay reads the same shadow word); WriteDirtyRegister flushes no
++// deferred draw for an instance loop method, breaks no fast draw for an unchanged value and
++// sets flags the first call set; ProcessMethodCall breaks no fast draw for an instance loop
++// method and hands draw.begin to DrawBegin, which for a subsequent instance adds one instance
++// and sets the mode (Instance) and the shape type (regs.draw.topology, unchanged) again.
++bool Maxwell3D::RepeatDrawBegin(u32 count, u32 method_argument) {
++    if (executing_macro != 0 ||
++        regs.draw.instance_id != Regs::Draw::InstanceId::Subsequent ||
++        draw_manager.draw_state.draw_mode != DrawManager::DrawMode::Instance) {
++        return false;
++    }
++    if (VideoCommon::Nx2Profile::Enabled()) [[unlikely]] {
++        // As CallMethod counts each write.
++        VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::MethodWrites, count);
++        if (regs.reg_array[MAXWELL3D_REG_INDEX(draw.begin)] == method_argument) {
++            VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::SameValueWrites,
++                                         count);
++        }
++    }
++    draw_manager.draw_state.instance_count += count;
++    return true;
++}
++
+ void Maxwell3D::MacroWrite(Core::System& system, u32 method, u32 argument) {
+     bool bookkeeping = g_trace_first_method_writes || VideoCommon::Nx2Profile::Enabled();
+     static const bool diagnostics = std::getenv("EDEN_NX2_3D_HISTORY") != nullptr ||
+diff --git a/src/video_core/engines/maxwell_3d.h b/src/video_core/engines/maxwell_3d.h
+index 5a49b7cc07..2e1c6961d9 100644
+--- a/src/video_core/engines/maxwell_3d.h
++++ b/src/video_core/engines/maxwell_3d.h
+@@ -3217,6 +3217,13 @@ public:
+     void CallConstBufferWords(Core::System& system, const u32* methods, const u32* arguments,
+                               u32 count);
+ 
++    /// EDEN_UP_INSTANCE_RUNS=1 (repeat_draw_begin; zortos293/Lichii PR #1597): GpuSplit's back,
++    /// right after CallMethod ran one draw.begin of a run of identical entries: `count` more of
++    /// them, as as many CallMethod calls would run them. Only an instance loop's subsequent
++    /// begins, each of which adds one instance; false where a begin would do more, and then
++    /// nothing was done (the caller runs CallMethod for each).
++    [[nodiscard]] bool RepeatDrawBegin(u32 count, u32 method_argument);
++
+     /// GPU thread split with macros on its front half (gpu_split.h, EDEN_NX2_SPLIT=2), called by
+     /// the front instead of CallMethod: runs macros and macro uploads against a copy of the
+     /// registers and sends the register writes to the back thread.
+diff --git a/src/video_core/gpu_split.cpp b/src/video_core/gpu_split.cpp
+index 291b2fca85..bb27e143b6 100644
+--- a/src/video_core/gpu_split.cpp
++++ b/src/video_core/gpu_split.cpp
+@@ -969,6 +969,31 @@ size_t GpuSplit::Execute(const u64* entry, size_t words) {
+                 }
+             }
+         }
++        // EDEN_UP_INSTANCE_RUNS=1 (zortos293/Lichii PR #1597, sanchodecuba11-del): with
++        // EDEN_UP_LOOP_SKIP the front sends no draw.end inside an instance loop, so the loop's
++        // draw.begin writes arrive as runs of identical one-word entries. The first runs as
++        // usual; the rest only add their instances when Maxwell3D::RepeatDrawBegin can, else
++        // each runs CallMethod as before. `words` stops at the ring's end and at what the front
++        // published, so the run is whole entries the back owns.
++        using Tegra::Engines::Maxwell3D;
++        if (engine->repeat_draw_begin && method == MAXWELL3D_REG_INDEX(draw.begin) &&
++            (head & HasSegment) == 0 && words > 1 && entry[1] == head) [[unlikely]] {
++            u32 count = 2;
++            while (count < words && entry[count] == head) {
++                ++count;
++            }
++            const bool is_last = (head & Direct) != 0 || (head & IsLast) != 0;
++            auto* const maxwell3d = static_cast<Maxwell3D*>(engine);
++            Nx2Profile::Scope method_scope{Nx2Profile::Zone::Method};
++            engine->ConsumeSink(*system);
++            engine->CallMethod(*system, method, argument, is_last);
++            if (!maxwell3d->RepeatDrawBegin(count - 1, argument)) {
++                for (u32 i = 1; i < count; ++i) {
++                    engine->CallMethod(*system, method, argument, is_last);
++                }
++            }
++            return count;
++        }
+         if ((head & Direct) != 0) {
+             Nx2Profile::Scope method_scope{Nx2Profile::Zone::Method};
+             engine->ConsumeSink(*system);

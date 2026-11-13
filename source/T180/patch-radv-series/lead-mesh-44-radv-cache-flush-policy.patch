@@ -1,0 +1,939 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: EglantinePS5
+Date: Fri, 13 Nov 2026 16:00:00 +0100
+Subject: [PATCH] util/mesa_cache_db: flush policy switches, writes outside the part's lock, held-back gets from memory; vk_pipeline_cache: the app's change count
+
+T175d. After about 250-300 s of the before-play pass the console's /data disk
+goes slow: every flush of a fast database (lead-mesh-32: two write calls, the
+.db bytes then the batch of index lines, about 9 KiB, made under the part's
+lock every 64 entries) took 190-960 ms, and gets on the compile threads waited
+for that lock (17-770 ms). No fsync, O_SYNC or flock is made per flush or get
+(owned databases keep their files open and locked from open to close).
+
+1. The flush policy, read once per process (unset: as before, 64 entries or
+   1 MiB): RADV_PS5_CACHE_FLUSH_MIB=<1-256>, RADV_PS5_CACHE_FLUSH_N=<entries,
+   0 none; with _MIB set and _N unset: none>, RADV_PS5_CACHE_FLUSH_S=<s> (at a
+   put, once the oldest waiting entry is that old). The batch of index lines
+   grows past 64 when the policy lets it.
+
+2. RADV_PS5_CACHE_MEM_PENDING=1: held-back .db bytes are kept in memory of
+   the part's own (not the stdio buffer). A flush moves the batch to in-flight
+   buffers, lets go of the lock, writes the bytes and then the index lines with
+   pwrite at their known offsets, and takes the lock again. One flush per part
+   is in flight; puts meanwhile start a new batch (a batch of 4 flushes' worth,
+   8 MiB at least, waits for the one in flight). A get of a held-back or
+   in-flight entry is copied from memory (before: it wrote the batch out under
+   the lock first); a get from the files is a pread, which no flush holds up.
+   Compaction, entry removal, zap and close wait for the flush in flight and
+   write the rest under the lock, through streams opened afresh. Access times
+   are written at compaction and close only (before: every 256 hits, one write
+   call per entry under the lock).
+
+3. The RADV_PS5_CACHE line gets flush_kib, flush_max_ms (longest flush in the
+   10 s), get_max_ms (longest disk_cache_get in the 10 s), mem_hits and
+   flush_wait_ms (puts waiting for a flush in flight), and the fast on line the
+   policy when a switch changed it.
+
+4. vk_pipeline_cache: a count of objects added to or removed from a
+   pipeline cache the app holds a handle to (the objects read from
+   vkCreatePipelineCache's initial data are not counted: the handle is made
+   after them; nor is a looked-up raw entry turned into the object its own
+   bytes describe, which every boot pipeline does), offered through eden_radv_pipeline_cache_changes (weak, as
+   lead-mesh-41's hooks). EglantinePS5's EDEN_UP_DRIVER_CACHE_SKIP_SAME keeps
+   vulkan_pipelines.bin as it is while it is 0.
+
+Crash safety is as lead-mesh-39 made it: data is written before the index
+lines that point at it; at the next open a torn index line, index lines past
+the data and data no line points at are cut. A kill loses the held-back batch
+(compiled again later). The files' format, names and the cache UUID do not
+change; an existing database is read as before. Ours.
+
+Numbered lead-mesh-44 in T176: written as lead-mesh-43 on T173, where
+T175b's lead-mesh-43 (long-lived lookup outside) took that number. Applies
+after lead-mesh-41, -42 and -43.
+---
+diff --git a/src/util/disk_cache.c b/src/util/disk_cache.c
+index c92b671..41e52bf 100644
+--- a/src/util/disk_cache.c
++++ b/src/util/disk_cache.c
+@@ -297,6 +297,9 @@ struct ps5_cache_counts {
+    /* T172: puts dropped before compressing because a part held the key
+     * (RADV_PS5_DISK_CACHE_SKIP_KNOWN / _ONE_COPY). */
+    uint64_t known, known_bytes;
++   /* lead-mesh-44: the longest disk_cache_get since the last line (reset by
++    * the line). */
++   uint64_t get_max_ns;
+ };
+ 
+ static simple_mtx_t ps5_caches_lock = SIMPLE_MTX_INITIALIZER;
+@@ -349,8 +352,14 @@ ps5_cache_register(struct disk_cache *cache)
+       atexit(ps5_cache_atexit);
+       ps5_start_ns = os_time_get_nano();
+       p_atomic_set(&ps5_next_ns, ps5_start_ns + PS5_REPORT_NS);
+-      fprintf(stderr, "RADV_PS5_CACHE fast on: %s, %u writer threads\n",
+-              cache->path, cache->cache_queue.num_threads);
++#if DETECT_OS_WINDOWS == 0
++      /* lead-mesh-44: the flush policy when a switch changed it. */
++      const char *policy = mesa_cache_db_ps5_policy();
++#else
++      const char *policy = "";
++#endif
++      fprintf(stderr, "RADV_PS5_CACHE fast on: %s, %u writer threads%s\n",
++              cache->path, cache->cache_queue.num_threads, policy);
+    }
+    simple_mtx_unlock(&ps5_caches_lock);
+ }
+@@ -421,6 +430,10 @@ ps5_cache_report(void)
+    db_delta.deferred = db.deferred - ps5_db_last.deferred;
+    db_delta.compactions = db.compactions - ps5_db_last.compactions;
+    db_delta.compact_ns = db.compact_ns - ps5_db_last.compact_ns;
++   db_delta.flush_bytes = db.flush_bytes - ps5_db_last.flush_bytes;
++   db_delta.flush_max_ns = db.flush_max_ns; /* since the last line already */
++   db_delta.mem_hits = db.mem_hits - ps5_db_last.mem_hits;
++   db_delta.put_wait_ns = db.put_wait_ns - ps5_db_last.put_wait_ns;
+    ps5_db_last = db;
+ #endif
+ 
+@@ -435,6 +448,9 @@ ps5_cache_report(void)
+    }
+    simple_mtx_unlock(&ps5_caches_lock);
+ 
++   /* lead-mesh-44: read and reset each 10 s, like the database's longest flush. */
++   const uint64_t get_max_ns = p_atomic_xchg(&ps5_counts.get_max_ns, 0);
++
+    uint64_t done = PS5_DELTA(done);
+    if (PS5_DELTA(added) || done || queued || PS5_DELTA(gets) ||
+        db_delta.flushes || db_delta.compactions) {
+@@ -446,7 +462,9 @@ ps5_cache_report(void)
+               " flushes=%" PRIu64 " flush_ms=%" PRIu64 " deferred=%" PRIu64
+               " compactions=%" PRIu64 " compact_ms=%" PRIu64
+               " known=%" PRIu64 " known_mib=%.1f%s"
+-              " total_written=%" PRIu64 " total_written_mib=%.1f\n",
++              " total_written=%" PRIu64 " total_written_mib=%.1f"
++              " flush_kib=%.1f flush_max_ms=%.0f get_max_ms=%.0f mem_hits=%" PRIu64
++              " flush_wait_ms=%" PRIu64 "\n",
+               (uint64_t)((now - ps5_start_ns) / 1000000000ull), queued,
+               queued_bytes / (1024.0 * 1024.0), PS5_DELTA(added),
+               PS5_DELTA(added_bytes) / (1024.0 * 1024.0), PS5_DELTA(written), done,
+@@ -459,7 +477,9 @@ ps5_cache_report(void)
+               db_delta.compactions, db_delta.compact_ns / 1000000,
+               PS5_DELTA(known), PS5_DELTA(known_bytes) / (1024.0 * 1024.0),
+               compress_text,
+-              now_counts.written, now_counts.written_bytes / (1024.0 * 1024.0));
++              now_counts.written, now_counts.written_bytes / (1024.0 * 1024.0),
++              db_delta.flush_bytes / 1024.0, db_delta.flush_max_ns / 1e6,
++              get_max_ns / 1e6, db_delta.mem_hits, db_delta.put_wait_ns / 1000000);
+    }
+    ps5_last = now_counts;
+ }
+@@ -1218,8 +1238,17 @@ disk_cache_get(struct disk_cache *cache, const cache_key key, size_t *size)
+ 
+          buf = disk_cache_db_load_item(cache, key, size);
+          if (cache->ps5_fast) {
++            const uint64_t took = os_time_get_nano() - start;
+             p_atomic_inc(&ps5_counts.gets);
+-            p_atomic_add(&ps5_counts.get_ns, os_time_get_nano() - start);
++            p_atomic_add(&ps5_counts.get_ns, took);
++            /* lead-mesh-44: the RADV_PS5_CACHE line's get_max_ms. */
++            uint64_t cur = p_atomic_read(&ps5_counts.get_max_ns);
++            while (took > cur) {
++               uint64_t prev = p_atomic_cmpxchg(&ps5_counts.get_max_ns, cur, took);
++               if (prev == cur)
++                  break;
++               cur = prev;
++            }
+          }
+       } else if (cache->type == DISK_CACHE_MULTI_FILE) {
+          char *filename = disk_cache_get_cache_filename(cache, key);
+diff --git a/src/util/mesa_cache_db.c b/src/util/mesa_cache_db.c
+index 8be8b82..3e59da0 100644
+--- a/src/util/mesa_cache_db.c
++++ b/src/util/mesa_cache_db.c
+@@ -94,6 +94,107 @@ mesa_cache_db_ps5_get_counts(struct mesa_cache_db_ps5_counts *counts)
+    counts->deferred = p_atomic_read(&mesa_db_ps5_counts.deferred);
+    counts->compactions = p_atomic_read(&mesa_db_ps5_counts.compactions);
+    counts->compact_ns = p_atomic_read(&mesa_db_ps5_counts.compact_ns);
++   counts->flush_bytes = p_atomic_read(&mesa_db_ps5_counts.flush_bytes);
++   /* lead-mesh-44: the longest since the last call (the line's 10 s). */
++   counts->flush_max_ns = p_atomic_xchg(&mesa_db_ps5_counts.flush_max_ns, 0);
++   counts->mem_hits = p_atomic_read(&mesa_db_ps5_counts.mem_hits);
++   counts->put_wait_ns = p_atomic_read(&mesa_db_ps5_counts.put_wait_ns);
++}
++
++/* lead-mesh-44: the flush policy of fast databases (RADV_PS5_CACHE_FAST=1),
++ * read once per process. Unset, each is as before:
++ *   RADV_PS5_CACHE_FLUSH_MIB=<1-256>: write the held-back entries once this
++ *     many MiB of them wait (1 before). With the stdio buffer (no _MEM_PENDING)
++ *     the .db bytes still go out whenever its 1 MiB fills; only the index
++ *     lines wait longer.
++ *   RADV_PS5_CACHE_FLUSH_N=<0-1000000>: ... or once this many entries wait
++ *     (64 before; 0: no count limit). With _FLUSH_MIB set and _FLUSH_N unset,
++ *     no count limit.
++ *   RADV_PS5_CACHE_FLUSH_S=<1-3600>: ... or, at a put, once the oldest
++ *     waiting entry is this many seconds old (none before).
++ *   RADV_PS5_CACHE_MEM_PENDING=1: the held-back bytes are kept in memory of
++ *     the database's own, and a flush writes them with pwrite after letting go
++ *     of the lock, so gets and other puts of the part never wait for the disk;
++ *     a get of a held-back or in-flight entry is served from memory. Access
++ *     times (LRU) are then written at compaction and close only (before: every
++ *     256 hits).
++ * No fsync anywhere: the database is a cache. What a kill or crash leaves is
++ * repaired at the next open (lead-mesh-39): a torn index line is cut, index
++ * lines pointing past the data are cut, data no index line points at is cut.
++ * Held-back entries are lost then, and are compiled again. */
++struct mesa_db_policy {
++   uint64_t flush_bytes;
++   unsigned flush_n;
++   int64_t flush_ns;
++   bool mem;
++   char line[160];
++};
++
++static struct mesa_db_policy mesa_db_policy_value;
++static int mesa_db_policy_state; /* 0 unread, 1 reading, 2 read */
++
++static long
++mesa_db_env_num(const char *name, long min, long max, long unset)
++{
++   const char *text = getenv(name);
++   if (!text || !*text)
++      return unset;
++   char *end = NULL;
++   long value = strtol(text, &end, 10);
++   if (end == text || *end)
++      return unset;
++   return value < min ? min : value > max ? max : value;
++}
++
++static const struct mesa_db_policy *
++mesa_db_policy(void)
++{
++   if (p_atomic_read(&mesa_db_policy_state) == 2)
++      return &mesa_db_policy_value;
++   if (p_atomic_cmpxchg(&mesa_db_policy_state, 0, 1) != 0) {
++      while (p_atomic_read(&mesa_db_policy_state) != 2)
++         os_time_sleep(100);
++      return &mesa_db_policy_value;
++   }
++
++   struct mesa_db_policy *p = &mesa_db_policy_value;
++   long mib = mesa_db_env_num("RADV_PS5_CACHE_FLUSH_MIB", 1, 256, 0);
++   long n = mesa_db_env_num("RADV_PS5_CACHE_FLUSH_N", 0, 1000000, -1);
++   long s = mesa_db_env_num("RADV_PS5_CACHE_FLUSH_S", 1, 3600, 0);
++   const char *mem = getenv("RADV_PS5_CACHE_MEM_PENDING");
++
++   p->flush_bytes = mib ? (uint64_t)mib * 1024 * 1024 : MESA_DB_FAST_FLUSH_BYTES;
++   p->flush_n = n >= 0 ? (unsigned)n : mib ? 0 : MESA_DB_FAST_PENDING;
++   p->flush_ns = (int64_t)s * 1000000000ll;
++   p->mem = mem && mem[0] == '1' && mem[1] == '\0';
++   p->line[0] = '\0';
++   if (mib || n >= 0 || s || p->mem)
++      snprintf(p->line, sizeof(p->line),
++               " flush_mib=%.1f flush_n=%u flush_s=%ld mem_pending=%d",
++               p->flush_bytes / (1024.0 * 1024.0), p->flush_n, s, p->mem ? 1 : 0);
++   p_atomic_set(&mesa_db_policy_state, 2);
++   return p;
++}
++
++const char *
++mesa_cache_db_ps5_policy(void)
++{
++   return mesa_db_policy()->line;
++}
++
++static void
++mesa_db_note_flush(uint64_t bytes, int64_t ns)
++{
++   p_atomic_inc(&mesa_db_ps5_counts.flushes);
++   p_atomic_add(&mesa_db_ps5_counts.flush_ns, ns);
++   p_atomic_add(&mesa_db_ps5_counts.flush_bytes, bytes);
++   uint64_t cur = p_atomic_read(&mesa_db_ps5_counts.flush_max_ns);
++   while ((uint64_t)ns > cur) {
++      uint64_t prev = p_atomic_cmpxchg(&mesa_db_ps5_counts.flush_max_ns, cur, (uint64_t)ns);
++      if (prev == cur)
++         break;
++      cur = prev;
++   }
+ }
+ 
+ static inline bool mesa_db_seek_end(FILE *file)
+@@ -315,13 +416,22 @@ mesa_db_fast_free_buffers(struct mesa_cache_db *db)
+ /* Writes what a fast database holds back: the .db bytes first, then the
+  * index entries that point at them, so an index on disk never points past
+  * the data, whatever the process does next. Under the lock. */
++static bool
++mesa_db_mem_flush_locked(struct mesa_cache_db *db);
++
+ static bool
+ mesa_db_fast_flush(struct mesa_cache_db *db)
+ {
+    if (!db->fast || (!db->pending && !db->pending_bytes))
+       return true;
+ 
++   /* lead-mesh-44: held back in memory, written under the lock here (the
++    * callers are compaction and close, which need it all in the files). */
++   if (db->mem)
++      return mesa_db_mem_flush_locked(db);
++
+    int64_t start = os_time_get_nano();
++   uint64_t bytes = db->pending_bytes;
+ 
+    if (fflush(db->cache.file))
+       return false;
+@@ -339,15 +449,220 @@ mesa_db_fast_flush(struct mesa_cache_db *db)
+ 
+       db->index.offset += size;
+       db->pending = 0;
++      bytes += size;
+    }
+    db->pending_bytes = 0;
++   db->pending_since_ns = 0;
+ 
+-   p_atomic_inc(&mesa_db_ps5_counts.flushes);
+-   p_atomic_add(&mesa_db_ps5_counts.flush_ns, os_time_get_nano() - start);
++   mesa_db_note_flush(bytes, os_time_get_nano() - start);
++
++   return true;
++}
++
++/* lead-mesh-44 (RADV_PS5_CACHE_MEM_PENDING): the whole of size at offset,
++ * with pwrite, which leaves the streams' positions and buffers alone. */
++static bool
++mesa_db_pwrite_all(int fd, const void *data, uint64_t size, int64_t offset)
++{
++   const uint8_t *p = data;
++
++   while (size) {
++      ssize_t done = pwrite(fd, p, size, offset);
++      if (done < 0 && errno == EINTR)
++         continue;
++      if (done <= 0)
++         return false;
++      p += done;
++      size -= done;
++      offset += done;
++   }
++   return true;
++}
++
++/* Waits, with the lock let go meanwhile, until no flush of this database is
++ * in flight. Under the lock; returns with it held. */
++static void
++mesa_db_mem_wait(struct mesa_cache_db *db)
++{
++   if (!db->inflight)
++      return;
++
++   int64_t start = os_time_get_nano();
++   while (db->inflight) {
++      simple_mtx_unlock(&db->flock_mtx);
++      os_time_sleep(200);
++      simple_mtx_lock(&db->flock_mtx);
++   }
++   p_atomic_add(&mesa_db_ps5_counts.put_wait_ns, os_time_get_nano() - start);
++}
++
++/* Room for one more entry's bytes (size) and index line in a fast database's
++ * held-back batch. */
++static bool
++mesa_db_pending_room(struct mesa_cache_db *db, uint64_t size)
++{
++   if (db->pending >= db->pending_cap) {
++      unsigned cap = db->pending_cap ? db->pending_cap * 2 : MESA_DB_FAST_PENDING;
++      void *index = realloc(db->pending_index,
++                            (size_t)cap * sizeof(struct mesa_index_db_file_entry));
++      if (!index)
++         return false;
++      db->pending_index = index;
++      db->pending_cap = cap;
++   }
++
++   if (db->mem && db->mem_len + size > db->mem_cap) {
++      uint64_t cap = MAX2(db->mem_cap ? db->mem_cap * 2 : 256 * 1024, db->mem_len + size);
++      uint8_t *data = realloc(db->mem_data, cap);
++      if (!data)
++         return false;
++      db->mem_data = data;
++      db->mem_cap = cap;
++   }
++   return true;
++}
++
++/* Writes the held-back batch under the lock (compaction, close): nothing
++ * may be in flight. */
++static bool
++mesa_db_mem_flush_locked(struct mesa_cache_db *db)
++{
++   mesa_db_mem_wait(db);
++
++   if (!db->pending && !db->mem_len)
++      return true;
++
++   int64_t start = os_time_get_nano();
++   uint64_t index_size = (uint64_t)db->pending * sizeof(struct mesa_index_db_file_entry);
++
++   if (!mesa_db_pwrite_all(fileno(db->cache.file), db->mem_data, db->mem_len,
++                           db->cache_end - (int64_t)db->mem_len) ||
++       !mesa_db_pwrite_all(fileno(db->index.file), db->pending_index, index_size,
++                           db->index.offset))
++      return false;
++
++   db->index.offset += index_size;
++   mesa_db_note_flush(db->mem_len + index_size, os_time_get_nano() - start);
++   db->pending = 0;
++   db->pending_bytes = 0;
++   db->mem_len = 0;
++   db->pending_since_ns = 0;
+ 
+    return true;
+ }
+ 
++/* Writes the held-back batch with the lock let go: the batch moves to the
++ * in-flight buffers (still readable by gets), the lock is released for the
++ * two pwrite calls (data first, then the index lines that point at it), and
++ * taken again. One flush at a time: wait=false returns at once when one is in
++ * flight (the batch keeps growing), wait=true waits for it first. Under the
++ * lock; returns with it held; false when a write failed (the caller zaps). */
++static bool
++mesa_db_mem_flush(struct mesa_cache_db *db, bool wait)
++{
++   if (db->inflight) {
++      if (!wait)
++         return true;
++      mesa_db_mem_wait(db);
++   }
++
++   if (!db->alive || (!db->pending && !db->mem_len))
++      return true;
++
++   uint8_t *data = db->mem_data;
++   uint64_t data_len = db->mem_len;
++   int64_t data_off = db->cache_end - (int64_t)db->mem_len;
++   void *index = db->pending_index;
++   uint64_t index_len = (uint64_t)db->pending * sizeof(struct mesa_index_db_file_entry);
++   int64_t index_off = db->index.offset;
++   int fd_data = fileno(db->cache.file);
++   int fd_index = fileno(db->index.file);
++
++   db->flight_data = data;
++   db->flight_cap = db->mem_cap;
++   db->flight_len = data_len;
++   db->flight_off = data_off;
++   db->flight_index = index;
++   db->flight_index_cap = db->pending_cap;
++   db->inflight = true;
++
++   db->mem_data = db->spare_data;
++   db->mem_cap = db->spare_cap;
++   db->pending_index = db->spare_index;
++   db->pending_cap = db->spare_index_cap;
++   db->spare_data = NULL;
++   db->spare_cap = 0;
++   db->spare_index = NULL;
++   db->spare_index_cap = 0;
++   db->mem_len = 0;
++   db->pending = 0;
++   db->pending_bytes = 0;
++   db->pending_since_ns = 0;
++   /* The index lines' place is taken now: the next batch goes after them. */
++   db->index.offset += index_len;
++
++   simple_mtx_unlock(&db->flock_mtx);
++
++   int64_t start = os_time_get_nano();
++   bool ok = mesa_db_pwrite_all(fd_data, data, data_len, data_off) &&
++             mesa_db_pwrite_all(fd_index, index, index_len, index_off);
++   int64_t took = os_time_get_nano() - start;
++
++   simple_mtx_lock(&db->flock_mtx);
++
++   db->inflight = false;
++   if (!db->spare_data) {
++      db->spare_data = db->flight_data;
++      db->spare_cap = db->flight_cap;
++   } else {
++      free(db->flight_data);
++   }
++   if (!db->spare_index) {
++      db->spare_index = db->flight_index;
++      db->spare_index_cap = db->flight_index_cap;
++   } else {
++      free(db->flight_index);
++   }
++   db->flight_data = NULL;
++   db->flight_index = NULL;
++   db->flight_len = 0;
++
++   if (ok)
++      mesa_db_note_flush(data_len + index_len, took);
++
++   return ok;
++}
++
++/* Whether a fast database's held-back batch is due (the policy). */
++static bool
++mesa_db_flush_due(struct mesa_cache_db *db)
++{
++   const struct mesa_db_policy *p = mesa_db_policy();
++
++   if (!db->pending)
++      return db->pending_bytes >= p->flush_bytes;
++   if ((p->flush_n && db->pending >= p->flush_n) || db->pending_bytes >= p->flush_bytes)
++      return true;
++   return p->flush_ns && os_time_get_nano() - db->pending_since_ns >= p->flush_ns;
++}
++
++/* (Re)opens a memory-pending database's streams: pwrite went past their
++ * buffers, so a stream that read before may hold old bytes. Before
++ * compaction and the access times' write, with nothing held back. */
++static bool
++mesa_db_mem_fresh_streams(struct mesa_cache_db *db)
++{
++   if (!db->mem)
++      return true;
++
++   mesa_db_close_file(&db->cache);
++   mesa_db_close_file(&db->index);
++   if (!mesa_db_reopen_file(&db->cache) || !mesa_db_reopen_file(&db->index))
++      return false;
++   mesa_db_fast_buffers(db);
++   return true;
++}
++
+ /* Puts a fast database's .db stream at the file's end and knows that end
+  * (db->cache_end). A seek writes the stdio buffer out, so it is made only when
+  * a read moved the stream. Under the lock. */
+@@ -357,6 +672,12 @@ mesa_db_fast_seek_end(struct mesa_cache_db *db)
+    if (db->cache_end >= 0 && ftell(db->cache.file) == db->cache_end)
+       return true;
+ 
++   /* lead-mesh-44: memory-pending appends never move the stream; the end is
++    * known from the open or the last compaction on (nothing is held back or
++    * in flight when it is not). */
++   if (db->mem && db->cache_end >= 0)
++      return true;
++
+    if (!mesa_db_seek_end(db->cache.file))
+       return false;
+ 
+@@ -380,12 +701,20 @@ mesa_db_zap(struct mesa_cache_db *db)
+    /* Disable cache to prevent the recurring faults */
+    db->alive = false;
+ 
++   /* lead-mesh-44: a flush in flight writes at its offsets; the cut comes
++    * after it. What is held back in memory is dropped. */
++   if (db->mem) {
++      mesa_db_mem_wait(db);
++      db->mem_len = 0;
++   }
++
+    /* A fast database's held-back bytes go out before the cut, not after it
+     * at their old offsets; its held-back index entries are dropped. */
+    if (db->fast) {
+       fflush(db->cache.file);
+       db->pending = 0;
+       db->pending_bytes = 0;
++      db->pending_since_ns = 0;
+       db->cache_end = -1;
+    }
+ 
+@@ -508,7 +837,43 @@ mesa_db_fast_read(struct mesa_cache_db *db,
+    int fd = fileno(db->cache.file);
+    int64_t offset = hash_entry->cache_db_file_offset;
+ 
+-   if (db->pending_bytes &&
++   /* lead-mesh-44 (RADV_PS5_CACHE_MEM_PENDING): an entry held back or in
++    * flight is copied from memory; one in the files is read with pread, which
++    * no flush in flight holds up (the flush does not hold the lock). */
++   if (db->mem) {
++      const uint8_t *src = NULL;
++      int64_t size = blob_file_size(hash_entry->size);
++      int64_t held = db->cache_end - (int64_t)db->mem_len;
++
++      if (db->mem_len && offset >= held) {
++         if (offset + size > db->cache_end)
++            return 2;
++         src = db->mem_data + (offset - held);
++      } else if (db->inflight && offset >= db->flight_off &&
++                 offset < db->flight_off + (int64_t)db->flight_len) {
++         if (offset + size > db->flight_off + (int64_t)db->flight_len)
++            return 2;
++         src = db->flight_data + (offset - db->flight_off);
++      }
++      if (src) {
++         memcpy(cache_entry, src, sizeof(*cache_entry));
++         if (!mesa_db_cache_entry_valid(cache_entry) ||
++             cache_entry->size != hash_entry->size)
++            return 2;
++         if (memcmp(cache_entry->key, cache_key_160bit, sizeof(cache_entry->key)))
++            return 1;
++         *data = malloc(cache_entry->size);
++         if (!*data)
++            return 3;
++         memcpy(*data, src + sizeof(*cache_entry), cache_entry->size);
++         if (util_hash_crc32(*data, cache_entry->size) != cache_entry->crc)
++            return 2;
++         p_atomic_inc(&mesa_db_ps5_counts.mem_hits);
++         return 0;
++      }
++   }
++
++   if (!db->mem && db->pending_bytes &&
+        offset + (int64_t)blob_file_size(hash_entry->size) >
+        db->cache_end - (int64_t)db->pending_bytes &&
+        !mesa_db_fast_flush(db))
+@@ -718,6 +1083,10 @@ mesa_db_write_times(struct mesa_cache_db *db)
+    if (!mesa_db_fast_flush(db))
+       return false;
+ 
++   /* lead-mesh-44: pwrite went past the streams' buffers. */
++   if (db->mem && db->dirty_times && !mesa_db_mem_fresh_streams(db))
++      return false;
++
+    if (!db->dirty_times)
+       return true;
+ 
+@@ -892,6 +1261,12 @@ mesa_db_compact(struct mesa_cache_db *db, int64_t blob_size,
+    unsigned int i = 0;
+    const uint64_t compact_start = os_time_get_nano(); /* RADV_PS5_DISK_CACHE_STATS */
+ 
++   /* lead-mesh-44: everything held back goes into the files first, and the
++    * streams that compaction reads through are opened afresh (the callers
++    * waited for any flush in flight). */
++   if (db->mem && (!mesa_db_fast_flush(db) || !mesa_db_mem_fresh_streams(db)))
++      return false;
++
+    /* reload index to sync the last access times */
+    if (db->owned && !mesa_db_write_times(db))
+       return false;
+@@ -1090,12 +1465,25 @@ mesa_cache_db_open_impl(struct mesa_cache_db *db, const char *cache_path, bool o
+    db->pending = 0;
+    db->pending_bytes = 0;
+    db->pending_index = NULL;
++   /* lead-mesh-44 */
++   db->pending_cap = 0;
++   db->pending_since_ns = 0;
++   db->mem = false;
++   db->mem_data = db->flight_data = db->spare_data = NULL;
++   db->mem_len = db->mem_cap = db->flight_len = db->flight_cap = db->spare_cap = 0;
++   db->flight_off = 0;
++   db->flight_index = db->spare_index = NULL;
++   db->flight_index_cap = db->spare_index_cap = 0;
++   db->inflight = false;
+    db->fast = db->owned && mesa_cache_db_ps5_fast();
+    if (db->fast) {
+       db->pending_index = malloc(MESA_DB_FAST_PENDING *
+                                  sizeof(struct mesa_index_db_file_entry));
+       if (!db->pending_index)
+          db->fast = false;
++      else
++         db->pending_cap = MESA_DB_FAST_PENDING;
++      db->mem = db->fast && mesa_db_policy()->mem;
+    }
+    mesa_db_fast_buffers(db);
+ 
+@@ -1128,8 +1516,11 @@ close_locks:
+    }
+    db->owned = false;
+    db->fast = false;
++   db->mem = false;
+    free(db->pending_index);
+    db->pending_index = NULL;
++   free(db->mem_data);
++   db->mem_data = NULL;
+    mesa_db_free_file(&db->index);
+ close_cache:
+    mesa_db_free_file(&db->cache);
+@@ -1171,12 +1562,25 @@ mesa_cache_db_close(struct mesa_cache_db *db)
+ {
+    if (db->owned && db->alive) {
+       simple_mtx_lock(&db->flock_mtx);
++      /* lead-mesh-44: after a flush in flight. */
++      if (db->mem)
++         mesa_db_mem_wait(db);
+       /* Writes a fast database's held-back entries first. */
+       mesa_db_write_times(db);
+       simple_mtx_unlock(&db->flock_mtx);
++   } else if (db->mem) {
++      simple_mtx_lock(&db->flock_mtx);
++      mesa_db_mem_wait(db);
++      simple_mtx_unlock(&db->flock_mtx);
+    }
+    free(db->pending_index);
+    db->pending_index = NULL;
++   /* lead-mesh-44 */
++   free(db->mem_data);
++   free(db->spare_data);
++   free(db->spare_index);
++   db->mem_data = db->spare_data = NULL;
++   db->spare_index = NULL;
+ 
+    _mesa_hash_table_u64_destroy(db->index_db);
+    simple_mtx_destroy(&db->flock_mtx);
+@@ -1273,7 +1677,10 @@ read_done:
+          hash_entry->time_dirty = true;
+          db->dirty_times++;
+       }
+-      if (db->dirty_times >= 256 && !mesa_db_write_times(db))
++      /* lead-mesh-44: memory-pending databases write them at compaction and
++       * close only (a write here would be one write call per entry, under
++       * the lock, and would first write out the held-back batch). */
++      if (!db->mem && db->dirty_times >= 256 && !mesa_db_write_times(db))
+          goto fail_fatal;
+    } else {
+       if (!mesa_db_seek(db->index.file, hash_entry->index_db_file_offset) ||
+@@ -1429,6 +1836,16 @@ fast:
+     * entry goes into the stdio buffer and its index entry into the batch;
+     * both reach the files in mesa_db_fast_flush. A read that hits this entry
+     * first seeks, which writes the buffer out. */
++   /* lead-mesh-44 (RADV_PS5_CACHE_MEM_PENDING): a batch in memory that has
++    * grown to 4 flushes' worth (8 MiB at least) while one is in flight waits
++    * for it, before anything is decided (the lock is let go meanwhile). */
++   if (db->mem && db->inflight &&
++       db->mem_len >= MAX2(4 * mesa_db_policy()->flush_bytes, 8ull * 1024 * 1024)) {
++      mesa_db_mem_wait(db);
++      if (!db->alive)
++         goto fail;
++   }
++
+    if (!mesa_db_fast_seek_end(db))
+       goto fail_fatal;
+ 
+@@ -1457,6 +1874,14 @@ fast:
+             p_atomic_inc(&mesa_db_ps5_counts.deferred);
+          db->needs_compaction = true;
+       } else {
++         /* lead-mesh-44: not while a flush is in flight; after it, the put
++          * starts over (the lock was let go). */
++         if (db->mem && db->inflight) {
++            mesa_db_mem_wait(db);
++            if (!db->alive)
++               goto fail;
++            goto fast;
++         }
+          if (!mesa_db_compact(db, MAX2(blob_size, mesa_cache_db_eviction_size(db)),
+                               NULL))
+             goto fail_fatal;
+@@ -1487,9 +1912,20 @@ fast:
+    hash_entry->evicted = false;
+    hash_entry->time_dirty = false;
+ 
+-   if (!mesa_db_write(db->cache.file, &cache_entry) ||
+-       !mesa_db_write_data(db->cache.file, blob, blob_size))
++   /* lead-mesh-44: the batch grows past 64 entries when the policy says so. */
++   if (!mesa_db_pending_room(db, blob_file_size(blob_size)))
++      goto fail;
++
++   if (db->mem) {
++      memcpy(db->mem_data + db->mem_len, &cache_entry, sizeof(cache_entry));
++      memcpy(db->mem_data + db->mem_len + sizeof(cache_entry), blob, blob_size);
++      db->mem_len += blob_file_size(blob_size);
++   } else if (!mesa_db_write(db->cache.file, &cache_entry) ||
++              !mesa_db_write_data(db->cache.file, blob, blob_size)) {
+       goto fail_fatal;
++   }
++   if (!db->pending)
++      db->pending_since_ns = os_time_get_nano();
+ 
+    memcpy((uint8_t *)db->pending_index + db->pending * sizeof(index_entry),
+           &index_entry, sizeof(index_entry));
+@@ -1500,9 +1936,11 @@ fast:
+    _mesa_hash_table_u64_insert(db->index_db, hash, hash_entry);
+    hash_entry = NULL;
+ 
+-   if ((db->pending >= MESA_DB_FAST_PENDING ||
+-        db->pending_bytes >= MESA_DB_FAST_FLUSH_BYTES) &&
+-       !mesa_db_fast_flush(db))
++   /* lead-mesh-44: the policy (RADV_PS5_CACHE_FLUSH_MIB / _N / _S; unset:
++    * 64 entries or 1 MiB, as before). Memory-pending: written with the lock
++    * let go, and not while another flush is in flight (the batch waits). */
++   if (mesa_db_flush_due(db) &&
++       !(db->mem ? mesa_db_mem_flush(db, false) : mesa_db_fast_flush(db)))
+       goto fail_fatal;
+ 
+    mesa_db_unlock(db);
+@@ -1575,6 +2013,9 @@ mesa_cache_db_compact_deferred(struct mesa_cache_db *db)
+       return false;
+ 
+    simple_mtx_lock(&db->flock_mtx);
++   /* lead-mesh-44: not while a flush is in flight. */
++   if (db->mem)
++      mesa_db_mem_wait(db);
+    if (db->alive && db->needs_compaction) {
+       int64_t over = db->cache_end - (int64_t)sizeof(struct mesa_db_file_header) -
+                      (int64_t)db->max_cache_size;
+@@ -1602,7 +2043,9 @@ mesa_cache_db_flush(struct mesa_cache_db *db)
+       return true;
+ 
+    simple_mtx_lock(&db->flock_mtx);
+-   if (db->alive && !mesa_db_fast_flush(db)) {
++   /* lead-mesh-44: memory-pending: after a flush in flight, with the lock
++    * let go for the writes, and done when this returns. */
++   if (db->alive && !(db->mem ? mesa_db_mem_flush(db, true) : mesa_db_fast_flush(db))) {
+       mesa_db_zap(db);
+       ok = false;
+    }
+@@ -1628,6 +2071,16 @@ mesa_cache_db_entry_remove(struct mesa_cache_db *db,
+    if (!mesa_db_refresh(db))
+       goto fail_fatal;
+ 
++   /* lead-mesh-44: the entry is read through the stream below: everything
++    * held back goes into the files first, through fresh streams. */
++   if (db->mem) {
++      mesa_db_mem_wait(db);
++      if (!db->alive)
++         goto fail;
++      if (!mesa_db_fast_flush(db) || !mesa_db_mem_fresh_streams(db))
++         goto fail_fatal;
++   }
++
+    hash_entry = _mesa_hash_table_u64_search(db->index_db, hash);
+    if (!hash_entry)
+       goto fail;
+diff --git a/src/util/mesa_cache_db.h b/src/util/mesa_cache_db.h
+index b9dbc1d..3126291 100644
+--- a/src/util/mesa_cache_db.h
++++ b/src/util/mesa_cache_db.h
+@@ -81,6 +81,29 @@ struct mesa_cache_db {
+     * (mesa_cache_db_compact_deferred); 0: compacted at once, as upstream. */
+    uint64_t defer_limit;
+    bool needs_compaction;
++   /* lead-mesh-44: entries pending_index has room for (it grows), and when
++    * the oldest held-back entry was put (RADV_PS5_CACHE_FLUSH_S). */
++   unsigned pending_cap;
++   int64_t pending_since_ns;
++   /* lead-mesh-44, RADV_PS5_CACHE_MEM_PENDING=1 (fast only): the held-back
++    * .db bytes are in mem_data (mem_len of them, at cache_end - mem_len), not
++    * in the stdio buffer, and a flush writes them and their index lines with
++    * pwrite after letting go of the lock. One flush at a time is in flight:
++    * its bytes stay readable in flight_data until it is done. */
++   bool mem;
++   uint8_t *mem_data;
++   uint64_t mem_len, mem_cap;
++   bool inflight;
++   uint8_t *flight_data;
++   uint64_t flight_len, flight_cap;
++   int64_t flight_off;
++   void *flight_index;
++   unsigned flight_index_cap;
++   /* Buffers a finished flush gives back, for the next batch. */
++   uint8_t *spare_data;
++   uint64_t spare_cap;
++   void *spare_index;
++   unsigned spare_index_cap;
+ };
+ 
+ /* Counts since the process started, for the RADV_PS5_CACHE line. */
+@@ -90,6 +113,14 @@ struct mesa_cache_db_ps5_counts {
+    uint64_t deferred;
+    uint64_t compactions;
+    uint64_t compact_ns;
++   /* lead-mesh-44: bytes the flushes wrote (.db and .idx), the longest flush
++    * since the last read of the counts (reset by that read), gets served from
++    * held-back or in-flight bytes, and the time puts waited for a flush in
++    * flight (RADV_PS5_CACHE_MEM_PENDING). */
++   uint64_t flush_bytes;
++   uint64_t flush_max_ns;
++   uint64_t mem_hits;
++   uint64_t put_wait_ns;
+ };
+ 
+ #if DETECT_OS_WINDOWS == 0
+@@ -169,6 +200,11 @@ mesa_cache_db_flush(struct mesa_cache_db *db);
+ 
+ void
+ mesa_cache_db_ps5_get_counts(struct mesa_cache_db_ps5_counts *counts);
++
++/* lead-mesh-44: the flush policy's one line ("" when every switch is at its
++ * default), for the RADV_PS5_CACHE fast on line. */
++const char *
++mesa_cache_db_ps5_policy(void);
+ #else
+ static inline bool
+ mesa_cache_db_open(struct mesa_cache_db *db, const char *cache_path)
+diff --git a/src/vulkan/runtime/vk_pipeline_cache.c b/src/vulkan/runtime/vk_pipeline_cache.c
+index a0a7fc9..08d7a7c 100644
+--- a/src/vulkan/runtime/vk_pipeline_cache.c
++++ b/src/vulkan/runtime/vk_pipeline_cache.c
+@@ -68,6 +68,32 @@ vk_pipeline_cache_put_new_mode(void)
+    return mode;
+ }
+ 
++/* lead-mesh-44: objects added to or removed from a pipeline cache the app
++ * holds a handle to (and merges into it), since the process started, not
++ * counting the objects vkCreatePipelineCache read from its initial data (the
++ * handle is made after that), nor a looked-up raw entry turned into the object
++ * its own bytes describe. EglantinePS5's EDEN_UP_DRIVER_CACHE_SKIP_SAME asks it through the
++ * hook below: while it is 0 the app's cache holds what its file held. */
++static uint64_t vk_pipeline_cache_client_changes;
++
++static unsigned long long
++vk_pipeline_cache_changes(void)
++{
++   return p_atomic_read(&vk_pipeline_cache_client_changes);
++}
++
++/* Set by the app (weak here, so a program without it links); undefined in
++ * the driver, it keeps its name through tools/isolate-radv.py (as
++ * lead-mesh-41's hooks). */
++extern unsigned long long (*eden_radv_pipeline_cache_changes)(void) __attribute__((weak));
++
++static inline void
++vk_pipeline_cache_note_change(const struct vk_pipeline_cache *cache)
++{
++   if (cache->base.client_visible && !cache->weak_ref)
++      p_atomic_inc(&vk_pipeline_cache_client_changes);
++}
++
+ static struct disk_cache *
+ get_disk_cache(const struct vk_pipeline_cache *cache)
+ {
+@@ -199,6 +225,7 @@ vk_pipeline_cache_remove_object(struct vk_pipeline_cache *cache,
+          vk_pipeline_cache_object_unref(cache->base.device, object);
+ 
+       _mesa_set_remove(cache->object_cache, entry);
++      vk_pipeline_cache_note_change(cache); /* lead-mesh-44 */
+    }
+ }
+ 
+@@ -347,12 +374,18 @@ vk_pipeline_cache_insert_object_ex(struct vk_pipeline_cache *cache,
+           assert(object->ref_cnt == 1);
+           entry->key = object;
+           object = found_object;
++          /* lead-mesh-44: not a change. The raw bytes read from the
++           * initial data (or a disk cache) for this key become the object
++           * they describe (a lookup deserializes them; a failed one removes
++           * the entry, which counts). Counting it made every boot pipeline
++           * looked up in the app's cache a change. */
+        } else if (was_new) {
+           *was_new = false;
+        }
+ 
+       result = vk_pipeline_cache_object_ref((void *)entry->key);
+    } else {
++      vk_pipeline_cache_note_change(cache); /* lead-mesh-44 */
+       result = object;
+       if (!cache->weak_ref)
+          vk_pipeline_cache_object_ref(result);
+@@ -729,6 +762,10 @@ vk_pipeline_cache_create(struct vk_device *device,
+                              pCreateInfo->initialDataSize);
+    }
+ 
++   /* lead-mesh-44 */
++   if (&eden_radv_pipeline_cache_changes)
++      p_atomic_set(&eden_radv_pipeline_cache_changes, vk_pipeline_cache_changes);
++
+    return cache;
+ }
+ 
+@@ -915,8 +952,10 @@ vk_common_MergePipelineCaches(VkDevice _device,
+                 */
+                vk_pipeline_cache_object_unref(device, dst_object);
+                dst_entry->key = vk_pipeline_cache_object_ref(src_object);
++               vk_pipeline_cache_note_change(dst); /* lead-mesh-44 */
+             }
+          } else {
++            vk_pipeline_cache_note_change(dst); /* lead-mesh-44 */
+             /* We inserted src_object in dst so it needs a reference */
+             assert(dst_entry->key == (const void *)src_object);
+             vk_pipeline_cache_object_ref(src_object);
