@@ -1,0 +1,116 @@
+diff --git a/src/video_core/dma_pusher.cpp b/src/video_core/dma_pusher.cpp
+index f7fb1c5..3786067 100644
+--- a/src/video_core/dma_pusher.cpp
++++ b/src/video_core/dma_pusher.cpp
+@@ -8,6 +8,7 @@
+ #include <functional>
+ #include <tuple>
+ #include <array>
++#include <chrono>
+ #include <algorithm>
+ #include <atomic>
+ #include <bit>
+@@ -1341,6 +1342,84 @@ static const u32 g_semaphore_watch = [] {
+     return value ? static_cast<u32>(std::strtoull(value, nullptr, 16)) : 0U;
+ }();
+ 
++// EDEN_GBB_GPFIFO=1 (GrowingBlackBeans 0934, log only, off by default): what the game actually
++// submits, counted at the GPFIFO boundary before the front expands anything. Per channel, every 10 s:
++// the entries parsed, the words those entries declare (CommandListHeader::size) and the command
++// headers the parser produced from them. "per header" is words divided by headers; compare the words
++// with EDEN_GBB_VITALS' ring_kwords_s for the whole front-to-back path.
++//
++// Why (13 Nov 2026): the back thread spends 27.6 ms of a 33.3 ms 30 fps budget on command methods,
++// 15.7 ms of it on `draw` alone at 13,294 draws a frame. Nothing we had counts what the game
++// submitted, so there is no way to say whether that demand is the game's or ours. This is the one
++// counter the frame anatomy needs and nothing in the tree provides: EDEN_NX2_FETCH_COUNT walks the
++// same entries but counts where their words came from, not how many there are.
++//
++// Off: one relaxed load of a function-local static per parsed entry. No clock read, no atomics.
++static bool GpfifoCountEnabled() {
++    static const bool enabled = Common::PeSwitch("EDEN_GBB_GPFIFO");
++    return enabled;
++}
++
++namespace {
++constexpr u32 GpfifoChannels = 16;
++struct GpfifoCounters {
++    std::atomic<u64> entries{};
++    std::atomic<u64> words{};
++    std::atomic<u64> headers{};
++};
++std::array<GpfifoCounters, GpfifoChannels> gpfifo_counters{};
++std::atomic<s64> gpfifo_next_report_ns{};
++
++s64 GpfifoNowNs() {
++    return std::chrono::duration_cast<std::chrono::nanoseconds>(
++               std::chrono::steady_clock::now().time_since_epoch())
++        .count();
++}
++
++/// One line per channel that saw an entry, then a total. Any guest core thread may land here, so the
++/// window is claimed with a compare-exchange and the counters are drained with exchange: a count that
++/// arrives between the claim and the drain lands in the next window rather than being lost.
++void GpfifoMaybeReport() {
++    const s64 now = GpfifoNowNs();
++    s64 due = gpfifo_next_report_ns.load(std::memory_order_relaxed);
++    if (due == 0) {
++        gpfifo_next_report_ns.compare_exchange_strong(due, now + 10'000'000'000LL,
++                                                      std::memory_order_relaxed);
++        return;
++    }
++    if (now < due ||
++        !gpfifo_next_report_ns.compare_exchange_strong(due, now + 10'000'000'000LL,
++                                                       std::memory_order_relaxed)) {
++        return;
++    }
++    u64 all_entries = 0;
++    u64 all_words = 0;
++    u64 all_headers = 0;
++    for (u32 channel = 0; channel < GpfifoChannels; ++channel) {
++        const u64 entries = gpfifo_counters[channel].entries.exchange(0, std::memory_order_relaxed);
++        const u64 words = gpfifo_counters[channel].words.exchange(0, std::memory_order_relaxed);
++        const u64 headers = gpfifo_counters[channel].headers.exchange(0, std::memory_order_relaxed);
++        if (entries == 0) {
++            continue;
++        }
++        all_entries += entries;
++        all_words += words;
++        all_headers += headers;
++        LOG_INFO(HW_GPU,
++                 "EDEN_GBB_GPFIFO: last 10 s channel {} entries {}, words {}, headers {}, "
++                 "{:.1f} words an entry, {:.3f} words a header",
++                 channel, entries, words, headers,
++                 static_cast<double>(words) / static_cast<double>(entries),
++                 headers == 0 ? 0.0 : static_cast<double>(words) / static_cast<double>(headers));
++    }
++    if (all_entries != 0) {
++        LOG_INFO(HW_GPU,
++                 "EDEN_GBB_GPFIFO: last 10 s all channels entries {}, words {}, headers {}",
++                 all_entries, all_words, all_headers);
++    }
++}
++} // namespace
++
+ // EDEN_NX2_PB_CHECK also keeps the last parsed entries, for DumpCurrentEntry. Read at first use:
+ // env.txt is applied in main, after the globals.
+ static bool RecordParsedEntries() {
+@@ -2689,6 +2768,18 @@ void DmaPusher::NoteDroppedWord(u32 word, size_t position) {
+ 
+ void DmaPusher::RecordParsedEntry(const CommandListHeader& header,
+                                   std::span<const CommandHeader> commands) {
++    // 0934: count what the game submitted, before anything expands it.
++    if (GpfifoCountEnabled()) [[unlikely]] {
++        const s32 bind_id = channel_state.bind_id;
++        const u32 channel = (bind_id >= 0 && static_cast<u32>(bind_id) < GpfifoChannels)
++                                ? static_cast<u32>(bind_id)
++                                : (GpfifoChannels - 1);
++        GpfifoCounters& c = gpfifo_counters[channel];
++        c.entries.fetch_add(1, std::memory_order_relaxed);
++        c.words.fetch_add(static_cast<u64>(header.size), std::memory_order_relaxed);
++        c.headers.fetch_add(commands.size(), std::memory_order_relaxed);
++        GpfifoMaybeReport();
++    }
+     if (FetchCountMode() != 0) {
+         CountFetchedEntry(header, commands);
+     }

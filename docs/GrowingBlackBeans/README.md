@@ -13,7 +13,38 @@ Base PS5, firmware 13.60, one standard route: Continue, through Link's house, ou
 - Builds t120-gbb4 to gbb7 (untested), switches and how to test them: `builds-t120-gbb4-7.md`.
 - Technical limits (what a base PS5 can ever do with this game): `technical-limits.md`. Second-opinion review: `review-2026-11-11-second-opinion.md`.
 
-## Where we are (11 Nov)
+- **13 Nov, read sync:** why its cost cannot be narrowed away (`read-sync-is-a-fence-wait-2026-11-13.md`), the escape dial (`read-sync-escape-2026-11-13.md`), and why the saved frame grids hold no flicker signal (`flicker-is-not-brightness-2026-11-13.md`, **corrected** -- Vampinity's `tools/Vampinity/flash-counter/` is the real meter).
+- **13 Nov, three review cycles:** `review-2026-11-13.md` (morning), `-evening.md`, `-night.md`. The night one carries the frame-anatomy plan and an addendum where an independent review rejected most of it.
+- **13 Nov builds:** `build-t134-gbb5-escape-dial.md`, `build-t134-gbb6-region-list.md`, `build-t134-gbb8-gpfifo.md`.
+- **Tools:** `tools/GrowingBlackBeans/eglog/` gains `anatomy.py` (demand against supply, per-method cost, the fit, a 30 fps budget), `guard.py` (the copy guard's own counters, unread in 77 runs until 13 Nov) and `flashdet.py` (**superseded** by Vampinity's flash-counter).
+
+## Where we are (13 Nov)
+
+**The frame is back-thread bound and draws dominate it.** From `runRD1`/`runRD2` with `anatomy.py`: the
+back thread is 87-90% of every walking frame, and `draw` (register `e0:0x585`) runs **13,294 times a
+frame at 1.182 us**, which is **15.69 ms -- 47% of a 33.3 ms budget at 30 fps** -- before the host GPU
+draws anything. All other commands are 11.86 ms. Both runs carry about 12% of instrument overhead, so
+treat the milliseconds as proportions.
+
+**Two independent levers:** 13,294 draws a frame is the game's demand; 1.182 us each is ours. Whether
+that count is the game's or inflated by our front end is what patch 0934 answers, and it has not run.
+
+**Read sync is closed as a line of work.** Three patches, three levers, all flat: syncs -28% (0930),
+per-wait -77% (0932), syncs -58% (0933). The cost is a wait for the frame's fence, which is an event,
+so the predicate is not the lever. And the guard counters show read sync removes the second frame in
+flight entirely, so its cost and the lost lookahead gain are one fact rather than two.
+
+**Flicker is parked, and the instrument question is settled:** Vampinity's capture-video flash meter is
+the only working one, it has run on 418 runs, and **none of them is a two-frames-ahead arm**. The
+measurement nobody has taken is the one the argument needs.
+
+**Still open:** `EDEN_UP_AHEAD_GUARD_ALL_WRITES=1` has never been set in any run, and it is the direct
+test of whether the copy guard's exposure is harm. `runGW1` is prepared for it.
+
+**Note on the 11 Nov section below:** its point 5 ("flashes near-gone with the guard") is wrong, and its
+ring-word fit is the ancestor of `anatomy.py`. We had this topsight on 11 Nov and then stopped using it.
+
+## Where we were (11 Nov)
 
 **Everyday setup:** T120 + our patches, `everyday.env.txt` (includes `EDEN_UP_AHEAD_GUARD=3`, the NaN guard and invariant position, mask components/unwritten, trust copy trio, shader prep). Standing ~33 fps, walking ~24-25.
 

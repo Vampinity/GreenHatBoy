@@ -1,0 +1,95 @@
+0932: the read-sync escape dial (EDEN_GBB_READ_SYNC_ESCAPE)
+
+GrowingBlackBeans, 13 Nov 2026. Applies on top of Vampinity's 0567 (up-ahead-read-sync), after our
+0929 and 0930. Credit for the wait and its escape: Vampinity.
+
+Why: RC1's census (0930) on t134-gbb4, 167,681 synced reads over eleven 10 s windows, says read sync's
+cost is almost all the give-up timer, not the flush round trip:
+
+  fence wait time  133,609 ms (84.4%)      flush round trips  24,614 ms (15.6%)
+  fence waits       62,168, 2.15 ms each   escapes            60,480 of 64,897 (93.2%)
+
+60,480 escapes at 2 ms is 120,960 ms, 91% of the fence-wait time and about 77% of everything read sync
+spends waiting. Those waits end *without* the data having landed, and the arms that ran them were clean
+at the house door 3 of 3 (12 Nov) and clean by eye again in RO1/RO2 (13 Nov), so what they return is not
+what flickers. This patch makes the timer settable so that claim can be tested.
+
+Default: unset keeps 0567's 2 ms, and with it the 500 us yield phase and 250 us sleep step, so a build
+with this patch and no new switch behaves as it does today. The setting is recorded in every run already,
+through 0923's EDEN_GBB_ENV line, so no new log line.
+
+--- a/src/video_core/ahead_read_sync.h
++++ b/src/video_core/ahead_read_sync.h
+@@ -1,8 +1,12 @@
++#include <algorithm>
++#include <cstdlib>
++
+ namespace VideoCommon::AheadReadSync {
+ 
+ /// The longest a read waits for the presented frame's fence before it flushes anyway.
+ inline constexpr s64 WaitCapMs = 50;
+-/// After this long a wait also ends when a GPU channel is suspended on a semaphore acquire.
+-inline constexpr s64 EscapeAfterNs = 2'000'000;
++/// After this long a wait also ends when a GPU channel is suspended on a semaphore acquire.
++/// 0567's value, and what EDEN_GBB_READ_SYNC_ESCAPE keeps when it is unset.
++inline constexpr s64 EscapeAfterNsDefault = 2'000'000;
+ 
++/// 0932, the escape dial. EDEN_GBB_READ_SYNC_ESCAPE=<microseconds>: how long a read's fence wait runs
++/// before it gives up because a channel is suspended on a semaphore acquire. Unset, 0 or unreadable
++/// keeps 0567's 2 ms. Floor 10 us, below which the wait is all clock reads.
++[[nodiscard]] inline s64 ParseEscapeNs(const char* text) {
++    if (text == nullptr) {
++        return EscapeAfterNsDefault;
++    }
++    char* end = nullptr;
++    const long long us = std::strtoll(text, &end, 10);
++    if (end == text || us <= 0) {
++        return EscapeAfterNsDefault;
++    }
++    return (std::max)(static_cast<s64>(10'000), static_cast<s64>(us) * 1'000);
++}
++
++[[nodiscard]] inline s64 EscapeAfterNs() {
++    static const s64 ns = ParseEscapeNs(std::getenv("EDEN_GBB_READ_SYNC_ESCAPE"));
++    return ns;
++}
++
++/// The yield phase and the sleep step follow the escape, so a short escape is not overshot by a whole
++/// sleep. At the 2 ms default these come out at 500 us and 250 us: 0567's values exactly.
++[[nodiscard]] inline s64 YieldUntilNs() {
++    static const s64 ns = (std::min)(static_cast<s64>(500'000), EscapeAfterNs() / 4);
++    return ns;
++}
++
++[[nodiscard]] inline s64 SleepStepUs() {
++    static const s64 us =
++        std::clamp(EscapeAfterNs() / 8'000, static_cast<s64>(25), static_cast<s64>(250));
++    return us;
++}
++
+ /// 1 while the game's latest present returned with its own fence not reached. Written only by
+ /// the nx2:vi2 present thread (release), read by guest core threads (acquire).
+ inline std::atomic<u32> g_ahead{0};
+
+--- a/src/video_core/gpu.cpp
++++ b/src/video_core/gpu.cpp
+@@ -344,13 +344,14 @@
+                     // Past EscapeAfterNs with a channel suspended on a semaphore acquire: the
+                     // frame may wait on a release this thread makes later (as AheadGuard's
+                     // HoldWriter, which lets such writers go).
+-                    if (now - start >= ReadSync::EscapeAfterNs &&
++                    if (now - start >= ReadSync::EscapeAfterNs() &&
+                         scheduler.HasPendingChannelsAnyThread()) {
+                         counters.fence_escapes.fetch_add(1, std::memory_order_relaxed);
+                         break;
+                     }
+-                    if (now - start < 500'000) {
++                    if (now - start < ReadSync::YieldUntilNs()) {
+                         std::this_thread::yield();
+                     } else {
+-                        std::this_thread::sleep_for(std::chrono::microseconds{250});
++                        std::this_thread::sleep_for(
++                            std::chrono::microseconds{ReadSync::SleepStepUs()});
+                     }
+                 }
+             }

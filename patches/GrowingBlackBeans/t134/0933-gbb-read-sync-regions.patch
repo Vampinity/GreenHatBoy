@@ -1,0 +1,252 @@
+diff --git a/src/video_core/gbb_read_sync_regions.h b/src/video_core/gbb_read_sync_regions.h
+new file mode 100644
+index 0000000..56b011c
+--- /dev/null
++++ b/src/video_core/gbb_read_sync_regions.h
+@@ -0,0 +1,209 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++/// GrowingBlackBeans 0933: read sync only where the data actually changes.
++///
++/// EDEN_GBB_READ_SYNC_REGIONS=<list> (boot; unset = off, and then nothing below runs):
++///   with EDEN_UP_AHEAD_READ_SYNC=1 on, a read that read sync would make wait
++///   (GPU::OnCPURead, a fence-downloaded range while the latest present ran ahead) waits only
++///   when it falls inside one of the listed regions. Every other such read takes guest memory
++///   as it is, exactly as without read sync.
++///   List: comma-separated "<base>" or "<base>+<size>". Base is hex (0x optional), size is hex
++///   or decimal with an optional K or M suffix and defaults to 1M. At most MaxRegions entries;
++///   a region with a zero or unparseable size is dropped. Example, the two clusters the 13 Nov
++///   census found: EDEN_GBB_READ_SYNC_REGIONS=0x2b600000+2M,0x30400000+2M
++///
++/// EDEN_GBB_READ_SYNC_REGIONS_AUDIT=1 (boot; needs the list and
++///   EDEN_UP_AHEAD_READ_SYNC_VERIFY=1): proves the list before anyone trusts it. Every read is
++///   synced as it would be without the list, and the counters below say how many reads with
++///   changed bytes fell OUTSIDE it. That is the number that must be zero. It is as slow as a
++///   full read sync; it is a measurement mode, not a setting to play with.
++///
++/// Why (13 Nov 2026, runRC1's census, 0930): of 167,681 synced reads, under 1% came back with
++///   different bytes, and the 104 the verify logged sit in five 1 MiB regions - two of them
++///   hold 81%, and only 71 distinct cache lines appear at all. Read sync waits on every
++///   fence-downloaded range and costs 7-8 fps for that; this pays it only where the race is.
++///
++/// Every 10 s while on:
++///   "EDEN_GBB_READ_SYNC_REGIONS: last 10 s inside <n> outside <n> (<n> regions[, audit:
++///    changed inside <n>, changed OUTSIDE <n>])"
++
++#include <algorithm>
++#include <atomic>
++#include <chrono>
++#include <cstdlib>
++#include <cstring>
++
++#include "common/common_types.h"
++#include "common/logging.h"
++
++namespace VideoCore::GbbReadSyncRegions {
++
++constexpr u32 MaxRegions = 16;
++constexpr u64 DefaultSize = 1ULL << 20;
++
++struct Region {
++    u64 begin;
++    u64 end;
++};
++
++struct Parsed {
++    Region regions[MaxRegions];
++    u32 count;
++};
++
++[[nodiscard]] inline u64 ParseSize(const char* text, const char** end_out) {
++    char* end = nullptr;
++    const int base = (text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) ? 16 : 10;
++    const unsigned long long value = std::strtoull(text, &end, base);
++    if (end == text) {
++        *end_out = text;
++        return 0;
++    }
++    u64 size = static_cast<u64>(value);
++    if (*end == 'K' || *end == 'k') {
++        size <<= 10;
++        ++end;
++    } else if (*end == 'M' || *end == 'm') {
++        size <<= 20;
++        ++end;
++    }
++    *end_out = end;
++    return size;
++}
++
++/// Reads the list once. A base with no "+size" covers DefaultSize.
++[[nodiscard]] inline Parsed ParseList(const char* text) {
++    Parsed out{};
++    if (text == nullptr) {
++        return out;
++    }
++    const char* p = text;
++    while (*p != '\0' && out.count < MaxRegions) {
++        while (*p == ',' || *p == ' ') {
++            ++p;
++        }
++        if (*p == '\0') {
++            break;
++        }
++        char* end = nullptr;
++        const unsigned long long base = std::strtoull(p, &end, 16);
++        if (end == p) {
++            break; // nothing readable left; keep what we have
++        }
++        p = end;
++        u64 size = DefaultSize;
++        if (*p == '+') {
++            const char* after = nullptr;
++            size = ParseSize(p + 1, &after);
++            p = after;
++        }
++        if (size != 0) {
++            out.regions[out.count].begin = static_cast<u64>(base);
++            out.regions[out.count].end = static_cast<u64>(base) + size;
++            ++out.count;
++        }
++        while (*p != '\0' && *p != ',') {
++            ++p;
++        }
++    }
++    return out;
++}
++
++[[nodiscard]] inline const Parsed& List() {
++    static const Parsed parsed = ParseList(std::getenv("EDEN_GBB_READ_SYNC_REGIONS"));
++    return parsed;
++}
++
++/// True when a list was given. One relaxed load of a function-local static when off.
++[[nodiscard]] inline bool On() {
++    static const bool on = List().count != 0;
++    return on;
++}
++
++[[nodiscard]] inline bool AuditOn() {
++    static const bool on = [] {
++        const char* v = std::getenv("EDEN_GBB_READ_SYNC_REGIONS_AUDIT");
++        return On() && v != nullptr && v[0] == '1' && v[1] == '\0';
++    }();
++    return on;
++}
++
++/// Counters: relaxed atomics, written by guest core threads, read by whoever logs.
++inline std::atomic<u64> g_inside{};
++inline std::atomic<u64> g_outside{};
++inline std::atomic<u64> g_changed_inside{};
++inline std::atomic<u64> g_changed_outside{};
++inline std::atomic<s64> g_next_report_ns{};
++
++[[nodiscard]] inline s64 NowNs() {
++    return std::chrono::duration_cast<std::chrono::nanoseconds>(
++               std::chrono::steady_clock::now().time_since_epoch())
++        .count();
++}
++
++[[nodiscard]] inline bool Covers(u64 addr, u64 size) {
++    const Parsed& list = List();
++    const u64 read_end = addr + size;
++    for (u32 i = 0; i < list.count; ++i) {
++        if (addr < list.regions[i].end && read_end > list.regions[i].begin) {
++            return true;
++        }
++    }
++    return false;
++}
++
++inline void MaybeReport() {
++    const s64 now = NowNs();
++    s64 due = g_next_report_ns.load(std::memory_order_relaxed);
++    if (due == 0) {
++        g_next_report_ns.compare_exchange_strong(due, now + 10'000'000'000LL,
++                                                 std::memory_order_relaxed);
++        return;
++    }
++    if (now < due || !g_next_report_ns.compare_exchange_strong(due, now + 10'000'000'000LL,
++                                                               std::memory_order_relaxed)) {
++        return;
++    }
++    const u64 inside = g_inside.exchange(0, std::memory_order_relaxed);
++    const u64 outside = g_outside.exchange(0, std::memory_order_relaxed);
++    if (AuditOn()) {
++        const u64 ci = g_changed_inside.exchange(0, std::memory_order_relaxed);
++        const u64 co = g_changed_outside.exchange(0, std::memory_order_relaxed);
++        LOG_INFO(HW_GPU,
++                 "EDEN_GBB_READ_SYNC_REGIONS: last 10 s inside {} outside {} ({} regions, audit: "
++                 "changed inside {}, changed OUTSIDE {})",
++                 inside, outside, List().count, ci, co);
++    } else {
++        LOG_INFO(HW_GPU, "EDEN_GBB_READ_SYNC_REGIONS: last 10 s inside {} outside {} ({} regions)",
++                 inside, outside, List().count);
++    }
++}
++
++/// The decision, called for every read read sync would otherwise wait on. Returns true when the
++/// read should still be synced. With the list unset this is one bool test and always true, so
++/// nothing changes for a build that does not set the switch.
++[[nodiscard]] inline bool ShouldSync(u64 addr, u64 size) {
++    if (!On()) {
++        return true;
++    }
++    const bool inside = Covers(addr, size);
++    (inside ? g_inside : g_outside).fetch_add(1, std::memory_order_relaxed);
++    MaybeReport();
++    // In audit mode every read is still synced, so the verify pass can say whether the ones
++    // outside the list ever came back changed.
++    return inside || AuditOn();
++}
++
++/// Called from the verify compare in GPU::OnCPURead, audit mode only.
++inline void NoteChanged(u64 addr, u64 size, bool changed) {
++    if (!changed || !AuditOn()) {
++        return;
++    }
++    (Covers(addr, size) ? g_changed_inside : g_changed_outside)
++        .fetch_add(1, std::memory_order_relaxed);
++}
++
++} // namespace VideoCore::GbbReadSyncRegions
+diff --git a/src/video_core/gpu.cpp b/src/video_core/gpu.cpp
+index deaf489..41849c7 100644
+--- a/src/video_core/gpu.cpp
++++ b/src/video_core/gpu.cpp
+@@ -47,6 +47,7 @@
+ #include "video_core/ahead_read_sync.h"
+ #include "video_core/gpu.h"
+ #include "video_core/gbb_read_sync_pending.h" // 0929
++#include "video_core/gbb_read_sync_regions.h" // 0933
+ #include "video_core/gpu_split.h"
+ #include "video_core/gpu_thread.h"
+ #include "video_core/host1x/host1x.h"
+@@ -712,10 +713,13 @@ struct GPU::Impl {
+             if (raster_area.preflushed) {
+                 const u32 ahead =
+                     VideoCommon::AheadReadSync::g_ahead.load(std::memory_order_acquire);
++                // EDEN_GBB_READ_SYNC_REGIONS (0933, video_core/gbb_read_sync_regions.h):
++                // only a read inside one of the listed regions is synced; the rest take guest
++                // memory as it is. Unset: one bool test that is always true.
+                 if (ahead != 0 &&
+                     (ahead == 2 ||
+-                     Common::LiveSwitch::Peek<Common::LiveSwitch::Id::AheadReadSync>() != 0))
+-                    [[unlikely]] {
++                     Common::LiveSwitch::Peek<Common::LiveSwitch::Id::AheadReadSync>() != 0) &&
++                    VideoCore::GbbReadSyncRegions::ShouldSync(addr, size)) [[unlikely]] {
+                     // EDEN_GBB_READ_SYNC_PENDING (0929): wait only for a range the GPU wrote
+                     // recently (video_core/gbb_read_sync_pending.h); others read as without sync.
+                     if (VideoCore::GbbReadSyncPending::OnceOn()) [[unlikely]] { // 0930
+@@ -996,6 +1000,8 @@ struct GPU::Impl {
+                     }
+                 }
+             }
++            // 0933: audit mode counts the changed reads that fell outside the list.
++            VideoCore::GbbReadSyncRegions::NoteChanged(addr, size, changed != 0);
+             if (VideoCore::GbbReadSyncPending::CensusOn()) [[unlikely]] { // 0930
+                 const u64 fence_ns = static_cast<u64>(gbb_fence_done - start);
+                 VideoCore::GbbReadSyncPending::NoteCensus(
