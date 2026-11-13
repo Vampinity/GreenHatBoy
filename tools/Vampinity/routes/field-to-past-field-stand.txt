@@ -1,0 +1,126 @@
+# Copy of field-to-past-field.txt with a STAND before the gate push (13 Nov 2026, dev build T175 and later). Made from
+# field-to-past-field.txt (frozen copy; it reached the load in every start since).
+# The ONLY change: one stand line after the last STEER, its comment, and these header lines. Every other
+# line, every STEER line included, is byte for byte the frozen copy's. Line numbers shift by the lines added: the
+# stand is line 99, the load-start GONE (frozen line 92) is line 116: read 'EDEN_TEST wait_met line=116 at='.
+#
+# Why: to make the load start later and closer to the same script second in every start (an early idea was that
+# a later arrival survives the load; later starts on 13 Nov did not bear that out). test_harness.h has NO 'wait until an absolute script time' command:
+# a section's seconds always count from the moment the WAIT/STEER before it was met; only the first section counts
+# from the guest start. So a fixed arrival time cannot be written in a T175 script. Best available construction: a
+# fixed STAND after the last STEER is met, as a MAYBE that can never be met (the load-screen grid with min 100 in
+# the field), so it always ends at its timeout: 32 s + 1 s = 33 s standing, then the frozen push as before.
+# Error: the arrival is then (last STEER met) + 33 s + the push (8.5-9.1 s in the five T166 starts). The walk's own
+# spread stays. In our T166 drain A/B (5 starts) the field was on screen at 76.9-78.2 s, the
+# first STEER was met at 121.7-146.0 s (that is where all the spread comes from), the last at 134.3-159.6 s, the
+# load started at 142.9-168.6 s. With the stand those walks would start the load at about 176-202 s: every start at
+# or after ~175 s, later than every arrival seen so far (both survivors included), spread unchanged (~26 s).
+# A true fixed time needs a harness change (e.g. a WAIT whose seconds count from the guest start): later build.
+
+# Crash repro route (13 Nov 2026): the owner's newest save, loaded in the field, walked by minimap steering
+# across the field to the gate, over the bridge and into the gate passage, where the load into the area past the
+# field starts (the load that crashed in both of the owner's play sessions of 13 Nov: session A at ~770 s of its video,
+# session B at ~1040 s). Then 300 s in the new area if the load is survived, then END.
+# Read: README.md next to this file. v2 (13 Nov, after the first start run1390, which walked into
+# the moat left of the bridge): new approach + ZL camera reset before the push. v3 (after run1393): approach on
+# x 896. v4 (after run1394-1396: v3 reached the load once in three, run1395, which crashed there; the other two
+# stuck on a stone ruin at ~900,773): around the ruin on the owner's line, then the last steer aims at the gate
+# itself. v1/v2/v3 are not shared (they missed the gate). v4 is this file.
+#
+# Save: the owner's own save (not shared; make your own, README). Always run with the save put back before each
+# start and EDEN_TEST_DISCARD_SAVE=1, so the real save is never written.
+# Its newest entry is the field autosave session B wrote at ~973 s of its video ("Saving..." on the dirt
+# path, minimap ~936,841). No later save in that session (checked frame by frame
+# up to the black at ~1040 s). The load list is newest first and the cursor starts on the newest, so the proven
+# "A on the newest save, A on Load" picks it with no cursor moves.
+#
+# Clock: seconds count from EDEN_GUEST_START. Lines after a WAIT, MAYBE or STEER count from the moment that line
+# was met (test_harness.h).
+# Stick: raw 0-255, 128 centre, y=0 is up on the stick = where the camera looks.
+#
+# LOOK grids (make-look.py):
+#   title    bottom line of the title menu, whichever item is lit           (proven, unchanged)
+#   load     the gold "Load" bar at the top of the load screen              (proven, unchanged)
+#   fieldmap NEW: the field minimap's left part (the two red roofs and the oval), 845 820 48 80 8x8,
+#            cut from session A at 612 s. Scores (min 80): 100 on every field frame of both sessions
+#            (A: 606-768 s, from the first frame after the load up to inside the gate passage; B: 930-1036 s),
+#            0 on the black of the load (A 770-800 s, B 1040-1050 s), 18-31 on village frames, -53 on the
+#            title, -4 on the load list. The player's marker never comes near this part of the map on this route.
+
+# --- Title: Continue is lit by default. The second A only plays if the load screen has not come 3 s after the first.
+0 WAIT 180 LOOK 403 848 194 42 24x3:0111010102010101010101010101010101010101010101013233454a4d43421c1e61343e622954453d5828513e444223092d372627231c1f0c221f1f0f140f1f0a211220181d291f
+1.5 A 150
+4.5 A 150
+1.0 WAIT 8 LOOK 400 0 200 75 16x4:3634333437373737393b3b3b3a3939394745454748484f494d554d4b49494b4b5d5c5e5e5d5e8091a78763636262626378787c7b7b7c817c7c827d7d7d7e7c7f
+# --- Load screen: A on the newest save (the field one), A on Load. A every 2 s until the screen goes, the rest is dropped.
+1.0 A 150
+3.0 A 150
+5.0 A 150
+7.0 A 150
+9.0 A 150
+0.5 WAIT 15 GONE 400 0 200 75 16x4:3634333437373737393b3b3b3a3939394745454748484f494d554d4b49494b4b5d5c5e5e5d5e8091a78763636262626378787c7b7b7c817c7c827d7d7d7e7c7f
+# --- Loading the field. No input. The hand session's in-game load of the same kind of save took ~25 s; 240 s for a
+# cold start (as d3). Met = the field minimap is on screen. A village minimap (wrong save) does not match: the
+# script then stops here (wait_timeout), which is the sign to pick another entry (README, "Tune").
+0 WAIT 240 LOOK 845 820 48 80 8x8:94958b8a848f9ea8929f96887a687ca893949a897b696da096acb2b1b1ae999692afadaeadaeb09581acacafb0aead967d9fb0b0aeafae9a7c63759095988b9d 80
+# --- The field. The place card shows for ~5 s after the load; in the hand session the player moved from ~10 s.
+# STEER from 8 s (also keeps its looks away from the load). The path: the owner's own line on the dirt path from the
+# save point north-north-west to the bridge in front of the gate. Points from steer-route.py (step 5, r=4) on
+# session A 613-761 s and session B 971-1032 s; the two agree within 2-3 per mille up to 907,777,
+# the A line (straighter) is used from there, up to 903,772 (v2: the old last three points 900,766 898,761
+# 897,757 are replaced by the approach below).
+# Walk: ~65 per mille at ~1.2 a second = ~55 s at the owner's speed; small flying plant enemies come out of the
+# ground near 922,803 (both sessions fought there) and can knock the player about: timeout 150 s.
+# First start (run1390): all 14 points met in 73 s (a 24 s stand between points 4 and 5, where the minimap over the
+# bright dirt path was not read as a map).
+8 STEER 150 936,841 933,833 931,825 928,817 925,809 922,802 918,796 914,790 910,783 907,777 903,772 r=4
+# --- v2: the approach on the gate line. The bridge and the gate passage lie on a line a little west of north,
+# x = 897 + (y - 756) / 12 per mille (both owner walks: 896.8,754.8 / 896.5,750.2 / 896.1,743.9 and 896.5,755.4 /
+# 896.3,750.7 / 896.1,744.7). v1 ended 30 degrees west of it (900,766 -> 897,757 with r=4, met at ~898.4,762.9) with
+# the camera at 315-330 degrees: the straight push went north-west, off the road, into the moat left of the bridge.
+# v3 (after run1393, v2: 896,770 897,755 overshot west to 895.1, came in 6 deg east of north, pushed up x 897.1 on
+# the bridge's right stone rail and stuck on the gate post at 897.2,744.2): 896,771 896,763 896,755 r=2. It worked
+# once (run1395: x 896.1-896.6 north, the load came 9 s after the met). Twice (run1394, run1396) the straight leg
+# from ~904.8,774 west to 896,771 ran into a stone ruin whose north-east corner is at ~900.6,772.9 and he stood
+# against it for 40 s (steer_timeout point=0/3); run1395 scraped past it at y 772.7.
+# v4, step 1: around the ruin. 901,767 is on both owner walks (900.7-901.4,766.7-768.7) and the leg to it from
+# ~904.8,774 passes the ruin's corner ~3.5 per mille to the east. 896,768 is on the grass west of the road (v2 and
+# run1395 walked 895-896,769-771). 896,763 starts the leg north; with r=2 it is met at ~896.5,765, on x 896-897.
+0 STEER 40 901,767 896,768 896,763 r=2
+# v4, step 2: steer AT the gate passage (896,744, between the owner's 896.1-896.9 and run1395's 895.3) and stop
+# 8 per mille short of it, at y ~758, where the wedge still reads (it reads down to y 754-755). The heading at the
+# met then points at the passage: a sideways error e at the met turns the heading by only e/8 radians (v3's near
+# point 896,755 with r=2: e/2, which is what sent run1395's push 8-13 degrees west of north).
+0 STEER 30 896,744 r=8
+# --- T175 STAND (the only added script line). The player stands on the road before the bridge, where the last
+# STEER stopped him, for 33 s: a MAYBE on the load-screen grid with min 100 is never met in the field, so it ends
+# at its timeout (32 + 1 s) as 'EDEN_TEST wait_skipped line=99' and the gate push below starts. It looks at the
+# frame only in its last second (2 looks). If it is ever met (wait_met line=99), the stand was cut short: say so.
+32 MAYBE 1 LOOK 400 0 200 75 16x4:3634333437373737393b3b3b3a3939394745454748484f494d554d4b49494b4b5d5c5e5e5d5e8091a78763636262626378787c7b7b7c817c7c827d7d7d7e7c7f 100
+# --- The gate. ZL puts the camera behind the player, who faces the way the last steered stretch went: at the
+# passage. Then push straight on: up the bridge and through the gate passage. run1395: the black came 9 s after the
+# met; the owner sessions 7-8 s after 897,757. Straight push 12 s.
+0.2 ZL 150
+1.0 LSTICK 128 0 12000
+# Only if the minimap is still there after that (the GONE below drops every line not started yet): he is stuck at a
+# gate post or on a stone ledge beside the deck (run1393: right ledge, 897.2,744.2). Push up-right 25 degrees for
+# 3 s (off a left post or ledge, sliding along the wall into the passage), up-left 25 degrees for 3 s (off the right
+# ledge onto the deck, the way run1393 needed), then straight up 6 s. Stick relative to the camera, no ZL here (he
+# faces sideways after a nudge, so a ZL would turn the camera away from the gate).
+13.2 LSTICK 182 13 3000
+16.4 LSTICK 74 13 3000
+19.6 LSTICK 128 0 6000
+# Met = the field minimap is gone = the load into the area past the field has started (the screen goes black with
+# the small loading mark bottom right). Looks stop the moment it is met. Not met in 30 s = the push and the nudges
+# missed the gate: the script stops (wait_timeout), README "Tune".
+1.5 WAIT 30 GONE 845 820 48 80 8x8:94958b8a848f9ea8929f96887a687ca893949a897b696da096acb2b1b1ae999692afadaeadaeb09581acacafb0aead967d9fb0b0aeafae9a7c63759095988b9d 80
+# --- The load. No input and no frame looks for 120 s: the load is the thing under test (one long frame, ~2.1 GB
+# of graphics memory wanted). A crash here ends the test as a crash (the runner), the script never gets further.
+# At 120 s, a look only to label the run: met = the FIELD minimap is back (the player never left the field, e.g. the
+# GONE above was a menu or a game-over screen, the run does not count); skipped = not in the field.
+120 MAYBE 20 LOOK 845 820 48 80 8x8:94958b8a848f9ea8929f96887a687ca893949a897b696da096acb2b1b1ae999692afadaeadaeb09581acacafb0aead967d9fb0b0aeafae9a7c63759095988b9d 80
+# --- In the new area (if the load was survived): stand ~20 s, a short walk forward 6 s (away from the gate, into
+# the new area: the camera looks the way the player came in), stand, END at 160 s after the MAYBE section starts,
+# so ~300 s after the black. our runner ends the test 10 s after script_done.
+20 LSTICK 128 0 6000
+160 END
