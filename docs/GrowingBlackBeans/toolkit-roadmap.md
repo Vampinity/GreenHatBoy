@@ -11,6 +11,7 @@ GrowingBlackBeans, 11 Nov 2026, updated 12 Nov. The tools live in `tools/Growing
 | Back-thread breakdown (`EDEN_GBB_BACK_CALLS`) | patch 0921 | ran on the console (V1) |
 | Per-second vitals (`EDEN_GBB_VITALS`), per-event timeline (`EDEN_GBB_TIMELINE`) and reader | patch 0922, `eglog/timeline.py` | ran on the console; reader tested on a real capture (V1) |
 | Flight recorder (`EDEN_GBB_FLIGHT`), effective env line, touchpad + R3 marker | patch 0923 | ran on the console; the recorder should skip loading screens; the marker is too awkward to press while playing |
+| Frame anatomy (demand against supply, per-method cost, the fit, the 30 fps budget) | `eglog/anatomy.py` | **new 13 Nov**, tested on runRD1/runRD2 |
 | Flash counter (`EDEN_GBB_FLASH`) and reader | patch 0928, `eglog/flashes.py` | ran on the console (12 Nov); count with `flashes.py grids` at Vampinity's sizes, see `two-slot-guard-2026-11-12.md` |
 
 ## Designed, not built
@@ -38,3 +39,19 @@ GrowingBlackBeans, 11 Nov 2026, updated 12 Nov. The tools live in `tools/Growing
 
 - Guest-thread state sampling into the timeline (which guest thread is running or waiting at each present), to see the game's own chain frame by frame.
 - Host CPU placement (which PS5 core each host thread runs on), to check SMT contention.
+
+
+## Added 13 Nov: the anatomy phase
+
+`eglog/anatomy.py` is built and tested. What it still needs:
+
+- **A GPFIFO counter** (entries and words per frame per channel, log only, off by default). This is the
+  demand boundary and nothing we have measures it. One patch.
+- **Several places.** The fit is not identified on one route: methods, calls and ring words correlate
+  above 0.95. Three or four fixed standing spots fix it; more runs of the same route do not.
+- **Extractors for signals already in the logs that no tool reads**: the guard line's "armed beside
+  another", "copies served both slots" and "reads took a newer frame's copy"; and the vitals line's
+  `gpu_subs_s` and `fence_pops_s`.
+- **0928 is retracted as a flicker measure.** It saturates after about 135 s (83-95% of frames flagged)
+  and cannot separate a no-lookahead run from a two-ahead run. Do not rate anything with it until it
+  gates on stillness and requires the excursion to revert.
