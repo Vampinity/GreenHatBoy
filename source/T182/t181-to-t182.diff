@@ -1,0 +1,3464 @@
+diff --git a/tools/eglantine-patches/0980-up-l1515-query-cheap.patch b/tools/eglantine-patches/0980-up-l1515-query-cheap.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..d82be126e835276ce238806d556b5baaf3c1102e
+--- /dev/null
++++ b/tools/eglantine-patches/0980-up-l1515-query-cheap.patch
+@@ -0,0 +1,580 @@
++From: EglantinePS5
++Subject: [PATCH] up: L1515 cheaper report lookups, frees and locks (EDEN_UP_L1515_QUERY_CHEAP, off unless set)
++
++Ports zortos293/Lichii #1515, 5b9012f (author Zortos; from #1161), read by hand onto our query
++cache (0446/0447/0560/0706 and the split). Gated by EDEN_UP_L1515_QUERY_CHEAP (exact "1"), read
++once at boot; off by default. Not built or measured with this tree yet. Upstream measured at
++Ocarina of Time's water: 51.2/51.9 fps against 49.8/51.4, 4.61/4.60 us of back thread per draw
++against 4.97/4.83 (their PC, not the PS5).
++
++On:
++- BankBase: references are two counters, `added` (GPU thread) and `dropped` (fencing thread), each
++  on its own cache line; References() = added - dropped (ASSERT on a double free).
++- UnregisterPending: the queries leave the cache under cache_mutex, then each streamer frees its
++  batch under its own lock once (StreamerInterface::FreeMany; SimpleStreamer and SamplesStreamer
++  override it).
++- SimpleStreamer::BuildQuery: the building thread takes free ids from its own `reusable` list,
++  refilled from the freed list (oldest first) under the lock once per batch. Not in upstream: the
++  first building thread owns the list; a build from any other thread (not expected) takes a new
++  slot under the lock, counts foreign_build, and the owner then builds under the lock too. With the
++  switch the free ids go to spare_queries (EDEN_UP_REPORT_NO_ALLOC's FIFO is not used).
++- InvalidateRegion, SemiFlushRegion, HasCachedReports, IsRegionGpuModified skip pages on which no
++  report was ever registered (page_filter). The filter exists only with
++  EDEN_NX2_INVALIDATION_FILTER=1 (page_filter.h); without it Any answers true and nothing skips.
++- IterateCache: a range of up to 32 candidate start offsets looks those offsets up instead of
++  walking every query of the page. Same queries; our EDEN_UP_FRITCHII_PR700 early-exit rule kept.
++Always (layout only, no behaviour): host_results and last_used_tick of SamplesQueryBank on lines
++of their own; BankBase's two new counters (+~192 bytes per bank).
++
++Not taken: upstream's unit test (src/tests); upstream's page_filter check in a report-range
++function our tree does not have (its 16-byte look-back variant).
++Count lines (each logs at 1, 2, 4, ...): "EDEN_UP_L1515_QUERY_CHEAP count free_batches= /
++freed_queries= / filter_skips= / probes= / id_refills= / foreign_build=". Boot line when on.
++Memory: per-streamer scratch vectors and the reusable id list (a few KiB); no GPU memory.
++
++No file here is a translation id input and no name is added to TranslationSwitches: KEEPS THE STORE.
++---
++diff --git a/src/video_core/query_cache/bank_base.h b/src/video_core/query_cache/bank_base.h
++index 44769ea971..fbc1ac5197 100644
++--- a/src/video_core/query_cache/bank_base.h
+++++ b/src/video_core/query_cache/bank_base.h
++@@ -7,7 +7,9 @@
++ #include <deque>
++ #include <utility>
++ 
+++#include "common/assert.h"
++ #include "common/common_types.h"
+++#include "video_core/up_l1515.h"
++ 
++ namespace VideoCommon {
++ 
++@@ -17,6 +19,14 @@ protected:
++     size_t bank_size{};
++     std::atomic<size_t> references{};
++     size_t current_slot{};
+++    // EDEN_UP_L1515_QUERY_CHEAP=1 (zortos293/Lichii #1515, Zortos): queries take their slots'
+++    // references where they are recorded (the GPU thread) and drop them where their results land
+++    // (the fencing thread), a report at a time: one counter each, on its own cache line, so
+++    // neither thread pulls the line from the other at every report. Off: `references` as before.
+++    alignas(64) std::atomic<size_t> added{};
+++    alignas(64) std::atomic<size_t> dropped{};
+++    /// Keeps a derived bank's members off dropped's line.
+++    char dropped_padding[64 - sizeof(std::atomic<size_t>)]{};
++ 
++ public:
++     explicit BankBase(size_t bank_size_) : base_bank_size{bank_size_}, bank_size(bank_size_) {}
++@@ -34,6 +44,8 @@ public:
++     virtual void Reset() {
++         current_slot = 0;
++         references = 0;
+++        added = 0;
+++        dropped = 0;
++         bank_size = base_bank_size;
++     }
++ 
++@@ -42,16 +54,37 @@ public:
++     }
++ 
++     void AddReference(size_t how_many = 1) {
+++        if (UpL1515::Enabled()) {
+++            added.fetch_add(how_many, std::memory_order_relaxed);
+++            return;
+++        }
++         references.fetch_add(how_many, std::memory_order_relaxed);
++     }
++ 
++     void CloseReference(size_t how_many = 1) {
+++        if (UpL1515::Enabled()) {
+++            dropped.fetch_add(how_many, std::memory_order_relaxed);
+++            return;
+++        }
++         if (how_many > references.load(std::memory_order_relaxed)) {
++             UNREACHABLE();
++         }
++         references.fetch_sub(how_many, std::memory_order_relaxed);
++     }
++ 
+++    /// The references taken and not dropped yet. With EDEN_UP_L1515_QUERY_CHEAP it is called
+++    /// where references are taken, so every reference dropped was taken before: more dropped
+++    /// than taken is a double free.
+++    size_t References() const {
+++        if (!UpL1515::Enabled()) {
+++            return references.load(std::memory_order_relaxed);
+++        }
+++        const size_t dropped_now = dropped.load(std::memory_order_acquire);
+++        const size_t added_now = added.load(std::memory_order_acquire);
+++        ASSERT(dropped_now <= added_now);
+++        return added_now - dropped_now;
+++    }
+++
++     void Close() {
++         bank_size = current_slot;
++     }
++@@ -61,7 +94,7 @@ public:
++     }
++ 
++     bool IsDead() const {
++-        return IsClosed() && references == 0;
+++        return IsClosed() && References() == 0;
++     }
++ };
++ 
++diff --git a/src/video_core/query_cache/query_cache.h b/src/video_core/query_cache/query_cache.h
++index 60055f9957..91b16b543f 100644
++--- a/src/video_core/query_cache/query_cache.h
+++++ b/src/video_core/query_cache/query_cache.h
++@@ -190,6 +190,10 @@ struct QueryCacheBase<Traits>::QueryCacheBaseImpl {
++     std::mutex flush_guard;
++     std::deque<u64> flushes_pending;
++     std::vector<QueryCacheBase<Traits>::QueryLocation> pending_unregister;
+++    /// EDEN_UP_L1515_QUERY_CHEAP: UnregisterPending's ids to free, by streamer, kept with their
+++    /// capacity.
+++    std::array<std::vector<size_t>, static_cast<size_t>(QueryType::MaxQueryTypes)>
+++        unregister_scratch;
++ };
++ 
++ template <typename Traits>
++@@ -517,6 +521,50 @@ void QueryCacheBase<Traits>::UnregisterPending() {
++         return std::make_pair<u64, u32>(cur_addr >> Core::DEVICE_PAGEBITS,
++                                         static_cast<u32>(cur_addr & Core::DEVICE_PAGEMASK));
++     };
+++    if (UpL1515::Enabled()) {
+++        // EDEN_UP_L1515_QUERY_CHEAP=1 (zortos293/Lichii #1515, Zortos): the fencing thread runs
+++        // this for every fence's reports while the GPU thread registers and builds new ones: the
+++        // queries leave the cache under its lock, then each streamer frees its batch under its own
+++        // lock once, instead of a streamer lock per query inside the cache's.
+++        auto& freed = impl->unregister_scratch;
+++        for (auto& ids : freed) {
+++            ids.clear();
+++        }
+++        {
+++            std::scoped_lock lock(cache_mutex);
+++            for (QueryLocation loc : impl->pending_unregister) {
+++                const auto [streamer_id, query_id] = loc.unpack();
+++                if (streamer_id >= freed.size()) [[unlikely]] {
+++                    continue;
+++                }
+++                auto* streamer = impl->streamers[streamer_id];
+++                if (!streamer) [[unlikely]] {
+++                    continue;
+++                }
+++                auto* query = streamer->GetQuery(query_id);
+++                auto [cont_addr, base] = gen_caching_indexing(query->guest_address);
+++                auto it1 = cached_queries.find(cont_addr);
+++                if (it1 != cached_queries.end()) {
+++                    auto it2 = it1->second.find(base);
+++                    if (it2 != it1->second.end()) {
+++                        if (it2->second.raw == loc.raw) {
+++                            it1->second.erase(it2);
+++                        }
+++                    }
+++                }
+++                freed[streamer_id].push_back(query_id);
+++            }
+++        }
+++        impl->pending_unregister.clear();
+++        for (size_t streamer_id = 0; streamer_id < freed.size(); ++streamer_id) {
+++            if (!freed[streamer_id].empty()) {
+++                impl->streamers[streamer_id]->FreeMany(freed[streamer_id]);
+++                UpL1515::Add(UpL1515::Count::FreeBatches);
+++                UpL1515::Add(UpL1515::Count::FreedQueries, freed[streamer_id].size());
+++            }
+++        }
+++        return;
+++    }
++     std::scoped_lock lock(cache_mutex);
++     for (QueryLocation loc : impl->pending_unregister) {
++         const auto [streamer_id, query_id] = loc.unpack();
++diff --git a/src/video_core/query_cache/query_cache_base.h b/src/video_core/query_cache/query_cache_base.h
++index d9c0c10e95..d3094cf051 100644
++--- a/src/video_core/query_cache/query_cache_base.h
+++++ b/src/video_core/query_cache/query_cache_base.h
++@@ -6,6 +6,7 @@
++ 
++ #pragma once
++ 
+++#include <algorithm>
++ #include <functional>
++ #include <mutex>
++ #include <optional>
++@@ -22,6 +23,7 @@
++ #include "video_core/page_filter.h"
++ #include "video_core/query_cache/query_base.h"
++ #include "video_core/query_cache/types.h"
+++#include "video_core/up_l1515.h"
++ 
++ namespace VideoCore {
++ class RasterizerInterface;
++@@ -63,6 +65,13 @@ public:
++     ~QueryCacheBase();
++ 
++     void InvalidateRegion(VAddr addr, std::size_t size) {
+++        // EDEN_UP_L1515_QUERY_CHEAP (zortos293/Lichii #1515): compute inline writes come by the
+++        // thousand a frame, mostly where no report ever was: pages never registered need no look
+++        // under cache_mutex. Acts only with EDEN_NX2_INVALIDATION_FILTER=1 (page_filter.h; without
+++        // it Any answers true).
+++        if (SkipByFilter(addr, size)) {
+++            return;
+++        }
++         IterateCache<true>(addr, size,
++                            [this](QueryLocation location) { InvalidateQuery(location); });
++     }
++@@ -75,6 +84,9 @@ public:
++ 
++     /// Writes out the finalized reports in the region. True when some still wait for host results.
++     bool SemiFlushRegion(VAddr addr, std::size_t size) {
+++        if (SkipByFilter(addr, size)) {
+++            return false;
+++        }
++         bool result = false;
++         // Visits every query in the range: each final value not written yet is written here. The
++         // callback returns nothing, so EDEN_UP_FRITCHII_PR700's early exit never ends this walk
++@@ -97,6 +109,9 @@ public:
++     /// unregistered yet). Only the cache mutex: callable from the split front
++     /// (EDEN_NX2_DMA_SNAPSHOT).
++     [[nodiscard]] bool HasCachedReports(VAddr addr, size_t size) {
+++        if (SkipByFilter(addr, size)) {
+++            return false;
+++        }
++         bool result = false;
++         IterateCache<false>(addr, size, [&result](QueryLocation) { result = true; });
++         return result;
++@@ -104,6 +119,9 @@ public:
++ 
++     /// Return true when a CPU region is modified from the GPU
++     [[nodiscard]] bool IsRegionGpuModified(VAddr addr, size_t size) {
+++        if (SkipByFilter(addr, size)) {
+++            return false;
+++        }
++         bool result = false;
++         IterateCache<false>(addr, size, [this, &result](QueryLocation location) {
++             result |= IsQueryDirty(location);
++@@ -154,6 +172,53 @@ protected:
++         const u64 addr_begin = addr;
++         const u64 addr_end = addr_begin + size;
++ 
+++        // EDEN_UP_L1515_QUERY_CHEAP=1 (zortos293/Lichii #1515, Zortos): a read of a few words
+++        // (the macro DMA reads of reports, ~1,700 a frame at Ocarina of Time's water) looks up
+++        // the offsets a query overlapping it can start at, instead of walking every query of the
+++        // page (hundreds there). Same queries, from the same pages (a query starts on the first
+++        // page or later, as in the walk below), removed the same way.
+++        static constexpr u64 MaxProbes = 32;
+++        if (UpL1515::Enabled()) {
+++            const u64 page_first = (addr_begin >> Core::DEVICE_PAGEBITS) << Core::DEVICE_PAGEBITS;
+++            const u64 probe_first =
+++                (std::max)(addr_begin >= sizeof(u32) - 1 ? addr_begin - (sizeof(u32) - 1) : 0,
+++                           page_first);
+++            if (addr_end > probe_first && addr_end - probe_first <= MaxProbes) {
+++                UpL1515::Add(UpL1515::Count::Probes);
+++                std::scoped_lock lock(cache_mutex);
+++                u64 cached_page = ~u64{0};
+++                typename ContentCache::mapped_type* contents = nullptr;
+++                for (u64 query_addr = probe_first; query_addr < addr_end; ++query_addr) {
+++                    const u64 page = query_addr >> Core::DEVICE_PAGEBITS;
+++                    if (page != cached_page) {
+++                        cached_page = page;
+++                        const auto it = cached_queries.find(page);
+++                        contents = it != cached_queries.end() ? &it->second : nullptr;
+++                    }
+++                    if (contents == nullptr) {
+++                        continue;
+++                    }
+++                    const auto query =
+++                        contents->find(static_cast<u32>(query_addr & Core::DEVICE_PAGEMASK));
+++                    if (query == contents->end()) {
+++                        continue;
+++                    }
+++                    const QueryLocation location = query->second;
+++                    if constexpr (remove_from_cache) {
+++                        contents->erase(query);
+++                    }
+++                    if constexpr (RETURNS_BOOL) {
+++                        if (func(location) && WalkEarlyExit()) {
+++                            return;
+++                        }
+++                    } else {
+++                        func(location);
+++                    }
+++                }
+++                return;
+++            }
+++        }
+++
++         const u64 page_end = addr_end >> Core::DEVICE_PAGEBITS;
++         std::scoped_lock lock(cache_mutex);
++         for (u64 page = addr_begin >> Core::DEVICE_PAGEBITS; page <= page_end; ++page) {
++@@ -197,6 +262,15 @@ protected:
++         }
++     }
++ 
+++    /// EDEN_UP_L1515_QUERY_CHEAP=1: no report was ever registered on these pages.
+++    bool SkipByFilter(VAddr addr, std::size_t size) const {
+++        if (!UpL1515::Enabled() || page_filter.Any(addr, size)) {
+++            return false;
+++        }
+++        UpL1515::Add(UpL1515::Count::FilterSkips);
+++        return true;
+++    }
+++
++     /// EDEN_UP_FRITCHII_PR700=1: an IterateCache callback returning true ends the walk.
++     static bool WalkEarlyExit() noexcept {
++         static const bool on = ::Common::PeSwitch("EDEN_UP_FRITCHII_PR700");
++diff --git a/src/video_core/query_cache/query_stream.h b/src/video_core/query_cache/query_stream.h
++index 1054610827..f5911604b5 100644
++--- a/src/video_core/query_cache/query_stream.h
+++++ b/src/video_core/query_cache/query_stream.h
++@@ -7,8 +7,12 @@
++ #pragma once
++ 
++ #include <cstddef>
+++#include <atomic>
++ #include <deque>
+++#include <mutex>
++ #include <optional>
+++#include <span>
+++#include <thread>
++ #include <vector>
++ 
++ #include "common/assert.h"
++@@ -17,6 +21,7 @@
++ #include "video_core/query_cache/query_base.h"
++ #include "video_core/zpass_cut.h"
++ #include "video_core/report_no_alloc.h"
+++#include "video_core/up_l1515.h"
++ 
++ namespace VideoCommon {
++ 
++@@ -77,6 +82,13 @@ public:
++ 
++     virtual void Free(size_t query_id) = 0;
++ 
+++    /// Free for each id, as one batch (EDEN_UP_L1515_QUERY_CHEAP's UnregisterPending).
+++    virtual void FreeMany(std::span<const size_t> query_ids) {
+++        for (const size_t query_id : query_ids) {
+++            Free(query_id);
+++        }
+++    }
+++
++     size_t GetId() const {
++         return id;
++     }
++@@ -129,8 +141,18 @@ protected:
++         ReleaseQuery(query_id);
++     }
++ 
+++    virtual void FreeMany(std::span<const size_t> query_ids) override {
+++        std::scoped_lock lk(guard);
+++        for (const size_t query_id : query_ids) {
+++            ReleaseQuery(query_id);
+++        }
+++    }
+++
++     template <typename... Args, typename = decltype(QueryType(std::declval<Args>()...))>
++     size_t BuildQuery(Args&&... args) {
+++        if (UpL1515::Enabled()) {
+++            return BuildQueryBatched(std::forward<Args>(args)...);
+++        }
++         std::scoped_lock lk(guard);
++         if (ReportNoAllocEnabled() && old_queries_head != spare_queries.size()) {
++             const size_t new_id = spare_queries[old_queries_head++];
++@@ -152,9 +174,66 @@ protected:
++         return new_id;
++     }
++ 
+++    /// EDEN_UP_L1515_QUERY_CHEAP=1 (zortos293/Lichii #1515, Zortos): called by the one thread
+++    /// that records reports (the GPU thread, or the split's back while it runs). Free ids are
+++    /// taken from `reusable`, which only that thread touches, and moved there from
+++    /// `spare_queries` in batches: one lock per batch instead of one per query (a report per draw
+++    /// builds two). Oldest first, as they were freed. Should a second thread ever build (not
+++    /// expected; counted as foreign_build), it takes a new slot under the lock and from then on
+++    /// the first thread builds under the lock too.
+++    template <typename... Args>
+++    size_t BuildQueryBatched(Args&&... args) {
+++        const std::thread::id self = std::this_thread::get_id();
+++        std::thread::id owner = builder.load(std::memory_order_relaxed);
+++        if (owner == std::thread::id{}) {
+++            if (builder.compare_exchange_strong(owner, self, std::memory_order_relaxed)) {
+++                owner = self;
+++            }
+++        }
+++        if (owner != self) [[unlikely]] {
+++            std::scoped_lock lk(guard);
+++            shared_builders.store(true, std::memory_order_release);
+++            UpL1515::Add(UpL1515::Count::ForeignBuild);
+++            const size_t new_id = slot_queries.size();
+++            slot_queries.emplace_back(std::forward<Args>(args)...);
+++            return new_id;
+++        }
+++        if (shared_builders.load(std::memory_order_acquire)) [[unlikely]] {
+++            std::scoped_lock lk(guard);
+++            return TakeReusable<true>(std::forward<Args>(args)...);
+++        }
+++        return TakeReusable<false>(std::forward<Args>(args)...);
+++    }
+++
+++    template <bool locked, typename... Args>
+++    size_t TakeReusable(Args&&... args) {
+++        if (reusable_head == reusable.size()) {
+++            reusable.clear();
+++            reusable_head = 0;
+++            std::unique_lock<std::mutex> lk;
+++            if constexpr (!locked) {
+++                lk = std::unique_lock{guard};
+++            }
+++            if (spare_queries.empty()) {
+++                const size_t new_id = slot_queries.size();
+++                slot_queries.emplace_back(std::forward<Args>(args)...);
+++                return new_id;
+++            }
+++            reusable.swap(spare_queries);
+++            UpL1515::Add(UpL1515::Count::IdRefills);
+++        }
+++        const size_t new_id = reusable[reusable_head++];
+++        new (&slot_queries[new_id]) QueryType(std::forward<Args>(args)...);
+++        return new_id;
+++    }
+++
++     void ReleaseQuery(size_t query_id) {
++ 
++         if (query_id < slot_queries.size()) {
+++            if (UpL1515::Enabled()) {
+++                spare_queries.push_back(query_id);
+++                return;
+++            }
++             if (ReportNoAllocEnabled()) {
++                 if (old_queries_head >= 1024 && old_queries_head >= spare_queries.size() / 2) {
++                     spare_queries.erase(spare_queries.begin(),
++@@ -175,6 +254,12 @@ protected:
++     std::deque<size_t> old_queries; // baseline FIFO, used only with the switch off
++     std::vector<size_t> spare_queries;
++     size_t old_queries_head{};
+++    /// EDEN_UP_L1515_QUERY_CHEAP: free ids BuildQuery took from spare_queries, used from
+++    /// reusable_head (the builder's thread only), and that thread.
+++    std::vector<size_t> reusable;
+++    size_t reusable_head{};
+++    std::atomic<std::thread::id> builder{};
+++    std::atomic<bool> shared_builders{};
++ };
++ 
++ } // namespace VideoCommon
++diff --git a/src/video_core/renderer_vulkan/vk_query_cache.cpp b/src/video_core/renderer_vulkan/vk_query_cache.cpp
++index 3709a6ae99..392af9ae11 100644
++--- a/src/video_core/renderer_vulkan/vk_query_cache.cpp
+++++ b/src/video_core/renderer_vulkan/vk_query_cache.cpp
++@@ -64,7 +64,7 @@ public:
++     ~SamplesQueryBank() = default;
++ 
++     void Reset() override {
++-        ASSERT(references == 0);
+++        ASSERT(References() == 0);
++         VideoCommon::BankBase::Reset();
++         if (device.IsHostQueryResetSupported()) {
++             if (VideoCommon::ReportNoAllocEnabled()) {
++@@ -129,8 +129,10 @@ private:
++     Scheduler& scheduler;
++     const size_t index;
++     vk::QueryPool query_pool;
++-    std::array<u64, BANK_SIZE> host_results;
++-    u64 last_used_tick{};
+++    /// The fencing thread writes the results (Sync): on lines of their own, away from the
+++    /// members the GPU thread reads at every report (zortos293/Lichii #1515; layout only).
+++    alignas(64) std::array<u64, BANK_SIZE> host_results;
+++    alignas(64) u64 last_used_tick{};
++ };
++ 
++ using BaseStreamer = VideoCommon::SimpleStreamer<VideoCommon::HostQueryBase>;
++@@ -626,6 +628,17 @@ private:
++         ReleaseQuery(query_id);
++     }
++ 
+++    void FreeMany(std::span<const size_t> query_ids) override {
+++        std::scoped_lock lk(guard);
+++        for (const size_t query_id : query_ids) {
+++            auto* query = GetQuery(query_id);
+++            ApplyBankOp(query, [](SamplesQueryBank* bank, size_t start, size_t amount) {
+++                bank->CloseReference(amount);
+++            });
+++            ReleaseQuery(query_id);
+++        }
+++    }
+++
++     void AbandonCurrentQuery() {
++         if (!current_query) {
++             return;
++@@ -763,7 +776,7 @@ public:
++     ~TFBQueryBank() = default;
++ 
++     void Reset() override {
++-        ASSERT(references == 0);
+++        ASSERT(References() == 0);
++         VideoCommon::BankBase::Reset();
++     }
++ 
++diff --git a/src/video_core/up_l1515.h b/src/video_core/up_l1515.h
++new file mode 100644
++index 0000000000..69ee84f78b
++--- /dev/null
+++++ b/src/video_core/up_l1515.h
++@@ -0,0 +1,62 @@
+++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+++// SPDX-License-Identifier: GPL-3.0-or-later
+++
+++// Port of zortos293/Lichii #1515 (5b9012f, Zortos), behind its own switch, read once at boot
+++// (exact "1"), off by default:
+++//   EDEN_UP_L1515_QUERY_CHEAP=1  cheaper report lookups, frees and locks (query cache)
+++// Count lines: each counter logs when it reaches a power of two (1, 2, 4, ...), so a run shows
+++// that the switch acted without a timer or a lock.
+++
+++#pragma once
+++
+++#include <atomic>
+++#include <bit>
+++
+++#include "common/common_types.h"
+++#include "common/logging.h"
+++#include "common/pe_switch.h"
+++
+++namespace VideoCommon::UpL1515 {
+++
+++[[nodiscard]] inline bool Enabled() noexcept {
+++    static const bool on = [] {
+++        const bool enabled = Common::PeSwitch("EDEN_UP_L1515_QUERY_CHEAP");
+++        if (enabled) {
+++            LOG_INFO(HW_GPU, "EDEN_UP_L1515_QUERY_CHEAP=1: split bank references, batched query "
+++                             "frees, filtered and probed report walks, batched query ids");
+++        }
+++        return enabled;
+++    }();
+++    return on;
+++}
+++
+++enum class Count : u32 {
+++    FreeBatches,  ///< UnregisterPending freed a streamer's queries as one batch
+++    FreedQueries, ///< queries freed in those batches
+++    FilterSkips,  ///< a region walk skipped: no report was ever registered on its pages
+++    Probes,       ///< a small region walk looked up its few offsets instead of whole pages
+++    IdRefills,    ///< BuildQuery took the streamer's lock to take a batch of free ids
+++    ForeignBuild, ///< BuildQuery from a second thread (fully locked from then on)
+++    Max,
+++};
+++
+++inline const char* const Names[] = {"free_batches", "freed_queries", "filter_skips",
+++                                    "probes",       "id_refills",    "foreign_build"};
+++
+++struct alignas(64) Counter {
+++    std::atomic<u64> value{};
+++};
+++inline Counter counters[static_cast<u32>(Count::Max)];
+++
+++inline void Add(Count which, u64 amount = 1) noexcept {
+++    const u64 before =
+++        counters[static_cast<u32>(which)].value.fetch_add(amount, std::memory_order_relaxed);
+++    const u64 after = before + amount;
+++    // Logs once each time the count passes a power of two.
+++    if (before == 0 || (std::bit_width(before) != std::bit_width(after))) {
+++        LOG_INFO(HW_GPU, "EDEN_UP_L1515_QUERY_CHEAP count {}={}", Names[static_cast<u32>(which)],
+++                 after);
+++    }
+++}
+++
+++} // namespace VideoCommon::UpL1515
+diff --git a/tools/eglantine-patches/0981-up-l1516-fence-cheap.patch b/tools/eglantine-patches/0981-up-l1516-fence-cheap.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..e6af0755d3c446cc754239aef5606a44b4a7e24d
+--- /dev/null
++++ b/tools/eglantine-patches/0981-up-l1516-fence-cheap.patch
+@@ -0,0 +1,223 @@
++From: EglantinePS5
++Subject: [PATCH] up: L1516 fencing thread woken only when waiting, flushed query lists kept (EDEN_UP_L1516_FENCE_CHEAP, off unless set)
++
++Ports the parts of zortos293/Lichii #1516, 342b839 (author Zortos; from Lucas Borges' #1161,
++bffeb662c0 and 792e12a47b) that our tree did not have yet. Gated by EDEN_UP_L1516_FENCE_CHEAP
++(exact "1"), read once at boot; off by default. Not built or measured with this tree yet.
++
++On:
++- FenceManager::SignalFence: cv.notify_all only when the fencing thread waits on cv for fences
++  (fence_thread_waiting, set in the wait's predicate under `guard`, read under `guard` before it
++  is unlocked). While it waits for the host GPU or runs operations it rechecks `fences` under the
++  same lock before it sleeps, so no fence is missed. Destructor's wake unchanged.
++- SamplesStreamer: PopUnsyncedQueries keeps the lists it is done with (at most 16, under
++  flush_guard); PushUnsyncedQueries takes one instead of growing a new list at each fence.
++Always (layout only, no behaviour): MasterSemaphore's gpu_tick, current_tick and wait_mutex on
++lines of their own (+~128 bytes, one object).
++
++Already in our tree, not taken again: the compact report operation, recycled fence operation
++lists, the read-back page bounds check before the buffer cache lock, the equal-tick semaphore
++store skip and the bank host reset on the Vulkan worker are 0560's EDEN_UP_REPORT_NO_ALLOC (ported
++from 792e12a47b before). Set EDEN_UP_REPORT_NO_ALLOC=1 too for the whole of #1516. Left out as
++upstream left them out: Nx2SemaphoreWaiters' watched-address filter, PresyncWrites scratch reuse,
++the Vulkan worker's spin. Upstream's buffer_cache_ports.cpp test not taken.
++Count lines (each logs at 1, 2, 4, ...): "EDEN_UP_L1516_FENCE_CHEAP count wakes_sent= /
++wakes_skipped= / lists_reused=". Boot line when on. Memory: at most 16 kept index lists.
++
++No file here is a translation id input and no name is added to TranslationSwitches: KEEPS THE STORE.
++---
++diff --git a/src/video_core/fence_manager.h b/src/video_core/fence_manager.h
++index 77f0a27424..7e0c273691 100644
++--- a/src/video_core/fence_manager.h
+++++ b/src/video_core/fence_manager.h
++@@ -37,6 +37,7 @@
++ #include "video_core/rasterizer_interface.h"
++ #include "video_core/readback_wait.h"
++ #include "video_core/report_no_alloc.h"
+++#include "video_core/up_l1516.h"
++ 
++ namespace VideoCommon {
++ 
++@@ -334,8 +335,19 @@ private:
++             rasterizer.FlushCommands();
++         }
++         if constexpr (can_async_check) {
+++            // EDEN_UP_L1516_FENCE_CHEAP=1 (zortos293/Lichii #1516, Zortos, from Lucas Borges'
+++            // #1161): the fencing thread waits for the host GPU while it has fences; it needs
+++            // waking (a system call) only when it waits on cv for fences to be made.
+++            const bool wake = !UpL1516::Enabled() || fence_thread_waiting;
++             guard.unlock();
++-            cv.notify_all();
+++            if (wake) {
+++                cv.notify_all();
+++                if (UpL1516::Enabled()) {
+++                    UpL1516::Add(UpL1516::Count::WakesSent);
+++                }
+++            } else {
+++                UpL1516::Add(UpL1516::Count::WakesSkipped);
+++            }
++         }
++         rasterizer.InvalidateGPUCache();
++     }
++@@ -691,7 +703,11 @@ private:
++         while (!stop_token.stop_requested()) {
++             {
++                 std::unique_lock lock(guard);
++-                cv.wait(lock, [&] { return stop_token.stop_requested() || !fences.empty(); });
+++                cv.wait(lock, [&] {
+++                    fence_thread_waiting = !stop_token.stop_requested() && fences.empty();
+++                    return !fence_thread_waiting;
+++                });
+++                fence_thread_waiting = false;
++                 if (stop_token.stop_requested()) [[unlikely]] {
++                     return;
++                 }
++@@ -886,6 +902,8 @@ private:
++     std::mutex ring_guard;
++     std::mutex uncommitted_guard; ///< Guards uncommitted_operations
++     std::condition_variable cv;
+++    /// The fencing thread waits on cv for fences (guarded by guard; EDEN_UP_L1516_FENCE_CHEAP).
+++    bool fence_thread_waiting{};
++ 
++     std::jthread fence_thread;
++ 
++diff --git a/src/video_core/renderer_vulkan/vk_master_semaphore.h b/src/video_core/renderer_vulkan/vk_master_semaphore.h
++index b1b934b898..dc4efddce4 100644
++--- a/src/video_core/renderer_vulkan/vk_master_semaphore.h
+++++ b/src/video_core/renderer_vulkan/vk_master_semaphore.h
++@@ -82,9 +82,12 @@ private:
++ private:
++     const Device& device;             ///< Device.
++     vk::Semaphore semaphore;          ///< Timeline semaphore.
++-    std::atomic<u64> gpu_tick{0};     ///< Current known GPU tick.
++-    std::atomic<u64> current_tick{1}; ///< Current logical tick.
++-    std::mutex wait_mutex;
+++    /// On their own cache lines (zortos293/Lichii #1516; layout only, no switch): the GPU thread
+++    /// reads current_tick several times a draw, while threads refreshing gpu_tick would otherwise
+++    /// make each of those reads miss.
+++    alignas(64) std::atomic<u64> gpu_tick{0};     ///< Current known GPU tick.
+++    alignas(64) std::atomic<u64> current_tick{1}; ///< Current logical tick.
+++    alignas(64) std::mutex wait_mutex;
++     std::mutex free_mutex;
++     std::condition_variable_any wait_cv;
++     std::queue<Waitable> wait_queue;  ///< Queue for the fences to be waited on by the wait thread.
++diff --git a/src/video_core/renderer_vulkan/vk_query_cache.cpp b/src/video_core/renderer_vulkan/vk_query_cache.cpp
++index 392af9ae11..0858e568a6 100644
++--- a/src/video_core/renderer_vulkan/vk_query_cache.cpp
+++++ b/src/video_core/renderer_vulkan/vk_query_cache.cpp
++@@ -6,6 +6,7 @@
++ 
++ #include <cstdlib>
++ #include "video_core/report_no_alloc.h"
+++#include "video_core/up_l1516.h"
++ #include <cstddef>
++ #include <limits>
++ #include <map>
++@@ -501,6 +502,19 @@ public:
++         {
++             std::scoped_lock lk(flush_guard);
++             pending_flush_sets.emplace_back(std::move(pending_flush_queries));
+++            // EDEN_UP_L1516_FENCE_CHEAP=1 (zortos293/Lichii #1516, Zortos, from Lucas Borges'
+++            // #1161): a list the fencing thread is done with, with its capacity: a fence made
+++            // with reports pending grew a new one from nothing (~2,400 a second at Ocarina's
+++            // water).
+++            if (VideoCommon::UpL1516::Enabled()) {
+++                if (!spare_flush_queries.empty()) {
+++                    pending_flush_queries = std::move(spare_flush_queries.back());
+++                    spare_flush_queries.pop_back();
+++                    VideoCommon::UpL1516::Add(VideoCommon::UpL1516::Count::ListsReused);
+++                } else {
+++                    pending_flush_queries = {};
+++                }
+++            }
++         }
++     }
++ 
++@@ -526,6 +540,13 @@ public:
++             query->value = total;
++             query->flags |= VideoCommon::QueryFlagBits::IsFinalValueSynced;
++         }
+++        if (VideoCommon::UpL1516::Enabled()) {
+++            current_flush_queries.clear();
+++            std::scoped_lock lk(flush_guard);
+++            if (spare_flush_queries.size() < MaxSpareFlushQueries) {
+++                spare_flush_queries.push_back(std::move(current_flush_queries));
+++            }
+++        }
++     }
++ 
++ private:
++@@ -728,6 +749,9 @@ private:
++     // flush levels
++     std::vector<size_t> pending_flush_queries;
++     std::deque<std::vector<size_t>> pending_flush_sets;
+++    /// EDEN_UP_L1516_FENCE_CHEAP: lists PopUnsyncedQueries is done with (guarded by flush_guard).
+++    static constexpr size_t MaxSpareFlushQueries = 16;
+++    std::vector<std::vector<size_t>> spare_flush_queries;
++ 
++     // State Machine
++     size_t current_bank_slot;
++diff --git a/src/video_core/up_l1516.h b/src/video_core/up_l1516.h
++new file mode 100644
++index 0000000000..29b59d4f24
++--- /dev/null
+++++ b/src/video_core/up_l1516.h
++@@ -0,0 +1,58 @@
+++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+++// SPDX-License-Identifier: GPL-3.0-or-later
+++
+++// Port of zortos293/Lichii #1516 (342b839, Zortos, from Lucas
+++// Borges' #1161), behind its own switch, read once at boot (exact "1"), off by default:
+++//   EDEN_UP_L1516_FENCE_CHEAP=1  the fencing thread is woken only when it waits for fences; the
+++//                                samples streamer keeps its flushed query lists
+++// Count lines: each counter logs when it reaches a power of two (1, 2, 4, ...), so a run shows
+++// that the switch acted without a timer or a lock.
+++
+++#pragma once
+++
+++#include <atomic>
+++#include <bit>
+++
+++#include "common/common_types.h"
+++#include "common/logging.h"
+++#include "common/pe_switch.h"
+++
+++namespace VideoCommon::UpL1516 {
+++
+++[[nodiscard]] inline bool Enabled() noexcept {
+++    static const bool on = [] {
+++        const bool enabled = Common::PeSwitch("EDEN_UP_L1516_FENCE_CHEAP");
+++        if (enabled) {
+++            LOG_INFO(HW_GPU, "EDEN_UP_L1516_FENCE_CHEAP=1: fencing thread woken only when it "
+++                             "waits for fences; flushed query lists kept (at most 16)");
+++        }
+++        return enabled;
+++    }();
+++    return on;
+++}
+++
+++enum class Count : u32 {
+++    WakesSent,      ///< a fence was made while the fencing thread waited for one: woken
+++    WakesSkipped,   ///< a fence was made while the fencing thread was busy: no wake
+++    ListsReused,    ///< PushUnsyncedQueries took a kept list instead of a new one
+++    Max,
+++};
+++
+++inline const char* const Names[] = {"wakes_sent", "wakes_skipped", "lists_reused"};
+++
+++struct alignas(64) Counter {
+++    std::atomic<u64> value{};
+++};
+++inline Counter counters[static_cast<u32>(Count::Max)];
+++
+++inline void Add(Count which, u64 amount = 1) noexcept {
+++    const u64 before =
+++        counters[static_cast<u32>(which)].value.fetch_add(amount, std::memory_order_relaxed);
+++    const u64 after = before + amount;
+++    if (before == 0 || (std::bit_width(before) != std::bit_width(after))) {
+++        LOG_INFO(HW_GPU, "EDEN_UP_L1516_FENCE_CHEAP count {}={}", Names[static_cast<u32>(which)],
+++                 after);
+++    }
+++}
+++
+++} // namespace VideoCommon::UpL1516
+diff --git a/tools/eglantine-patches/0982-up-l1515-foreign-build-reuse.patch b/tools/eglantine-patches/0982-up-l1515-foreign-build-reuse.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..bd8e1d4ec403135b3220260b88ffcf0bfd296ad5
+--- /dev/null
++++ b/tools/eglantine-patches/0982-up-l1515-foreign-build-reuse.patch
+@@ -0,0 +1,45 @@
++From: EglantinePS5
++Subject: [PATCH] up: L1515 checker fix: a second building thread still reuses free query ids (EDEN_UP_L1515_QUERY_CHEAP only)
++
++Fix to 0980 (port of zortos293/Lichii #1515, 5b9012f, Zortos). Only with
++EDEN_UP_L1515_QUERY_CHEAP=1; unset, nothing here runs.
++
++0980's BuildQuery lets the first thread that builds a query own a lock-free list of free ids.
++Not in upstream: a build from another thread (counted as foreign_build) took a new slot each
++time. Reports are recorded by the thread that owns the Vulkan scheduler: when the GPU thread
++split stops and starts again mid-game (accuracy settings changed), its new back thread is such
++a thread, and every report it built from then on took a new slot while the freed ids piled up
++in spare_queries and were never taken again: memory grew with every report for the rest of the
++session. Now a foreign build takes the free ids under the lock, and (as before) every build
++after it, on any thread, takes the lock: the cost of T181, no growth.
++
++No file here is a translation id input and no name is added to TranslationSwitches: KEEPS THE STORE.
++---
++diff --git a/src/video_core/query_cache/query_stream.h b/src/video_core/query_cache/query_stream.h
++index f5911604b5..fc07db7649 100644
++--- a/src/video_core/query_cache/query_stream.h
+++++ b/src/video_core/query_cache/query_stream.h
++@@ -179,8 +179,10 @@ protected:
++     /// taken from `reusable`, which only that thread touches, and moved there from
++     /// `spare_queries` in batches: one lock per batch instead of one per query (a report per draw
++     /// builds two). Oldest first, as they were freed. Should a second thread ever build (not
++-    /// expected; counted as foreign_build), it takes a new slot under the lock and from then on
++-    /// the first thread builds under the lock too.
+++    /// expected while one thread runs; a split restarted mid-game has a new back thread; counted
+++    /// as foreign_build), every build from then on, on any thread, takes the lock and still
+++    /// reuses the free ids (T182a checker: a foreign build took a new slot each time and the
+++    /// freed ids were never taken again, so slots and spare_queries grew without bound).
++     template <typename... Args>
++     size_t BuildQueryBatched(Args&&... args) {
++         const std::thread::id self = std::this_thread::get_id();
++@@ -194,9 +196,7 @@ protected:
++             std::scoped_lock lk(guard);
++             shared_builders.store(true, std::memory_order_release);
++             UpL1515::Add(UpL1515::Count::ForeignBuild);
++-            const size_t new_id = slot_queries.size();
++-            slot_queries.emplace_back(std::forward<Args>(args)...);
++-            return new_id;
+++            return TakeReusable<true>(std::forward<Args>(args)...);
++         }
++         if (shared_builders.load(std::memory_order_acquire)) [[unlikely]] {
++             std::scoped_lock lk(guard);
+diff --git a/tools/eglantine-patches/0983-up-l1519-fast-draws.patch b/tools/eglantine-patches/0983-up-l1519-fast-draws.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..f6632dd3f7dcb3fc479c77203653c3825e38bc6e
+--- /dev/null
++++ b/tools/eglantine-patches/0983-up-l1519-fast-draws.patch
+@@ -0,0 +1,360 @@
++From: EglantinePS5
++Subject: [PATCH] up: L1519 fast draws, handle words checked on one translation of their span (EDEN_UP_L1519_FAST_DRAWS), off by default
++
++Port of zortos293/Lichii PR #1519, commit 65745c2 (Zortos, "fast draws for computed texture
++handles, handle words and dynamic vertex input", from #1161). Ported by reading, onto our
++EDEN_UP_L1161_DRAW (0559), which already carries most of it from #1161 itself.
++
++Already in T181 with EDEN_UP_FAST_DRAW=1 + EDEN_UP_L1161_DRAW=1 (not ported again): delta draws for
++pipelines with computed texture handles (GraphicsPipeline::ComputedHandlesChanged under both cache
++locks), handle data compared word by word, secondary words included, vertex attribute formats as
++draw parameters with dynamic vertex input (IsL1161VertexFormat + the attribute type check), a full
++range list widened instead of ending reuse (AppendConservativeRange, no uniform keeps then), and
++verify counting only draws that held.
++
++New here, with EDEN_UP_L1519_FAST_DRAWS=1 (exact "1", read once; needs EDEN_UP_FAST_DRAW=1 and acts
++only while EDEN_UP_L1161_DRAW is on):
++- TakeReusableDraw translates a handle buffer only over the bytes its handle words span
++  (HandleRange), not the whole constant buffer, and compares the words on that one translation
++  (Delta::ReachesWords: by device address when the span maps to one run of device memory, else
++  any device write into the span counts). L1161 alone translated each word again, through one
++  shared DeviceSpans, whenever a write reached the buffer.
++- Words are sorted and merged per slot (MergedHandleWords) when the pipeline's word table is built.
++- A write that reaches the span only between handle words keeps the delta draw but no uniform
++  keeps (taken_delta.no_uniform_keeps), as upstream.
++- With EDEN_NX2_NULL_POINTER_HANDLE on, texture words that are a storage buffer's address are left
++  out of the merged words (ConfigureImpl binds no texture for them then). Upstream leaves them out
++  always; ours reads them as handles without that switch, so they stay in.
++- DeviceSpans records whether its range maps linearly (always computed in Update; read only here).
++
++Not taken: FixedPipelineState::DynamicAttributeTypes (fixed_pipeline_state.* is a translation id
++input; ours already has the function from an earlier patch), the pipeline cache's
++g_dynamic_vertex_input (ours has g_vertex_formats_dynamic), the Reason::DeltaOverflow removal
++(kept for the switch-off path), tests (src/tests not built here).
++
++Line (Render_Vulkan, the first 16 checks a write reached, then powers of two):
++"EDEN_UP_L1519_FAST_DRAWS: handle buffers checked over their words' span N, a write reached the
++span N (not one device run N), reached a handle word N (full draw), only between the words N
++(delta kept, no uniform keeps), merged words compared N, slots with no word left N".
++
++Off: one bool per TakeReusableDraw that reaches the handle loop with L1161 on; DeviceSpans::Update
++sets two fields more. Memory: per pipeline built with L1161 on, the merged word list and a
++5x18 range table (about 0.7 KiB). Not in the kept-store stamp: nx2_fast_draw.*, vk_rasterizer.*,
++vk_graphics_pipeline.* (KEEPS THE STORE).
++---
++diff --git a/src/video_core/nx2_fast_draw.cpp b/src/video_core/nx2_fast_draw.cpp
++index 5fdfd7cc95..be698c35ab 100644
++--- a/src/video_core/nx2_fast_draw.cpp
+++++ b/src/video_core/nx2_fast_draw.cpp
++@@ -18,7 +18,12 @@ void DeviceSpans::Update(const Tegra::MemoryManager& memory_, GPUVAddr address_,
++     size = size_;
++     map_serial = serial;
++     spans.clear();
++-    for (const auto& [device, bytes] : memory_.GetSubmappedDeviceRange(address_, size_)) {
+++    const auto submapped = memory_.GetSubmappedDeviceRange(address_, size_);
+++    // EDEN_UP_L1519_FAST_DRAWS (Lichii #1519): segments come in GPU order, joined where device
+++    // memory continues; one segment of the whole size maps linearly. Only ReachesWords reads it.
+++    linear = submapped.size() == 1 && submapped[0].second == size_;
+++    linear_base = linear ? submapped[0].first : 0;
+++    for (const auto& [device, bytes] : submapped) {
++         spans.emplace_back(device, device + bytes);
++     }
++     std::ranges::sort(spans);
++diff --git a/src/video_core/nx2_fast_draw.h b/src/video_core/nx2_fast_draw.h
++index 6481f78db9..a8596061ec 100644
++--- a/src/video_core/nx2_fast_draw.h
+++++ b/src/video_core/nx2_fast_draw.h
++@@ -122,6 +122,19 @@ inline constexpr std::array<const char*, static_cast<size_t>(Reason::Count)> rea
++     return Common::LiveSwitch::Peek<Common::LiveSwitch::Id::L1161Draw>() != 0;
++ }
++ 
+++/// EDEN_UP_L1519_FAST_DRAWS=1 (exact "1") with EDEN_UP_FAST_DRAW=1, read once (zortos293/Lichii
+++/// #1519, 65745c2, Zortos; from #1161): when EDEN_UP_L1161_DRAW's handle check runs, a handle
+++/// buffer is translated only over the bytes its handle words span (not the whole constant
+++/// buffer), and the words are compared on that one translation (Delta::ReachesWords) instead of
+++/// translating each word again. A write that reaches the buffer only between its handles keeps
+++/// the delta draw but no uniforms. With EDEN_NX2_NULL_POINTER_HANDLE on, the words read as a
+++/// storage buffer address (never a texture then) are left out of the words. Does nothing
+++/// without EDEN_UP_L1161_DRAW.
+++[[nodiscard]] inline bool L1519FastDrawsEnabled() {
+++    static const bool enabled = Enabled() && Common::PeSwitch("EDEN_UP_L1519_FAST_DRAWS");
+++    return enabled;
+++}
+++
++ /// EDEN_UP_L949_UBO_KEEP=1 with EDEN_UP_FAST_DRAW=1 (zortos293/Lichii #949: 6b38851501 and
++ /// 3e86407514, zortos293): a delta draw binds a small streamed uniform buffer from the stream
++ /// allocation the previous draw made for the same stage, slot, address and size in the same
++@@ -207,11 +220,25 @@ public:
++     /// Whether [begin, end) of device memory overlaps the range's.
++     [[nodiscard]] bool Intersects(DAddr begin, DAddr end) const;
++ 
+++    /// EDEN_UP_L1519_FAST_DRAWS (Lichii #1519): the GPU address the range starts at, and whether
+++    /// it maps to one run of device memory in GPU order, starting at LinearBase.
+++    [[nodiscard]] GPUVAddr Address() const noexcept {
+++        return address;
+++    }
+++    [[nodiscard]] bool IsLinear() const noexcept {
+++        return linear;
+++    }
+++    [[nodiscard]] DAddr LinearBase() const noexcept {
+++        return linear_base;
+++    }
+++
++ private:
++     const Tegra::MemoryManager* memory{};
++     GPUVAddr address{};
++     u64 size{};
++     u64 map_serial{};
+++    bool linear{};
+++    DAddr linear_base{};
++     std::vector<std::pair<DAddr, DAddr>> spans; ///< Sorted, disjoint [begin, end) pairs
++ };
++ 
++@@ -264,6 +291,39 @@ struct Delta {
++         }
++         return false;
++     }
+++
+++    /// EDEN_UP_L1519_FAST_DRAWS (zortos293/Lichii #1519, 65745c2): Reaches for only the bytes
+++    /// [base + first, base + second) of each of `words` (sorted byte offsets of one constant
+++    /// buffer at `base`), all inside the range `spans` was updated with. Device writes are
+++    /// compared word by word when that range maps linearly, else with the whole range (true when
+++    /// one reaches it anywhere: conservative).
+++    template <typename Words>
+++    [[nodiscard]] bool ReachesWords(GPUVAddr base, const Words& words,
+++                                    const DeviceSpans& spans) const {
+++        for (u32 write = 0; write < num_writes; ++write) {
+++            for (const auto& [first, second] : words) {
+++                if (write_begin[write] < base + second && base + first < write_end[write]) {
+++                    return true;
+++                }
+++            }
+++        }
+++        for (u32 write = 0; write < num_device_writes; ++write) {
+++            if (!spans.Intersects(device_begin[write], device_end[write])) {
+++                continue;
+++            }
+++            if (!spans.IsLinear()) {
+++                return true;
+++            }
+++            for (const auto& [first, second] : words) {
+++                const DAddr begin = spans.LinearBase() + (base + first - spans.Address());
+++                const DAddr end = begin + (second - first);
+++                if (device_begin[write] < end && begin < device_end[write]) {
+++                    return true;
+++                }
+++            }
+++        }
+++        return false;
+++    }
++ };
++ 
++ inline Delta g_delta;
++diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++index 7643e5f3bc..a876f4fb14 100644
++--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++@@ -1113,27 +1113,59 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
++ 
++ void GraphicsPipeline::BuildHandleWords() {
++     handle_words = std::make_unique<HandleWordTable>();
+++    // EDEN_UP_L1519_FAST_DRAWS (Lichii #1519): a texture element whose word is a storage buffer
+++    // address binds no texture with EDEN_NX2_NULL_POINTER_HANDLE (ConfigureImpl), so a write to
+++    // it changes nothing a full resolve gives. Left out of `merged` only, and only then.
+++    const bool null_pointer_handles = VideoCommon::NullPointerHandlesEnabled();
++     {
++         for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
+++            const auto& info = stage_infos[stage];
++             const auto add = [&](const auto& desc) {
++                 if (desc.handle_program != ~0U) return;
++-                const auto range = [&](u32 slot, u32 offset) {
+++                const auto range = [&](u32 slot, u32 offset, bool primary) {
++                     precise_handle_buffers[stage] |= 1U << slot;
++                     for (u32 i = 0; i < desc.count; ++i) {
++                         const u32 first = offset + (i << desc.size_shift);
++                         handle_words->words[stage][slot].emplace_back(first, first + 4);
+++                        if constexpr (std::is_same_v<std::remove_cvref_t<decltype(desc)>,
+++                                                     Shader::TextureDescriptor>) {
+++                            if (primary && null_pointer_handles &&
+++                                VideoCommon::HandleIsStoragePointer(info, desc, i)) {
+++                                continue;
+++                            }
+++                        }
+++                        handle_words->merged[stage][slot].emplace_back(first, first + 4);
++                     }
++                 };
++-                range(desc.cbuf_index, desc.cbuf_offset);
+++                range(desc.cbuf_index, desc.cbuf_offset, true);
++                 if constexpr (requires { desc.has_secondary; }) {
++-                    if (desc.has_secondary) range(desc.secondary_cbuf_index, desc.secondary_cbuf_offset);
+++                    if (desc.has_secondary) {
+++                        range(desc.secondary_cbuf_index, desc.secondary_cbuf_offset, false);
+++                    }
++                 }
++             };
++-            const auto& info = stage_infos[stage];
++             for (const auto& desc : info.texture_buffer_descriptors) add(desc);
++             for (const auto& desc : info.image_buffer_descriptors) add(desc);
++             for (const auto& desc : info.texture_descriptors) add(desc);
++             for (const auto& desc : info.image_descriptors) add(desc);
+++            // EDEN_UP_L1519_FAST_DRAWS: sorted, overlapping or touching words joined, and the
+++            // span they cover (upstream's handle_words / handle_ranges).
+++            for (u32 slot = 0; slot < Maxwell::MaxConstBuffers; ++slot) {
+++                auto& list = handle_words->merged[stage][slot];
+++                std::ranges::sort(list);
+++                size_t joined = 0;
+++                for (const auto& word : list) {
+++                    if (joined != 0 && word.first <= list[joined - 1].second) {
+++                        list[joined - 1].second = (std::max)(list[joined - 1].second, word.second);
+++                    } else {
+++                        list[joined++] = word;
+++                    }
+++                }
+++                list.resize(joined);
+++                if (!list.empty()) {
+++                    handle_words->ranges[stage][slot] = {list.front().first, list.back().second};
+++                }
+++            }
++         }
++     }
++ 
++diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
++index 22914769bd..3590cb29b7 100644
++--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
+++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
++@@ -274,6 +274,16 @@ public:
++     [[nodiscard]] std::span<const std::pair<u32, u32>> HandleWords(size_t stage, u32 slot) const {
++         return handle_words->words[stage][slot];
++     }
+++    /// EDEN_UP_L1519_FAST_DRAWS (zortos293/Lichii #1519, 65745c2): the bytes [first, second) of
+++    /// a PreciseHandleBuffers slot that handles are read from (first == second: none), and the
+++    /// same bytes word by word, sorted and merged. Only after BuildHandleWords.
+++    [[nodiscard]] std::pair<u32, u32> HandleRange(size_t stage, u32 slot) const {
+++        return handle_words->ranges[stage][slot];
+++    }
+++    [[nodiscard]] std::span<const std::pair<u32, u32>> MergedHandleWords(size_t stage,
+++                                                                         u32 slot) const {
+++        return handle_words->merged[stage][slot];
+++    }
++ 
++     /// EDEN_UP_FAST_DRAW: resolves and binds every buffer as Configure does (storage buffer
++     /// addresses are read from the constant buffers again) and records the draw's descriptors
++@@ -380,6 +390,15 @@ private:
++                               Tegra::Engines::Maxwell3D::Regs::MaxConstBuffers>,
++                    NUM_STAGES>
++             words;
+++        /// EDEN_UP_L1519_FAST_DRAWS: `words` sorted and merged (with EDEN_NX2_NULL_POINTER_HANDLE,
+++        /// without the storage pointer words), and the span of each slot's merged words.
+++        std::array<std::array<std::vector<std::pair<u32, u32>>,
+++                              Tegra::Engines::Maxwell3D::Regs::MaxConstBuffers>,
+++                   NUM_STAGES>
+++            merged;
+++        std::array<std::array<std::pair<u32, u32>, Tegra::Engines::Maxwell3D::Regs::MaxConstBuffers>,
+++                   NUM_STAGES>
+++            ranges{};
++     };
++     bool handle_words_ready{};
++     std::array<u32, NUM_STAGES> precise_handle_buffers{};
++diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++index 31bcdc309a..1e655c7e1d 100644
++--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++@@ -482,6 +482,10 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
++     }
++     const auto& handles = l1161 ? draw.pipeline->PreciseHandleBuffers()
++                                : draw.pipeline->HandleConstantBuffers();
+++    // EDEN_UP_L1519_FAST_DRAWS (zortos293/Lichii #1519, 65745c2): refines EDEN_UP_L1161_DRAW's
+++    // check; read once, nothing without both.
+++    const bool l1519 = l1161 && FastDraw::L1519FastDrawsEnabled();
+++    bool l1519_no_keeps = false;
++     for (size_t stage = 0; stage < handles.size() && !delta.Empty(); ++stage) {
++         if ((delta.binds[stage] & handles[stage]) != 0) {
++             return full(FullDraw::HandleBind);
++@@ -497,6 +501,33 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
++             }
++             const auto& cbuf = cbufs[slot];
++             FastDraw::DeviceSpans& spans = handle_spans[stage][slot];
+++            if (l1519) {
+++                // Only the bytes the handles are read from: draws write their own data next to
+++                // them. One translation, the words compared on it (Delta::ReachesWords).
+++                const auto [begin, end] = draw.pipeline->HandleRange(stage, slot);
+++                if (begin == end) {
+++                    ++l1519_stats.skipped_empty;
+++                    continue;
+++                }
+++                ++l1519_stats.checked;
+++                spans.Update(*gpu_memory, cbuf.address + begin, end - begin);
+++                if (!delta.Reaches(cbuf.address + begin, end - begin, spans)) {
+++                    continue;
+++                }
+++                const auto words = draw.pipeline->MergedHandleWords(stage, slot);
+++                ++l1519_stats.reached;
+++                l1519_stats.words_compared += words.size();
+++                l1519_stats.not_linear += spans.IsLinear() ? 0 : 1;
+++                const bool hit = delta.ReachesWords(cbuf.address, words, spans);
+++                ++(hit ? l1519_stats.word_hits : l1519_stats.between);
+++                ReportL1519();
+++                if (hit) {
+++                    return full(FullDraw::HandleData);
+++                }
+++                // Upstream: as when such writes ended draw reuse, the draw keeps no uniforms.
+++                l1519_no_keeps = true;
+++                continue;
+++            }
++             spans.Update(*gpu_memory, cbuf.address, cbuf.size);
++             if (!delta.Reaches(cbuf.address, cbuf.size, spans)) {
++                 continue; // nothing written reaches the buffer: as without the switch
++@@ -520,7 +551,7 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
++     if (FastDraw::UboKeepEnabled()) {
++         // EDEN_UP_L949_UBO_KEEP (Lichii #949): what BeginGraphicsUniforms reads, before the delta
++         // is emptied on the way out (only the binds and the device ranges).
++-        taken_delta.no_uniform_keeps = delta.no_uniform_keeps;
+++        taken_delta.no_uniform_keeps = delta.no_uniform_keeps || l1519_no_keeps;
++         taken_delta.binds = delta.binds;
++         taken_delta.num_device_writes = delta.num_device_writes;
++         std::copy_n(delta.device_begin.begin(), delta.num_device_writes,
++@@ -531,6 +562,21 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
++     return draw.pipeline;
++ }
++ 
+++void RasterizerVulkan::ReportL1519() {
+++    // EDEN_UP_L1519_FAST_DRAWS: the first 16 reached checks, then each power of two.
+++    const L1519Stats& stats = l1519_stats;
+++    if (stats.reached > 16 && (stats.reached & (stats.reached - 1)) != 0) {
+++        return;
+++    }
+++    LOG_INFO(Render_Vulkan,
+++             "EDEN_UP_L1519_FAST_DRAWS: handle buffers checked over their words' span {}, a write "
+++             "reached the span {} (not one device run {}), reached a handle word {} (full draw), "
+++             "only between the words {} (delta kept, no uniform keeps), merged words compared {}, "
+++             "slots with no word left {}",
+++             stats.checked, stats.reached, stats.not_linear, stats.word_hits, stats.between,
+++             stats.words_compared, stats.skipped_empty);
+++}
+++
++ bool RasterizerVulkan::DeltaStillHolds(u64 serial, u64 map_serial) {
++     // Lichii #921 (1c25fbdfb4): TakeReusableDraw ran before the caches were locked, while other
++     // threads could still write, unmap or delete what the delta draw keeps.
++diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.h b/src/video_core/renderer_vulkan/vk_rasterizer.h
++index fc1db90a32..e924da2ba1 100644
++--- a/src/video_core/renderer_vulkan/vk_rasterizer.h
+++++ b/src/video_core/renderer_vulkan/vk_rasterizer.h
++@@ -403,6 +403,18 @@ private:
++     /// EDEN_UP_L1161_DRAW: one handle word's device memory, translated only when a write
++     /// reached its buffer.
++     VideoCommon::Nx2FastDraw::DeviceSpans handle_word_spans;
+++    /// EDEN_UP_L1519_FAST_DRAWS (Lichii #1519): what its handle check did, counted on the back
+++    /// and logged at the first 16 checks that a write reached, then at powers of two.
+++    struct L1519Stats {
+++        u64 checked{};       ///< handle buffers checked over their handle words' span
+++        u64 reached{};       ///< a write reached that span
+++        u64 word_hits{};     ///< ...and a handle word: full draw (handle data written)
+++        u64 between{};       ///< ...only between the words: delta draw kept, no uniform keeps
+++        u64 not_linear{};    ///< reached spans that map to more than one run of device memory
+++        u64 words_compared{}; ///< merged words compared (EDEN_UP_L1161_DRAW alone translated each)
+++        u64 skipped_empty{}; ///< slots with no handle word left (all storage pointers)
+++    } l1519_stats;
+++    void ReportL1519();
++     FastDrawStats fast_draw_stats;
++     /// EDEN_UP_TESS_TOPOLOGY: the primitive topology last recorded as dynamic state
++     /// (UpdateDynamicStates). Never read or written with the switch off.
+diff --git a/tools/eglantine-patches/0984-up-l1521-keep-gaps.patch b/tools/eglantine-patches/0984-up-l1521-keep-gaps.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..14d489fd940d927f1b05f25b9caa3d1883c395ff
+--- /dev/null
++++ b/tools/eglantine-patches/0984-up-l1521-keep-gaps.patch
+@@ -0,0 +1,261 @@
++From: EglantinePS5
++Subject: [PATCH] up: L1521 uniform keep gaps closed (EDEN_UP_L1521_KEEP_GAPS), off by default
++
++Port of zortos293/Lichii PR #1521, commit 45d0fb6 (Zortos, with Lucas Borges; "close uniform keep
++gaps and copy only the fast-draw delta's ranges in use", from #1161). Ported by reading onto our
++EDEN_UP_L949_UBO_KEEP (Lichii #949 keeps, delta draws only; upstream's are #1441's).
++
++With EDEN_UP_L1521_KEEP_GAPS=1 (exact "1", read once; needs EDEN_UP_L949_UBO_KEEP=1, which needs
++EDEN_UP_FAST_DRAW=1):
++- Each submitted guest command list ends uniform keeps: on the split, a FastDrawNeutral deferred
++  call bumps Nx2FastDraw::g_keep_submits in order on the back (draw reuse itself goes on); without
++  the split it is bumped where the list is pushed. BeginGraphicsUniforms keeps nothing when the
++  count moved since the previous draw. Guest CPU writes before a submit go unseen on pages the
++  caches don't watch.
++- DMA copies from memory no GPU wrote, DMA clears and in-place inline uploads (InlineMemory) are
++  noted to the keeps (NoteUniformWrite); before, only a DMA copy with GPU data was.
++- The keep verifier (EDEN_UP_L949_UBO_KEEP_VERIFY) compares only ranges RebindKeptUniform would
++  bind again (KeptUniformMatches: same range, same command buffer).
++
++Not taken, and why: TakeDelta (copy only the ranges in use): our TakeReusableDraw already reads
++g_delta in place and copies only the device ranges for the keeps. The GPU memory compare
++(keep.gpu_memory): our keeps are only on delta draws, which TakeReusableDraw allows only with the
++same MemoryManager. The puller acquire notes: every acquire path of ours already ends draw reuse
++(Break(Fence), or EndFastDrawAtAcquire's deferred call), so no delta draw, and no keep, crosses
++one. The overflow -> no_uniform_keeps rename: done by 0559. Tests: not built here.
++
++Line (HW_GPU, the first 16 events, then powers of two): "EDEN_UP_L1521_KEEP_GAPS: keeps ended by
++a submitted list N, noted writes: DMA copies from memory no GPU wrote N, DMA clears N, inline
++uploads in place N; verify skipped N (kept so far N)".
++
++Effect: fewer uniform keeps (safer), never more. Off: one bool per submit list, DMA copy/clear,
++inline upload and keep-verify bind. Memory: none to speak of. Not in the kept-store stamp:
++buffer_cache*.h, uniform_stream_reuse.h, gpu_thread.cpp, nx2_fast_draw.h (KEEPS THE STORE).
++---
++diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
++index afc5abb74b..7eb72e2054 100644
++--- a/src/video_core/buffer_cache/buffer_cache.h
+++++ b/src/video_core/buffer_cache/buffer_cache.h
++@@ -1582,6 +1582,12 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
++         if (should_sync) {
++             runtime.Finish();
++         }
+++    } else if (Nx2FastDraw::L1521KeepGapsEnabled()) {
+++        // EDEN_UP_L1521_KEEP_GAPS (Lichii #1521): from memory no GPU wrote, the copy lands in
+++        // guest memory (below) all the same.
+++        NoteUniformWrite(*cpu_dest_address, amount);
+++        ++uniform_keep.gap_dma_copies;
+++        ReportKeepGaps();
++     }
++ 
++     {
++@@ -1627,6 +1633,11 @@ bool BufferCache<P>::DMAClear(GPUVAddr dst_address, u64 amount, u32 value) {
++ 
++     ClearDownload(*cpu_dst_address, size);
++     gpu_modified_ranges.Subtract(*cpu_dst_address, size);
+++    if (Nx2FastDraw::L1521KeepGapsEnabled()) {
+++        NoteUniformWrite(*cpu_dst_address, size); // EDEN_UP_L1521_KEEP_GAPS (Lichii #1521)
+++        ++uniform_keep.gap_dma_clears;
+++        ReportKeepGaps();
+++    }
++     Nx2BankHashForget(*cpu_dst_address, size); // EDEN_UP_BANK_HASH_SKIP; empty without it
++     if (fritchii_dma_list || VideoCommon::GpuSplit::L1094ListWords()) {
++         // The caller writes the cleared words to guest memory after this (WriteBlockUnsafe), as
++@@ -1837,13 +1848,25 @@ void BufferCache<P>::BeginGraphicsUniforms(const Nx2FastDraw::Delta* delta) {
++     UniformKeep& keep = uniform_keep;
++     const bool unwritten = !keep.memory_writes_lost && keep.draw_deletions == keep.deletions;
++     keep.draw_deletions = keep.deletions;
+++    // EDEN_UP_L1521_KEEP_GAPS (zortos293/Lichii #1521, 45d0fb6): no keep across a submitted
+++    // guest command list (Nx2FastDraw::g_keep_submits, bumped in order on this thread).
+++    bool same_list = true;
+++    if (Nx2FastDraw::L1521KeepGapsEnabled()) {
+++        const u64 submits = Nx2FastDraw::g_keep_submits.load(std::memory_order_relaxed);
+++        same_list = keep.submit_serial == submits;
+++        keep.submit_serial = submits;
+++        if (!same_list && delta != nullptr && unwritten && !delta->no_uniform_keeps) {
+++            ++keep.gap_submit_ends;
+++            ReportKeepGaps();
+++        }
+++    }
++     keep.candidates = {};
++     keep.writes.clear();
++     const std::array<u32, NUM_STAGES> streamed = std::exchange(keep.streamed, {});
++     // EDEN_UP_FRITCHII_BANKFLAG exists to catch guest CPU writes the caches were not told about
++     // yet: no keeps while it is on.
++     const bool usable = delta != nullptr && unwritten && !delta->no_uniform_keeps &&
++-                        !Core::BankFlagPages();
+++                        same_list && !Core::BankFlagPages();
++     if (usable) {
++         keep.writes.insert(keep.writes.end(), keep.memory_writes.begin(),
++                            keep.memory_writes.end());
++@@ -1863,6 +1886,22 @@ void BufferCache<P>::BeginGraphicsUniforms(const Nx2FastDraw::Delta* delta) {
++     }
++ }
++ 
+++template <class P>
+++void BufferCache<P>::ReportKeepGaps() {
+++    const UniformKeep& keep = uniform_keep;
+++    const u64 events = keep.gap_submit_ends + keep.gap_dma_copies + keep.gap_dma_clears +
+++                       keep.gap_inline + keep.gap_verify_skips;
+++    if (events > 16 && (events & (events - 1)) != 0) {
+++        return;
+++    }
+++    LOG_INFO(HW_GPU,
+++             "EDEN_UP_L1521_KEEP_GAPS: keeps ended by a submitted list {}, noted writes: DMA "
+++             "copies from memory no GPU wrote {}, DMA clears {}, inline uploads in place {}; "
+++             "verify skipped {} (kept so far {})",
+++             keep.gap_submit_ends, keep.gap_dma_copies, keep.gap_dma_clears, keep.gap_inline,
+++             keep.gap_verify_skips, keep.kept);
+++}
+++
++ template <class P>
++ bool BufferCache<P>::UniformRangeKept(size_t stage, u32 index, DAddr device_addr,
++                                       u32 size) const noexcept {
++@@ -3203,7 +3242,15 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32
++     bool verify_kept = false;
++     if constexpr (!IS_OPENGL && VideoCommon::StreamUniformReusable<Runtime>) {
++         if (Nx2FastDraw::UboKeepEnabled() && UniformRangeKept(stage, index, device_addr, size)) {
++-            if (Nx2FastDraw::UboKeepVerify()) {
+++            // EDEN_UP_L1521_KEEP_GAPS (Lichii #1521): the verifier compares only the ranges
+++            // RebindKeptUniform would bind again; the others stream as before.
+++            const bool rebindable = !Nx2FastDraw::L1521KeepGapsEnabled() ||
+++                                    VideoCommon::KeptUniformMatches(runtime, stage, index,
+++                                                                    device_addr, size);
+++            if (Nx2FastDraw::UboKeepVerify() && !rebindable) {
+++                ++uniform_keep.gap_verify_skips;
+++                ReportKeepGaps();
+++            } else if (Nx2FastDraw::UboKeepVerify()) {
++                 ++uniform_keep.verified;
++                 verify_kept = true;
++                 if (!VideoCommon::KeptUniformHolds<Runtime>(device_memory, stage, index,
++@@ -5550,6 +5597,11 @@ bool BufferCache<P>::InlineMemory(DAddr dest_address, size_t copy_size,
++         return false;
++     }
++ 
+++    if (Nx2FastDraw::L1521KeepGapsEnabled()) {
+++        NoteUniformWrite(dest_address, copy_size); // EDEN_UP_L1521_KEEP_GAPS (Lichii #1521)
+++        ++uniform_keep.gap_inline;
+++        ReportKeepGaps();
+++    }
++     return InlineMemoryImplementation(dest_address, copy_size, inlined_buffer);
++ }
++ 
++diff --git a/src/video_core/buffer_cache/buffer_cache_base.h b/src/video_core/buffer_cache/buffer_cache_base.h
++index 2302045b3b..21f0c22003 100644
++--- a/src/video_core/buffer_cache/buffer_cache_base.h
+++++ b/src/video_core/buffer_cache/buffer_cache_base.h
++@@ -1080,6 +1080,8 @@ private:
++         }
++         keep.memory_writes.emplace_back(device_addr, device_addr + size);
++     }
+++    /// EDEN_UP_L1521_KEEP_GAPS: the count line (first 16 events, then powers of two).
+++    void ReportKeepGaps();
++     struct UniformKeep {
++         std::array<u32, NUM_STAGES> candidates{}; ///< Streamed by the previous draw, not rebound
++         std::array<u32, NUM_STAGES> streamed{};   ///< Streamed by this draw
++@@ -1091,6 +1093,14 @@ private:
++         bool memory_writes_lost{}; ///< More writes than memory_writes holds
++         u64 deletions{};           ///< Buffers deleted (DeleteBuffer, the inline index buffer)
++         u64 draw_deletions{};      ///< deletions when the previous draw began
+++        /// EDEN_UP_L1521_KEEP_GAPS: Nx2FastDraw::g_keep_submits when the previous draw began, and
+++        /// what the switch did (logged at the first 16 events, then at powers of two).
+++        u64 submit_serial{};
+++        u64 gap_submit_ends{};   ///< draws that would have kept, after a submitted list
+++        u64 gap_dma_copies{};    ///< DMA copies from memory no GPU wrote, noted
+++        u64 gap_dma_clears{};    ///< DMA clears noted
+++        u64 gap_inline{};        ///< in-place inline uploads noted
+++        u64 gap_verify_skips{};  ///< verify skipped: RebindKeptUniform would not bind it again
++         u64 kept{};
++         u64 streamed_binds{};
++         u64 verified{};
++diff --git a/src/video_core/buffer_cache/uniform_stream_reuse.h b/src/video_core/buffer_cache/uniform_stream_reuse.h
++index 52d9761bb5..9742e1a071 100644
++--- a/src/video_core/buffer_cache/uniform_stream_reuse.h
+++++ b/src/video_core/buffer_cache/uniform_stream_reuse.h
++@@ -329,6 +329,23 @@ template <class Runtime, class DeviceMemory>
++     return true;
++ }
++ 
+++/// EDEN_UP_L1521_KEEP_GAPS (zortos293/Lichii #1521, 45d0fb6): whether RebindKeptUniform binds the
+++/// slot's last allocation again for this range: the slot's last bind read the same range in the
+++/// command buffer that is current now.
+++template <class Runtime>
+++[[nodiscard]] bool KeptUniformMatches(Runtime& runtime, size_t stage, u32 index, u64 device_addr,
+++                                      u32 size) {
+++    using Reuse = UniformStreamReuse<typename Runtime::StreamUniformRef>;
+++    if (size == 0 || size > Reuse::MaxBytes || stage >= Reuse::NumStages ||
+++        index >= Reuse::NumSlots) {
+++        return false;
+++    }
+++    const typename Reuse::Slot& slot =
+++        UniformStreamReuseState<typename Runtime::StreamUniformRef>().slots[stage][index];
+++    return slot.size == size && slot.device_addr == device_addr &&
+++           slot.tick == runtime.CurrentTick();
+++}
+++
++ /// EDEN_UP_L949_UBO_KEEP (zortos293/Lichii #949, 6b38851501): binds the slot's last allocation
++ /// again without reading guest memory, when BindSmallUniformReusing made it for the same range in
++ /// this command buffer. The caller guarantees that nothing ordered before this draw wrote the
++diff --git a/src/video_core/gpu_thread.cpp b/src/video_core/gpu_thread.cpp
++index 72093f29bd..0d186f8442 100644
++--- a/src/video_core/gpu_thread.cpp
+++++ b/src/video_core/gpu_thread.cpp
++@@ -22,6 +22,7 @@
++ #include "video_core/gpu.h"
++ #include "video_core/gpu_thread.h"
++ #include "video_core/gpu_split.h"
+++#include "video_core/nx2_fast_draw.h"
++ #include "video_core/nx2_profile.h"
++ #include "video_core/host1x/host1x.h"
++ #include "video_core/renderer_base.h"
++@@ -185,6 +186,13 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
++                 auto* const rasterizer_ptr = renderer.ReadRasterizer();
++                 if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
++                     Profile::Scope scope{Profile::Zone::Push};
+++                    // EDEN_UP_L1521_KEEP_GAPS (Lichii #1521): the guest may have written pages the
+++                    // caches don't watch since the lists before it: uniform keeps end here, in
+++                    // order on the back. Neutral: draw reuse itself goes on.
+++                    if (VideoCommon::Nx2FastDraw::L1521KeepGapsEnabled()) {
+++                        split.Defer([] { VideoCommon::Nx2FastDraw::NoteKeepSubmit(); },
+++                                    VideoCommon::GpuSplit::FastDrawNeutral);
+++                    }
++                     // Ahead of anything the list queues.
++                     if (system.GPU().HeldWritesOn()) {
++                         split.Defer([gpu = &system.GPU()] { gpu->ApplyHeldWritesBeforeList(); });
++@@ -225,6 +233,9 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
++             }
++             if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
++                 Profile::Scope scope{Profile::Zone::Push};
+++                if (VideoCommon::Nx2FastDraw::L1521KeepGapsEnabled()) {
+++                    VideoCommon::Nx2FastDraw::NoteKeepSubmit(); // EDEN_UP_L1521_KEEP_GAPS
+++                }
++                 system.GPU().ApplyHeldWritesBeforeList();
++                 scheduler.Push(system.GPU(), submit_list->channel, std::move(submit_list->entries));
++             } else if (std::holds_alternative<GPUTickCommand>(next.data)) {
++diff --git a/src/video_core/nx2_fast_draw.h b/src/video_core/nx2_fast_draw.h
++index a8596061ec..747d38f9d4 100644
++--- a/src/video_core/nx2_fast_draw.h
+++++ b/src/video_core/nx2_fast_draw.h
++@@ -150,6 +150,22 @@ inline constexpr std::array<const char*, static_cast<size_t>(Reason::Count)> rea
++     static const bool verify = UboKeepEnabled() && Common::PeSwitch("EDEN_UP_L949_UBO_KEEP_VERIFY");
++     return verify;
++ }
+++/// EDEN_UP_L1521_KEEP_GAPS=1 (exact "1") with EDEN_UP_L949_UBO_KEEP=1, read once (zortos293/Lichii
+++/// #1521, 45d0fb6, Zortos; from #1161): closes gaps in uniform keeps. Each guest command list
+++/// submitted ends them, in order on the split's back (a FastDrawNeutral deferred call; the guest's
+++/// CPU writes before a submit go unseen on pages the caches don't watch); DMA copies (also from
+++/// memory no GPU wrote), DMA clears and in-place inline uploads are noted as writes to the keeps;
+++/// the keep verifier compares only ranges RebindKeptUniform would bind again.
+++[[nodiscard]] inline bool L1521KeepGapsEnabled() {
+++    static const bool enabled = UboKeepEnabled() && Common::PeSwitch("EDEN_UP_L1521_KEEP_GAPS");
+++    return enabled;
+++}
+++/// EDEN_UP_L1521_KEEP_GAPS: bumped once per guest command list, on the thread that runs the
+++/// draws (in order); BufferCache::BeginGraphicsUniforms keeps nothing across a change.
+++inline std::atomic<u64> g_keep_submits{0};
+++inline void NoteKeepSubmit() {
+++    g_keep_submits.fetch_add(1, std::memory_order_relaxed);
+++}
++ /// EDEN_UP_L949_DESC_REPLAY=1 with EDEN_UP_FAST_DRAW=1 (zortos293/Lichii #949, ee98215f14): delta
++ /// draws copy the image descriptor entries and rescaling words the capturing resolve pushed
++ /// instead of looking up every view and sampler again (GraphicsPipeline::ConfigureDelta). Read
+diff --git a/tools/eglantine-patches/0985-up-l1519-table-when-on.patch b/tools/eglantine-patches/0985-up-l1519-table-when-on.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..04b8b401d36bdf32bf0f7ed78a2161c91809db15
+--- /dev/null
++++ b/tools/eglantine-patches/0985-up-l1519-table-when-on.patch
+@@ -0,0 +1,141 @@
++From: EglantinePS5
++Subject: [PATCH] up: L1519 fixes from the T182b check: its word table only with the switch on, a line at the first check
++
++Follows 0982 (EDEN_UP_L1519_FAST_DRAWS, port of zortos293/Lichii PR #1519, commit 65745c2 by
++Zortos). Found in the T182b check:
++- 0982 put the merged words and the 5x18 range table into HandleWordTable, which EDEN_UP_L1161_DRAW
++  allocates and fills per pipeline whatever EDEN_UP_L1519_FAST_DRAWS says: with L1161 on and L1519
++  off, about 2.9 KiB more per pipeline (90 empty vectors plus the table) and a sort per slot,
++  unlike T181. Now its own table (L1519WordTable), made only with the switch on; TakeReusableDraw
++  uses it only when the pipeline has one (else the L1161 check, as T181).
++- The count line was written only when a write reached a span: a run where none did showed no line
++  at all. It is now also written at the first span check.
++
++Off: as T181 (no table, no work). Not in the kept-store stamp: vk_graphics_pipeline.*,
++vk_rasterizer.cpp (KEEPS THE STORE).
++---
++diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++index a876f4fb14..29c3594c2f 100644
++--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++@@ -1113,6 +1113,11 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
++ 
++ void GraphicsPipeline::BuildHandleWords() {
++     handle_words = std::make_unique<HandleWordTable>();
+++    // EDEN_UP_L1519_FAST_DRAWS (Lichii #1519): its table only with the switch on (0984).
+++    const bool l1519 = VideoCommon::Nx2FastDraw::L1519FastDrawsEnabled();
+++    if (l1519) {
+++        l1519_words = std::make_unique<L1519WordTable>();
+++    }
++     // EDEN_UP_L1519_FAST_DRAWS (Lichii #1519): a texture element whose word is a storage buffer
++     // address binds no texture with EDEN_NX2_NULL_POINTER_HANDLE (ConfigureImpl), so a write to
++     // it changes nothing a full resolve gives. Left out of `merged` only, and only then.
++@@ -1127,6 +1132,9 @@ void GraphicsPipeline::BuildHandleWords() {
++                     for (u32 i = 0; i < desc.count; ++i) {
++                         const u32 first = offset + (i << desc.size_shift);
++                         handle_words->words[stage][slot].emplace_back(first, first + 4);
+++                        if (!l1519) {
+++                            continue;
+++                        }
++                         if constexpr (std::is_same_v<std::remove_cvref_t<decltype(desc)>,
++                                                      Shader::TextureDescriptor>) {
++                             if (primary && null_pointer_handles &&
++@@ -1134,7 +1142,7 @@ void GraphicsPipeline::BuildHandleWords() {
++                                 continue;
++                             }
++                         }
++-                        handle_words->merged[stage][slot].emplace_back(first, first + 4);
+++                        l1519_words->merged[stage][slot].emplace_back(first, first + 4);
++                     }
++                 };
++                 range(desc.cbuf_index, desc.cbuf_offset, true);
++@@ -1150,8 +1158,8 @@ void GraphicsPipeline::BuildHandleWords() {
++             for (const auto& desc : info.image_descriptors) add(desc);
++             // EDEN_UP_L1519_FAST_DRAWS: sorted, overlapping or touching words joined, and the
++             // span they cover (upstream's handle_words / handle_ranges).
++-            for (u32 slot = 0; slot < Maxwell::MaxConstBuffers; ++slot) {
++-                auto& list = handle_words->merged[stage][slot];
+++            for (u32 slot = 0; l1519 && slot < Maxwell::MaxConstBuffers; ++slot) {
+++                auto& list = l1519_words->merged[stage][slot];
++                 std::ranges::sort(list);
++                 size_t joined = 0;
++                 for (const auto& word : list) {
++@@ -1163,7 +1171,7 @@ void GraphicsPipeline::BuildHandleWords() {
++                 }
++                 list.resize(joined);
++                 if (!list.empty()) {
++-                    handle_words->ranges[stage][slot] = {list.front().first, list.back().second};
+++                    l1519_words->ranges[stage][slot] = {list.front().first, list.back().second};
++                 }
++             }
++         }
++diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
++index 3590cb29b7..206a15230b 100644
++--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
+++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
++@@ -277,12 +277,17 @@ public:
++     /// EDEN_UP_L1519_FAST_DRAWS (zortos293/Lichii #1519, 65745c2): the bytes [first, second) of
++     /// a PreciseHandleBuffers slot that handles are read from (first == second: none), and the
++     /// same bytes word by word, sorted and merged. Only after BuildHandleWords.
+++    /// Made only with EDEN_UP_L1519_FAST_DRAWS on (HasL1519Words), so a run without it keeps
+++    /// T181's memory (0984).
+++    [[nodiscard]] bool HasL1519Words() const noexcept {
+++        return l1519_words != nullptr;
+++    }
++     [[nodiscard]] std::pair<u32, u32> HandleRange(size_t stage, u32 slot) const {
++-        return handle_words->ranges[stage][slot];
+++        return l1519_words->ranges[stage][slot];
++     }
++     [[nodiscard]] std::span<const std::pair<u32, u32>> MergedHandleWords(size_t stage,
++                                                                          u32 slot) const {
++-        return handle_words->merged[stage][slot];
+++        return l1519_words->merged[stage][slot];
++     }
++ 
++     /// EDEN_UP_FAST_DRAW: resolves and binds every buffer as Configure does (storage buffer
++@@ -390,8 +395,11 @@ private:
++                               Tegra::Engines::Maxwell3D::Regs::MaxConstBuffers>,
++                    NUM_STAGES>
++             words;
++-        /// EDEN_UP_L1519_FAST_DRAWS: `words` sorted and merged (with EDEN_NX2_NULL_POINTER_HANDLE,
++-        /// without the storage pointer words), and the span of each slot's merged words.
+++    };
+++    /// EDEN_UP_L1519_FAST_DRAWS: `words` sorted and merged (with EDEN_NX2_NULL_POINTER_HANDLE,
+++    /// without the storage pointer words), and the span of each slot's merged words. Its own
+++    /// allocation, made only with the switch on.
+++    struct L1519WordTable {
++         std::array<std::array<std::vector<std::pair<u32, u32>>,
++                               Tegra::Engines::Maxwell3D::Regs::MaxConstBuffers>,
++                    NUM_STAGES>
++@@ -403,6 +411,7 @@ private:
++     bool handle_words_ready{};
++     std::array<u32, NUM_STAGES> precise_handle_buffers{};
++     std::unique_ptr<HandleWordTable> handle_words;
+++    std::unique_ptr<L1519WordTable> l1519_words;
++     struct ComputedHandle { u8 stage; u8 kind; u16 descriptor; u32 value; };
++     // Prefixed: plain Texture/Image enumerators would hide those names in the class's scope.
++     enum ComputedHandleKind : u8 { HandleTextureBuffer, HandleImageBuffer, HandleTexture, HandleImage };
++diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++index 1e655c7e1d..7413f48c63 100644
++--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++@@ -501,7 +501,7 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
++             }
++             const auto& cbuf = cbufs[slot];
++             FastDraw::DeviceSpans& spans = handle_spans[stage][slot];
++-            if (l1519) {
+++            if (l1519 && draw.pipeline->HasL1519Words()) {
++                 // Only the bytes the handles are read from: draws write their own data next to
++                 // them. One translation, the words compared on it (Delta::ReachesWords).
++                 const auto [begin, end] = draw.pipeline->HandleRange(stage, slot);
++@@ -509,7 +509,9 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
++                     ++l1519_stats.skipped_empty;
++                     continue;
++                 }
++-                ++l1519_stats.checked;
+++                if (++l1519_stats.checked == 1) {
+++                    ReportL1519(); // 0984: the switch acted, before any write reached a span
+++                }
++                 spans.Update(*gpu_memory, cbuf.address + begin, end - begin);
++                 if (!delta.Reaches(cbuf.address + begin, end - begin, spans)) {
++                     continue;
+diff --git a/tools/eglantine-patches/0986-up-l1520-command-words.patch b/tools/eglantine-patches/0986-up-l1520-command-words.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..6a68251aebd6a07f72d024d09b42228d677624a7
+--- /dev/null
++++ b/tools/eglantine-patches/0986-up-l1520-command-words.patch
+@@ -0,0 +1,657 @@
++From: EglantinePS5
++Subject: [PATCH] up: EDEN_UP_L1520_WORDS_POOL and EDEN_UP_L1520_ASYNC_COPY (zortos293/Lichii #1520, off unless set)
++
++Port of zortos293/Lichii #1520 (8dcea11bf62fd8ad9885955280afbe2e2931819e, Zortos, co-authors
++Lucas Borges and Copilot; from #1161): "dma_pusher: reuse command list copies and copy them again
++off the front at resumes". Upstream measured at Ocarina of Time's water (PC, 3 runs): 62.4 ->
++63.8 fps; the split front's busy time 726 -> 671 ms/s; the back waiting for the front 92 -> 54 ms/s.
++Not measured on the PS5.
++
++What (two switches, each off unless set to exactly "1"):
++- EDEN_UP_L1520_WORDS_POOL=1: CommandList::submitted_words takes its blocks from
++  CommandWordsPool, which keeps freed blocks (4 KiB to 4 MiB, by size class) for the next
++  submission instead of the guest's submit thread allocating and the GPU thread freeing ~1000
++  a second. EDEN_UP_L1520_WORDS_POOL_MIB (default 48, upstream's classes add up to ~48) caps
++  what is kept in all. Memory: up to that many MiB of heap stay held while blocks are free; they
++  go back when a channel goes away (~DmaPusher Trim). Line every 10 s while blocks are asked
++  for: "EDEN_UP_L1520_WORDS_POOL: ... asked for, ... reused, ... kept, ... freed, ... MiB kept".
++- EDEN_UP_L1520_ASYNC_COPY=1: at a resume after a semaphore acquire, the lists queued after the
++  one the parse resumes in are copied again on a "GPUSnapshot" thread (256-job ring); the GPU
++  thread waits for a list's copy when it reaches it (Step), before a synchronous refresh of it,
++  before any non-list command (maps, flushes, ticks: the copier reads through the channel's
++  memory manager), at shutdown (in GpuSplit::Stop, as upstream's NotifyShutdown wait: the PS5
++  front rewrites NotifyShutdown's text) and when a channel goes away. Before the copies the split's
++  front publishes what it sent. Only where this tree's refresh of those lists is a plain copy of
++  memory: not with EDEN_NX2_DESYNC_FIX, EDEN_UP_RESUME_KEEP_COPY or EDEN_NX2_FETCH_COUNT (their
++  per-entry judging stays on the GPU thread); the refresh check's walk and log end at the first
++  queued list (carry unknown). Memory: one thread (stack) and a 4 KiB job ring. Line every 10 s
++  at resumes: "EDEN_UP_L1520_ASYNC_COPY: ... later lists copied on the GPUSnapshot thread, ...
++  copied here (queue full), ... waits".
++
++Changed from upstream: the copier sleeps on a std::condition_variable (not std::atomic::wait);
++the front list's entries already run were skipped here before (first_entry/first_word, the
++refresh check) and still are. Not ported: GpuSplit::semaphore_writes as a flat map (a type
++change that cannot be switched off); upstream's unit tests (src/tests is not built here).
++Read in source; not run.
++
++Unset (both): submitted_words allocates through ::operator new/delete as std::allocator did, no
++thread is started, and nothing else changes. No file here is a translation id input and no name
++is added to TranslationSwitches: KEEPS THE STORE.
++
++(T182 merge: regenerated with git apply --3way on top of 0983-0985 (L1519/L1521); one hunk of gpu_thread.cpp moved by 0984 (L1521)'s lines, content unchanged.)
++
++---
++diff --git a/src/video_core/dma_pusher.cpp b/src/video_core/dma_pusher.cpp
++index 54ee3ec141..b5f44e75be 100644
++--- a/src/video_core/dma_pusher.cpp
+++++ b/src/video_core/dma_pusher.cpp
++@@ -16,11 +16,19 @@
++ #include <cstring>
++ #include <string>
++ #include <utility>
+++#include <chrono>
+++#include <mutex>
+++#include <thread>
+++
+++#if defined(_M_X64) || defined(__x86_64__)
+++#include <immintrin.h>
+++#endif
++ 
++ #include "common/live_switch.h"
++ #include "common/pe_switch.h"
++ #include "common/scope_exit.h"
++ #include "common/settings.h"
+++#include "common/thread.h"
++ #include "core/core.h"
++ #include "core/memory.h"
++ #include "video_core/nx2_profile.h"
++@@ -47,6 +55,361 @@ namespace Tegra {
++ constexpr u32 MacroRegistersStart = 0xE00;
++ constexpr u32 ComputeInline = 0x6D;
++ 
+++// EDEN_UP_L1520_WORDS_POOL (zortos293/Lichii #1520, 8dcea11, Zortos, from #1161): see
+++// dma_pusher.h. Ported with the switch (off: ::operator new/delete, as std::allocator), a total
+++// cap (EDEN_UP_L1520_WORDS_POOL_MIB, default 48 as upstream's classes add up to) and a count line.
+++namespace CommandWordsPool {
+++namespace {
+++
+++constexpr std::size_t SmallestBlock = std::size_t{4} << 10;
+++constexpr std::size_t ClassCount = 11; ///< Blocks of 4 KiB to 4 MiB, each twice the one before
+++constexpr std::size_t MaxBlocksPerClass = 32;
+++constexpr std::size_t MaxBytesPerClass = std::size_t{8} << 20;
+++
+++bool PoolEnabled() {
+++    static const bool enabled = [] {
+++        const char* const value = std::getenv("EDEN_UP_L1520_WORDS_POOL");
+++        return value != nullptr && value[0] == '1';
+++    }();
+++    return enabled;
+++}
+++
+++std::size_t PoolCapBytes() {
+++    static const std::size_t cap = [] {
+++        const char* const value = std::getenv("EDEN_UP_L1520_WORDS_POOL_MIB");
+++        const long mib = value != nullptr ? std::strtol(value, nullptr, 10) : 48;
+++        return static_cast<std::size_t>(mib < 0 ? 0 : (std::min)(mib, 1024L)) << 20;
+++    }();
+++    return cap;
+++}
+++
+++struct Pool {
+++    Pool() {
+++        for (auto& blocks : free) {
+++            blocks.reserve(MaxBlocksPerClass);
+++        }
+++    }
+++    std::mutex mutex;
+++    std::array<std::vector<void*>, ClassCount> free;
+++    std::size_t kept_bytes = 0;
+++    // Counts for the line (under the mutex).
+++    u64 allocations = 0;
+++    u64 reused = 0;
+++    u64 kept = 0;
+++    u64 freed = 0;
+++    u64 oversize = 0;
+++    u64 trims = 0;
+++    std::chrono::steady_clock::time_point last_report{};
+++};
+++
+++Pool& GetPool() {
+++    static Pool pool;
+++    return pool;
+++}
+++
+++/// The class of a block of `bytes`, ClassCount and over for blocks the pool does not keep.
+++std::size_t ClassOf(std::size_t bytes) {
+++    const std::size_t blocks = ((std::max<std::size_t>)(bytes, 1) + SmallestBlock - 1) / SmallestBlock;
+++    return static_cast<std::size_t>(std::bit_width(blocks - 1));
+++}
+++
+++std::size_t MaxBlocks(std::size_t index) {
+++    return (std::min)(MaxBlocksPerClass,
+++                      (std::max<std::size_t>)(1, MaxBytesPerClass / SmallestBlock >> index));
+++}
+++
+++/// One "EDEN_UP_L1520_WORDS_POOL:" line every 10 s while blocks are asked for (mutex held).
+++void MaybeReport(Pool& pool) {
+++    if ((pool.allocations & 0x3ff) != 0) {
+++        return;
+++    }
+++    const auto now = std::chrono::steady_clock::now();
+++    if (now - pool.last_report < std::chrono::seconds{10}) {
+++        return;
+++    }
+++    pool.last_report = now;
+++    LOG_INFO(HW_GPU,
+++             "EDEN_UP_L1520_WORDS_POOL: {} command word blocks asked for, {} reused, {} kept on "
+++             "free, {} freed (class or cap full), {} too large to keep, {} trims; {:.1f} MiB kept "
+++             "(cap {} MiB)",
+++             pool.allocations, pool.reused, pool.kept, pool.freed, pool.oversize, pool.trims,
+++             static_cast<double>(pool.kept_bytes) / (1024.0 * 1024.0), PoolCapBytes() >> 20);
+++}
+++
+++} // Anonymous namespace
+++
+++void* Allocate(std::size_t bytes) {
+++    if (!PoolEnabled()) {
+++        return ::operator new(bytes);
+++    }
+++    const std::size_t index = ClassOf(bytes);
+++    Pool& pool = GetPool();
+++    if (index >= ClassCount) {
+++        std::scoped_lock lock{pool.mutex};
+++        ++pool.allocations;
+++        ++pool.oversize;
+++        MaybeReport(pool);
+++        return ::operator new(bytes);
+++    }
+++    {
+++        std::scoped_lock lock{pool.mutex};
+++        ++pool.allocations;
+++        MaybeReport(pool);
+++        if (auto& blocks = pool.free[index]; !blocks.empty()) {
+++            void* const block = blocks.back();
+++            blocks.pop_back();
+++            pool.kept_bytes -= SmallestBlock << index;
+++            ++pool.reused;
+++            return block;
+++        }
+++    }
+++    return ::operator new(SmallestBlock << index);
+++}
+++
+++void Deallocate(void* pointer, std::size_t bytes) noexcept {
+++    if (!PoolEnabled()) {
+++        ::operator delete(pointer);
+++        return;
+++    }
+++    const std::size_t index = ClassOf(bytes);
+++    if (index < ClassCount) {
+++        Pool& pool = GetPool();
+++        std::scoped_lock lock{pool.mutex};
+++        const std::size_t block = SmallestBlock << index;
+++        if (auto& blocks = pool.free[index];
+++            blocks.size() < MaxBlocks(index) && pool.kept_bytes + block <= PoolCapBytes()) {
+++            blocks.push_back(pointer);
+++            pool.kept_bytes += block;
+++            ++pool.kept;
+++            return;
+++        }
+++        ++pool.freed;
+++    }
+++    ::operator delete(pointer);
+++}
+++
+++void Trim() noexcept {
+++    if (!PoolEnabled()) {
+++        return;
+++    }
+++    Pool& pool = GetPool();
+++    std::scoped_lock lock{pool.mutex};
+++    for (auto& blocks : pool.free) {
+++        for (void* const block : blocks) {
+++            ::operator delete(block);
+++        }
+++        blocks.clear();
+++    }
+++    pool.kept_bytes = 0;
+++    ++pool.trims;
+++}
+++
+++std::size_t PooledBytes() noexcept {
+++    if (!PoolEnabled()) {
+++        return 0;
+++    }
+++    Pool& pool = GetPool();
+++    std::scoped_lock lock{pool.mutex};
+++    return pool.kept_bytes;
+++}
+++
+++} // namespace CommandWordsPool
+++
+++namespace {
+++
+++void CopierPause() {
+++#if defined(_M_X64) || defined(__x86_64__)
+++    _mm_pause();
+++#else
+++    std::this_thread::yield();
+++#endif
+++}
+++
+++/// EDEN_UP_L1520_ASYNC_COPY (zortos293/Lichii #1520, 8dcea11, Zortos, from #1161): copies the
+++/// command lists queued behind a resumed acquire again (DmaPusher::Step) on a thread of its own,
+++/// in the order they were queued, while the GPU thread goes on with the list it resumed in and
+++/// waits for a list's copy only once it reaches it. Upstream measured the copies at ~13% of the
+++/// split front's work at Ocarina of Time's water (PC). Ported with a condition variable for the
+++/// sleep instead of std::atomic::wait, and a count line.
+++class SnapshotCopier {
+++public:
+++    struct Job {
+++        const MemoryManager* memory;
+++        CommandList* list;
+++    };
+++
+++    static SnapshotCopier& Get() {
+++        static SnapshotCopier copier;
+++        started.store(true, std::memory_order_release);
+++        return copier;
+++    }
+++    [[nodiscard]] static bool Started() {
+++        return started.load(std::memory_order_acquire);
+++    }
+++
+++    /// Queues `job`; its number, or 0 when the queue is full.
+++    u64 Queue(const Job& job) {
+++        std::unique_lock lock{queue_mutex};
+++        const u64 queued = published.load(std::memory_order_relaxed);
+++        if (queued - completed.load(std::memory_order_acquire) >= Capacity) {
+++            ++full;
+++            return 0;
+++        }
+++        jobs[queued % Capacity] = job;
+++        published.store(queued + 1, std::memory_order_seq_cst);
+++        ++queued_jobs;
+++        const bool wake = sleeping;
+++        lock.unlock();
+++        if (wake) {
+++            wake_cv.notify_one();
+++        }
+++        return queued + 1;
+++    }
+++
+++    /// Waits until job `number` and the ones before it ran.
+++    void WaitFor(u64 number) {
+++        if (completed.load(std::memory_order_acquire) >= number) {
+++            return;
+++        }
+++        waits.fetch_add(1, std::memory_order_relaxed);
+++        for (u32 spins = 0; completed.load(std::memory_order_acquire) < number; ++spins) {
+++            if (spins < 4096) {
+++                CopierPause();
+++            } else {
+++                std::this_thread::yield();
+++            }
+++        }
+++    }
+++    void WaitIdle() {
+++        WaitFor(published.load(std::memory_order_acquire));
+++    }
+++
+++    /// One "EDEN_UP_L1520_ASYNC_COPY:" line every 10 s while jobs are queued (GPU thread).
+++    void MaybeReport(u64 refreshed_here) {
+++        const auto now = std::chrono::steady_clock::now();
+++        if (now - last_report < std::chrono::seconds{10}) {
+++            return;
+++        }
+++        last_report = now;
+++        u64 jobs_now;
+++        u64 full_now;
+++        {
+++            std::scoped_lock lock{queue_mutex};
+++            jobs_now = queued_jobs;
+++            full_now = full;
+++        }
+++        LOG_INFO(HW_GPU,
+++                 "EDEN_UP_L1520_ASYNC_COPY: {} later lists copied on the GPUSnapshot thread, {} "
+++                 "copied here (queue full), {} times the GPU thread waited for a copy; {} lists "
+++                 "refreshed on the GPU thread at resumes in all",
+++                 jobs_now, full_now, waits.load(std::memory_order_relaxed), refreshed_here);
+++    }
+++
+++private:
+++    SnapshotCopier() : thread{[this](std::stop_token token) { Loop(token); }} {}
+++    ~SnapshotCopier() {
+++        thread.request_stop();
+++        {
+++            std::scoped_lock lock{queue_mutex};
+++            sleeping = false;
+++        }
+++        wake_cv.notify_one();
+++    }
+++
+++    void Loop(std::stop_token token) {
+++        Common::SetCurrentThreadName("GPUSnapshot");
+++        Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
+++        u64 done = 0;
+++        while (!token.stop_requested()) {
+++            u64 available = published.load(std::memory_order_acquire);
+++            for (u32 spins = 0; available == done && spins < 2048; ++spins) {
+++                CopierPause();
+++                available = published.load(std::memory_order_acquire);
+++            }
+++            if (available == done) {
+++                std::unique_lock lock{queue_mutex};
+++                sleeping = true;
+++                wake_cv.wait(lock, [this, done, &token] {
+++                    return token.stop_requested() ||
+++                           published.load(std::memory_order_relaxed) != done;
+++                });
+++                sleeping = false;
+++                continue;
+++            }
+++            for (; done != available; ++done) {
+++                Copy(jobs[done % Capacity]);
+++                completed.store(done + 1, std::memory_order_release);
+++            }
+++        }
+++    }
+++
+++    static void Copy(const Job& job) {
+++        CommandList& list = *job.list;
+++        for (size_t i = 0; i < list.command_lists.size() && i < list.submitted_offsets.size();
+++             ++i) {
+++            const CommandListHeader& entry = list.command_lists[i];
+++            const u32 offset = list.submitted_offsets[i];
+++            if (size_t{offset} + entry.size > list.submitted_words.size()) {
+++                continue;
+++            }
+++            job.memory->ReadBlockUnsafe(entry.addr, list.submitted_words.data() + offset,
+++                                        entry.size * sizeof(u32));
+++        }
+++    }
+++
+++    static constexpr u64 Capacity = 256;
+++    static inline std::atomic<bool> started{};
+++    std::mutex queue_mutex; ///< Queue's: jobs, the number it publishes, sleeping, the counts
+++    std::condition_variable wake_cv;
+++    std::array<Job, Capacity> jobs{};
+++    alignas(64) std::atomic<u64> published{};
+++    alignas(64) std::atomic<u64> completed{};
+++    bool sleeping{};
+++    u64 queued_jobs{};
+++    u64 full{};
+++    std::atomic<u64> waits{};
+++    std::chrono::steady_clock::time_point last_report{};
+++    std::jthread thread; ///< Last: it starts once the rest is constructed
+++};
+++
+++/// Waits for the snapshot copier's job on `list`, if any: the list's words are needed now, or
+++/// about to be copied on this thread.
+++void WaitForCopyJob(CommandList& list) {
+++    if (list.copy_job != 0) [[unlikely]] {
+++        SnapshotCopier::Get().WaitFor(list.copy_job);
+++        list.copy_job = 0;
+++    }
+++}
+++
+++} // Anonymous namespace
+++
+++bool DmaPusher::AsyncCopyEnabled() {
+++    static const bool enabled = [] {
+++        const char* const value = std::getenv("EDEN_UP_L1520_ASYNC_COPY");
+++        return value != nullptr && value[0] == '1';
+++    }();
+++    return enabled;
+++}
+++
+++void DmaPusher::WaitForSnapshotCopies() {
+++    if (SnapshotCopier::Started()) {
+++        SnapshotCopier::Get().WaitIdle();
+++    }
+++}
+++
+++bool DmaPusher::QueueSnapshotCopy(CommandList& list, u64 now) {
+++    // An older job on this list (an earlier resume) is in the ring before this one: in order.
+++    const u64 number = SnapshotCopier::Get().Queue({&memory_manager, &list});
+++    if (number == 0) {
+++        return false;
+++    }
+++    list.copy_job = number;
+++    list.snapshot_suspensions = now;
+++    // The copy covers them (as RefreshSnapshot clears them).
+++    list.deferred_entries.clear();
+++    return true;
+++}
+++
++ namespace {
++ // 0921 EDEN_UP_GPU_BADALLOC_BACKSTOP=1, the single-thread path (no split): a std::bad_alloc out
++ // of one engine method call is caught, counted and the heap trimmed (gpu_badalloc_backstop.h); the
++@@ -699,7 +1062,13 @@ DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Cont
++     }
++ }
++ 
++-DmaPusher::~DmaPusher() = default;
+++DmaPusher::~DmaPusher() {
+++    // EDEN_UP_L1520_ASYNC_COPY: jobs of the snapshot copier point into dma_pushbuffer.
+++    WaitForSnapshotCopies();
+++    dma_pushbuffer.clear();
+++    // EDEN_UP_L1520_WORDS_POOL: the kept blocks go with the channel (nothing when off).
+++    CommandWordsPool::Trim();
+++}
++ 
++ // EDEN_NX2_LIST_ASYNC=1, from Lichii PR 752 (zortos293/Lichii, async-command-lists). A command
++ // list the GPU wrote is read from the copy the buffer cache made after its writer, once the host
++@@ -924,6 +1293,8 @@ bool DmaPusher::Step() {
++     if (!ib_enable || dma_pushbuffer.empty()) {
++         return false;
++     }
+++    // EDEN_UP_L1520_ASYNC_COPY: the list's words copied again on the copier (0 otherwise).
+++    WaitForCopyJob(dma_pushbuffer.front());
++     // Reading and parsing the lists; the methods they call open zones of their own.
++     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::CommandLists};
++     // EDEN_NX2_LIST_ASYNC: waiting for the GPU's copy of the command list this channel reads next
++@@ -971,10 +1342,33 @@ bool DmaPusher::Step() {
++         check.fix = DesyncFixActive();
++         check.fix_suspended = check.fix && DesyncFixMode() == 1;
++         check.carry = dma_state.method_count;
+++        // EDEN_UP_L1520_ASYNC_COPY=1 (zortos293/Lichii #1520): the lists after the one this
+++        // resume continues in go to the snapshot copier, where their refresh is a plain copy of
+++        // memory: no EDEN_NX2_DESYNC_FIX (it judges, and may keep, copies), no
+++        // EDEN_UP_RESUME_KEEP_COPY and no EDEN_NX2_FETCH_COUNT. The refresh check's walk and its
+++        // log lines then end at the first queued list (carry unknown from there).
+++        const bool async_copy = AsyncCopyEnabled() && !check.fix && resume_keep_mode == 0 &&
+++                                FetchCountMode() == 0;
+++        if (async_copy) {
+++            // The copies take the front a while: what it sent before goes to the back first.
+++            if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
+++                split.Publish();
+++            }
+++        }
+++        static u64 async_refreshed_here = 0; // GPU thread only
++         for (CommandList& list : dma_pushbuffer) {
++             const bool front = check.list_index == 0;
++             const size_t first_entry = front ? dma_pushbuffer_subindex : 0;
++             const size_t first_word = front ? command_resume_offset : 0;
+++            if (async_copy && !front && !list.submitted_offsets.empty() &&
+++                QueueSnapshotCopy(list, now)) {
+++                check.carry_known = false;
+++                ++check.list_index;
+++                continue;
+++            }
+++            if (async_copy && !list.submitted_offsets.empty()) {
+++                ++async_refreshed_here;
+++            }
++             if (!list.submitted_offsets.empty()) {
++                 // The parser keeps an open method across lists (Step's pop_front leaves dma_state
++                 // as it is), so a known carry goes on into this list. A lost one restarts at 0 at
++@@ -1024,6 +1418,9 @@ bool DmaPusher::Step() {
++             ++check.list_index;
++         }
++         ReportRefreshCheck(check);
+++        if (async_copy) {
+++            SnapshotCopier::Get().MaybeReport(async_refreshed_here);
+++        }
++     }
++ 
++     CommandList& command_list = dma_pushbuffer.front();
++@@ -1936,6 +2333,9 @@ void DmaPusher::NoteDmaSemaphore(u32 method, u32 argument) {
++ // (ReportRefreshCheck), bounded.
++ void DmaPusher::RefreshSnapshot(CommandList& list, u64 now, RefreshCheck* check,
++                                 size_t first_entry, size_t first_word) {
+++    // EDEN_UP_L1520_ASYNC_COPY: a copier job queued at an earlier resume may still write these
+++    // words (0 otherwise: nothing to wait for).
+++    WaitForCopyJob(list);
++     // Copied during a suspension (odd count) rather than before this one began or at an earlier
++     // resume. With the fix on, such a list keeps copies only with =1 (fix_suspended).
++     const bool suspended_copy = (list.snapshot_suspensions & 1) != 0;
++@@ -1945,7 +2345,7 @@ void DmaPusher::RefreshSnapshot(CommandList& list, u64 now, RefreshCheck* check,
++     if (FetchCountMode() != 0) {
++         // The words as submitted, for CountFetchedEntry. A deferred entry's slot holds none.
++         if (list.refreshes == 0 && list.deferred_entries.empty()) {
++-            list.first_words = list.submitted_words;
+++            list.first_words.assign(list.submitted_words.begin(), list.submitted_words.end());
++         }
++         ++list.refreshes;
++         fetch_refreshed_lists.fetch_add(1, std::memory_order_relaxed);
++@@ -2606,7 +3006,7 @@ void DmaPusher::CountFetchedEntry(const CommandListHeader& header,
++     };
++     if (has_copy) {
++         const CommandHeader* const copy =
++-            (list.first_words.empty() ? list.submitted_words : list.first_words).data() +
+++            (list.first_words.empty() ? list.submitted_words.data() : list.first_words.data()) +
++             list.submitted_offsets[index];
++         if (reason != FetchSubmitCopy) {
++             // The words the parser got, not memory again: a GPU-written entry can come from a
++diff --git a/src/video_core/dma_pusher.h b/src/video_core/dma_pusher.h
++index 9e314f7cb2..130ac020dd 100644
++--- a/src/video_core/dma_pusher.h
+++++ b/src/video_core/dma_pusher.h
++@@ -111,6 +111,41 @@ inline CommandHeader BuildCommandHeader(BufferMethods method, u32 arg_count, Sub
++     return result;
++ }
++ 
+++/// EDEN_UP_L1520_WORDS_POOL=1 (zortos293/Lichii #1520, 8dcea11, Zortos; from #1161): keeps the
+++/// blocks of the command lists' submit-time copies for reuse. The guest's submit thread
+++/// allocated ~1000 a second, of up to hundreds of KiB, and the GPU thread freed them (upstream
+++/// measured ~30 us a free on the GPU thread in Ocarina of Time, on PC). Blocks of 4 KiB to
+++/// 4 MiB are kept by size class, at most EDEN_UP_L1520_WORDS_POOL_MIB (48) in all. Off (the
+++/// default): plain ::operator new/delete, as std::allocator.
+++namespace CommandWordsPool {
+++[[nodiscard]] void* Allocate(std::size_t bytes);
+++void Deallocate(void* pointer, std::size_t bytes) noexcept;
+++/// Frees the blocks kept for reuse (when a channel goes away).
+++void Trim() noexcept;
+++/// Bytes kept for reuse.
+++[[nodiscard]] std::size_t PooledBytes() noexcept;
+++} // namespace CommandWordsPool
+++
+++template <typename T>
+++struct CommandWordsAllocator {
+++    using value_type = T;
+++
+++    CommandWordsAllocator() noexcept = default;
+++    template <typename U>
+++    CommandWordsAllocator(const CommandWordsAllocator<U>&) noexcept {}
+++
+++    [[nodiscard]] T* allocate(std::size_t count) {
+++        return static_cast<T*>(CommandWordsPool::Allocate(count * sizeof(T)));
+++    }
+++    void deallocate(T* pointer, std::size_t count) noexcept {
+++        CommandWordsPool::Deallocate(pointer, count * sizeof(T));
+++    }
+++    template <typename U>
+++    bool operator==(const CommandWordsAllocator<U>&) const noexcept {
+++        return true;
+++    }
+++};
+++
++ struct CommandList final {
++     CommandList() = default;
++     explicit CommandList(std::size_t size) : command_lists(size) {}
++@@ -125,7 +160,7 @@ struct CommandList final {
++     std::vector<u64> submit_hashes;
++     /// The entries' words when they were submitted (NX2), each entry's at submitted_offsets[i]:
++     /// executed instead of the memory, which the game may already be refilling for a later frame.
++-    std::vector<CommandHeader> submitted_words;
+++    std::vector<CommandHeader, CommandWordsAllocator<CommandHeader>> submitted_words;
++     std::vector<u32> submitted_offsets;
++     /// Entries (ascending) not copied when submitted, because a GPU map still queued covers them:
++     /// DmaPusher::Push copies them after the map, and until then they read memory.
++@@ -139,6 +174,10 @@ struct CommandList final {
++     /// the list's words were read again after submit.
++     std::vector<CommandHeader> first_words;
++     u32 refreshes = 0;
+++    /// EDEN_UP_L1520_ASYNC_COPY: the snapshot copier's job that copies the words again
+++    /// (DmaPusher::QueueSnapshotCopy), 0 for none: the GPU thread waits for it before it parses
+++    /// or copies the list itself.
+++    u64 copy_job = 0;
++ };
++ 
++ /// FNV-1a over pushbuffer words (EDEN_NX2_PB_CHECK).
++@@ -285,6 +324,15 @@ public:
++                          size_t first_entry = 0, size_t first_word = 0);
++     /// Copies the list's deferred entries (CommandList::deferred_entries) from memory.
++     void RefreshDeferredEntries(CommandList& list);
+++    /// EDEN_UP_L1520_ASYNC_COPY=1 (zortos293/Lichii #1520): a resume's plain refresh of a list
+++    /// after the one it resumes in, on the snapshot copier's thread. False when its queue is full
+++    /// (the caller copies). Sets the list's copy_job and snapshot_suspensions.
+++    bool QueueSnapshotCopy(CommandList& list, u64 now);
+++    /// Waits until the snapshot copier copied everything queued (before work that may change the
+++    /// GPU's mappings, and before a channel goes away). Nothing when it never started.
+++    static void WaitForSnapshotCopies();
+++    /// EDEN_UP_L1520_ASYNC_COPY: the switch (read once).
+++    static bool AsyncCopyEnabled();
++ 
++     /// EDEN_NX2_DESYNC_FIX=1 (exact "1", off unless set), Ocarina of Time on Switch 2 only: a
++     /// refresh after a resume keeps an entry's submit copy when memory holds other commands (the
++diff --git a/src/video_core/gpu_split.cpp b/src/video_core/gpu_split.cpp
++index 47d5279da1..62b4f71df4 100644
++--- a/src/video_core/gpu_split.cpp
+++++ b/src/video_core/gpu_split.cpp
++@@ -24,6 +24,7 @@
++ #include "common/settings.h"
++ #include "common/thread.h"
++ #include "core/core.h"
+++#include "video_core/dma_pusher.h"
++ #include "video_core/engines/engine_interface.h"
++ #include "video_core/engines/maxwell_3d.h"
++ #include "video_core/engines/maxwell_3d.h"
++@@ -217,6 +218,11 @@ void GpuSplit::MaybeStart(Core::System& system_) {
++ }
++ 
++ void GpuSplit::Stop() {
+++    // EDEN_UP_L1520_ASYNC_COPY (zortos293/Lichii #1520): queued snapshot copies read the channels'
+++    // memory managers, which services free next. Here, not in ThreadManager::NotifyShutdown,
+++    // whose text the PS5 front rewrites (headless/CMakeLists.txt); its only caller runs this
+++    // after the GPU thread, the copies' producer, stopped. Nothing when the copier never started.
+++    Tegra::DmaPusher::WaitForSnapshotCopies();
++     if (!back_thread.joinable()) {
++         return;
++     }
++diff --git a/src/video_core/gpu_thread.cpp b/src/video_core/gpu_thread.cpp
++index 0d186f8442..744360c6ac 100644
++--- a/src/video_core/gpu_thread.cpp
+++++ b/src/video_core/gpu_thread.cpp
++@@ -184,6 +184,11 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
++                 // Only command lists are parsed here; everything else runs on the back thread
++                 // in order, and so does the signal that the command ran.
++                 auto* const rasterizer_ptr = renderer.ReadRasterizer();
+++                if (!std::holds_alternative<SubmitListCommand>(next.data)) {
+++                    // EDEN_UP_L1520_ASYNC_COPY (zortos293/Lichii #1520): maps and flushes may
+++                    // change what the snapshot copier reads. Nothing when it never started.
+++                    Tegra::DmaPusher::WaitForSnapshotCopies();
+++                }
++                 if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
++                     Profile::Scope scope{Profile::Zone::Push};
++                     // EDEN_UP_L1521_KEEP_GAPS (Lichii #1521): the guest may have written pages the
++@@ -231,6 +236,9 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
++                 }
++                 continue;
++             }
+++            if (!std::holds_alternative<SubmitListCommand>(next.data)) {
+++                Tegra::DmaPusher::WaitForSnapshotCopies(); // EDEN_UP_L1520_ASYNC_COPY, as above
+++            }
++             if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
++                 Profile::Scope scope{Profile::Zone::Push};
++                 if (VideoCommon::Nx2FastDraw::L1521KeepGapsEnabled()) {
+diff --git a/tools/eglantine-patches/0987-up-l1585-state-blocks.patch b/tools/eglantine-patches/0987-up-l1585-state-blocks.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..bfd507c51f05d791a87e1dd347e1fd908f7468de
+--- /dev/null
++++ b/tools/eglantine-patches/0987-up-l1585-state-blocks.patch
+@@ -0,0 +1,520 @@
++From: EglantinePS5
++Subject: [PATCH] up: EDEN_UP_L1585_STATE_BLOCKS (zortos293/Lichii #1585, off unless set)
++
++Port of zortos293/Lichii #1585 (19ae2d1ebfb972d3011772d81b481e7309fed516, Zortos, co-author
++capy-ai; after Damfortx's state blocks 76548f0bf1 and stephenjayakar's StateDelta #641/#717):
++"send the split front's 3D state writes to the back as register blocks". Upstream's reason: the
++back replayed each changed 3D state register as its own ring entry (decode, method sink, shadow
++RAM, same-value check, deferred draw check, fast draw check, both dirty tables); in a Mario Kart
++World sample that was about 2.3 ms a frame on the back (PC). Not measured on the PS5.
++
++Against this tree: the ring already gathers plain state writes into one Regs entry with
++EDEN_PE_REG_BLOCKS=1 (ProsperoEden, off in play), but the back still sinks and processes them one
++by one (as Damfortx's version, which upstream found cut entries without cutting back time). What
++this adds is the part that saves back work: the front works out the dirty flags (OR of both
++tables) and the last write that ends EDEN_UP_FAST_DRAW reuse, and the back stores the block at
++once.
++
++What (EDEN_UP_L1585_STATE_BLOCKS=1, only on top of the front's same-value skip):
++- Front (Maxwell3D::FrontWrite): a state write it sends (not in execution_mask, not a register a
++  back-run macro may own under EDEN_UP_L1056_BACK_MACROS, not in shadow RAM replay), from the
++  pushbuffer or a macro, goes into an open State entry in the ring (GpuSplit::StateWrite; the
++  open-entry mechanics of the Regs entry: at most 64 writes, closed before any other entry, a
++  publish or a drain). Entry: head (count, last breaking method), 4 words of dirty flags, then
++  method|value per write, in order.
++- Back (Maxwell3D::WriteStateRegisters): consumes the method sink, then stores the registers
++  (and the shadow RAM when tracked), sets the flags and breaks fast draw reuse once, when every
++  write changes its register, no deferred instanced draw is pending, no macro runs on the back,
++  no replay, and the write history, first-write trace and EDEN_NX2_GPU_PROFILE are off; else a
++  CallMethod of each write, as a direct write.
++- Ordering: a state write that used to wait in the back's method sink until the next executable
++  method now applies at its place in the stream (as a macro's direct write did, and as
++  EDEN_PE_REG_BLOCKS does). Upstream's NoteAnyWrite for blocks that may issue a deferred draw is
++  not needed here: this tree's front notes no draw as a guest memory writer.
++- EDEN_UP_L1585_STATE_BLOCKS_VERIFY=1 (upstream's EDEN_NX2_REG_BLOCK_VERIFY with both follow-up
++  fixes): each block also runs write by write from the same state, that result stays, and
++  registers, shadow RAM, dirty flags and the fast draw break are compared; an error line per
++  differing block (first 16) and a "EDEN_UP_L1585_STATE_BLOCKS_VERIFY" line every 10 s.
++- Count line every 10 s on the back: "EDEN_UP_L1585_STATE_BLOCKS in N s: ... blocks of ... writes
++  stored at once, ... one by one".
++Memory: none (the entries live in the existing 8 MiB ring; a State entry reserves 69 words).
++Not ported: upstream's unit test; EDEN_NX2_PERF_VERIFY / fast_maxwell3d conditions (not in this
++tree). With EDEN_UP_FAST_DRAW's chain diagnostics a block counts one register break where the
++writes one by one counted one per write (counts only). Read in source; not run.
++
++Unset: nothing here runs (FrontState::state_blocks false). No file here is a translation id input
++and no name is added to TranslationSwitches: KEEPS THE STORE.
++
++---
++diff --git a/src/video_core/engines/maxwell_3d.cpp b/src/video_core/engines/maxwell_3d.cpp
++index 2afbbd4c72..ecd33a8333 100644
++--- a/src/video_core/engines/maxwell_3d.cpp
+++++ b/src/video_core/engines/maxwell_3d.cpp
++@@ -9,14 +9,18 @@
++ #include <algorithm>
++ #include <array>
++ #include <atomic>
+++#include <bit>
++ #include <bitset>
++ #include <chrono>
++ #include <cstdlib>
++ #include <cstring>
++ #include <limits>
++ #include <optional>
+++#include <string>
++ #include <string_view>
++ #include <unordered_map>
+++#include <vector>
+++#include <fmt/format.h>
++ #include "common/assert.h"
++ #include "common/bit_util.h"
++ #include "common/scope_exit.h"
++@@ -932,6 +936,203 @@ void Maxwell3D::TraceFirstMethodWrite(u32 method, u32 argument) {
++ 
++ // Lichii PR 184 (commit 4a0bc9a007, with bfc3eb523d for the page limit): macros write constant
++ // buffers a word at a time, and each word walked the GPU page table on its own.
+++void Maxwell3D::WriteStateRegisters(Core::System& system, std::span<const u64, 4> flags,
+++                                    std::span<const u64> writes, u32 last_break) {
+++    // EDEN_UP_L1585_STATE_BLOCKS (zortos293/Lichii #1585, 19ae2d1, Zortos; after Damfortx's
+++    // 76548f0bf1 and stephenjayakar's #641/#717). Ported onto this tree's split: CallMethod's
+++    // state register branch here is ProcessShadowRam, the same-value skip and WriteDirtyRegister
+++    // (deferred draw, fast draw break, store, both dirty tables); the conditions below are where
+++    // that is all CallMethod would do.
+++    ConsumeSink(system);
+++    // The front sends only writes that change its copy of the register, which is the back's but
+++    // for registers the back changes itself: each normally changes the register here too.
+++    const auto control = shadow_state.shadow_ram_control;
+++    bool changes = one_call_plain && executing_macro == 0 && SkipSameValueWrites() &&
+++                   !VideoCommon::Nx2Profile::Enabled() &&
+++                   control != Regs::ShadowRamControl::Replay && !draw_manager.HasDeferredDraw();
+++    for (size_t i = 0; changes && i < writes.size(); ++i) {
+++        changes = regs.reg_array[static_cast<u32>(writes[i])] != static_cast<u32>(writes[i] >> 32);
+++    }
+++    static const bool verify = [] {
+++        const char* const value = std::getenv("EDEN_UP_L1585_STATE_BLOCKS_VERIFY");
+++        return value != nullptr && value[0] == '1';
+++    }();
+++    if (verify) [[unlikely]] {
+++        VerifyStateRegisters(system, flags, writes, last_break, changes);
+++        CountStateBlock(changes, writes.size());
+++        return;
+++    }
+++    if (!changes) {
+++        for (const u64 write : writes) {
+++            CallMethod(system, static_cast<u32>(write), static_cast<u32>(write >> 32), true);
+++        }
+++        CountStateBlock(false, writes.size());
+++        return;
+++    }
+++    StoreStateRegisters(flags, writes);
+++    if (last_break != NoBreak && VideoCommon::Nx2FastDraw::Enabled()) {
+++        VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Register, last_break);
+++    }
+++    CountStateBlock(true, writes.size());
+++}
+++
+++void Maxwell3D::StoreStateRegisters(std::span<const u64, 4> flags, std::span<const u64> writes) {
+++    const auto control = shadow_state.shadow_ram_control;
+++    const bool tracked = control == Regs::ShadowRamControl::Track ||
+++                         control == Regs::ShadowRamControl::TrackWithFilter;
+++    for (const u64 write : writes) {
+++        const u32 method = static_cast<u32>(write);
+++        const u32 value = static_cast<u32>(write >> 32);
+++        regs.reg_array[method] = value;
+++        if (tracked) {
+++            shadow_state.reg_array[method] = value;
+++        }
+++    }
+++    for (size_t word = 0; word < flags.size(); ++word) {
+++        for (u64 bits = flags[word]; bits != 0; bits &= bits - 1) {
+++            dirty.flags[word * 64 + static_cast<size_t>(std::countr_zero(bits))] = true;
+++        }
+++    }
+++}
+++
+++void Maxwell3D::CountStateBlock(bool stored, size_t writes) {
+++    // Back thread only.
+++    static u64 blocks_stored{};
+++    static u64 writes_stored{};
+++    static u64 blocks_single{};
+++    static u64 writes_single{};
+++    static auto last_report = std::chrono::steady_clock::now();
+++    if (stored) {
+++        ++blocks_stored;
+++        writes_stored += writes;
+++    } else {
+++        ++blocks_single;
+++        writes_single += writes;
+++    }
+++    if (((blocks_stored + blocks_single) & 0x3ff) != 0) {
+++        return;
+++    }
+++    const auto now = std::chrono::steady_clock::now();
+++    const double seconds = std::chrono::duration<double>(now - last_report).count();
+++    if (seconds < 10.0) {
+++        return;
+++    }
+++    last_report = now;
+++    LOG_INFO(HW_GPU,
+++             "EDEN_UP_L1585_STATE_BLOCKS in {:.1f} s: {} state blocks of {} writes stored at once, "
+++             "{} blocks of {} writes one by one (a write kept its register, a deferred draw, "
+++             "replay, or a diagnostic on)",
+++             seconds, blocks_stored, writes_stored, blocks_single, writes_single);
+++    blocks_stored = writes_stored = blocks_single = writes_single = 0;
+++}
+++
+++void Maxwell3D::VerifyStateRegisters(Core::System& system, std::span<const u64, 4> flags,
+++                                     std::span<const u64> writes, u32 last_break, bool changes) {
+++    // EDEN_UP_L1585_STATE_BLOCKS_VERIFY (upstream's EDEN_NX2_REG_BLOCK_VERIFY, with its two
+++    // follow-ups: only this thread's fast draw breaks are judged; the mark is a register break of
+++    // no register). The block's stores and flags, then (from the same state) each write as
+++    // CallMethod, which stays.
+++    namespace FastDraw = VideoCommon::Nx2FastDraw;
+++    static u64 blocks{};
+++    static u64 block_writes{};
+++    static u64 by_write{};
+++    static u64 differences{};
+++    static u64 total_differences{};
+++    static u64 hidden_breaks{};
+++    static auto last_report = std::chrono::steady_clock::now();
+++    const auto one_by_one = [&] {
+++        for (const u64 write : writes) {
+++            CallMethod(system, static_cast<u32>(write), static_cast<u32>(write >> 32), true);
+++        }
+++    };
+++    const auto method_at = [&writes](size_t i) { return static_cast<u32>(writes[i]); };
+++    if (!changes) {
+++        ++by_write;
+++        one_by_one();
+++    } else {
+++        ++blocks;
+++        block_writes += writes.size();
+++        std::vector<u32> before(writes.size() * 2);
+++        for (size_t i = 0; i < writes.size(); ++i) {
+++            before[i * 2] = regs.reg_array[method_at(i)];
+++            before[i * 2 + 1] = shadow_state.reg_array[method_at(i)];
+++        }
+++        const DirtyState::Flags flags_before = dirty.flags;
+++        StoreStateRegisters(flags, writes);
+++        std::vector<u32> stored(writes.size() * 2);
+++        for (size_t i = 0; i < writes.size(); ++i) {
+++            stored[i * 2] = regs.reg_array[method_at(i)];
+++            stored[i * 2 + 1] = shadow_state.reg_array[method_at(i)];
+++        }
+++        const DirtyState::Flags stored_flags = dirty.flags;
+++        for (size_t i = writes.size(); i-- > 0;) {
+++            regs.reg_array[method_at(i)] = before[i * 2];
+++            shadow_state.reg_array[method_at(i)] = before[i * 2 + 1];
+++        }
+++        dirty.flags = flags_before;
+++        constexpr u32 unset = static_cast<u32>(FastDraw::Reason::Register) | 0xffffff00u;
+++        const u32 previous = FastDraw::g_last_break.exchange(unset, std::memory_order_relaxed);
+++        one_by_one();
+++        u32 last = unset;
+++        FastDraw::g_last_break.compare_exchange_strong(last, previous, std::memory_order_relaxed);
+++        const bool expected_break = last_break != NoBreak && FastDraw::Enabled();
+++        const u32 expected_last =
+++            static_cast<u32>(FastDraw::Reason::Register) | (expected_break ? last_break << 8 : 0);
+++        const bool own_break = (last & 0xff) == static_cast<u32>(FastDraw::Reason::Register);
+++        if (last != unset && !own_break) {
+++            ++hidden_breaks;
+++        }
+++        const bool break_differs =
+++            last == unset ? expected_break : own_break && last != expected_last;
+++        std::string register_differences;
+++        for (size_t i = 0; i < writes.size(); ++i) {
+++            const u32 method = method_at(i);
+++            if (stored[i * 2] != regs.reg_array[method] ||
+++                stored[i * 2 + 1] != shadow_state.reg_array[method]) {
+++                register_differences += fmt::format(" {:#x}={:#x}/{:#x} (one by one {:#x}/{:#x})",
+++                                                    method, stored[i * 2], stored[i * 2 + 1],
+++                                                    regs.reg_array[method],
+++                                                    shadow_state.reg_array[method]);
+++            }
+++        }
+++        const DirtyState::Flags flag_differences = stored_flags ^ dirty.flags;
+++        if (!register_differences.empty() || flag_differences.any() || break_differs) {
+++            ++differences;
+++            if (++total_differences <= 16) {
+++                std::string flag_list;
+++                for (size_t i = 0; i < flag_differences.size(); ++i) {
+++                    if (flag_differences[i]) {
+++                        flag_list += fmt::format(" {}={}", i, stored_flags[i] ? 1 : 0);
+++                    }
+++                }
+++                LOG_ERROR(HW_GPU,
+++                          "EDEN_UP_L1585_STATE_BLOCKS_VERIFY: a block of {} writes differs from "
+++                          "them one by one: registers (block/shadow){}, block dirty flags{}, fast "
+++                          "draw break {} {:#x} against {} {:#x}",
+++                          writes.size(), register_differences, flag_list, expected_break ? 1 : 0,
+++                          expected_last, last != unset ? 1 : 0, last != unset ? last : 0);
+++            }
+++        }
+++    }
+++    const auto now = std::chrono::steady_clock::now();
+++    const double seconds = std::chrono::duration<double>(now - last_report).count();
+++    if (seconds < 10.0) {
+++        return;
+++    }
+++    last_report = now;
+++    LOG_INFO(HW_GPU,
+++             "EDEN_UP_L1585_STATE_BLOCKS_VERIFY in {:.1f} s: {} blocks of {} writes compared with "
+++             "the writes one by one, {} differ ({} in all, must stay 0), {} breaks not judged as "
+++             "another thread's break came last; {} blocks written one by one",
+++             seconds, blocks, block_writes, differences, total_differences, hidden_breaks,
+++             by_write);
+++    blocks = 0;
+++    block_writes = 0;
+++    by_write = 0;
+++    differences = 0;
+++    hidden_breaks = 0;
+++}
+++
++ void Maxwell3D::CallConstBufferWords(Core::System& system, const u32* methods, const u32* arguments,
++                                      u32 count) {
++     const u32 offset = regs.const_buffer.offset;
++@@ -1638,6 +1839,10 @@ struct Maxwell3D::FrontState {
++     /// belong to.
++     u64 read_ahead_generation{~u64{0}};
++     bool skip_same{}; ///< SkipSameValueWrites() && FrontSkipSame(), read once
+++    /// EDEN_UP_L1585_STATE_BLOCKS=1 (zortos293/Lichii #1585), only on top of skip_same (the back
+++    /// relies on every write it gets changing the front's copy): state writes go to the back as
+++    /// State entries (GpuSplit::StateWrite). Read once with skip_same.
+++    bool state_blocks{};
++     /// EDEN_UP_LOOP_SKIP=1 (zortos293/Lichii #178 + #488), read once with skip_same: the front
++     /// does not send the instance loop writes the back ignores (FrontSkipsLoopWrite). With it
++     /// off nothing below is read or written.
++@@ -1965,6 +2170,7 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
++         std::memcpy(front->shadow.data(), shadow_state.reg_array.data(), sizeof(front->shadow));
++         front->control = shadow_state.shadow_ram_control;
++         front->skip_same = SkipSameValueWrites() && FrontSkipSame();
+++        front->state_blocks = front->skip_same && VideoCommon::GpuSplit::StateBlocksSwitch();
++         if (FrontLoopSkip()) [[unlikely]] {
++             // EDEN_UP_LOOP_SKIP: only on top of the same-value skip (#178 needs it).
++             front->loop_skip = front->skip_same;
++@@ -2024,7 +2230,10 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
++     // ran may have written is the front's again, and its write is sent even if the front's copies
++     // hold the value (FrontTakeOver; back_owned is never set with the switch off).
++     u32 value = argument;
++-    bool shadow_kept = !(fs.back_owned[method] && FrontTakeOver(split, fs, method));
+++    // EDEN_UP_L1585_STATE_BLOCKS: a register a macro the back ran may have written keeps its own
+++    // entry (as before FrontTakeOver gives it back to the front).
+++    const bool back_owned = fs.back_owned[method];
+++    bool shadow_kept = !(back_owned && FrontTakeOver(split, fs, method));
++     bool payload_release = false;
++     bool report_write = false;
++     if (fs.control == Regs::ShadowRamControl::Track ||
++@@ -2149,7 +2358,14 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
++     // entry. Only a plain Method entry of a state register leaves one there; a Regs or CbData
++     // block, a direct (macro) write and an executable method consume the sink when they run.
++     bool sink_left = false;
++-    if (!execution_mask[method] && split.RegBlocks()) {
+++    if (fs.state_blocks && !execution_mask[method] && !back_owned &&
+++        fs.control != Regs::ShadowRamControl::Replay) {
+++        // EDEN_UP_L1585_STATE_BLOCKS (zortos293/Lichii #1585, 19ae2d1): sent with the state
+++        // writes around it, dirty flags and the fast draw check worked out here. The back
+++        // consumes its method sink first, so nothing is left in it.
+++        split.StateWrite(this, method, value, {dirty.tables[0][method], dirty.tables[1][method]},
+++                         !IsFastDrawParameter(method));
+++    } else if (!execution_mask[method] && split.RegBlocks()) {
++         split.PlainWrite(this, method, argument);
++     } else if (method >= cb_data_first && method < cb_data_first + 16 && split.RegBlocks()) {
++         split.CbDataWrite(this, method, argument);
++diff --git a/src/video_core/engines/maxwell_3d.h b/src/video_core/engines/maxwell_3d.h
++index 2e1c6961d9..a41a207330 100644
++--- a/src/video_core/engines/maxwell_3d.h
+++++ b/src/video_core/engines/maxwell_3d.h
++@@ -3217,6 +3217,19 @@ public:
++     void CallConstBufferWords(Core::System& system, const u32* methods, const u32* arguments,
++                               u32 count);
++ 
+++    /// EDEN_UP_L1585_STATE_BLOCKS: no write of a state block ends fast draw reuse.
+++    static constexpr u32 NoBreak = ~0U;
+++    /// EDEN_UP_L1585_STATE_BLOCKS (zortos293/Lichii #1585, 19ae2d1), GpuSplit's back: state
+++    /// register writes the front sent as one entry (GpuSplit::StateWrite), each
+++    /// `method | value << 32`, in order. `flags`: the dirty flags they set, a bit each;
+++    /// `last_break`: the last of them whose change ends fast draw reuse. As a CallMethod of each
+++    /// when every write changes its register: the stores, then the flags and one break; else
+++    /// (and with the write history, first-write trace or profile on, a macro running here, shadow
+++    /// RAM replay or a deferred instanced draw) a CallMethod of each.
+++    /// EDEN_UP_L1585_STATE_BLOCKS_VERIFY=1 also runs them one by one and compares.
+++    void WriteStateRegisters(Core::System& system, std::span<const u64, 4> flags,
+++                             std::span<const u64> writes, u32 last_break);
+++
++     /// EDEN_UP_INSTANCE_RUNS=1 (repeat_draw_begin; zortos293/Lichii PR #1597): GpuSplit's back,
++     /// right after CallMethod ran one draw.begin of a run of identical entries: `count` more of
++     /// them, as as many CallMethod calls would run them. Only an instance loop's subsequent
++@@ -3480,6 +3493,14 @@ private:
++     /// EDEN_UP_REG_WRITE_ONE_CALL. All of it belongs to the thread that runs CallMethod and the
++     /// method sink: the split's back, or the one GPU thread without the split.
++     bool one_call_plain{};      ///< No write history and no first-write trace (constructor)
+++    /// EDEN_UP_L1585_STATE_BLOCKS: WriteStateRegisters' stores and flags.
+++    void StoreStateRegisters(std::span<const u64, 4> flags, std::span<const u64> writes);
+++    /// EDEN_UP_L1585_STATE_BLOCKS_VERIFY: StoreStateRegisters against a CallMethod of each write.
+++    void VerifyStateRegisters(Core::System& system, std::span<const u64, 4> flags,
+++                              std::span<const u64> writes, u32 last_break, bool changes);
+++    /// EDEN_UP_L1585_STATE_BLOCKS: blocks and writes stored at once or one by one (back thread),
+++    /// for the line every 10 s.
+++    void CountStateBlock(bool stored, size_t writes);
++     bool one_call_verify{};     ///< EDEN_UP_REG_WRITE_ONE_CALL_VERIFY=1, read in the constructor
++     bool one_call_short{};      ///< one_call_plain && !one_call_verify: one load on the hot path
++     bool one_call_verifying{};  ///< VerifyOneCall is running CallMethod's full path
++diff --git a/src/video_core/gpu_split.cpp b/src/video_core/gpu_split.cpp
++index 62b4f71df4..b57b42535c 100644
++--- a/src/video_core/gpu_split.cpp
+++++ b/src/video_core/gpu_split.cpp
++@@ -238,6 +238,8 @@ void GpuSplit::Stop() {
++     ring.reset();
++     regs_entry = nullptr;
++     regs_count = 0;
+++    state_break = 0;
+++    state_breaks = false;
++     write_position = 0;
++     last_writer_position = 0;
++     dma_writer_at = dma_unranged_at = ~u64{0};
++@@ -341,6 +343,19 @@ void GpuSplit::Publish() {
++     }
++ }
++ 
+++bool GpuSplit::StateBlocksSwitch() {
+++    static const bool enabled = [] {
+++        const char* const value = std::getenv("EDEN_UP_L1585_STATE_BLOCKS");
+++        const bool on = value != nullptr && value[0] == '1';
+++        if (on) {
+++            LOG_INFO(HW_GPU, "EDEN_UP_L1585_STATE_BLOCKS=1: the split front sends changed 3D "
+++                             "state register writes as State entries the back stores at once");
+++        }
+++        return on;
+++    }();
+++    return enabled;
+++}
+++
++ bool GpuSplit::PendingReleasesSwitch() {
++     if (!Common::PeSwitch("EDEN_PE_PENDING_RELEASES")) {
++         return false;
++@@ -1094,6 +1109,20 @@ size_t GpuSplit::Execute(const u64* entry, size_t words) {
++         engine->ConsumeSink(*system);
++         return 1 + count;
++     }
+++    case Kind::State: {
+++        // EDEN_UP_L1585_STATE_BLOCKS (zortos293/Lichii #1585): only the 3D engine sends these.
+++        const u32 count = static_cast<u32>((head >> 8) & 0xff);
+++        using Tegra::Engines::Maxwell3D;
+++        const u32 last_break = (head & HasBreak) != 0 ? static_cast<u32>((head >> 16) & 0xffff)
+++                                                      : Maxwell3D::NoBreak;
+++        Nx2Profile::Scope method_scope{Nx2Profile::Zone::Method};
+++        static_cast<Maxwell3D*>(back_engine)
+++            ->WriteStateRegisters(*system,
+++                                  std::span<const u64, StateFlagWords>{entry + 1, StateFlagWords},
+++                                  std::span<const u64>{entry + 1 + StateFlagWords, count},
+++                                  last_break);
+++        return 1 + StateFlagWords + count;
+++    }
++     case Kind::CbData: {
++         const u32 count = static_cast<u32>((head >> 8) & 0xff);
++         auto* const engine = back_engine;
++@@ -1165,6 +1194,8 @@ size_t GpuSplit::EntryWords(const u64* entry, size_t words) const {
++     case Kind::Regs:
++     case Kind::CbData:
++         return 1 + static_cast<size_t>((head >> 8) & 0xff);
+++    case Kind::State:
+++        return 1 + StateFlagWords + static_cast<size_t>((head >> 8) & 0xff);
++     case Kind::Call:
++         return 2 + static_cast<size_t>((head >> 8) & 0xffffff);
++     }
++diff --git a/src/video_core/gpu_split.h b/src/video_core/gpu_split.h
++index 9ee1bd8977..0cd272d562 100644
++--- a/src/video_core/gpu_split.h
+++++ b/src/video_core/gpu_split.h
++@@ -261,6 +261,42 @@ public:
++     void CbDataWrite(Tegra::Engines::EngineInterface* engine, u32 method, u32 argument) {
++         BlockWrite(Kind::CbData, engine, method, argument);
++     }
+++    /// EDEN_UP_L1585_STATE_BLOCKS=1 (zortos293/Lichii #1585, 19ae2d1, Zortos; after Damfortx's
+++    /// state blocks 76548f0bf1 and stephenjayakar's StateDelta #641/#717): read once.
+++    [[nodiscard]] static bool StateBlocksSwitch();
+++    /// EDEN_UP_L1585_STATE_BLOCKS: a Maxwell3D state register write (not in execution_mask) from
+++    /// the front, shadow RAM applied (not in replay) and sent because it changes the front's copy
+++    /// (or its shadow entry). Writes in a row go to the back as one State entry, closed before any
+++    /// other entry, publish or wait (as the Regs entry); the back stores them and sets their
+++    /// dirty flags at once (Maxwell3D::WriteStateRegisters). `flags`: the dirty flags the register
+++    /// sets (both tables); `breaks`: changing it ends EDEN_UP_FAST_DRAW reuse.
+++    void StateWrite(Tegra::Engines::EngineInterface* engine, u32 method, u32 value,
+++                    std::array<u8, 2> flags, bool breaks) {
+++        SelectEngine(engine);
+++        if (regs_entry != nullptr && regs_kind != Kind::State) {
+++            CloseRegs();
+++        }
+++        if (regs_entry == nullptr) {
+++            regs_entry = Reserve(1 + StateFlagWords + MaxRegs);
+++            regs_kind = Kind::State;
+++            for (size_t i = 0; i < StateFlagWords; ++i) {
+++                regs_entry[1 + i] = 0;
+++            }
+++            state_breaks = false;
+++            state_break = 0;
+++        }
+++        regs_entry[1 + StateFlagWords + regs_count] = (u64{value} << 32) | method;
+++        for (const u8 flag : flags) {
+++            regs_entry[1 + flag / 64] |= u64{1} << (flag % 64);
+++        }
+++        if (breaks) {
+++            state_break = method;
+++            state_breaks = true;
+++        }
+++        if (++regs_count == MaxRegs) {
+++            CloseRegs();
+++        }
+++    }
++     /// A write made by a macro: CallMethod without the method sink, as the engines' macros do.
++     void MacroWrite(Tegra::Engines::EngineInterface* engine, u32 method, u32 argument) {
++         SelectEngine(engine);
++@@ -933,10 +969,16 @@ private:
++         Call,   ///< Bits 8-31 payload size in words; word 1 thunk, then the payload
++         Regs,   ///< Bits 8-15 count; then per word method (low 32 bits) and argument (high 32)
++         CbData, ///< As Regs, all constant-buffer data writes of the 3D engine
+++        /// EDEN_UP_L1585_STATE_BLOCKS: bits 8-15 count, 16-31 the last method that ends fast
+++        /// draw reuse (flag HasBreak); words 1-4 the dirty flags; then per write method (low 32
+++        /// bits) and value (high 32), in order (StateWrite)
+++        State,
++     };
++     static constexpr u64 IsLast = 1 << 4;
++     static constexpr u64 HasSegment = 1 << 5;
++     static constexpr u64 Direct = 1 << 6; ///< Method: call it even if not executable (macros)
+++    static constexpr u64 HasBreak = 1 << 4; ///< State: a write ends fast draw reuse
+++    static constexpr size_t StateFlagWords = 4; ///< State: 256 dirty flags
++ 
++     static constexpr size_t RingWords = size_t{1} << 20; // 8 MiB
++     static constexpr size_t RingMask = RingWords - 1;
++@@ -977,11 +1019,18 @@ private:
++         if (regs_entry == nullptr) {
++             return;
++         }
++-        regs_entry[0] = static_cast<u64>(regs_kind) | (u64{regs_count} << 8);
++-        regs_entry = nullptr;
++         const u32 count = regs_count;
+++        size_t words = 1 + count;
+++        if (regs_kind == Kind::State) {
+++            regs_entry[0] = static_cast<u64>(Kind::State) | (state_breaks ? HasBreak : 0) |
+++                            (u64{count} << 8) | (u64{state_break & 0xffff} << 16);
+++            words += StateFlagWords;
+++        } else {
+++            regs_entry[0] = static_cast<u64>(regs_kind) | (u64{count} << 8);
+++        }
+++        regs_entry = nullptr;
++         regs_count = 0;
++-        Commit(1 + count);
+++        Commit(words);
++     }
++     /// Room for an entry of `words` at the write position (never across the ring's end).
++     u64* Reserve(size_t words) {
++@@ -1089,6 +1138,9 @@ private:
++     /// The open Regs entry (reserved, not committed) and the writes in it.
++     u64* regs_entry{};
++     u32 regs_count{};
+++    /// EDEN_UP_L1585_STATE_BLOCKS: the open State entry's last write that ends fast draw reuse.
+++    u32 state_break{};
+++    bool state_breaks{};
++     Kind regs_kind{Kind::Regs};
++     enum class FrontWriteKind : u8 { Exact, Add, Max, Unknown };
++     struct FrontWrite {
+diff --git a/tools/eglantine-patches/0988-up-l1585-l1520-checker-fixes.patch b/tools/eglantine-patches/0988-up-l1585-l1520-checker-fixes.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..c117c77e9859dbc0b38152180898fcf066ad6eaf
+--- /dev/null
++++ b/tools/eglantine-patches/0988-up-l1585-l1520-checker-fixes.patch
+@@ -0,0 +1,235 @@
++From: EglantinePS5
++Subject: [PATCH] up: checker fixes to 0984 (zortos293/Lichii #1520) and 0985 (#1585), off unless set
++
++Fixes found in review of T182c (read in source; compile-checked, not run). Credits as 0984/0985:
++zortos293/Lichii #1520 (8dcea11) and #1585 (19ae2d1), Zortos.
++
++- EDEN_UP_L1585_STATE_BLOCKS: the front worked out the fast draw check with
++  Maxwell3D::IsFastDrawParameter, whose EDEN_UP_L1161_DRAW branch (IsL1161VertexFormat) also sets
++  Nx2FastDraw::g_delta.vertex_formats_changed: a plain bool of the back's, written from the front
++  thread out of stream order, and never set by the back for a block it stores at once (with
++  EDEN_UP_L1161_DRAW switched off live in between, a delta draw could keep stale vertex input).
++  Now the front asks without the side effect (IsFastDrawParameter(method, false)) and marks a
++  State entry holding a vertex attribute format word (HasVertexFormat, bit 5 of the head); the
++  back, storing such a block at once with EDEN_UP_FAST_DRAW on, runs the check for those words
++  as WriteDirtyRegister would. Upstream has the same front call.
++- EDEN_UP_L1520_ASYNC_COPY: one line at the first channel saying whether it can act. It only
++  acts at resumes that refresh the queued lists: EDEN_NX2_RESNAPSHOT on and EDEN_NX2_FETCH_COUNT,
++  EDEN_NX2_DESYNC_FIX, EDEN_UP_RESUME_KEEP_COPY all 0. The play settings have
++  EDEN_NX2_RESNAPSHOT=0 and EDEN_NX2_FETCH_COUNT=1: there it says IDLE and does nothing.
++- EDEN_UP_L1520_WORDS_POOL: one line at the first channel with its state and cap.
++
++Unset: nothing here runs or prints. No file here is a translation id input and no name is added
++to TranslationSwitches: KEEPS THE STORE.
++
++---
++diff --git a/src/video_core/dma_pusher.cpp b/src/video_core/dma_pusher.cpp
++index b5f44e75be..764b81e1a4 100644
++--- a/src/video_core/dma_pusher.cpp
+++++ b/src/video_core/dma_pusher.cpp
++@@ -1060,6 +1060,26 @@ DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Cont
++             KeepCopyParserClash(SplitCheckMode());
++         }
++     }
+++    // EDEN_UP_L1520_ASYNC_COPY / _WORDS_POOL (0986): proves each switch was read, and says when
+++    // ASYNC_COPY cannot act (its count line comes only from resumes that refresh the lists).
+++    if (static std::atomic<bool> reported{}; AsyncCopyEnabled() && !reported.exchange(true)) {
+++        const bool idle = !ResnapshotEnabled() || FetchCountMode() != 0 ||
+++                          DesyncFixMode() != 0 || ResumeKeepCopyMode() != 0;
+++        LOG_WARNING(HW_GPU,
+++                    "EDEN_UP_L1520_ASYNC_COPY=1 {}: EDEN_NX2_RESNAPSHOT {}, EDEN_NX2_FETCH_COUNT={}, "
+++                    "EDEN_NX2_DESYNC_FIX={}, EDEN_UP_RESUME_KEEP_COPY={} (it acts only with "
+++                    "RESNAPSHOT on and the other three 0; DESYNC_FIX and KEEP_COPY also by title)",
+++                    idle ? "IDLE" : "on", ResnapshotEnabled() ? "on" : "=0", FetchCountMode(),
+++                    DesyncFixMode(), ResumeKeepCopyMode());
+++    }
+++    if (static std::atomic<bool> reported{};
+++        std::getenv("EDEN_UP_L1520_WORDS_POOL") != nullptr && !reported.exchange(true)) {
+++        const char* const value = std::getenv("EDEN_UP_L1520_WORDS_POOL");
+++        LOG_WARNING(HW_GPU, "EDEN_UP_L1520_WORDS_POOL={} ({}): at most {} MiB of free command "
+++                            "word blocks kept (EDEN_UP_L1520_WORDS_POOL_MIB)",
+++                    value, CommandWordsPool::PoolEnabled() ? "on" : "off",
+++                    CommandWordsPool::PoolCapBytes() >> 20);
+++    }
++ }
++ 
++ DmaPusher::~DmaPusher() {
++diff --git a/src/video_core/engines/maxwell_3d.cpp b/src/video_core/engines/maxwell_3d.cpp
++index ecd33a8333..315f2cab10 100644
++--- a/src/video_core/engines/maxwell_3d.cpp
+++++ b/src/video_core/engines/maxwell_3d.cpp
++@@ -634,7 +634,7 @@ void Maxwell3D::ReportOneCall() {
++              one_call_macro, one_call_sink, one_call_verified, one_call_differences);
++ }
++ 
++-bool Maxwell3D::IsFastDrawParameter(u32 method) {
+++bool Maxwell3D::IsFastDrawParameter(u32 method, bool note) {
++     switch (method) {
++     case MAXWELL3D_REG_INDEX(const_buffer.size):
++     case MAXWELL3D_REG_INDEX(const_buffer.address_high):
++@@ -651,16 +651,21 @@ bool Maxwell3D::IsFastDrawParameter(u32 method) {
++     default:
++         return DrawManager::IsInstanceLoopMethod(method) || IsFastDrawDeltaMethod(method) ||
++                IsFastDrawVertexBuffer(method) || IsFastDrawExempt(method) ||
++-               IsL974DrawParameter(method) || IsL1161VertexFormat(method);
+++               IsL974DrawParameter(method) || IsL1161VertexFormat(method, note);
++     }
++ }
++ 
++-bool Maxwell3D::IsL1161VertexFormat(u32 method) {
+++bool Maxwell3D::IsVertexFormatWord(u32 method) {
+++    constexpr u32 first = MAXWELL3D_REG_INDEX(vertex_attrib_format);
+++    return method >= first && method < first + Regs::NumVertexAttributes;
+++}
+++
+++bool Maxwell3D::IsL1161VertexFormat(u32 method, bool note) {
++     constexpr u32 first = MAXWELL3D_REG_INDEX(vertex_attrib_format);
++     const bool light = VideoCommon::Nx2FastDraw::L1161DrawEnabled() &&
++            VideoCommon::Nx2FastDraw::g_vertex_formats_dynamic.load(std::memory_order_relaxed) &&
++            method >= first && method < first + Regs::NumVertexAttributes;
++-    if (light) VideoCommon::Nx2FastDraw::g_delta.vertex_formats_changed = true;
+++    if (light && note) VideoCommon::Nx2FastDraw::g_delta.vertex_formats_changed = true;
++     return light;
++ }
++ 
++@@ -937,7 +942,8 @@ void Maxwell3D::TraceFirstMethodWrite(u32 method, u32 argument) {
++ // Lichii PR 184 (commit 4a0bc9a007, with bfc3eb523d for the page limit): macros write constant
++ // buffers a word at a time, and each word walked the GPU page table on its own.
++ void Maxwell3D::WriteStateRegisters(Core::System& system, std::span<const u64, 4> flags,
++-                                    std::span<const u64> writes, u32 last_break) {
+++                                    std::span<const u64> writes, u32 last_break,
+++                                    bool vertex_formats) {
++     // EDEN_UP_L1585_STATE_BLOCKS (zortos293/Lichii #1585, 19ae2d1, Zortos; after Damfortx's
++     // 76548f0bf1 and stephenjayakar's #641/#717). Ported onto this tree's split: CallMethod's
++     // state register branch here is ProcessShadowRam, the same-value skip and WriteDirtyRegister
++@@ -970,6 +976,15 @@ void Maxwell3D::WriteStateRegisters(Core::System& system, std::span<const u64, 4
++         return;
++     }
++     StoreStateRegisters(flags, writes);
+++    // 0986: WriteDirtyRegister's fast draw check also marks the delta for an EDEN_UP_L1161_DRAW
+++    // vertex format word (IsL1161VertexFormat); the front's check has no side effect, so here.
+++    if (vertex_formats && VideoCommon::Nx2FastDraw::Enabled()) [[unlikely]] {
+++        for (const u64 write : writes) {
+++            if (IsVertexFormatWord(static_cast<u32>(write))) {
+++                static_cast<void>(IsFastDrawParameter(static_cast<u32>(write)));
+++            }
+++        }
+++    }
++     if (last_break != NoBreak && VideoCommon::Nx2FastDraw::Enabled()) {
++         VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Register, last_break);
++     }
++@@ -2363,8 +2378,10 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
++         // EDEN_UP_L1585_STATE_BLOCKS (zortos293/Lichii #1585, 19ae2d1): sent with the state
++         // writes around it, dirty flags and the fast draw check worked out here. The back
++         // consumes its method sink first, so nothing is left in it.
+++        // 0986: the check without IsL1161VertexFormat's side effect (the back's delta, marked
+++        // where the block is stored).
++         split.StateWrite(this, method, value, {dirty.tables[0][method], dirty.tables[1][method]},
++-                         !IsFastDrawParameter(method));
+++                         !IsFastDrawParameter(method, false), IsVertexFormatWord(method));
++     } else if (!execution_mask[method] && split.RegBlocks()) {
++         split.PlainWrite(this, method, argument);
++     } else if (method >= cb_data_first && method < cb_data_first + 16 && split.RegBlocks()) {
++diff --git a/src/video_core/engines/maxwell_3d.h b/src/video_core/engines/maxwell_3d.h
++index a41a207330..3e21186eb1 100644
++--- a/src/video_core/engines/maxwell_3d.h
+++++ b/src/video_core/engines/maxwell_3d.h
++@@ -3227,8 +3227,10 @@ public:
++     /// (and with the write history, first-write trace or profile on, a macro running here, shadow
++     /// RAM replay or a deferred instanced draw) a CallMethod of each.
++     /// EDEN_UP_L1585_STATE_BLOCKS_VERIFY=1 also runs them one by one and compares.
+++    /// `vertex_formats` (0986): a write of the block is a vertex attribute format word, for which
+++    /// a store at once still marks the fast draw delta as the write one by one would.
++     void WriteStateRegisters(Core::System& system, std::span<const u64, 4> flags,
++-                             std::span<const u64> writes, u32 last_break);
+++                             std::span<const u64> writes, u32 last_break, bool vertex_formats);
++ 
++     /// EDEN_UP_INSTANCE_RUNS=1 (repeat_draw_begin; zortos293/Lichii PR #1597): GpuSplit's back,
++     /// right after CallMethod ran one draw.begin of a run of identical entries: `count` more of
++@@ -3313,12 +3315,16 @@ public:
++     /// EDEN_UP_FAST_DRAW (nx2_fast_draw.h): registers that only parameterize the next draw, the
++     /// next constant buffer bind or the buffers a delta draw binds again, or that
++     /// ProcessMethodCall handles, so writing them doesn't end draw reuse.
++-    static bool IsFastDrawParameter(u32 method);
+++    /// `note` false (EDEN_UP_L1585_STATE_BLOCKS' front, 0986): no side effect (IsL1161VertexFormat
+++    /// marks the back's delta otherwise).
+++    static bool IsFastDrawParameter(u32 method, bool note = true);
++     /// Methods fast draw records as light changes (constant buffer data and binds).
++     static bool IsFastDrawDeltaMethod(u32 method);
++     /// EDEN_UP_L1161_DRAW: a vertex attribute format word while vertex input is dynamic state;
++     /// marks the delta so TakeReusableDraw compares the pipeline's attribute types.
++-    static bool IsL1161VertexFormat(u32 method);
+++    static bool IsL1161VertexFormat(u32 method, bool note = true);
+++    /// EDEN_UP_L1585_STATE_BLOCKS (0986): `method` is a vertex attribute format word (no switch read).
+++    static bool IsVertexFormatWord(u32 method);
++     /// EDEN_UP_L974_CHAIN: report operands, MME memory words (front macros only), the vertex id
++     /// base, counter resets and the render condition are draw parameters.
++     static bool IsL974DrawParameter(u32 method);
++diff --git a/src/video_core/gpu_split.cpp b/src/video_core/gpu_split.cpp
++index b57b42535c..e2948263d8 100644
++--- a/src/video_core/gpu_split.cpp
+++++ b/src/video_core/gpu_split.cpp
++@@ -240,6 +240,7 @@ void GpuSplit::Stop() {
++     regs_count = 0;
++     state_break = 0;
++     state_breaks = false;
+++    state_vertex_formats = false;
++     write_position = 0;
++     last_writer_position = 0;
++     dma_writer_at = dma_unranged_at = ~u64{0};
++@@ -1120,7 +1121,7 @@ size_t GpuSplit::Execute(const u64* entry, size_t words) {
++             ->WriteStateRegisters(*system,
++                                   std::span<const u64, StateFlagWords>{entry + 1, StateFlagWords},
++                                   std::span<const u64>{entry + 1 + StateFlagWords, count},
++-                                  last_break);
+++                                  last_break, (head & HasVertexFormat) != 0);
++         return 1 + StateFlagWords + count;
++     }
++     case Kind::CbData: {
++diff --git a/src/video_core/gpu_split.h b/src/video_core/gpu_split.h
++index 0cd272d562..c8a1710120 100644
++--- a/src/video_core/gpu_split.h
+++++ b/src/video_core/gpu_split.h
++@@ -271,7 +271,7 @@ public:
++     /// dirty flags at once (Maxwell3D::WriteStateRegisters). `flags`: the dirty flags the register
++     /// sets (both tables); `breaks`: changing it ends EDEN_UP_FAST_DRAW reuse.
++     void StateWrite(Tegra::Engines::EngineInterface* engine, u32 method, u32 value,
++-                    std::array<u8, 2> flags, bool breaks) {
+++                    std::array<u8, 2> flags, bool breaks, bool vertex_format) {
++         SelectEngine(engine);
++         if (regs_entry != nullptr && regs_kind != Kind::State) {
++             CloseRegs();
++@@ -284,7 +284,9 @@ public:
++             }
++             state_breaks = false;
++             state_break = 0;
+++            state_vertex_formats = false;
++         }
+++        state_vertex_formats = state_vertex_formats || vertex_format;
++         regs_entry[1 + StateFlagWords + regs_count] = (u64{value} << 32) | method;
++         for (const u8 flag : flags) {
++             regs_entry[1 + flag / 64] |= u64{1} << (flag % 64);
++@@ -978,6 +980,7 @@ private:
++     static constexpr u64 HasSegment = 1 << 5;
++     static constexpr u64 Direct = 1 << 6; ///< Method: call it even if not executable (macros)
++     static constexpr u64 HasBreak = 1 << 4; ///< State: a write ends fast draw reuse
+++    static constexpr u64 HasVertexFormat = 1 << 5; ///< State: a vertex attribute format write (0986)
++     static constexpr size_t StateFlagWords = 4; ///< State: 256 dirty flags
++ 
++     static constexpr size_t RingWords = size_t{1} << 20; // 8 MiB
++@@ -1023,6 +1026,7 @@ private:
++         size_t words = 1 + count;
++         if (regs_kind == Kind::State) {
++             regs_entry[0] = static_cast<u64>(Kind::State) | (state_breaks ? HasBreak : 0) |
+++                            (state_vertex_formats ? HasVertexFormat : 0) |
++                             (u64{count} << 8) | (u64{state_break & 0xffff} << 16);
++             words += StateFlagWords;
++         } else {
++@@ -1141,6 +1145,7 @@ private:
++     /// EDEN_UP_L1585_STATE_BLOCKS: the open State entry's last write that ends fast draw reuse.
++     u32 state_break{};
++     bool state_breaks{};
+++    bool state_vertex_formats{}; ///< 0986: the open State entry holds a vertex format write
++     Kind regs_kind{Kind::Regs};
++     enum class FrontWriteKind : u8 { Exact, Add, Max, Unknown };
++     struct FrontWrite {
+diff --git a/tools/eglantine-patches/0989-up-l1639-park-frame-wait.patch b/tools/eglantine-patches/0989-up-l1639-park-frame-wait.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..987d42932166404127bf26bc9273b1a6c636239e
+--- /dev/null
++++ b/tools/eglantine-patches/0989-up-l1639-park-frame-wait.patch
+@@ -0,0 +1,254 @@
++From: EglantinePS5
++Subject: [PATCH] up: EDEN_UP_L1639_PARK_WAIT, frame fence waits park the vi2 service thread (port of Lichii PR #1639 by DuskDarf1; off unless set)
++
++Upstream: zortos293/Lichii PR #1639 "nx2: suspend fixed frame-fence waits in the guest kernel" by
++DuskDarf1 (head dbfbd68761eb), open and unbuilt upstream on 13 Nov 2026. Ported by reading the PR diff.
++
++Why: nx2:vi2's present runs on the sm server's service thread, a guest thread on guest core 3
++(services.cpp RunOnGuestCoreProcess, InitializeServiceThread, priority 16). WaitForFrame blocks the
++host thread of that core on a condition variable until the frame's fence: past the field 27-35 ms of
++a 63 ms frame (measured by others). No other guest thread can run on core 3 meanwhile.
++
++What (only with EDEN_UP_L1639_PARK_WAIT=1):
++- WaitForFrame's full waits (not the frames-ahead probe with unless_gpu_waits, not with
++  EDEN_UP_FRAME_WAIT_PROGRESS) clear one per-session KEvent, register a scoped fence action that
++  signals it (on the GPU thread, as nx2:syncpt's slot events are signalled), and wait on it with
++  KSynchronizationObject::Wait in 50 ms rounds, keeping the deadline (4 s or EDEN_TEST_FRAME_WAIT_MS)
++  and the power-off check. Leaving the wait deregisters the action; our DeregisterGuestAction also
++  joins one already running, so the next wait's Clear never races a late Signal.
++- Not on a guest thread (a dummy KThread) or no event: the old host wait, counted.
++- The session's destructor drops the action and closes the event (as upstream).
++- One line per 600 waits: "EDEN_UP_L1639_PARK_WAIT: last 600 frame waits ...": parked, average
++  wait, kernel waits, 50 ms timeouts, terminations, signal-to-run time (the guest reschedule cost
++  this adds to each present), and waits that kept the host wait. One line at the first parked wait.
++
++Not taken from upstream: their nx2_fence_action.h as a file (the class is in nx2_gsv.h, so no
++CMakeLists change) and their src/tests case (our build does not build the tests).
++Not covered: WaitForFrameSlack / WaitForFrameCapped's own waits and WaitForFrameFront's wait for
++the split front keep their host waits (their WaitForFrame calls are covered).
++
++Unset (the default): one cached static read per frame wait; behaviour as T181. nx2_gsv.h is not a
++translation id input and no name is added to TranslationSwitches: KEEPS THE STORE.
++
++---
++diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
++index 33d99f9e88..8441e0a196 100644
++--- a/src/core/hle/service/nx2_gsv.h
+++++ b/src/core/hle/service/nx2_gsv.h
++@@ -65,6 +65,7 @@
++ #include "core/hle/kernel/k_hardware_timer.h"
++ #include "core/hle/kernel/k_readable_event.h"
++ #include "core/hle/kernel/k_session.h"
+++#include "core/hle/kernel/k_synchronization_object.h"
++ #include "core/hle/kernel/k_thread.h"
++ #include "core/hle/kernel/k_transfer_memory.h"
++ #include "core/hle/kernel/svc_results.h"
++@@ -1895,6 +1896,31 @@ inline Nx2DecoderImageLayout Nx2CalculateDecoderImageLayout(const u32* preferenc
++     return layout;
++ }
++ 
+++/// EDEN_UP_L1639_PARK_WAIT (after Lichii PR #1639 by DuskDarf1, open and unbuilt upstream on
+++/// 13 Nov 2026; their Nx2ScopedGuestFenceAction, nx2_fence_action.h): owns one guest-fence action
+++/// until it ran or its waiter left. Our SyncpointManager::DeregisterGuestAction also waits for an
+++/// action already running outside its lock, so after the destructor the action never runs.
+++class Nx2ScopedGuestFenceAction final {
+++public:
+++    template <typename Callback>
+++    Nx2ScopedGuestFenceAction(Tegra::Host1x::SyncpointManager& syncpoints_, u32 id_, u32 value,
+++                              Callback&& callback)
+++        : syncpoints{syncpoints_}, id{id_},
+++          handle{syncpoints.RegisterGuestAction(id, value, std::forward<Callback>(callback))} {}
+++
+++    ~Nx2ScopedGuestFenceAction() {
+++        syncpoints.DeregisterGuestAction(id, handle);
+++    }
+++
+++    Nx2ScopedGuestFenceAction(const Nx2ScopedGuestFenceAction&) = delete;
+++    Nx2ScopedGuestFenceAction& operator=(const Nx2ScopedGuestFenceAction&) = delete;
+++
+++private:
+++    Tegra::Host1x::SyncpointManager& syncpoints;
+++    const u32 id;
+++    const Tegra::Host1x::SyncpointManager::ActionHandle handle;
+++};
+++
++ // Placeholder for the Switch 2 display session (nn::vi2::sdk), handed out by gsv 305. Reply
++ // shapes read from the SDK: TIPC 1 -> u32 < 0x400, TIPC 3 -> u32 < 8, TIPC 11/31(u32) and
++ // 32(handle, u32) -> one handle at word 3 then the result. Handles returned here are events (a
++@@ -1977,6 +2003,12 @@ public:
++     }
++ 
++     ~INx2Vi2Session() override {
+++        // EDEN_UP_L1639_PARK_WAIT (Lichii #1639): a service fiber can be dropped at shutdown
+++        // without unwinding its stack. Remove or join the fence action before closing its event.
+++        m_park_action.reset();
+++        if (m_park_event != nullptr) {
+++            m_context.CloseEvent(m_park_event);
+++        }
++         // The vsync callback may be running on the HostTiming thread: empty its event list under
++         // its lock first (it holds the state, not this session), then close the events.
++         {
++@@ -2789,6 +2821,149 @@ private:
++     u64 m_test_gave_up_total{};
++     std::chrono::steady_clock::time_point m_test_wait_window{};
++ 
+++    /// EDEN_UP_L1639_PARK_WAIT=1 (port of Lichii PR #1639 by DuskDarf1, "nx2: suspend fixed
+++    /// frame-fence waits in the guest kernel"; open and unbuilt upstream on 13 Nov 2026). Off
+++    /// (unset, the default): one cached static read per wait, nothing else. This session's
+++    /// requests run on the sm server's service thread (services.cpp: RunOnGuestCoreProcess,
+++    /// guest core 3, priority 16). The plain wait blocks that core's host thread on a condition
+++    /// variable, so no other guest thread runs on core 3 until the fence (27-35 ms a frame past
+++    /// the field). Parked, the service thread waits on a session event in the guest kernel; the
+++    /// fence action signals it from the GPU thread (as nx2:syncpt's slot events already are), and
+++    /// core 3 runs other guest threads meanwhile. The present itself still returns at the fence:
+++    /// the game thread that presents waits exactly as long as before.
+++    static bool ParkWaitSwitch() {
+++        static const bool on = Common::PeSwitch("EDEN_UP_L1639_PARK_WAIT");
+++        return on;
+++    }
+++
+++    /// One reusable event per session; a failed allocation keeps the host wait for good.
+++    bool EnsureParkEvent() {
+++        if (m_park_event == nullptr && !m_park_event_tried) {
+++            m_park_event_tried = true;
+++            m_park_event = m_context.CreateEvent("nx2:vi2 frame fence wait");
+++            if (m_park_event == nullptr) {
+++                LOG_WARNING(Service, "EDEN_UP_L1639_PARK_WAIT: no event for the frame wait; "
+++                                     "this session keeps the host wait");
+++            }
+++        }
+++        return m_park_event != nullptr;
+++    }
+++
+++    /// Returns false (and waits not at all) when it cannot park: not on a guest thread, or no
+++    /// event. Otherwise waits as WaitForFrame's host wait does (the fence, the deadline, power
+++    /// off) and returns true; the caller then reads the fence as before.
+++    bool ParkFrameWait(u32 fence_id, u32 fence_value, std::chrono::steady_clock::time_point start,
+++                       std::chrono::steady_clock::time_point deadline) {
+++        auto& kernel = system.Kernel();
+++        Kernel::KThread* const self = Kernel::GetCurrentThreadPointer(kernel);
+++        if (self == nullptr || self->IsDummyThread()) {
+++            // A host thread (a dummy KThread): a kernel wait would block it all the same.
+++            ++m_park.host_thread;
+++            NoteParkWaits();
+++            return false;
+++        }
+++        if (!EnsureParkEvent()) {
+++            ++m_park.no_event;
+++            NoteParkWaits();
+++            return false;
+++        }
+++        if (!m_park.first_logged) {
+++            m_park.first_logged = true;
+++            LOG_INFO(Service,
+++                     "EDEN_UP_L1639_PARK_WAIT=1: frame fence waits park the nx2:vi2 service "
+++                     "thread in the guest kernel (Lichii #1639; first at present #{})",
+++                     m_presents);
+++        }
+++        auto& syncpoints = system.Host1x().GetSyncpointManager();
+++        m_park_event->Clear(kernel);
+++        m_park_signal_ns.store(0, std::memory_order_relaxed);
+++        // Runs on the GPU thread as it reaches the fence, or inline here if it already did.
+++        m_park_action.emplace(syncpoints, fence_id, fence_value,
+++                              [event = m_park_event, kernel_ptr = &kernel,
+++                               signal_ns = &m_park_signal_ns] {
+++                                  signal_ns->store(std::chrono::steady_clock::now()
+++                                                       .time_since_epoch()
+++                                                       .count(),
+++                                                   std::memory_order_relaxed);
+++                                  event->Signal(*kernel_ptr);
+++                              });
+++        Kernel::KSynchronizationObject* object = &m_park_event->GetReadableEvent();
+++        while (!syncpoints.IsReadyGuest(fence_id, fence_value) && system.IsPoweredOn() &&
+++               std::chrono::steady_clock::now() < deadline) {
+++            s32 index = -1;
+++            // 50 ms rounds keep the power-off and deadline checks the host wait has.
+++            const s64 timeout = kernel.HardwareTimer().GetTick() + 50'000'000;
+++            const Result result =
+++                Kernel::KSynchronizationObject::Wait(kernel, &index, &object, 1, timeout);
+++            ++m_park.kernel_waits;
+++            if (result == Kernel::ResultTimedOut) {
+++                ++m_park.timeouts;
+++            } else if (result == Kernel::ResultTerminationRequested) {
+++                ++m_park.terminated;
+++                break;
+++            }
+++        }
+++        // Join an action still signalling before the next wait clears the event.
+++        m_park_action.reset();
+++        const auto end = std::chrono::steady_clock::now();
+++        const s64 signalled = m_park_signal_ns.load(std::memory_order_relaxed);
+++        if (signalled != 0) {
+++            // From the fence action's signal to this thread running again (guest reschedule).
+++            const s64 wake_us =
+++                (end.time_since_epoch().count() - signalled) / 1000;
+++            m_park.wake_us += wake_us > 0 ? static_cast<u64>(wake_us) : 0;
+++            m_park.wake_max_us = (std::max)(m_park.wake_max_us,
+++                                            wake_us > 0 ? static_cast<u64>(wake_us) : 0);
+++            ++m_park.woken;
+++        }
+++        const auto waited_us =
+++            std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+++        m_park.parked_us += waited_us > 0 ? static_cast<u64>(waited_us) : 0;
+++        ++m_park.parked;
+++        NoteParkWaits();
+++        return true;
+++    }
+++
+++    /// EDEN_UP_L1639_PARK_WAIT: one line per 600 waits that reached ParkFrameWait.
+++    void NoteParkWaits() {
+++        if (++m_park.waits < 600) {
+++            return;
+++        }
+++        LOG_INFO(Service,
+++                 "EDEN_UP_L1639_PARK_WAIT: last {} frame waits (to present #{}): {} parked "
+++                 "(avg {} us, {} kernel waits, {} 50-ms timeouts, {} ended by termination), "
+++                 "signal-to-run avg {} us max {} us over {}; host wait kept: {} not on a guest "
+++                 "thread, {} without an event",
+++                 m_park.waits, m_presents, m_park.parked,
+++                 m_park.parked != 0 ? m_park.parked_us / m_park.parked : 0, m_park.kernel_waits,
+++                 m_park.timeouts, m_park.terminated,
+++                 m_park.woken != 0 ? m_park.wake_us / m_park.woken : 0, m_park.wake_max_us,
+++                 m_park.woken, m_park.host_thread, m_park.no_event);
+++        const bool first_logged = m_park.first_logged;
+++        m_park = {};
+++        m_park.first_logged = first_logged;
+++    }
+++
+++    struct ParkWaitCounts {
+++        u64 waits{};
+++        u64 parked{};
+++        u64 parked_us{};
+++        u64 kernel_waits{};
+++        u64 timeouts{};
+++        u64 terminated{};
+++        u64 woken{};
+++        u64 wake_us{};
+++        u64 wake_max_us{};
+++        u64 host_thread{};
+++        u64 no_event{};
+++        bool first_logged{};
+++    };
+++    ParkWaitCounts m_park{};
+++    Kernel::KEvent* m_park_event{};
+++    bool m_park_event_tried{};
+++    std::atomic<s64> m_park_signal_ns{0};
+++    std::optional<Nx2ScopedGuestFenceAction> m_park_action;
+++
++     /// Waits until the fence is reached. With `unless_gpu_waits`, gives up after a few ms once a
++     /// GPU channel was seen suspended on a semaphore (it may be one this thread releases later).
++     /// Returns whether the fence was reached.
++@@ -2808,7 +2983,12 @@ private:
++         if (progress_wait) [[unlikely]] {
++             ReportWaitProgress(start);
++         }
++-        if (!syncpoints.IsReadyGuest(fence_id, fence_value)) {
+++        // EDEN_UP_L1639_PARK_WAIT=1: a full wait (not the probe, not with
+++        // EDEN_UP_FRAME_WAIT_PROGRESS) parks this service thread in the guest kernel instead of
+++        // blocking the host thread of its guest core (ParkFrameWait); false = the host wait below.
+++        if (!syncpoints.IsReadyGuest(fence_id, fence_value) &&
+++            !(ParkWaitSwitch() && !unless_gpu_waits && !progress_wait &&
+++              ParkFrameWait(fence_id, fence_value, start, deadline))) {
++             // Woken by the GPU thread as it reaches the fence. Polling with 200 us sleeps slept
++             // about 1 ms per check on Windows, added to every frame. An action left registered
++             // after a timeout fires later on a state nobody waits on.
+diff --git a/tools/eglantine-patches/0990-up-l1639-park-wait-no-batch-join.patch b/tools/eglantine-patches/0990-up-l1639-park-wait-no-batch-join.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..79937054071f60b24bc94eae399d3267445dcd5f
+--- /dev/null
++++ b/tools/eglantine-patches/0990-up-l1639-park-wait-no-batch-join.patch
+@@ -0,0 +1,122 @@
++From: EglantinePS5
++Subject: [PATCH] up: EDEN_UP_L1639_PARK_WAIT, no batch-wide join after the fence action finished (fix to 0986; port of Lichii PR #1639 by DuskDarf1; off unless set)
++
++Upstream: zortos293/Lichii PR #1639 by DuskDarf1. Their scoped action joins "a callback already
++running under the syncpoint manager's action lock": upstream runs actions under that lock, so a
++deregister joins only its own action. Our SyncpointManager runs due actions outside the guard and a
++deregister that misses the list waits until running_actions (one count for all syncpoints) is 0.
++
++Defect in 0986 (read in source, not measured): after a normal wake the action has already left the
++list, so leaving the wait waited for the rest of the fence's due batch on the GPU thread, with the
++composite of that frame among it (gpu.cpp registers renderer->Composite on the same fence; ours sits
++before it in the list), plus any batch on any other syncpoint. That is a host-thread block on guest
++core 3 for the composite's length after every present, which 0986 did not have in mind.
++
++Fix: the action's last step sets a per-session flag. When it is set the waiter skips the deregister
++(the action is off the list and touches nothing of the session any more). Otherwise (timeout, power
++off, fence seen reached before its action ran) it deregisters as before, counted as "deregistered
++before their action finished" in the 600-wait line. Unset: nothing changes (code only runs parked).
++nx2_gsv.h is not a translation id input: KEEPS THE STORE.
++
++---
++diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
++index 8441e0a196..3984fe5e6c 100644
++--- a/src/core/hle/service/nx2_gsv.h
+++++ b/src/core/hle/service/nx2_gsv.h
++@@ -1909,7 +1909,18 @@ public:
++           handle{syncpoints.RegisterGuestAction(id, value, std::forward<Callback>(callback))} {}
++ 
++     ~Nx2ScopedGuestFenceAction() {
++-        syncpoints.DeregisterGuestAction(id, handle);
+++        if (!finished) {
+++            syncpoints.DeregisterGuestAction(id, handle);
+++        }
+++    }
+++
+++    /// 0987: the action ran to its end (its last step marks it), so it is off the manager's list
+++    /// and touches nothing of the waiter's any more. Then the destructor skips the deregister:
+++    /// in our tree a deregister that misses the list waits until no due action runs anywhere
+++    /// (running_actions is one count for all syncpoints), which after a normal wake meant waiting
+++    /// for the rest of the fence's batch, the composite (renderer->Composite) among it.
+++    void MarkFinished() {
+++        finished = true;
++     }
++ 
++     Nx2ScopedGuestFenceAction(const Nx2ScopedGuestFenceAction&) = delete;
++@@ -1919,6 +1930,7 @@ private:
++     Tegra::Host1x::SyncpointManager& syncpoints;
++     const u32 id;
++     const Tegra::Host1x::SyncpointManager::ActionHandle handle;
+++    bool finished{};
++ };
++ 
++ // Placeholder for the Switch 2 display session (nn::vi2::sdk), handed out by gsv 305. Reply
++@@ -2877,15 +2889,18 @@ private:
++         auto& syncpoints = system.Host1x().GetSyncpointManager();
++         m_park_event->Clear(kernel);
++         m_park_signal_ns.store(0, std::memory_order_relaxed);
+++        m_park_fired.store(false, std::memory_order_relaxed);
++         // Runs on the GPU thread as it reaches the fence, or inline here if it already did.
+++        // Its last step marks it finished (0987): nothing of this session is touched after it.
++         m_park_action.emplace(syncpoints, fence_id, fence_value,
++                               [event = m_park_event, kernel_ptr = &kernel,
++-                               signal_ns = &m_park_signal_ns] {
+++                               signal_ns = &m_park_signal_ns, fired = &m_park_fired] {
++                                   signal_ns->store(std::chrono::steady_clock::now()
++                                                        .time_since_epoch()
++                                                        .count(),
++                                                    std::memory_order_relaxed);
++                                   event->Signal(*kernel_ptr);
+++                                  fired->store(true, std::memory_order_release);
++                               });
++         Kernel::KSynchronizationObject* object = &m_park_event->GetReadableEvent();
++         while (!syncpoints.IsReadyGuest(fence_id, fence_value) && system.IsPoweredOn() &&
++@@ -2903,7 +2918,14 @@ private:
++                 break;
++             }
++         }
++-        // Join an action still signalling before the next wait clears the event.
+++        // An action that finished needs no deregister (0987). Otherwise (timeout, power off, or
+++        // the fence seen reached before its action ran) remove it, or join it if it is running,
+++        // before the next wait clears the event; that join can wait for the fence's whole batch.
+++        if (m_park_fired.load(std::memory_order_acquire)) {
+++            m_park_action->MarkFinished();
+++        } else {
+++            ++m_park.deregistered;
+++        }
++         m_park_action.reset();
++         const auto end = std::chrono::steady_clock::now();
++         const s64 signalled = m_park_signal_ns.load(std::memory_order_relaxed);
++@@ -2932,13 +2954,13 @@ private:
++         LOG_INFO(Service,
++                  "EDEN_UP_L1639_PARK_WAIT: last {} frame waits (to present #{}): {} parked "
++                  "(avg {} us, {} kernel waits, {} 50-ms timeouts, {} ended by termination), "
++-                 "signal-to-run avg {} us max {} us over {}; host wait kept: {} not on a guest "
++-                 "thread, {} without an event",
+++                 "signal-to-run avg {} us max {} us over {}, {} deregistered before their action "
+++                 "finished; host wait kept: {} not on a guest thread, {} without an event",
++                  m_park.waits, m_presents, m_park.parked,
++                  m_park.parked != 0 ? m_park.parked_us / m_park.parked : 0, m_park.kernel_waits,
++                  m_park.timeouts, m_park.terminated,
++                  m_park.woken != 0 ? m_park.wake_us / m_park.woken : 0, m_park.wake_max_us,
++-                 m_park.woken, m_park.host_thread, m_park.no_event);
+++                 m_park.woken, m_park.deregistered, m_park.host_thread, m_park.no_event);
++         const bool first_logged = m_park.first_logged;
++         m_park = {};
++         m_park.first_logged = first_logged;
++@@ -2954,6 +2976,7 @@ private:
++         u64 woken{};
++         u64 wake_us{};
++         u64 wake_max_us{};
+++        u64 deregistered{};
++         u64 host_thread{};
++         u64 no_event{};
++         bool first_logged{};
++@@ -2962,6 +2985,7 @@ private:
++     Kernel::KEvent* m_park_event{};
++     bool m_park_event_tried{};
++     std::atomic<s64> m_park_signal_ns{0};
+++    std::atomic<bool> m_park_fired{false};
++     std::optional<Nx2ScopedGuestFenceAction> m_park_action;
++ 
++     /// Waits until the fence is reached. With `unless_gpu_waits`, gives up after a few ms once a

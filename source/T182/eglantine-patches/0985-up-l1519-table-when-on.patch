@@ -1,0 +1,141 @@
+From: EglantinePS5
+Subject: [PATCH] up: L1519 fixes from the T182b check: its word table only with the switch on, a line at the first check
+
+Follows 0982 (EDEN_UP_L1519_FAST_DRAWS, port of zortos293/Lichii PR #1519, commit 65745c2 by
+Zortos). Found in the T182b check:
+- 0982 put the merged words and the 5x18 range table into HandleWordTable, which EDEN_UP_L1161_DRAW
+  allocates and fills per pipeline whatever EDEN_UP_L1519_FAST_DRAWS says: with L1161 on and L1519
+  off, about 2.9 KiB more per pipeline (90 empty vectors plus the table) and a sort per slot,
+  unlike T181. Now its own table (L1519WordTable), made only with the switch on; TakeReusableDraw
+  uses it only when the pipeline has one (else the L1161 check, as T181).
+- The count line was written only when a write reached a span: a run where none did showed no line
+  at all. It is now also written at the first span check.
+
+Off: as T181 (no table, no work). Not in the kept-store stamp: vk_graphics_pipeline.*,
+vk_rasterizer.cpp (KEEPS THE STORE).
+---
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+index a876f4fb14..29c3594c2f 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -1113,6 +1113,11 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
+ 
+ void GraphicsPipeline::BuildHandleWords() {
+     handle_words = std::make_unique<HandleWordTable>();
++    // EDEN_UP_L1519_FAST_DRAWS (Lichii #1519): its table only with the switch on (0984).
++    const bool l1519 = VideoCommon::Nx2FastDraw::L1519FastDrawsEnabled();
++    if (l1519) {
++        l1519_words = std::make_unique<L1519WordTable>();
++    }
+     // EDEN_UP_L1519_FAST_DRAWS (Lichii #1519): a texture element whose word is a storage buffer
+     // address binds no texture with EDEN_NX2_NULL_POINTER_HANDLE (ConfigureImpl), so a write to
+     // it changes nothing a full resolve gives. Left out of `merged` only, and only then.
+@@ -1127,6 +1132,9 @@ void GraphicsPipeline::BuildHandleWords() {
+                     for (u32 i = 0; i < desc.count; ++i) {
+                         const u32 first = offset + (i << desc.size_shift);
+                         handle_words->words[stage][slot].emplace_back(first, first + 4);
++                        if (!l1519) {
++                            continue;
++                        }
+                         if constexpr (std::is_same_v<std::remove_cvref_t<decltype(desc)>,
+                                                      Shader::TextureDescriptor>) {
+                             if (primary && null_pointer_handles &&
+@@ -1134,7 +1142,7 @@ void GraphicsPipeline::BuildHandleWords() {
+                                 continue;
+                             }
+                         }
+-                        handle_words->merged[stage][slot].emplace_back(first, first + 4);
++                        l1519_words->merged[stage][slot].emplace_back(first, first + 4);
+                     }
+                 };
+                 range(desc.cbuf_index, desc.cbuf_offset, true);
+@@ -1150,8 +1158,8 @@ void GraphicsPipeline::BuildHandleWords() {
+             for (const auto& desc : info.image_descriptors) add(desc);
+             // EDEN_UP_L1519_FAST_DRAWS: sorted, overlapping or touching words joined, and the
+             // span they cover (upstream's handle_words / handle_ranges).
+-            for (u32 slot = 0; slot < Maxwell::MaxConstBuffers; ++slot) {
+-                auto& list = handle_words->merged[stage][slot];
++            for (u32 slot = 0; l1519 && slot < Maxwell::MaxConstBuffers; ++slot) {
++                auto& list = l1519_words->merged[stage][slot];
+                 std::ranges::sort(list);
+                 size_t joined = 0;
+                 for (const auto& word : list) {
+@@ -1163,7 +1171,7 @@ void GraphicsPipeline::BuildHandleWords() {
+                 }
+                 list.resize(joined);
+                 if (!list.empty()) {
+-                    handle_words->ranges[stage][slot] = {list.front().first, list.back().second};
++                    l1519_words->ranges[stage][slot] = {list.front().first, list.back().second};
+                 }
+             }
+         }
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
+index 3590cb29b7..206a15230b 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
+@@ -277,12 +277,17 @@ public:
+     /// EDEN_UP_L1519_FAST_DRAWS (zortos293/Lichii #1519, 65745c2): the bytes [first, second) of
+     /// a PreciseHandleBuffers slot that handles are read from (first == second: none), and the
+     /// same bytes word by word, sorted and merged. Only after BuildHandleWords.
++    /// Made only with EDEN_UP_L1519_FAST_DRAWS on (HasL1519Words), so a run without it keeps
++    /// T181's memory (0984).
++    [[nodiscard]] bool HasL1519Words() const noexcept {
++        return l1519_words != nullptr;
++    }
+     [[nodiscard]] std::pair<u32, u32> HandleRange(size_t stage, u32 slot) const {
+-        return handle_words->ranges[stage][slot];
++        return l1519_words->ranges[stage][slot];
+     }
+     [[nodiscard]] std::span<const std::pair<u32, u32>> MergedHandleWords(size_t stage,
+                                                                          u32 slot) const {
+-        return handle_words->merged[stage][slot];
++        return l1519_words->merged[stage][slot];
+     }
+ 
+     /// EDEN_UP_FAST_DRAW: resolves and binds every buffer as Configure does (storage buffer
+@@ -390,8 +395,11 @@ private:
+                               Tegra::Engines::Maxwell3D::Regs::MaxConstBuffers>,
+                    NUM_STAGES>
+             words;
+-        /// EDEN_UP_L1519_FAST_DRAWS: `words` sorted and merged (with EDEN_NX2_NULL_POINTER_HANDLE,
+-        /// without the storage pointer words), and the span of each slot's merged words.
++    };
++    /// EDEN_UP_L1519_FAST_DRAWS: `words` sorted and merged (with EDEN_NX2_NULL_POINTER_HANDLE,
++    /// without the storage pointer words), and the span of each slot's merged words. Its own
++    /// allocation, made only with the switch on.
++    struct L1519WordTable {
+         std::array<std::array<std::vector<std::pair<u32, u32>>,
+                               Tegra::Engines::Maxwell3D::Regs::MaxConstBuffers>,
+                    NUM_STAGES>
+@@ -403,6 +411,7 @@ private:
+     bool handle_words_ready{};
+     std::array<u32, NUM_STAGES> precise_handle_buffers{};
+     std::unique_ptr<HandleWordTable> handle_words;
++    std::unique_ptr<L1519WordTable> l1519_words;
+     struct ComputedHandle { u8 stage; u8 kind; u16 descriptor; u32 value; };
+     // Prefixed: plain Texture/Image enumerators would hide those names in the class's scope.
+     enum ComputedHandleKind : u8 { HandleTextureBuffer, HandleImageBuffer, HandleTexture, HandleImage };
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 1e655c7e1d..7413f48c63 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -501,7 +501,7 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
+             }
+             const auto& cbuf = cbufs[slot];
+             FastDraw::DeviceSpans& spans = handle_spans[stage][slot];
+-            if (l1519) {
++            if (l1519 && draw.pipeline->HasL1519Words()) {
+                 // Only the bytes the handles are read from: draws write their own data next to
+                 // them. One translation, the words compared on it (Delta::ReachesWords).
+                 const auto [begin, end] = draw.pipeline->HandleRange(stage, slot);
+@@ -509,7 +509,9 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
+                     ++l1519_stats.skipped_empty;
+                     continue;
+                 }
+-                ++l1519_stats.checked;
++                if (++l1519_stats.checked == 1) {
++                    ReportL1519(); // 0984: the switch acted, before any write reached a span
++                }
+                 spans.Update(*gpu_memory, cbuf.address + begin, end - begin);
+                 if (!delta.Reaches(cbuf.address + begin, end - begin, spans)) {
+                     continue;

@@ -1,0 +1,211 @@
+From: EglantinePS5
+Subject: [PATCH] up: data the GPU's engines write keeps its pages tracked (EDEN_UP_L1436_ENGINE_TRACKED, off unless set)
+
+Upstream: zortos293/Lichii 6cd99d2e15 (PR #1436, "buffer_cache: data the GPU's engines write keeps
+its pages tracked"), by Zortos (zortos293), from Lucas Borges' (lucastaonline) #1161 (4c44094e30),
+with Copilot and capy-ai. Ported against our patched buffer cache (series up to 0971); the
+upstream memory tracker test is not taken.
+
+What: inline constant buffer data the GPU's own engines write (MemoryManager::WriteBlockCached ->
+FlushCaching -> RasterizerVulkan::InnerInvalidation -> BufferCache::WriteMemory) was marked like a
+guest CPU write: the pages became CPU-modified AND untracked (a host protection change), and the
+next upload tracked them again (another). With EDEN_UP_L1436_ENGINE_TRACKED=1, where the written
+pages hold no GPU-written data, such a write sets the CPU bits but leaves the pages tracked
+(WordManager::MarkWrittenTracked / MemoryTracker::MarkRegionAsWrittenTracked): the upload clears
+the bits and has nothing to track again. Pages with GPU-written data take the old mark (after the
+download our WriteMemory already does). Upstream measured ~4% of the GPU thread at Ocarina of
+Time's village water, 60.9 fps against 59.5 (PC, author's 3 interleaved rounds).
+
+Differences from upstream, for our tree: no ForgetSynchronized/NoteCleanWord (not in our tracker);
+instead upload_epoch and cpu_epoch move (so the full-region clean shortcut and the uniform
+memoisation see the write, as ChangeRegionState does) and, under EDEN_UP_HOT_PAGES, the hot page
+clean bit is dropped so this frame's upload still sends the new bytes. The GPU-written check is
+taken before our keep_page_gpu_data download (which removes the ranges it downloads).
+
+Count line (stderr): "EDEN_UP_L1436_ENGINE_TRACKED writes N kept tracked, pages P stayed tracked,
+F engine writes on GPU-written pages marked as before" at the first such write, then every 65536th;
+P counts pages that were tracked and stayed so (each a protection change and its undo saved).
+"EDEN_UP_L1436_ENGINE_TRACKED on" once at first use.
+
+Unset: every write marks as before (InnerInvalidation passes engine_write, which is ignored).
+Store: buffer cache, memory tracker, word manager and vk_rasterizer.cpp are not translation id
+inputs: KEEPS THE STORE.
+---
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index afc5abb74b..48244e5252 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -480,8 +480,50 @@ void BufferCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t size
+     }
+ }
+ 
++// EDEN_UP_L1436_ENGINE_TRACKED=1 (off by default; zortos293/Lichii #1436, 6cd99d2e15, Zortos,
++// from Lucas Borges' #1161): data the GPU's own engines wrote (inline constant buffer data,
++// MemoryManager::FlushCaching -> InnerInvalidation) marks its pages CPU-modified but leaves them
++// tracked, where the pages hold no GPU-written data. A guest CPU mark untracks the pages (a host
++// protection change) and the next upload tracks them again (another), for writes no guest CPU
++// access needed to see; upstream measured ~4% of the GPU thread at Ocarina of Time's village water,
++// 60.9 fps against 59.5. A guest CPU access to such a page takes the tracked path, as for any
++// tracked page. Unset: every write marks as before.
++inline bool EngineTrackedOn() noexcept {
++    static const bool on = [] {
++        const bool value = Common::PeSwitch("EDEN_UP_L1436_ENGINE_TRACKED");
++        if (value) {
++            std::fprintf(stderr, "EDEN_UP_L1436_ENGINE_TRACKED on: engine writes keep their pages "
++                                 "tracked\n");
++        }
++        return value;
++    }();
++    return on;
++}
++
++// A stderr line at the first engine write kept tracked, then every 65536th: writes kept tracked,
++// pages that stayed tracked (each one a protection change and its undo saved), and engine writes
++// that took the old mark because their pages held GPU-written data.
++inline void NoteEngineTracked(bool kept, u64 pages) noexcept {
++    static std::atomic<u64> writes{0}, kept_pages{0}, fallbacks{0};
++    if (!kept) {
++        fallbacks.fetch_add(1, std::memory_order_relaxed);
++        return;
++    }
++    const u64 total = kept_pages.fetch_add(pages, std::memory_order_relaxed) + pages;
++    const u64 count = writes.fetch_add(1, std::memory_order_relaxed) + 1;
++    if (count == 1 || (count & 0xFFFF) == 0) {
++        std::fprintf(stderr,
++                     "EDEN_UP_L1436_ENGINE_TRACKED writes %llu kept tracked, pages %llu stayed "
++                     "tracked, %llu engine writes on GPU-written pages marked as before\n",
++                     static_cast<unsigned long long>(count),
++                     static_cast<unsigned long long>(total),
++                     static_cast<unsigned long long>(fallbacks.load(std::memory_order_relaxed)));
++    }
++}
++
+ template <class P>
+-void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu_data) {
++void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu_data,
++                                 bool engine_write) {
+     Nx2NoteListHostWrite(device_addr, size);
+     NoteUniformWrite(device_addr, size); // EDEN_UP_L949_UBO_KEEP; nothing unless set
+     if (IsRegionGpuModified(device_addr, size)) {
+@@ -502,6 +544,11 @@ void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu
+     // guest CPU writes come through TryCacheInvalidation, which sends such pages to the GPU thread.
+     const DAddr page_begin = Common::AlignDown(device_addr, DEVICE_PAGESIZE);
+     const DAddr page_end = Common::AlignUp(device_addr + size, DEVICE_PAGESIZE);
++    // EDEN_UP_L1436_ENGINE_TRACKED: decided before the download below, which takes the pages'
++    // GPU-written ranges away; only pages that held none keep their tracking.
++    const bool engine_tracked = engine_write && EngineTrackedOn();
++    const bool page_gpu_data =
++        engine_tracked && gpu_modified_ranges.Intersects(page_begin, page_end - page_begin);
+     if (keep_page_gpu_data && VideoCommon::GpuSplit::OwnsScheduler() &&
+         gpu_modified_ranges.Intersects(page_begin, page_end - page_begin)) {
+         // Switch 2 titles: upload the CPU's bytes into the buffer instead, as CachedWriteMemory
+@@ -531,6 +578,14 @@ void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu
+             DownloadMemory(page_begin, page_end - page_begin);
+         }
+     }
++    if (engine_tracked) {
++        if (!page_gpu_data) {
++            NoteEngineTracked(true, memory_tracker.MarkRegionAsWrittenTracked(device_addr, size));
++            MarkVertexBuffersStale(device_addr, size);
++            return;
++        }
++        NoteEngineTracked(false, 0);
++    }
+     memory_tracker.MarkRegionAsCpuModified(device_addr, size);
+     MarkVertexBuffersStale(device_addr, size);
+ }
+diff --git a/src/video_core/buffer_cache/buffer_cache_base.h b/src/video_core/buffer_cache/buffer_cache_base.h
+index 2302045b3b..3524bb807d 100644
+--- a/src/video_core/buffer_cache/buffer_cache_base.h
++++ b/src/video_core/buffer_cache/buffer_cache_base.h
+@@ -305,7 +305,11 @@ public:
+ 
+     /// `keep_page_gpu_data`: download GPU-written bytes sharing the written pages first (false
+     /// when the memory is going away).
+-    void WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu_data = true);
++    /// `engine_write`: the GPU's own engines wrote it (inline constant buffer data,
++    /// MemoryManager::FlushCaching), not the guest CPU. With EDEN_UP_L1436_ENGINE_TRACKED=1 such a
++    /// write leaves pages without GPU-written data tracked (zortos293/Lichii #1436).
++    void WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu_data = true,
++                     bool engine_write = false);
+ 
+     void CachedWriteMemory(DAddr device_addr, u64 size);
+ 
+diff --git a/src/video_core/buffer_cache/memory_tracker_base.h b/src/video_core/buffer_cache/memory_tracker_base.h
+index b8ac318441..1b9916b338 100644
+--- a/src/video_core/buffer_cache/memory_tracker_base.h
++++ b/src/video_core/buffer_cache/memory_tracker_base.h
+@@ -111,6 +111,20 @@ public:
+         });
+     }
+ 
++    /// EDEN_UP_L1436_ENGINE_TRACKED (zortos293/Lichii #1436): as MarkRegionAsCpuModified, for
++    /// data the GPU's own engines wrote to guest memory (inline constant buffer data): the pages
++    /// stay tracked, as no guest CPU write needs to be let through, and the next upload has
++    /// nothing to track again. Returns the pages that stayed tracked (pages a CPU mark would have
++    /// untracked).
++    u64 MarkRegionAsWrittenTracked(VAddr dirty_cpu_addr, u64 query_size) {
++        u64 kept = 0;
++        IteratePages<true>(dirty_cpu_addr, query_size,
++                           [&kept](Manager* manager, u64 offset, size_t size) {
++                               kept += manager->MarkWrittenTracked(manager->cpu_addr + offset, size);
++                           });
++        return kept;
++    }
++
+     /// Unmark region as CPU modified, notifying the device_tracker about this change
+     void UnmarkRegionAsCpuModified(VAddr dirty_cpu_addr, u64 query_size) {
+         IteratePages<true>(dirty_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
+diff --git a/src/video_core/buffer_cache/word_manager.h b/src/video_core/buffer_cache/word_manager.h
+index b3d448a1e2..4576b6dc29 100644
+--- a/src/video_core/buffer_cache/word_manager.h
++++ b/src/video_core/buffer_cache/word_manager.h
+@@ -250,6 +250,34 @@ struct WordManager {
+         }
+     }
+ 
++    /// EDEN_UP_L1436_ENGINE_TRACKED (zortos293/Lichii #1436, 6cd99d2e15, Zortos, from Lucas
++    /// Borges' #1161): ChangeRegionState(Type::CPU, true, ...) leaving the Untracked bits as they
++    /// are. Pages tracked now stay tracked (no host protection change), so clearing the CPU bits at
++    /// the next upload tracks nothing again. Both epochs move, as for any CPU mark, so the clean
++    /// region shortcut and the uniform memoisation see the write; a hot page loses its clean bit
++    /// so this frame's upload still sends it. Returns the pages that stayed tracked.
++    u64 MarkWrittenTracked(u64 dirty_addr, u64 size) noexcept {
++        const bool hot_pages = HotPagesEnabled();
++        if (hot_pages) {
++            RefreshHotEpoch();
++        }
++        ++upload_epoch;
++        ++cpu_epoch;
++        std::span<u64> cpu_words = Span(Type::CPU);
++        std::span<u64> cached_words = Span(Type::CachedCPU);
++        const std::span<const u64> untracked_words = Span(Type::Untracked);
++        u64 kept = 0;
++        IterateWords(dirty_addr - cpu_addr, size, [&](size_t index, u64 mask) {
++            if (hot_pages) {
++                hot_state->clean[index] &= ~mask;
++            }
++            kept += static_cast<u64>(std::popcount(~untracked_words[index] & mask));
++            cpu_words[index] |= mask;
++            cached_words[index] &= ~mask;
++        });
++        return kept;
++    }
++
+     /// @brief Change the state of a range of pages
+     /// @param type          Type of the page
+     /// @param enable        If enabling or disabling
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 31bcdc309a..b52aacbed2 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -2798,7 +2798,8 @@ void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::s
+     {
+         std::scoped_lock lock{buffer_cache.mutex};
+         for (const auto& [addr, size] : sequences) {
+-            buffer_cache.WriteMemory(addr, size);
++            // engine_write: the GPU's own cached writes (EDEN_UP_L1436_ENGINE_TRACKED).
++            buffer_cache.WriteMemory(addr, size, true, true);
+         }
+     }
+     if (any(query_cache.page_filter)) {

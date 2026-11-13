@@ -1,0 +1,254 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_L1639_PARK_WAIT, frame fence waits park the vi2 service thread (port of Lichii PR #1639 by DuskDarf1; off unless set)
+
+Upstream: zortos293/Lichii PR #1639 "nx2: suspend fixed frame-fence waits in the guest kernel" by
+DuskDarf1 (head dbfbd68761eb), open and unbuilt upstream on 13 Nov 2026. Ported by reading the PR diff.
+
+Why: nx2:vi2's present runs on the sm server's service thread, a guest thread on guest core 3
+(services.cpp RunOnGuestCoreProcess, InitializeServiceThread, priority 16). WaitForFrame blocks the
+host thread of that core on a condition variable until the frame's fence: past the field 27-35 ms of
+a 63 ms frame (measured by others). No other guest thread can run on core 3 meanwhile.
+
+What (only with EDEN_UP_L1639_PARK_WAIT=1):
+- WaitForFrame's full waits (not the frames-ahead probe with unless_gpu_waits, not with
+  EDEN_UP_FRAME_WAIT_PROGRESS) clear one per-session KEvent, register a scoped fence action that
+  signals it (on the GPU thread, as nx2:syncpt's slot events are signalled), and wait on it with
+  KSynchronizationObject::Wait in 50 ms rounds, keeping the deadline (4 s or EDEN_TEST_FRAME_WAIT_MS)
+  and the power-off check. Leaving the wait deregisters the action; our DeregisterGuestAction also
+  joins one already running, so the next wait's Clear never races a late Signal.
+- Not on a guest thread (a dummy KThread) or no event: the old host wait, counted.
+- The session's destructor drops the action and closes the event (as upstream).
+- One line per 600 waits: "EDEN_UP_L1639_PARK_WAIT: last 600 frame waits ...": parked, average
+  wait, kernel waits, 50 ms timeouts, terminations, signal-to-run time (the guest reschedule cost
+  this adds to each present), and waits that kept the host wait. One line at the first parked wait.
+
+Not taken from upstream: their nx2_fence_action.h as a file (the class is in nx2_gsv.h, so no
+CMakeLists change) and their src/tests case (our build does not build the tests).
+Not covered: WaitForFrameSlack / WaitForFrameCapped's own waits and WaitForFrameFront's wait for
+the split front keep their host waits (their WaitForFrame calls are covered).
+
+Unset (the default): one cached static read per frame wait; behaviour as T181. nx2_gsv.h is not a
+translation id input and no name is added to TranslationSwitches: KEEPS THE STORE.
+
+---
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index 33d99f9e88..8441e0a196 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -65,6 +65,7 @@
+ #include "core/hle/kernel/k_hardware_timer.h"
+ #include "core/hle/kernel/k_readable_event.h"
+ #include "core/hle/kernel/k_session.h"
++#include "core/hle/kernel/k_synchronization_object.h"
+ #include "core/hle/kernel/k_thread.h"
+ #include "core/hle/kernel/k_transfer_memory.h"
+ #include "core/hle/kernel/svc_results.h"
+@@ -1895,6 +1896,31 @@ inline Nx2DecoderImageLayout Nx2CalculateDecoderImageLayout(const u32* preferenc
+     return layout;
+ }
+ 
++/// EDEN_UP_L1639_PARK_WAIT (after Lichii PR #1639 by DuskDarf1, open and unbuilt upstream on
++/// 13 Nov 2026; their Nx2ScopedGuestFenceAction, nx2_fence_action.h): owns one guest-fence action
++/// until it ran or its waiter left. Our SyncpointManager::DeregisterGuestAction also waits for an
++/// action already running outside its lock, so after the destructor the action never runs.
++class Nx2ScopedGuestFenceAction final {
++public:
++    template <typename Callback>
++    Nx2ScopedGuestFenceAction(Tegra::Host1x::SyncpointManager& syncpoints_, u32 id_, u32 value,
++                              Callback&& callback)
++        : syncpoints{syncpoints_}, id{id_},
++          handle{syncpoints.RegisterGuestAction(id, value, std::forward<Callback>(callback))} {}
++
++    ~Nx2ScopedGuestFenceAction() {
++        syncpoints.DeregisterGuestAction(id, handle);
++    }
++
++    Nx2ScopedGuestFenceAction(const Nx2ScopedGuestFenceAction&) = delete;
++    Nx2ScopedGuestFenceAction& operator=(const Nx2ScopedGuestFenceAction&) = delete;
++
++private:
++    Tegra::Host1x::SyncpointManager& syncpoints;
++    const u32 id;
++    const Tegra::Host1x::SyncpointManager::ActionHandle handle;
++};
++
+ // Placeholder for the Switch 2 display session (nn::vi2::sdk), handed out by gsv 305. Reply
+ // shapes read from the SDK: TIPC 1 -> u32 < 0x400, TIPC 3 -> u32 < 8, TIPC 11/31(u32) and
+ // 32(handle, u32) -> one handle at word 3 then the result. Handles returned here are events (a
+@@ -1977,6 +2003,12 @@ public:
+     }
+ 
+     ~INx2Vi2Session() override {
++        // EDEN_UP_L1639_PARK_WAIT (Lichii #1639): a service fiber can be dropped at shutdown
++        // without unwinding its stack. Remove or join the fence action before closing its event.
++        m_park_action.reset();
++        if (m_park_event != nullptr) {
++            m_context.CloseEvent(m_park_event);
++        }
+         // The vsync callback may be running on the HostTiming thread: empty its event list under
+         // its lock first (it holds the state, not this session), then close the events.
+         {
+@@ -2789,6 +2821,149 @@ private:
+     u64 m_test_gave_up_total{};
+     std::chrono::steady_clock::time_point m_test_wait_window{};
+ 
++    /// EDEN_UP_L1639_PARK_WAIT=1 (port of Lichii PR #1639 by DuskDarf1, "nx2: suspend fixed
++    /// frame-fence waits in the guest kernel"; open and unbuilt upstream on 13 Nov 2026). Off
++    /// (unset, the default): one cached static read per wait, nothing else. This session's
++    /// requests run on the sm server's service thread (services.cpp: RunOnGuestCoreProcess,
++    /// guest core 3, priority 16). The plain wait blocks that core's host thread on a condition
++    /// variable, so no other guest thread runs on core 3 until the fence (27-35 ms a frame past
++    /// the field). Parked, the service thread waits on a session event in the guest kernel; the
++    /// fence action signals it from the GPU thread (as nx2:syncpt's slot events already are), and
++    /// core 3 runs other guest threads meanwhile. The present itself still returns at the fence:
++    /// the game thread that presents waits exactly as long as before.
++    static bool ParkWaitSwitch() {
++        static const bool on = Common::PeSwitch("EDEN_UP_L1639_PARK_WAIT");
++        return on;
++    }
++
++    /// One reusable event per session; a failed allocation keeps the host wait for good.
++    bool EnsureParkEvent() {
++        if (m_park_event == nullptr && !m_park_event_tried) {
++            m_park_event_tried = true;
++            m_park_event = m_context.CreateEvent("nx2:vi2 frame fence wait");
++            if (m_park_event == nullptr) {
++                LOG_WARNING(Service, "EDEN_UP_L1639_PARK_WAIT: no event for the frame wait; "
++                                     "this session keeps the host wait");
++            }
++        }
++        return m_park_event != nullptr;
++    }
++
++    /// Returns false (and waits not at all) when it cannot park: not on a guest thread, or no
++    /// event. Otherwise waits as WaitForFrame's host wait does (the fence, the deadline, power
++    /// off) and returns true; the caller then reads the fence as before.
++    bool ParkFrameWait(u32 fence_id, u32 fence_value, std::chrono::steady_clock::time_point start,
++                       std::chrono::steady_clock::time_point deadline) {
++        auto& kernel = system.Kernel();
++        Kernel::KThread* const self = Kernel::GetCurrentThreadPointer(kernel);
++        if (self == nullptr || self->IsDummyThread()) {
++            // A host thread (a dummy KThread): a kernel wait would block it all the same.
++            ++m_park.host_thread;
++            NoteParkWaits();
++            return false;
++        }
++        if (!EnsureParkEvent()) {
++            ++m_park.no_event;
++            NoteParkWaits();
++            return false;
++        }
++        if (!m_park.first_logged) {
++            m_park.first_logged = true;
++            LOG_INFO(Service,
++                     "EDEN_UP_L1639_PARK_WAIT=1: frame fence waits park the nx2:vi2 service "
++                     "thread in the guest kernel (Lichii #1639; first at present #{})",
++                     m_presents);
++        }
++        auto& syncpoints = system.Host1x().GetSyncpointManager();
++        m_park_event->Clear(kernel);
++        m_park_signal_ns.store(0, std::memory_order_relaxed);
++        // Runs on the GPU thread as it reaches the fence, or inline here if it already did.
++        m_park_action.emplace(syncpoints, fence_id, fence_value,
++                              [event = m_park_event, kernel_ptr = &kernel,
++                               signal_ns = &m_park_signal_ns] {
++                                  signal_ns->store(std::chrono::steady_clock::now()
++                                                       .time_since_epoch()
++                                                       .count(),
++                                                   std::memory_order_relaxed);
++                                  event->Signal(*kernel_ptr);
++                              });
++        Kernel::KSynchronizationObject* object = &m_park_event->GetReadableEvent();
++        while (!syncpoints.IsReadyGuest(fence_id, fence_value) && system.IsPoweredOn() &&
++               std::chrono::steady_clock::now() < deadline) {
++            s32 index = -1;
++            // 50 ms rounds keep the power-off and deadline checks the host wait has.
++            const s64 timeout = kernel.HardwareTimer().GetTick() + 50'000'000;
++            const Result result =
++                Kernel::KSynchronizationObject::Wait(kernel, &index, &object, 1, timeout);
++            ++m_park.kernel_waits;
++            if (result == Kernel::ResultTimedOut) {
++                ++m_park.timeouts;
++            } else if (result == Kernel::ResultTerminationRequested) {
++                ++m_park.terminated;
++                break;
++            }
++        }
++        // Join an action still signalling before the next wait clears the event.
++        m_park_action.reset();
++        const auto end = std::chrono::steady_clock::now();
++        const s64 signalled = m_park_signal_ns.load(std::memory_order_relaxed);
++        if (signalled != 0) {
++            // From the fence action's signal to this thread running again (guest reschedule).
++            const s64 wake_us =
++                (end.time_since_epoch().count() - signalled) / 1000;
++            m_park.wake_us += wake_us > 0 ? static_cast<u64>(wake_us) : 0;
++            m_park.wake_max_us = (std::max)(m_park.wake_max_us,
++                                            wake_us > 0 ? static_cast<u64>(wake_us) : 0);
++            ++m_park.woken;
++        }
++        const auto waited_us =
++            std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
++        m_park.parked_us += waited_us > 0 ? static_cast<u64>(waited_us) : 0;
++        ++m_park.parked;
++        NoteParkWaits();
++        return true;
++    }
++
++    /// EDEN_UP_L1639_PARK_WAIT: one line per 600 waits that reached ParkFrameWait.
++    void NoteParkWaits() {
++        if (++m_park.waits < 600) {
++            return;
++        }
++        LOG_INFO(Service,
++                 "EDEN_UP_L1639_PARK_WAIT: last {} frame waits (to present #{}): {} parked "
++                 "(avg {} us, {} kernel waits, {} 50-ms timeouts, {} ended by termination), "
++                 "signal-to-run avg {} us max {} us over {}; host wait kept: {} not on a guest "
++                 "thread, {} without an event",
++                 m_park.waits, m_presents, m_park.parked,
++                 m_park.parked != 0 ? m_park.parked_us / m_park.parked : 0, m_park.kernel_waits,
++                 m_park.timeouts, m_park.terminated,
++                 m_park.woken != 0 ? m_park.wake_us / m_park.woken : 0, m_park.wake_max_us,
++                 m_park.woken, m_park.host_thread, m_park.no_event);
++        const bool first_logged = m_park.first_logged;
++        m_park = {};
++        m_park.first_logged = first_logged;
++    }
++
++    struct ParkWaitCounts {
++        u64 waits{};
++        u64 parked{};
++        u64 parked_us{};
++        u64 kernel_waits{};
++        u64 timeouts{};
++        u64 terminated{};
++        u64 woken{};
++        u64 wake_us{};
++        u64 wake_max_us{};
++        u64 host_thread{};
++        u64 no_event{};
++        bool first_logged{};
++    };
++    ParkWaitCounts m_park{};
++    Kernel::KEvent* m_park_event{};
++    bool m_park_event_tried{};
++    std::atomic<s64> m_park_signal_ns{0};
++    std::optional<Nx2ScopedGuestFenceAction> m_park_action;
++
+     /// Waits until the fence is reached. With `unless_gpu_waits`, gives up after a few ms once a
+     /// GPU channel was seen suspended on a semaphore (it may be one this thread releases later).
+     /// Returns whether the fence was reached.
+@@ -2808,7 +2983,12 @@ private:
+         if (progress_wait) [[unlikely]] {
+             ReportWaitProgress(start);
+         }
+-        if (!syncpoints.IsReadyGuest(fence_id, fence_value)) {
++        // EDEN_UP_L1639_PARK_WAIT=1: a full wait (not the probe, not with
++        // EDEN_UP_FRAME_WAIT_PROGRESS) parks this service thread in the guest kernel instead of
++        // blocking the host thread of its guest core (ParkFrameWait); false = the host wait below.
++        if (!syncpoints.IsReadyGuest(fence_id, fence_value) &&
++            !(ParkWaitSwitch() && !unless_gpu_waits && !progress_wait &&
++              ParkFrameWait(fence_id, fence_value, start, deadline))) {
+             // Woken by the GPU thread as it reaches the fence. Polling with 200 us sleeps slept
+             // about 1 ms per check on Windows, added to every frame. An action left registered
+             // after a timeout fires later on a state nobody waits on.

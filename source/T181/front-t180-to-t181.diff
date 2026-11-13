@@ -1,0 +1,493 @@
+diff --git a/src/guest_memory_service.inc b/src/guest_memory_service.inc
+index 4afa67ff3cc723c6159c3b4835c943d54191ffd4..7390b04278540c7b9d7d27897a4e4ee122c878e6 100644
+--- a/src/guest_memory_service.inc
++++ b/src/guest_memory_service.inc
+@@ -1600,6 +1600,14 @@ void NoteWriter(std::size_t slot) noexcept {
+ }
+ } // namespace
+ 
++// T181a EDEN_UP_WAIT_RECLAIM (at wait_reclaim_on, below): the core's emergency pass (patch 0970,
++// renderer_vulkan/wait_reclaim.h) and the heap's waiters. Weak: absent, the helper does the heap
++// trim and the swap's part only.
++extern "C" int eden_wait_reclaim_request(unsigned long long seq, unsigned long long target_bytes, unsigned min_age,
++                                         unsigned gpu_wait_ms, unsigned flags) noexcept __attribute__((weak));
++extern "C" void eden_wait_reclaim_stats(unsigned long long* values, unsigned count) noexcept __attribute__((weak));
++extern "C" unsigned eden_heap_wanted(void) __attribute__((weak));
++
+ namespace {
+ // Writers waiting for a block (WaitForBlock), and how many waits ended with one.
+ std::atomic<unsigned> memory_waiters{0};
+@@ -1717,6 +1725,72 @@ FaultLastTryCounters fault_last_try_counters;
+ // Bytes given back (the trim's, plus the slots' estimate); `slots` and `busy` say what the swap did.
+ std::size_t EmergencyGiveBack(std::size_t* slots, bool* busy) noexcept;
+ 
++// ---- T181a EDEN_UP_WAIT_RECLAIM=1 (off unless set): the wait-driven emergency reclaim ----
++//
++// run1441/run1442 (T179, 13 Nov): a game thread (or GPUBack) faulted on a packed slot, waited its whole
++// EDEN_UP_GUEST_WRITE_WAIT_MS (10 s) for one block and lost. No frame was drawn while it waited (the driver's
++// memory lines and the texture cache's last TickFrame stop just before the wait began), and everything that
++// frees graphics memory runs at a frame's end. With the switch:
++//   - a waiting thread (WaitForBlock below, TableCommitWait) that has waited EDEN_UP_WAIT_RECLAIM_AFTER_MS
++//     (unset 50) counts itself as a reclaim waiter: atomics only, it is in a fault handler;
++//   - the helper thread (WaitReclaimLoop, every 20 ms; a heap request that waited 3 ticks counts too) runs a
++//     round every EDEN_UP_WAIT_RECLAIM_EVERY_MS (unset 100) while any waiter is there: the heap's empty
++//     spaces back to the pool (the unheld trim), and, when a waiter is a thread other than GPUBack and GPU,
++//     one emergency pass asked of the core (eden_wait_reclaim_request: queued on the GPU thread with
++//     RunInOrder, run between two entries; the drain's releases, then images by least-recent use until
++//     EDEN_UP_WAIT_RECLAIM_MIB, unset 128, at most EDEN_UP_WAIT_RECLAIM_TOTAL_MIB, unset 512, in one stretch
++//     of waiting, then the GPU waited for again; patch 0970/0971; asynchronous GPU mode only). One pass at a
++//     time: the next is asked once this one's result is in. Heap waits alone get the trim only (they come in
++//     normal play). The swap's emergency pack of cold slots (no cache lock needed) runs when a GPU thread
++//     waits (GPUBack holds the caches' locks inside its copy, the GPU thread is the one that would run the
++//     pass), when the pass asked is still out after a round, or when the last pass freed nothing (busy,
++//     conditional, failed);
++//   - a round that gave EDEN_UP_WAIT_RECLAIM_GRANT_MIB (unset 16) back to the pool in whole blocks (VMA
++//     memory returned to the driver, packed slots) or grew the pool's largest piece to 2 MiB or more lets
++//     every waiter wait on past its limit for EDEN_UP_WAIT_RECLAIM_EXTEND_MS (unset 3000) more; never past
++//     EDEN_UP_WAIT_RECLAIM_MAX_MS (unset 60000) from the wait's start. Bytes that only became slack inside
++//     allocator blocks, and trimmed heap pages, extend nothing.
++// Lines (stderr): EDEN_UP_WAIT_RECLAIM round ... (one per round, the first 200 and every 20th after),
++// EDEN_UP_WAIT_RECLAIM totals ... (when a stretch of waiting ends, and every 10 s while it goes on). With
++// EDEN_UP_FAULT_LOG=1 a fault wait's end line adds reclaim_extended_ms=. Off: one relaxed load per wait.
++std::atomic<bool> wait_reclaim_on{false};
++std::atomic<unsigned> wait_reclaim_after_ms{50};
++std::atomic<unsigned> wait_reclaim_max_ms{60000};
++std::atomic<unsigned> reclaim_cpu_waiters{0};            // past AFTER_MS, not a GPU thread: the pass can serve them
++std::atomic<unsigned> reclaim_gpu_waiters{0};            // past AFTER_MS, GPUBack or GPU: the pass cannot run
++std::atomic<std::uint64_t> reclaim_grant_until_ms{0};    // waiters may go on past their limits until then
++std::atomic<const char*> reclaim_who{nullptr};           // the last thread to count itself, for the line
++std::atomic<std::uint64_t> reclaim_who_slot{0}, reclaim_who_since_ms{0};
++std::atomic<std::uint64_t> reclaim_extended_waits{0}, reclaim_extended_won{0};
++
++// A waiter's mark: raised once it waited AFTER_MS, dropped when its wait ends. A fault handler's: atomics only.
++struct ReclaimMark {
++    bool raised = false;
++    bool gpu = false;
++    void Raise(bool gpu_thread, const char* who, std::size_t slot, std::uint64_t since_ms) noexcept {
++        if (raised) return;
++        raised = true;
++        gpu = gpu_thread;
++        reclaim_who.store(who, std::memory_order_relaxed);
++        reclaim_who_slot.store(slot, std::memory_order_relaxed);
++        reclaim_who_since_ms.store(since_ms, std::memory_order_relaxed);
++        (gpu ? reclaim_gpu_waiters : reclaim_cpu_waiters).fetch_add(1, std::memory_order_acq_rel);
++    }
++    void Drop() noexcept {
++        if (!raised) return;
++        raised = false;
++        (gpu ? reclaim_gpu_waiters : reclaim_cpu_waiters).fetch_sub(1, std::memory_order_acq_rel);
++    }
++    // Raised when due; true while the wait may go on past its own limit (a recent round freed memory).
++    bool Tick(bool gpu_thread, const char* who, std::size_t slot, std::uint64_t start_ms) noexcept {
++        const std::uint64_t now = MonotonicMs();
++        if (!raised && now - start_ms >= wait_reclaim_after_ms.load(std::memory_order_relaxed))
++            Raise(gpu_thread, who, slot, start_ms);
++        return now < reclaim_grant_until_ms.load(std::memory_order_acquire) &&
++               now - start_ms < wait_reclaim_max_ms.load(std::memory_order_relaxed);
++    }
++};
++
+ template <typename Promote>
+ bool WaitForBlock(Promote&& promote, std::size_t slot = 0, std::uint8_t state = 0) noexcept {
+     const std::uint64_t block_since = StallProbe::On() ? StallProbe::NowNs() : 0; // EDEN_UP_STALL_PROBE
+@@ -1764,7 +1838,19 @@ bool WaitForBlock(Promote&& promote, std::size_t slot = 0, std::uint8_t state =
+     // pages. Off: one cached static read per wait, then the loop as before.
+     static const bool block_wait_trim = Common::PeSwitch("EDEN_UP_BLOCK_WAIT_TRIM");
+     constexpr unsigned trim_every_tries = static_cast<unsigned>(::Eden::MemoryWait::TrimEveryMs / 20);
+-    for (unsigned tries = 0; tries < limit && !ok; ++tries) {
++    // T181a EDEN_UP_WAIT_RECLAIM (at wait_reclaim_on): the mark after AFTER_MS, and past `limit` the wait goes
++    // on while a recent round freed memory (bounded by EDEN_UP_WAIT_RECLAIM_MAX_MS). Off: as before.
++    const bool reclaim = wait_reclaim_on.load(std::memory_order_relaxed);
++    ReclaimMark mark;
++    bool extended = false;
++    for (unsigned tries = 0; !ok; ++tries) {
++        if (tries >= limit) {
++            if (!reclaim || !mark.Tick(gpu_kind != 0, FaultThreadName(gpu_kind), slot, wait_start_ms)) break;
++            if (!extended) {
++                extended = true;
++                reclaim_extended_waits.fetch_add(1, std::memory_order_relaxed);
++            }
++        }
+         if (block_wait_trim && tries % trim_every_tries == 0 && ::eden_heap_trim != nullptr) {
+             // EDEN_UP_HEAP_HOLD_AT_LOAD's hold does not stop this one: the game's memory first.
+             (void)(::eden_heap_trim_unheld != nullptr ? ::eden_heap_trim_unheld() : ::eden_heap_trim());
+@@ -1774,7 +1860,10 @@ bool WaitForBlock(Promote&& promote, std::size_t slot = 0, std::uint8_t state =
+         const timespec pause{0, 20'000'000};
+         nanosleep(&pause, nullptr);
+         ok = promote();
++        if (reclaim && !ok) (void)mark.Tick(gpu_kind != 0, FaultThreadName(gpu_kind), slot, wait_start_ms);
+     }
++    mark.Drop();
++    if (extended && ok) reclaim_extended_won.fetch_add(1, std::memory_order_relaxed);
+     memory_waiters.fetch_sub(1, std::memory_order_acq_rel);
+     if (block_since != 0) StallProbe::BlockWaited(block_since);
+     (ok ? memory_waits_won : memory_waits_lost).fetch_add(1, std::memory_order_relaxed);
+@@ -1790,8 +1879,12 @@ bool WaitForBlock(Promote&& promote, std::size_t slot = 0, std::uint8_t state =
+     }
+     if (waited_ms > fault_wait_counters.most_ms.load(std::memory_order_relaxed))
+         fault_wait_counters.most_ms.store(waited_ms, std::memory_order_relaxed);
+-    if (logged)
+-        log_line("end").Put(" waited_ms=").Num(waited_ms).Put(" outcome=").Put(trim_won ? "trim" : ok ? "got-block" : "lost").Write();
++    if (logged) {
++        FaultLine end = log_line("end");
++        end.Put(" waited_ms=").Num(waited_ms).Put(" outcome=").Put(trim_won ? "trim" : ok ? "got-block" : "lost");
++        if (reclaim) end.Put(" reclaim_extended_ms=").Num(extended ? waited_ms - std::min<std::uint64_t>(waited_ms, wait_ms) : 0);
++        end.Write();
++    }
+     return ok;
+ }
+ } // namespace
+@@ -3746,6 +3839,309 @@ std::size_t EmergencyGiveBack(std::size_t* slots, bool* busy) noexcept {
+     return given;
+ }
+ 
++#ifdef PS5_NATIVE
++// ---- T181a EDEN_UP_WAIT_RECLAIM's helper thread (the switch and the waiters' side: at wait_reclaim_on) ----
++//
++// A thread of its own, never a fault handler: it may take locks, ask the core to queue work, and write lines.
++// What it calls: eden_heap_trim_unheld (any thread; a fault handler's wait calls it too), EmergencyPackColdSlots
++// (swap_out_mutex by try_lock, slots locked now passed over), PoolLargest (a kernel query), and the core's
++// eden_wait_reclaim_request (takes the rasterizer's registry mutex and the GPU thread's queue lock, queues one
++// function, waits for nothing in asynchronous GPU mode). It holds no lock of its own while it calls them.
++struct WaitReclaimConfig {
++    unsigned every_ms = 100;
++    unsigned extend_ms = 3000;
++    unsigned age = 2;
++    unsigned gpu_ms = 200;
++    unsigned urgent_ms = 2000;
++    unsigned long long target = 128ull << 20;
++    unsigned long long total = 512ull << 20;
++    unsigned long long grant = 16ull << 20;
++};
++WaitReclaimConfig wait_reclaim_config; // written before the thread starts, read only after
++std::thread wait_reclaimer;
++void WaitReclaimLoop();
++
++void ReadWaitReclaimSwitches() noexcept {
++    const char* const value = std::getenv("EDEN_UP_WAIT_RECLAIM");
++    const bool on = value != nullptr && value[0] == '1' && value[1] == '\0';
++    wait_reclaim_on.store(false, std::memory_order_relaxed);
++    if (!on) return;
++    using ::Eden::MemoryWait::ReadMs;
++    auto& c = wait_reclaim_config;
++    wait_reclaim_after_ms.store(ReadMs("EDEN_UP_WAIT_RECLAIM_AFTER_MS", 50, 20, 5000), std::memory_order_relaxed);
++    wait_reclaim_max_ms.store(ReadMs("EDEN_UP_WAIT_RECLAIM_MAX_MS", 60000, 1000, 60000), std::memory_order_relaxed);
++    c.every_ms = ReadMs("EDEN_UP_WAIT_RECLAIM_EVERY_MS", 100, 50, 2000);
++    c.extend_ms = ReadMs("EDEN_UP_WAIT_RECLAIM_EXTEND_MS", 3000, 0, 10000);
++    c.age = ReadMs("EDEN_UP_WAIT_RECLAIM_AGE", 2, 1, 1000);
++    c.gpu_ms = ReadMs("EDEN_UP_WAIT_RECLAIM_GPU_MS", 200, 10, 1000);
++    c.target = static_cast<unsigned long long>(ReadMs("EDEN_UP_WAIT_RECLAIM_MIB", 128, 0, 2048)) << 20;
++    c.total = static_cast<unsigned long long>(ReadMs("EDEN_UP_WAIT_RECLAIM_TOTAL_MIB", 512, 0, 4096)) << 20;
++    c.urgent_ms = ReadMs("EDEN_UP_WAIT_RECLAIM_URGENT_MS", 2000, 0, 60000);
++    c.grant = static_cast<unsigned long long>(ReadMs("EDEN_UP_WAIT_RECLAIM_GRANT_MIB", 16, 1, 1024)) << 20;
++    try {
++        wait_reclaimer = std::thread(WaitReclaimLoop);
++    } catch (...) {
++        Report("EDEN_UP_WAIT_RECLAIM off: no thread\n");
++        return;
++    }
++    wait_reclaim_on.store(true, std::memory_order_release);
++    char line[400];
++    const int length = std::snprintf(
++        line, sizeof(line),
++        "EDEN_UP_WAIT_RECLAIM on: after %u ms of waiting, a round every %u ms (heap trim; a GPU pass of %llu MiB, "
++        "at most %llu MiB of images in one stretch, images unused for %u frames, spared ASTC after %u ms, GPU "
++        "waited for up to %u ms); a round that gives %llu MiB back to the pool in whole blocks or grows its "
++        "largest piece to 2 MiB lets waiters go on %u ms more, at most %u ms in all; core pass %s\n",
++        wait_reclaim_after_ms.load(std::memory_order_relaxed), c.every_ms, c.target >> 20, c.total >> 20, c.age,
++        c.urgent_ms, c.gpu_ms, c.grant >> 20, c.extend_ms, wait_reclaim_max_ms.load(std::memory_order_relaxed),
++        eden_wait_reclaim_request != nullptr ? "linked" : "missing (heap trim and swap only)");
++    if (length > 0) Report(line);
++}
++
++void WaitReclaimLoop() {
++    if (::eden_crash_name_thread) ::eden_crash_name_thread("WaitReclaim");
++    const WaitReclaimConfig& c = wait_reclaim_config;
++    struct Totals {
++        unsigned long long rounds = 0, passes = 0, busy = 0, conditional = 0, behind = 0, failed = 0, unserved = 0,
++                           drain = 0, staging = 0, image_bytes = 0, images = 0, marked = 0, to_driver = 0, trim = 0,
++                           pack = 0, grants = 0;
++        void Add(const Totals& o) noexcept {
++            rounds += o.rounds; passes += o.passes; busy += o.busy; conditional += o.conditional; behind += o.behind;
++            failed += o.failed; unserved += o.unserved; drain += o.drain; staging += o.staging;
++            image_bytes += o.image_bytes; images += o.images; marked += o.marked; to_driver += o.to_driver;
++            trim += o.trim; pack += o.pack; grants += o.grants;
++        }
++    };
++    Totals session{}, stretch{};
++    bool in_stretch = false;
++    std::uint64_t stretch_start_ms = 0, last_totals_ms = 0, last_round_ms = 0, seq = 0;
++    unsigned heap_ticks = 0, lines = 0;
++    // The pass asked for and not answered yet (one at a time), and what its round did on this side.
++    bool pending = false, pending_noted = false, sync_noted = false, core_usable = eden_wait_reclaim_request != nullptr;
++    std::uint64_t pending_seq = 0, pending_since_ms = 0, pending_trim = 0, pending_pack = 0, pending_largest = 0,
++                  pending_slot = 0, pending_waited = 0;
++    // The last pass's outcome (2 busy, 3 conditional, 5 failed: it freed nothing, so the pack runs next round).
++    unsigned long long last_outcome = 0;
++    const char* pending_who = "?";
++    unsigned pending_cpu = 0, pending_gpu = 0, pending_heap = 0;
++    constexpr unsigned long long MiB = 1ull << 20;
++    const auto line_wanted = [&]() noexcept {
++        ++lines;
++        return lines <= 200 || lines % 20 == 0;
++    };
++    // The extension is granted on what can become a 2 MiB block, not on bytes freed anywhere: memory given back
++    // to the pool in whole blocks (VMA's device memory returned to the driver, the swap's packed slots) of GRANT
++    // or more, or the pool's largest free piece grown to at least one block during the round. Allocator use
++    // that only became slack inside 8 MiB VMA blocks, or heap pages trimmed here and there, extend nothing.
++    const auto grant = [&](std::uint64_t now, unsigned long long block_bytes, std::uint64_t largest_before,
++                           std::uint64_t largest_after) noexcept {
++        const bool progress = block_bytes >= c.grant ||
++                              (largest_after >= (2ull << 20) && largest_after > largest_before);
++        if (!progress || c.extend_ms == 0) return false;
++        const std::uint64_t until = now + c.extend_ms;
++        std::uint64_t held = reclaim_grant_until_ms.load(std::memory_order_relaxed);
++        while (held < until && !reclaim_grant_until_ms.compare_exchange_weak(held, until, std::memory_order_release,
++                                                                               std::memory_order_relaxed)) {
++        }
++        ++stretch.grants;
++        return true;
++    };
++    const auto totals_line = [&](const char* why, std::uint64_t now) noexcept {
++        char line[800];
++        const int length = std::snprintf(
++            line, sizeof(line),
++            "EDEN_UP_WAIT_RECLAIM totals (%s) t_ms=%llu stretch_ms=%llu rounds=%llu passes=%llu busy=%llu "
++            "conditional=%llu gpu_behind=%llu failed=%llu unserved=%llu freed_mib: drain=%llu (staging %llu) "
++            "images=%llu (%llu images, marked %llu) to_driver=%llu trim=%llu pack=%llu; grants=%llu; waits past "
++            "their limit=%llu, of them got a block=%llu; session: rounds=%llu passes=%llu freed_mib=%llu\n",
++            why, (unsigned long long)(now - fault_log_start_ms), (unsigned long long)(now - stretch_start_ms),
++            stretch.rounds, stretch.passes, stretch.busy, stretch.conditional, stretch.behind, stretch.failed,
++            stretch.unserved, stretch.drain / MiB, stretch.staging / MiB, stretch.image_bytes / MiB, stretch.images,
++            stretch.marked / MiB,
++            stretch.to_driver / MiB, stretch.trim / MiB, stretch.pack / MiB, stretch.grants,
++            (unsigned long long)reclaim_extended_waits.load(std::memory_order_relaxed),
++            (unsigned long long)reclaim_extended_won.load(std::memory_order_relaxed), session.rounds + stretch.rounds,
++            session.passes + stretch.passes,
++            (session.drain + session.image_bytes + session.trim + session.pack + stretch.drain + stretch.image_bytes +
++             stretch.trim + stretch.pack) / MiB);
++        if (length > 0) Report(line);
++    };
++    std::unique_lock lock{scanner_mutex};
++    while (!scanner_stop) {
++        scanner_wake.wait_for(lock, std::chrono::milliseconds(20), [] { return scanner_stop; });
++        if (scanner_stop) break;
++        lock.unlock();
++        const std::uint64_t now = MonotonicMs();
++        const unsigned cpu = reclaim_cpu_waiters.load(std::memory_order_acquire);
++        const unsigned gpu = reclaim_gpu_waiters.load(std::memory_order_acquire);
++        const unsigned heap = eden_heap_wanted != nullptr ? eden_heap_wanted() : 0;
++        heap_ticks = heap != 0 ? heap_ticks + 1 : 0;
++        const bool heap_waits = heap_ticks >= 3; // a heap request 40-60 ms old
++        // The pass asked for earlier: its result, or a note that it has not run.
++        if (pending && eden_wait_reclaim_stats != nullptr) {
++            unsigned long long v[13]{};
++            eden_wait_reclaim_stats(v, 13);
++            if (v[0] >= pending_seq) {
++                pending = false;
++                const char* outcome = v[1] == 1 ? "done" : v[1] == 2 ? "busy" : v[1] == 3 ? "conditional" : v[1] == 4 ? "gpu-behind" : v[1] == 5 ? "failed" : "?";
++                last_outcome = v[1];
++                ++stretch.passes;
++                stretch.busy += v[1] == 2 ? 1 : 0;
++                stretch.conditional += v[1] == 3 ? 1 : 0;
++                stretch.behind += v[1] == 4 ? 1 : 0;
++                stretch.failed += v[1] == 5 ? 1 : 0;
++                if (v[1] != 5) { // a failed pass published its outcome only
++                    stretch.drain += v[2];
++                    stretch.staging += v[3];
++                    stretch.image_bytes += v[4];
++                    stretch.images += v[5];
++                    stretch.marked += v[6];
++                    stretch.to_driver += v[7];
++                } else {
++                    v[2] = v[3] = v[4] = v[5] = v[6] = v[7] = v[8] = v[9] = v[10] = 0;
++                }
++                const unsigned long long freed = v[2] + v[4] + pending_trim + pending_pack;
++                const std::uint64_t largest_now = PoolLargest();
++                const bool granted = grant(now, v[7] + pending_pack, pending_largest, largest_now);
++                if (line_wanted()) {
++                    char line[700];
++                    const int length = std::snprintf(
++                        line, sizeof(line),
++                        "EDEN_UP_WAIT_RECLAIM pass %llu t_ms=%llu who=%s slot=%llu waited_ms=%llu waiters=%u/%u/%u "
++                        "outcome=%s drain_mib=%llu staging_mib=%llu images=%llu image_mib=%llu (marked %llu) "
++                        "to_driver_mib=%llu trim_mib=%llu pack_mib=%llu largest_mib=%llu->%llu (pass %llu->%llu) "
++                        "pass_ms=%llu answer_ms=%llu freed_mib=%llu grant=%d\n",
++                        (unsigned long long)pending_seq, (unsigned long long)(now - fault_log_start_ms), pending_who,
++                        (unsigned long long)pending_slot, (unsigned long long)pending_waited, pending_cpu, pending_gpu,
++                        pending_heap, outcome, v[2] / MiB, v[3] / MiB, v[5], v[4] / MiB, v[6] / MiB, v[7] / MiB,
++                        (unsigned long long)(pending_trim / MiB), (unsigned long long)(pending_pack / MiB),
++                        (unsigned long long)(pending_largest / MiB), (unsigned long long)(largest_now / MiB),
++                        v[8] / MiB, v[9] / MiB, v[10] / 1000,
++                        (unsigned long long)(now - pending_since_ms), freed / MiB, granted ? 1 : 0);
++                    if (length > 0) Report(line);
++                }
++            } else if (!pending_noted && now - pending_since_ms >= 2000) {
++                // Not run in 2 s: the GPU thread is busy elsewhere (a long list, a fence, its own fault). It
++                // stays asked; no second pass is queued behind it.
++                pending_noted = true;
++                ++stretch.unserved;
++                char line[200];
++                const int length = std::snprintf(line, sizeof(line),
++                                                 "EDEN_UP_WAIT_RECLAIM pass %llu not run after %llu ms (the GPU "
++                                                 "thread is busy); heap trims go on\n",
++                                                 (unsigned long long)pending_seq,
++                                                 (unsigned long long)(now - pending_since_ms));
++                if (length > 0) Report(line);
++            }
++        }
++        const bool any = cpu != 0 || gpu != 0 || heap_waits;
++        if (!any) {
++            if (in_stretch && !pending) {
++                totals_line("waiting over", now);
++                session.Add(stretch);
++                stretch = {};
++                in_stretch = false;
++                last_outcome = 0;
++            }
++            lock.lock();
++            continue;
++        }
++        if (!in_stretch) {
++            in_stretch = true;
++            stretch_start_ms = now;
++            last_totals_ms = now;
++        } else if (now - last_totals_ms >= 10'000) {
++            last_totals_ms = now;
++            totals_line("still waiting", now);
++        }
++        if (now - last_round_ms < c.every_ms) {
++            lock.lock();
++            continue;
++        }
++        last_round_ms = now;
++        ++stretch.rounds;
++        const std::uint64_t largest0 = PoolLargest();
++        // (d) the heap's empty spaces: needs no cache lock, so for every kind of waiter.
++        std::size_t trim = 0;
++        if (::eden_heap_trim_unheld != nullptr) trim = ::eden_heap_trim_unheld();
++        else if (::eden_heap_trim != nullptr) trim = ::eden_heap_trim();
++        stretch.trim += trim;
++        // The core pass serves the game's own waiters (not GPU threads, which hold the caches' locks inside their
++        // copy or are the thread that would run it; not heap waits, which come in normal play too and get the
++        // trim only). In synchronous GPU mode the core refuses (2) and the helper stops asking.
++        const bool servable = cpu != 0 && core_usable;
++        const char* const who = reclaim_who.load(std::memory_order_relaxed);
++        const std::uint64_t since = reclaim_who_since_ms.load(std::memory_order_relaxed);
++        const std::uint64_t waited_now = since != 0 && now > since ? now - since : 0;
++        // The swap's emergency pack of cold slots (swap_out_mutex by try_lock, locked slots passed over): needs
++        // no cache lock, so it runs whenever the pass cannot help this round: a GPU thread waits (its copy holds
++        // the caches' locks, so a pass would not run before it lost), the pass asked earlier is still out after a
++        // round, the last pass freed nothing (busy: a waiter holds a cache lock; conditional; failed), or there
++        // is no core pass. Not for heap waits alone, nor for game waiters while a pass can still serve them (a
++        // pack makes cold game slots fault again later).
++        const bool pass_stuck = pending && now - pending_since_ms >= c.every_ms;
++        const bool pass_useless = last_outcome == 2 || last_outcome == 3 || last_outcome == 5;
++        const bool want_pack = gpu != 0 || (cpu != 0 && (!servable || pass_stuck || pass_useless));
++        std::size_t pack = 0, slots = 0;
++        bool swap_busy = false;
++        if (want_pack) pack = EmergencyPackColdSlots(&slots, &swap_busy);
++        stretch.pack += pack;
++        if (servable && !pending) {
++            // EDEN_UP_WAIT_RECLAIM_TOTAL_MIB: images one stretch of waiting may delete in all; past it the pass
++            // still does the drain's releases.
++            const unsigned long long target =
++                stretch.marked >= c.total ? 0 : (std::min)(c.target, c.total - stretch.marked);
++            const unsigned flags = c.urgent_ms != 0 && waited_now >= c.urgent_ms ? 1u : 0u;
++            ++seq;
++            const int asked = eden_wait_reclaim_request(seq, target, c.age, c.gpu_ms, flags);
++            if (asked == 2) {
++                core_usable = false;
++                if (!sync_noted) {
++                    sync_noted = true;
++                    Report("EDEN_UP_WAIT_RECLAIM: synchronous GPU mode, no core pass (heap trim and swap pack only)\n");
++                }
++            } else if (asked == 1) {
++                pending = true;
++                pending_noted = false;
++                last_outcome = 0;
++                pending_seq = seq;
++                pending_since_ms = now;
++                pending_trim = trim;
++                pending_pack = pack;
++                pending_largest = largest0;
++                pending_who = who != nullptr ? who : "?";
++                pending_slot = reclaim_who_slot.load(std::memory_order_relaxed);
++                pending_waited = waited_now;
++                pending_cpu = cpu;
++                pending_gpu = gpu;
++                pending_heap = heap;
++                lock.lock();
++                continue;
++            }
++        }
++        const unsigned long long freed = trim + pack;
++        const std::uint64_t largest1 = PoolLargest();
++        const bool granted = grant(now, pack, largest0, largest1);
++        if ((freed != 0 || stretch.rounds == 1 || granted) && line_wanted()) {
++            char line[500];
++            const int length = std::snprintf(
++                line, sizeof(line),
++                "EDEN_UP_WAIT_RECLAIM round t_ms=%llu who=%s waited_ms=%llu waiters=%u/%u/%u gpu_pass=%s trim_mib=%llu "
++                "pack_mib=%llu (%zu slots%s) largest_mib=%llu->%llu freed_mib=%llu grant=%d\n",
++                (unsigned long long)(now - fault_log_start_ms), who != nullptr ? who : "heap",
++                (unsigned long long)waited_now, cpu, gpu, heap,
++                pending ? "still out" : cpu == 0 ? (gpu != 0 ? "none (GPU waiter)" : "none (heap wait)")
++                          : !core_usable ? "no core" : "not queued",
++                (unsigned long long)(trim / MiB), (unsigned long long)(pack / MiB), slots,
++                swap_busy ? ", swap busy" : "", (unsigned long long)(largest0 / MiB),
++                (unsigned long long)(largest1 / MiB), freed / MiB, granted ? 1 : 0);
++            if (length > 0) Report(line);
++        }
++        lock.lock();
++    }
++}
++#endif
++
+ // ---- T178b: a table slot's commit waits instead of ending the app (memory_pages.cpp CommitSparsePage) ----
+ //
+ // Where T177 called abort ("EDEN_SPARSE_TABLES commit failed: out of memory"), the commit now waits and tries
+@@ -3832,6 +4228,12 @@ bool TableCommitWait(SparseRange& range, std::size_t slot) noexcept {
+     unsigned tries = 0, trims = 0;
+     std::size_t given = 0;
+     constexpr unsigned TrimEveryTries = 25; // 500 ms at 20 ms a try
++    // T181a EDEN_UP_WAIT_RECLAIM (at wait_reclaim_on): the mark after AFTER_MS, and the limit stretched while a
++    // recent round freed memory. A GPU thread here (its own page table, under the texture cache's lock) is a
++    // GPU waiter: no pass is asked for it. Off: as before.
++    const bool reclaim = wait_reclaim_on.load(std::memory_order_relaxed);
++    const bool reclaim_gpu = reclaim && GpuThreadKind() != 0;
++    ReclaimMark mark;
+     for (;;) {
+         const std::uint64_t waited = MonotonicMs() - start_ms;
+         if (tries % TrimEveryTries == 0 && (::eden_heap_trim_unheld != nullptr || ::eden_heap_trim != nullptr)) {
+@@ -3856,10 +4258,12 @@ bool TableCommitWait(SparseRange& range, std::size_t slot) noexcept {
+             ok = true;
+             break;
+         }
+-        if (waited >= limit_ms) break;
++        const bool stretched = reclaim && mark.Tick(reclaim_gpu, reclaim_gpu ? "GPU-table" : "table", slot, start_ms);
++        if (waited >= limit_ms && !stretched) break;
+         const timespec pause{0, 20'000'000};
+         nanosleep(&pause, nullptr);
+     }
++    mark.Drop();
+     memory_waiters.fetch_sub(1, std::memory_order_acq_rel);
+     const std::uint64_t waited = MonotonicMs() - start_ms;
+     (ok ? c.won : c.lost).fetch_add(1, std::memory_order_relaxed);
+@@ -4835,6 +5239,7 @@ void ServiceStart(SparseRange& range) noexcept {
+     pack_not_worth.store(0, std::memory_order_relaxed);
+     ReadPackSwitches(); // EDEN_UP_PACK_* (the mode is final now)
+     ReadGpuReadSwitches(); // 0900 EDEN_UP_GPU_READ_THROUGH, EDEN_UP_FAULT_* (the swap file is open now)
++    ReadWaitReclaimSwitches(); // T181a EDEN_UP_WAIT_RECLAIM (off: one getenv; its thread only when on)
+     if (swap_mode.load(std::memory_order_relaxed) != 0) {
+         for (auto* counter : {&swap_counters.armed, &swap_counters.touched, &swap_counters.out, &swap_counters.in,
+                               &swap_counters.out_ns, &swap_counters.in_ns, &swap_counters.in_most_ns,
+@@ -4873,6 +5278,8 @@ void ServiceStop(SparseRange& range) noexcept {
+ #ifdef PS5_NATIVE
+     if (keeper.joinable()) keeper.join();
+     if (swapper.joinable()) swapper.join();
++    wait_reclaim_on.store(false, std::memory_order_relaxed); // T181a: waits from here on keep their own limits
++    if (wait_reclaimer.joinable()) wait_reclaimer.join();
+ #endif
+     StopStallProbe();
+     StopGpuRead(); // 0900: plain copies again before the slots change

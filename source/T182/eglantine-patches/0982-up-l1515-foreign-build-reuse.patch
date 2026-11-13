@@ -1,0 +1,45 @@
+From: EglantinePS5
+Subject: [PATCH] up: L1515 checker fix: a second building thread still reuses free query ids (EDEN_UP_L1515_QUERY_CHEAP only)
+
+Fix to 0980 (port of zortos293/Lichii #1515, 5b9012f, Zortos). Only with
+EDEN_UP_L1515_QUERY_CHEAP=1; unset, nothing here runs.
+
+0980's BuildQuery lets the first thread that builds a query own a lock-free list of free ids.
+Not in upstream: a build from another thread (counted as foreign_build) took a new slot each
+time. Reports are recorded by the thread that owns the Vulkan scheduler: when the GPU thread
+split stops and starts again mid-game (accuracy settings changed), its new back thread is such
+a thread, and every report it built from then on took a new slot while the freed ids piled up
+in spare_queries and were never taken again: memory grew with every report for the rest of the
+session. Now a foreign build takes the free ids under the lock, and (as before) every build
+after it, on any thread, takes the lock: the cost of T181, no growth.
+
+No file here is a translation id input and no name is added to TranslationSwitches: KEEPS THE STORE.
+---
+diff --git a/src/video_core/query_cache/query_stream.h b/src/video_core/query_cache/query_stream.h
+index f5911604b5..fc07db7649 100644
+--- a/src/video_core/query_cache/query_stream.h
++++ b/src/video_core/query_cache/query_stream.h
+@@ -179,8 +179,10 @@ protected:
+     /// taken from `reusable`, which only that thread touches, and moved there from
+     /// `spare_queries` in batches: one lock per batch instead of one per query (a report per draw
+     /// builds two). Oldest first, as they were freed. Should a second thread ever build (not
+-    /// expected; counted as foreign_build), it takes a new slot under the lock and from then on
+-    /// the first thread builds under the lock too.
++    /// expected while one thread runs; a split restarted mid-game has a new back thread; counted
++    /// as foreign_build), every build from then on, on any thread, takes the lock and still
++    /// reuses the free ids (T182a checker: a foreign build took a new slot each time and the
++    /// freed ids were never taken again, so slots and spare_queries grew without bound).
+     template <typename... Args>
+     size_t BuildQueryBatched(Args&&... args) {
+         const std::thread::id self = std::this_thread::get_id();
+@@ -194,9 +196,7 @@ protected:
+             std::scoped_lock lk(guard);
+             shared_builders.store(true, std::memory_order_release);
+             UpL1515::Add(UpL1515::Count::ForeignBuild);
+-            const size_t new_id = slot_queries.size();
+-            slot_queries.emplace_back(std::forward<Args>(args)...);
+-            return new_id;
++            return TakeReusable<true>(std::forward<Args>(args)...);
+         }
+         if (shared_builders.load(std::memory_order_acquire)) [[unlikely]] {
+             std::scoped_lock lk(guard);

@@ -1,0 +1,261 @@
+From: EglantinePS5
+Subject: [PATCH] up: L1521 uniform keep gaps closed (EDEN_UP_L1521_KEEP_GAPS), off by default
+
+Port of zortos293/Lichii PR #1521, commit 45d0fb6 (Zortos, with Lucas Borges; "close uniform keep
+gaps and copy only the fast-draw delta's ranges in use", from #1161). Ported by reading onto our
+EDEN_UP_L949_UBO_KEEP (Lichii #949 keeps, delta draws only; upstream's are #1441's).
+
+With EDEN_UP_L1521_KEEP_GAPS=1 (exact "1", read once; needs EDEN_UP_L949_UBO_KEEP=1, which needs
+EDEN_UP_FAST_DRAW=1):
+- Each submitted guest command list ends uniform keeps: on the split, a FastDrawNeutral deferred
+  call bumps Nx2FastDraw::g_keep_submits in order on the back (draw reuse itself goes on); without
+  the split it is bumped where the list is pushed. BeginGraphicsUniforms keeps nothing when the
+  count moved since the previous draw. Guest CPU writes before a submit go unseen on pages the
+  caches don't watch.
+- DMA copies from memory no GPU wrote, DMA clears and in-place inline uploads (InlineMemory) are
+  noted to the keeps (NoteUniformWrite); before, only a DMA copy with GPU data was.
+- The keep verifier (EDEN_UP_L949_UBO_KEEP_VERIFY) compares only ranges RebindKeptUniform would
+  bind again (KeptUniformMatches: same range, same command buffer).
+
+Not taken, and why: TakeDelta (copy only the ranges in use): our TakeReusableDraw already reads
+g_delta in place and copies only the device ranges for the keeps. The GPU memory compare
+(keep.gpu_memory): our keeps are only on delta draws, which TakeReusableDraw allows only with the
+same MemoryManager. The puller acquire notes: every acquire path of ours already ends draw reuse
+(Break(Fence), or EndFastDrawAtAcquire's deferred call), so no delta draw, and no keep, crosses
+one. The overflow -> no_uniform_keeps rename: done by 0559. Tests: not built here.
+
+Line (HW_GPU, the first 16 events, then powers of two): "EDEN_UP_L1521_KEEP_GAPS: keeps ended by
+a submitted list N, noted writes: DMA copies from memory no GPU wrote N, DMA clears N, inline
+uploads in place N; verify skipped N (kept so far N)".
+
+Effect: fewer uniform keeps (safer), never more. Off: one bool per submit list, DMA copy/clear,
+inline upload and keep-verify bind. Memory: none to speak of. Not in the kept-store stamp:
+buffer_cache*.h, uniform_stream_reuse.h, gpu_thread.cpp, nx2_fast_draw.h (KEEPS THE STORE).
+---
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index afc5abb74b..7eb72e2054 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -1582,6 +1582,12 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
+         if (should_sync) {
+             runtime.Finish();
+         }
++    } else if (Nx2FastDraw::L1521KeepGapsEnabled()) {
++        // EDEN_UP_L1521_KEEP_GAPS (Lichii #1521): from memory no GPU wrote, the copy lands in
++        // guest memory (below) all the same.
++        NoteUniformWrite(*cpu_dest_address, amount);
++        ++uniform_keep.gap_dma_copies;
++        ReportKeepGaps();
+     }
+ 
+     {
+@@ -1627,6 +1633,11 @@ bool BufferCache<P>::DMAClear(GPUVAddr dst_address, u64 amount, u32 value) {
+ 
+     ClearDownload(*cpu_dst_address, size);
+     gpu_modified_ranges.Subtract(*cpu_dst_address, size);
++    if (Nx2FastDraw::L1521KeepGapsEnabled()) {
++        NoteUniformWrite(*cpu_dst_address, size); // EDEN_UP_L1521_KEEP_GAPS (Lichii #1521)
++        ++uniform_keep.gap_dma_clears;
++        ReportKeepGaps();
++    }
+     Nx2BankHashForget(*cpu_dst_address, size); // EDEN_UP_BANK_HASH_SKIP; empty without it
+     if (fritchii_dma_list || VideoCommon::GpuSplit::L1094ListWords()) {
+         // The caller writes the cleared words to guest memory after this (WriteBlockUnsafe), as
+@@ -1837,13 +1848,25 @@ void BufferCache<P>::BeginGraphicsUniforms(const Nx2FastDraw::Delta* delta) {
+     UniformKeep& keep = uniform_keep;
+     const bool unwritten = !keep.memory_writes_lost && keep.draw_deletions == keep.deletions;
+     keep.draw_deletions = keep.deletions;
++    // EDEN_UP_L1521_KEEP_GAPS (zortos293/Lichii #1521, 45d0fb6): no keep across a submitted
++    // guest command list (Nx2FastDraw::g_keep_submits, bumped in order on this thread).
++    bool same_list = true;
++    if (Nx2FastDraw::L1521KeepGapsEnabled()) {
++        const u64 submits = Nx2FastDraw::g_keep_submits.load(std::memory_order_relaxed);
++        same_list = keep.submit_serial == submits;
++        keep.submit_serial = submits;
++        if (!same_list && delta != nullptr && unwritten && !delta->no_uniform_keeps) {
++            ++keep.gap_submit_ends;
++            ReportKeepGaps();
++        }
++    }
+     keep.candidates = {};
+     keep.writes.clear();
+     const std::array<u32, NUM_STAGES> streamed = std::exchange(keep.streamed, {});
+     // EDEN_UP_FRITCHII_BANKFLAG exists to catch guest CPU writes the caches were not told about
+     // yet: no keeps while it is on.
+     const bool usable = delta != nullptr && unwritten && !delta->no_uniform_keeps &&
+-                        !Core::BankFlagPages();
++                        same_list && !Core::BankFlagPages();
+     if (usable) {
+         keep.writes.insert(keep.writes.end(), keep.memory_writes.begin(),
+                            keep.memory_writes.end());
+@@ -1863,6 +1886,22 @@ void BufferCache<P>::BeginGraphicsUniforms(const Nx2FastDraw::Delta* delta) {
+     }
+ }
+ 
++template <class P>
++void BufferCache<P>::ReportKeepGaps() {
++    const UniformKeep& keep = uniform_keep;
++    const u64 events = keep.gap_submit_ends + keep.gap_dma_copies + keep.gap_dma_clears +
++                       keep.gap_inline + keep.gap_verify_skips;
++    if (events > 16 && (events & (events - 1)) != 0) {
++        return;
++    }
++    LOG_INFO(HW_GPU,
++             "EDEN_UP_L1521_KEEP_GAPS: keeps ended by a submitted list {}, noted writes: DMA "
++             "copies from memory no GPU wrote {}, DMA clears {}, inline uploads in place {}; "
++             "verify skipped {} (kept so far {})",
++             keep.gap_submit_ends, keep.gap_dma_copies, keep.gap_dma_clears, keep.gap_inline,
++             keep.gap_verify_skips, keep.kept);
++}
++
+ template <class P>
+ bool BufferCache<P>::UniformRangeKept(size_t stage, u32 index, DAddr device_addr,
+                                       u32 size) const noexcept {
+@@ -3203,7 +3242,15 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32
+     bool verify_kept = false;
+     if constexpr (!IS_OPENGL && VideoCommon::StreamUniformReusable<Runtime>) {
+         if (Nx2FastDraw::UboKeepEnabled() && UniformRangeKept(stage, index, device_addr, size)) {
+-            if (Nx2FastDraw::UboKeepVerify()) {
++            // EDEN_UP_L1521_KEEP_GAPS (Lichii #1521): the verifier compares only the ranges
++            // RebindKeptUniform would bind again; the others stream as before.
++            const bool rebindable = !Nx2FastDraw::L1521KeepGapsEnabled() ||
++                                    VideoCommon::KeptUniformMatches(runtime, stage, index,
++                                                                    device_addr, size);
++            if (Nx2FastDraw::UboKeepVerify() && !rebindable) {
++                ++uniform_keep.gap_verify_skips;
++                ReportKeepGaps();
++            } else if (Nx2FastDraw::UboKeepVerify()) {
+                 ++uniform_keep.verified;
+                 verify_kept = true;
+                 if (!VideoCommon::KeptUniformHolds<Runtime>(device_memory, stage, index,
+@@ -5550,6 +5597,11 @@ bool BufferCache<P>::InlineMemory(DAddr dest_address, size_t copy_size,
+         return false;
+     }
+ 
++    if (Nx2FastDraw::L1521KeepGapsEnabled()) {
++        NoteUniformWrite(dest_address, copy_size); // EDEN_UP_L1521_KEEP_GAPS (Lichii #1521)
++        ++uniform_keep.gap_inline;
++        ReportKeepGaps();
++    }
+     return InlineMemoryImplementation(dest_address, copy_size, inlined_buffer);
+ }
+ 
+diff --git a/src/video_core/buffer_cache/buffer_cache_base.h b/src/video_core/buffer_cache/buffer_cache_base.h
+index 2302045b3b..21f0c22003 100644
+--- a/src/video_core/buffer_cache/buffer_cache_base.h
++++ b/src/video_core/buffer_cache/buffer_cache_base.h
+@@ -1080,6 +1080,8 @@ private:
+         }
+         keep.memory_writes.emplace_back(device_addr, device_addr + size);
+     }
++    /// EDEN_UP_L1521_KEEP_GAPS: the count line (first 16 events, then powers of two).
++    void ReportKeepGaps();
+     struct UniformKeep {
+         std::array<u32, NUM_STAGES> candidates{}; ///< Streamed by the previous draw, not rebound
+         std::array<u32, NUM_STAGES> streamed{};   ///< Streamed by this draw
+@@ -1091,6 +1093,14 @@ private:
+         bool memory_writes_lost{}; ///< More writes than memory_writes holds
+         u64 deletions{};           ///< Buffers deleted (DeleteBuffer, the inline index buffer)
+         u64 draw_deletions{};      ///< deletions when the previous draw began
++        /// EDEN_UP_L1521_KEEP_GAPS: Nx2FastDraw::g_keep_submits when the previous draw began, and
++        /// what the switch did (logged at the first 16 events, then at powers of two).
++        u64 submit_serial{};
++        u64 gap_submit_ends{};   ///< draws that would have kept, after a submitted list
++        u64 gap_dma_copies{};    ///< DMA copies from memory no GPU wrote, noted
++        u64 gap_dma_clears{};    ///< DMA clears noted
++        u64 gap_inline{};        ///< in-place inline uploads noted
++        u64 gap_verify_skips{};  ///< verify skipped: RebindKeptUniform would not bind it again
+         u64 kept{};
+         u64 streamed_binds{};
+         u64 verified{};
+diff --git a/src/video_core/buffer_cache/uniform_stream_reuse.h b/src/video_core/buffer_cache/uniform_stream_reuse.h
+index 52d9761bb5..9742e1a071 100644
+--- a/src/video_core/buffer_cache/uniform_stream_reuse.h
++++ b/src/video_core/buffer_cache/uniform_stream_reuse.h
+@@ -329,6 +329,23 @@ template <class Runtime, class DeviceMemory>
+     return true;
+ }
+ 
++/// EDEN_UP_L1521_KEEP_GAPS (zortos293/Lichii #1521, 45d0fb6): whether RebindKeptUniform binds the
++/// slot's last allocation again for this range: the slot's last bind read the same range in the
++/// command buffer that is current now.
++template <class Runtime>
++[[nodiscard]] bool KeptUniformMatches(Runtime& runtime, size_t stage, u32 index, u64 device_addr,
++                                      u32 size) {
++    using Reuse = UniformStreamReuse<typename Runtime::StreamUniformRef>;
++    if (size == 0 || size > Reuse::MaxBytes || stage >= Reuse::NumStages ||
++        index >= Reuse::NumSlots) {
++        return false;
++    }
++    const typename Reuse::Slot& slot =
++        UniformStreamReuseState<typename Runtime::StreamUniformRef>().slots[stage][index];
++    return slot.size == size && slot.device_addr == device_addr &&
++           slot.tick == runtime.CurrentTick();
++}
++
+ /// EDEN_UP_L949_UBO_KEEP (zortos293/Lichii #949, 6b38851501): binds the slot's last allocation
+ /// again without reading guest memory, when BindSmallUniformReusing made it for the same range in
+ /// this command buffer. The caller guarantees that nothing ordered before this draw wrote the
+diff --git a/src/video_core/gpu_thread.cpp b/src/video_core/gpu_thread.cpp
+index 72093f29bd..0d186f8442 100644
+--- a/src/video_core/gpu_thread.cpp
++++ b/src/video_core/gpu_thread.cpp
+@@ -22,6 +22,7 @@
+ #include "video_core/gpu.h"
+ #include "video_core/gpu_thread.h"
+ #include "video_core/gpu_split.h"
++#include "video_core/nx2_fast_draw.h"
+ #include "video_core/nx2_profile.h"
+ #include "video_core/host1x/host1x.h"
+ #include "video_core/renderer_base.h"
+@@ -185,6 +186,13 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
+                 auto* const rasterizer_ptr = renderer.ReadRasterizer();
+                 if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
+                     Profile::Scope scope{Profile::Zone::Push};
++                    // EDEN_UP_L1521_KEEP_GAPS (Lichii #1521): the guest may have written pages the
++                    // caches don't watch since the lists before it: uniform keeps end here, in
++                    // order on the back. Neutral: draw reuse itself goes on.
++                    if (VideoCommon::Nx2FastDraw::L1521KeepGapsEnabled()) {
++                        split.Defer([] { VideoCommon::Nx2FastDraw::NoteKeepSubmit(); },
++                                    VideoCommon::GpuSplit::FastDrawNeutral);
++                    }
+                     // Ahead of anything the list queues.
+                     if (system.GPU().HeldWritesOn()) {
+                         split.Defer([gpu = &system.GPU()] { gpu->ApplyHeldWritesBeforeList(); });
+@@ -225,6 +233,9 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
+             }
+             if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
+                 Profile::Scope scope{Profile::Zone::Push};
++                if (VideoCommon::Nx2FastDraw::L1521KeepGapsEnabled()) {
++                    VideoCommon::Nx2FastDraw::NoteKeepSubmit(); // EDEN_UP_L1521_KEEP_GAPS
++                }
+                 system.GPU().ApplyHeldWritesBeforeList();
+                 scheduler.Push(system.GPU(), submit_list->channel, std::move(submit_list->entries));
+             } else if (std::holds_alternative<GPUTickCommand>(next.data)) {
+diff --git a/src/video_core/nx2_fast_draw.h b/src/video_core/nx2_fast_draw.h
+index a8596061ec..747d38f9d4 100644
+--- a/src/video_core/nx2_fast_draw.h
++++ b/src/video_core/nx2_fast_draw.h
+@@ -150,6 +150,22 @@ inline constexpr std::array<const char*, static_cast<size_t>(Reason::Count)> rea
+     static const bool verify = UboKeepEnabled() && Common::PeSwitch("EDEN_UP_L949_UBO_KEEP_VERIFY");
+     return verify;
+ }
++/// EDEN_UP_L1521_KEEP_GAPS=1 (exact "1") with EDEN_UP_L949_UBO_KEEP=1, read once (zortos293/Lichii
++/// #1521, 45d0fb6, Zortos; from #1161): closes gaps in uniform keeps. Each guest command list
++/// submitted ends them, in order on the split's back (a FastDrawNeutral deferred call; the guest's
++/// CPU writes before a submit go unseen on pages the caches don't watch); DMA copies (also from
++/// memory no GPU wrote), DMA clears and in-place inline uploads are noted as writes to the keeps;
++/// the keep verifier compares only ranges RebindKeptUniform would bind again.
++[[nodiscard]] inline bool L1521KeepGapsEnabled() {
++    static const bool enabled = UboKeepEnabled() && Common::PeSwitch("EDEN_UP_L1521_KEEP_GAPS");
++    return enabled;
++}
++/// EDEN_UP_L1521_KEEP_GAPS: bumped once per guest command list, on the thread that runs the
++/// draws (in order); BufferCache::BeginGraphicsUniforms keeps nothing across a change.
++inline std::atomic<u64> g_keep_submits{0};
++inline void NoteKeepSubmit() {
++    g_keep_submits.fetch_add(1, std::memory_order_relaxed);
++}
+ /// EDEN_UP_L949_DESC_REPLAY=1 with EDEN_UP_FAST_DRAW=1 (zortos293/Lichii #949, ee98215f14): delta
+ /// draws copy the image descriptor entries and rescaling words the capturing resolve pushed
+ /// instead of looking up every view and sampler again (GraphicsPipeline::ConfigureDelta). Read

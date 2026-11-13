@@ -1,0 +1,27 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_L1436_ENGINE_TRACKED count line counts only pages a CPU mark would untrack
+
+Checker fix to 1008 (port of zortos293/Lichii #1436, 6cd99d2e15, Zortos, from Lucas Borges'
+#1161). The "pages P stayed tracked" figure counted every tracked page of each engine write,
+also pages an earlier engine write had already marked CPU-modified; the old mark would have
+untracked those at that earlier write, so nothing more is saved by the later one. Now only pages
+that are tracked and not yet CPU-modified count, so P is the protection changes saved (each
+with its undo at the next upload). Count only: no change to what is marked or tracked.
+Unset: as T181. KEEPS THE STORE (word_manager.h is not a translation id input).
+---
+diff --git a/src/video_core/buffer_cache/word_manager.h b/src/video_core/buffer_cache/word_manager.h
+index 4576b6dc29..67c44d3819 100644
+--- a/src/video_core/buffer_cache/word_manager.h
++++ b/src/video_core/buffer_cache/word_manager.h
+@@ -271,7 +271,10 @@ struct WordManager {
+             if (hot_pages) {
+                 hot_state->clean[index] &= ~mask;
+             }
+-            kept += static_cast<u64>(std::popcount(~untracked_words[index] & mask));
++            // Only pages a CPU mark would untrack now: tracked and not yet CPU-modified (a page
++            // an earlier engine write left marked would have been untracked by that write already).
++            kept += static_cast<u64>(
++                std::popcount(~untracked_words[index] & ~cpu_words[index] & mask));
+             cpu_words[index] |= mask;
+             cached_words[index] &= ~mask;
+         });

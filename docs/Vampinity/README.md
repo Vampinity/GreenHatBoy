@@ -4,9 +4,9 @@ What I built, what each switch does and what my tests found. Read this before yo
 
 | File | What is in it |
 |---|---|
-| [BUILDS.md](BUILDS.md) | Every test build, newest first: what it added, what it was built on, how it tested. T14 to T134. |
+| [BUILDS.md](BUILDS.md) | Every test build, newest first: what it added, what it was built on, how it tested. T14 to T183. |
 | [SWITCHES.md](SWITCHES.md) | Every `EDEN_...` switch, one row each: patch, default, first build that has it, values in my play settings, how many runs used it, and the latest verdict. |
-| [findings/](findings/) | One note per finding from the last days (9 to 12 Nov). Each starts with two lines: what was found, and what follows from it. |
+| [findings/](findings/) | One note per finding from the last days (9 to 13 Nov). Each starts with two lines: what was found, and what follows from it. |
 
 ## How to search
 
@@ -21,26 +21,17 @@ Search by the switch name, the patch number or the build number. Plain words wor
 
 If the switch or the idea is already here, build on it. If it is new, claim it first in the pinned "Who is working on what" thread in Discussions.
 
-## Being worked on now (12 Nov 2026, evening)
+## Being worked on now (14 Nov 2026, early morning)
 
-- **The very first start on a fresh install.** Five settings-only rounds on T134 (v7 to v11) settled it:
-  - From the second start on, the house door is solved: 16 of 16 warm starts reached the village, with `EDEN_NX2_PIPELINE_WORKERS=2` (one group had `=1`).
-  - A true first start (empty caches) reached the village 4 of 9 times with the best settings, none with memory to spare. The deaths are mostly at the house door, most of them a `std::bad_alloc` on the file-service thread (about 0.9 MB asked, where the size was logged).
-  - The cause is the wave at a cold door: about 40 new pipelines are built there at once and the heap grows by 0.4-0.8 GiB within ~2 s. `EDEN_UP_NEW_WAIT_MS=2000`, `EDEN_UP_HEAP_RESCUE=1` and the two `EDEN_UP_IR_FREE` lines did not stop it: 2 of 4 first starts with all of them on.
-  - Notes: [fresh-install-v7](findings/fresh-install-v7-2026-11-12.md), [fresh-install-v8](findings/fresh-install-v8-2026-11-12.md), [fresh-install-v10](findings/fresh-install-v10-2026-11-12.md). Rounds v9 and v11 have no note of their own: v9 lost both first starts with the wait and the rescue on (the wait fired for an 871,571-byte file-service request, waited its 2000 ms and gave up), and v11 lost both first starts with v10's first group's settings.
-- **A first fix, turned down in review, not built.** A byte budget for pipeline builds in flight (`EDEN_UP_BUILD_BUDGET_MIB`). With two builders it can only mean one build at a time, and one builder was already measured cold on 12 Nov: door waves of +640 and +608 MiB, against +544 and +448 MiB with two. So fewer builds at once does not shrink the wave.
-- **Next: a measuring build.** One log line per window at the door that names the thread whose requests made the heap grow (the existing per-thread growth counter, printed with thread names). The wave is 450 to 810 MiB in heap pieces while live bytes rise only 26 to 66 MiB, so the owner is not known yet; it may sit outside the builder threads.
-- **T135, written, not built.** It hands back whole heap spaces that hold only idle arenas (`EDEN_UP_ARENA_SPACES=1`, off by default). Two reviews put its net gain before the door at about -100 to +130 MiB, against a wave of ~800 MiB, so it is a measurement build at most, not the fix.
-- **Planned for a coming build, unchanged since the morning:**
-  - waveydude's fixes from his branch `w11-two-frame-guard` (the ones that apply to our tree; credited to him),
-  - the title-movie settings as code defaults: 8 decoder threads and a frame delay of 4 ([title-movie-test](findings/title-movie-test-2026-11-12.md)),
-  - the first-start settings that got 6 of 6 starts past the black screen ([fresh-install-v6](findings/fresh-install-v6-2026-11-12.md)).
+- **The load from the field into the next area.** Played by hand on 13 Nov every start crashed, the last three at this load. In scripted starts (handheld, 1x) most starts now get through, the more so with the lines that pack idle game memory sooner. Both deaths on T179 were the same kind: a thread waited 10 s for one 2 MiB block while no frame was drawn, so nothing freed memory. T181 adds `EDEN_UP_WAIT_RECLAIM=1` for that: 3 of 3 through with it, 2 of 3 with v3.9 alone in the same round. Not played by hand yet. Counts per build in [BUILDS.md](BUILDS.md) and the 13 November entry of the [changelog](../../CHANGELOG.md).
+- **The area after the field runs at about 15 fps** (T180, handheld, 1x). The graphics work there takes about 41 ms a frame, against 17 to 19 in the field. T183 adds `EDEN_UP_GFX_SCALE_TIER` (the game draws its own 3D smaller when asked) and the Lichii draw ports of T182 and T183, all off by default and not run yet.
+- **The house door on a first start:** the cause was one graphics driver compile. With `EDEN_NX2_RADV_COPY_PROP_FREE=1` it takes 78 to 89 MB instead of up to 909 MB, and 2 of 2 scripted first starts got through into the village (T144, docked, 1x, [door-compile-fix-t144](findings/door-compile-fix-t144-2026-11-13.md)).
 
 If you want to take one of these parts, say so in the thread first.
 
 ## Notes on these files
 
-- They are copies of my local notes from 12 Nov, with local paths and private details taken out. Images, videos and raw logs are not included; the run logs that are public are in `runs/`.
+- They are copies of my local notes from 9 to 13 Nov, with local paths and private details taken out. Images, videos and raw logs are not included; the run logs that are public are in `runs/`.
 - Paths in the notes (`queue-t132a.json`, `env-play-v27-fast-docked.txt`, folder names like `auto-20261112-...`) point to my machine. They are there so the notes stay exact, not because the files are in this repo.
 - "READ" in a note means seen in a log, a frame or the source. "INFERRED" means reasoning. Most notes were checked twice; where the second check corrected the first, the corrections are listed in the note.
 - One run is no verdict. Where a note gives a result from one or two runs, it says so.

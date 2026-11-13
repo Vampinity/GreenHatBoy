@@ -1,0 +1,520 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_L1585_STATE_BLOCKS (zortos293/Lichii #1585, off unless set)
+
+Port of zortos293/Lichii #1585 (19ae2d1ebfb972d3011772d81b481e7309fed516, Zortos, co-author
+capy-ai; after Damfortx's state blocks 76548f0bf1 and stephenjayakar's StateDelta #641/#717):
+"send the split front's 3D state writes to the back as register blocks". Upstream's reason: the
+back replayed each changed 3D state register as its own ring entry (decode, method sink, shadow
+RAM, same-value check, deferred draw check, fast draw check, both dirty tables); in a Mario Kart
+World sample that was about 2.3 ms a frame on the back (PC). Not measured on the PS5.
+
+Against this tree: the ring already gathers plain state writes into one Regs entry with
+EDEN_PE_REG_BLOCKS=1 (ProsperoEden, off in play), but the back still sinks and processes them one
+by one (as Damfortx's version, which upstream found cut entries without cutting back time). What
+this adds is the part that saves back work: the front works out the dirty flags (OR of both
+tables) and the last write that ends EDEN_UP_FAST_DRAW reuse, and the back stores the block at
+once.
+
+What (EDEN_UP_L1585_STATE_BLOCKS=1, only on top of the front's same-value skip):
+- Front (Maxwell3D::FrontWrite): a state write it sends (not in execution_mask, not a register a
+  back-run macro may own under EDEN_UP_L1056_BACK_MACROS, not in shadow RAM replay), from the
+  pushbuffer or a macro, goes into an open State entry in the ring (GpuSplit::StateWrite; the
+  open-entry mechanics of the Regs entry: at most 64 writes, closed before any other entry, a
+  publish or a drain). Entry: head (count, last breaking method), 4 words of dirty flags, then
+  method|value per write, in order.
+- Back (Maxwell3D::WriteStateRegisters): consumes the method sink, then stores the registers
+  (and the shadow RAM when tracked), sets the flags and breaks fast draw reuse once, when every
+  write changes its register, no deferred instanced draw is pending, no macro runs on the back,
+  no replay, and the write history, first-write trace and EDEN_NX2_GPU_PROFILE are off; else a
+  CallMethod of each write, as a direct write.
+- Ordering: a state write that used to wait in the back's method sink until the next executable
+  method now applies at its place in the stream (as a macro's direct write did, and as
+  EDEN_PE_REG_BLOCKS does). Upstream's NoteAnyWrite for blocks that may issue a deferred draw is
+  not needed here: this tree's front notes no draw as a guest memory writer.
+- EDEN_UP_L1585_STATE_BLOCKS_VERIFY=1 (upstream's EDEN_NX2_REG_BLOCK_VERIFY with both follow-up
+  fixes): each block also runs write by write from the same state, that result stays, and
+  registers, shadow RAM, dirty flags and the fast draw break are compared; an error line per
+  differing block (first 16) and a "EDEN_UP_L1585_STATE_BLOCKS_VERIFY" line every 10 s.
+- Count line every 10 s on the back: "EDEN_UP_L1585_STATE_BLOCKS in N s: ... blocks of ... writes
+  stored at once, ... one by one".
+Memory: none (the entries live in the existing 8 MiB ring; a State entry reserves 69 words).
+Not ported: upstream's unit test; EDEN_NX2_PERF_VERIFY / fast_maxwell3d conditions (not in this
+tree). With EDEN_UP_FAST_DRAW's chain diagnostics a block counts one register break where the
+writes one by one counted one per write (counts only). Read in source; not run.
+
+Unset: nothing here runs (FrontState::state_blocks false). No file here is a translation id input
+and no name is added to TranslationSwitches: KEEPS THE STORE.
+
+---
+diff --git a/src/video_core/engines/maxwell_3d.cpp b/src/video_core/engines/maxwell_3d.cpp
+index 2afbbd4c72..ecd33a8333 100644
+--- a/src/video_core/engines/maxwell_3d.cpp
++++ b/src/video_core/engines/maxwell_3d.cpp
+@@ -9,14 +9,18 @@
+ #include <algorithm>
+ #include <array>
+ #include <atomic>
++#include <bit>
+ #include <bitset>
+ #include <chrono>
+ #include <cstdlib>
+ #include <cstring>
+ #include <limits>
+ #include <optional>
++#include <string>
+ #include <string_view>
+ #include <unordered_map>
++#include <vector>
++#include <fmt/format.h>
+ #include "common/assert.h"
+ #include "common/bit_util.h"
+ #include "common/scope_exit.h"
+@@ -932,6 +936,203 @@ void Maxwell3D::TraceFirstMethodWrite(u32 method, u32 argument) {
+ 
+ // Lichii PR 184 (commit 4a0bc9a007, with bfc3eb523d for the page limit): macros write constant
+ // buffers a word at a time, and each word walked the GPU page table on its own.
++void Maxwell3D::WriteStateRegisters(Core::System& system, std::span<const u64, 4> flags,
++                                    std::span<const u64> writes, u32 last_break) {
++    // EDEN_UP_L1585_STATE_BLOCKS (zortos293/Lichii #1585, 19ae2d1, Zortos; after Damfortx's
++    // 76548f0bf1 and stephenjayakar's #641/#717). Ported onto this tree's split: CallMethod's
++    // state register branch here is ProcessShadowRam, the same-value skip and WriteDirtyRegister
++    // (deferred draw, fast draw break, store, both dirty tables); the conditions below are where
++    // that is all CallMethod would do.
++    ConsumeSink(system);
++    // The front sends only writes that change its copy of the register, which is the back's but
++    // for registers the back changes itself: each normally changes the register here too.
++    const auto control = shadow_state.shadow_ram_control;
++    bool changes = one_call_plain && executing_macro == 0 && SkipSameValueWrites() &&
++                   !VideoCommon::Nx2Profile::Enabled() &&
++                   control != Regs::ShadowRamControl::Replay && !draw_manager.HasDeferredDraw();
++    for (size_t i = 0; changes && i < writes.size(); ++i) {
++        changes = regs.reg_array[static_cast<u32>(writes[i])] != static_cast<u32>(writes[i] >> 32);
++    }
++    static const bool verify = [] {
++        const char* const value = std::getenv("EDEN_UP_L1585_STATE_BLOCKS_VERIFY");
++        return value != nullptr && value[0] == '1';
++    }();
++    if (verify) [[unlikely]] {
++        VerifyStateRegisters(system, flags, writes, last_break, changes);
++        CountStateBlock(changes, writes.size());
++        return;
++    }
++    if (!changes) {
++        for (const u64 write : writes) {
++            CallMethod(system, static_cast<u32>(write), static_cast<u32>(write >> 32), true);
++        }
++        CountStateBlock(false, writes.size());
++        return;
++    }
++    StoreStateRegisters(flags, writes);
++    if (last_break != NoBreak && VideoCommon::Nx2FastDraw::Enabled()) {
++        VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Register, last_break);
++    }
++    CountStateBlock(true, writes.size());
++}
++
++void Maxwell3D::StoreStateRegisters(std::span<const u64, 4> flags, std::span<const u64> writes) {
++    const auto control = shadow_state.shadow_ram_control;
++    const bool tracked = control == Regs::ShadowRamControl::Track ||
++                         control == Regs::ShadowRamControl::TrackWithFilter;
++    for (const u64 write : writes) {
++        const u32 method = static_cast<u32>(write);
++        const u32 value = static_cast<u32>(write >> 32);
++        regs.reg_array[method] = value;
++        if (tracked) {
++            shadow_state.reg_array[method] = value;
++        }
++    }
++    for (size_t word = 0; word < flags.size(); ++word) {
++        for (u64 bits = flags[word]; bits != 0; bits &= bits - 1) {
++            dirty.flags[word * 64 + static_cast<size_t>(std::countr_zero(bits))] = true;
++        }
++    }
++}
++
++void Maxwell3D::CountStateBlock(bool stored, size_t writes) {
++    // Back thread only.
++    static u64 blocks_stored{};
++    static u64 writes_stored{};
++    static u64 blocks_single{};
++    static u64 writes_single{};
++    static auto last_report = std::chrono::steady_clock::now();
++    if (stored) {
++        ++blocks_stored;
++        writes_stored += writes;
++    } else {
++        ++blocks_single;
++        writes_single += writes;
++    }
++    if (((blocks_stored + blocks_single) & 0x3ff) != 0) {
++        return;
++    }
++    const auto now = std::chrono::steady_clock::now();
++    const double seconds = std::chrono::duration<double>(now - last_report).count();
++    if (seconds < 10.0) {
++        return;
++    }
++    last_report = now;
++    LOG_INFO(HW_GPU,
++             "EDEN_UP_L1585_STATE_BLOCKS in {:.1f} s: {} state blocks of {} writes stored at once, "
++             "{} blocks of {} writes one by one (a write kept its register, a deferred draw, "
++             "replay, or a diagnostic on)",
++             seconds, blocks_stored, writes_stored, blocks_single, writes_single);
++    blocks_stored = writes_stored = blocks_single = writes_single = 0;
++}
++
++void Maxwell3D::VerifyStateRegisters(Core::System& system, std::span<const u64, 4> flags,
++                                     std::span<const u64> writes, u32 last_break, bool changes) {
++    // EDEN_UP_L1585_STATE_BLOCKS_VERIFY (upstream's EDEN_NX2_REG_BLOCK_VERIFY, with its two
++    // follow-ups: only this thread's fast draw breaks are judged; the mark is a register break of
++    // no register). The block's stores and flags, then (from the same state) each write as
++    // CallMethod, which stays.
++    namespace FastDraw = VideoCommon::Nx2FastDraw;
++    static u64 blocks{};
++    static u64 block_writes{};
++    static u64 by_write{};
++    static u64 differences{};
++    static u64 total_differences{};
++    static u64 hidden_breaks{};
++    static auto last_report = std::chrono::steady_clock::now();
++    const auto one_by_one = [&] {
++        for (const u64 write : writes) {
++            CallMethod(system, static_cast<u32>(write), static_cast<u32>(write >> 32), true);
++        }
++    };
++    const auto method_at = [&writes](size_t i) { return static_cast<u32>(writes[i]); };
++    if (!changes) {
++        ++by_write;
++        one_by_one();
++    } else {
++        ++blocks;
++        block_writes += writes.size();
++        std::vector<u32> before(writes.size() * 2);
++        for (size_t i = 0; i < writes.size(); ++i) {
++            before[i * 2] = regs.reg_array[method_at(i)];
++            before[i * 2 + 1] = shadow_state.reg_array[method_at(i)];
++        }
++        const DirtyState::Flags flags_before = dirty.flags;
++        StoreStateRegisters(flags, writes);
++        std::vector<u32> stored(writes.size() * 2);
++        for (size_t i = 0; i < writes.size(); ++i) {
++            stored[i * 2] = regs.reg_array[method_at(i)];
++            stored[i * 2 + 1] = shadow_state.reg_array[method_at(i)];
++        }
++        const DirtyState::Flags stored_flags = dirty.flags;
++        for (size_t i = writes.size(); i-- > 0;) {
++            regs.reg_array[method_at(i)] = before[i * 2];
++            shadow_state.reg_array[method_at(i)] = before[i * 2 + 1];
++        }
++        dirty.flags = flags_before;
++        constexpr u32 unset = static_cast<u32>(FastDraw::Reason::Register) | 0xffffff00u;
++        const u32 previous = FastDraw::g_last_break.exchange(unset, std::memory_order_relaxed);
++        one_by_one();
++        u32 last = unset;
++        FastDraw::g_last_break.compare_exchange_strong(last, previous, std::memory_order_relaxed);
++        const bool expected_break = last_break != NoBreak && FastDraw::Enabled();
++        const u32 expected_last =
++            static_cast<u32>(FastDraw::Reason::Register) | (expected_break ? last_break << 8 : 0);
++        const bool own_break = (last & 0xff) == static_cast<u32>(FastDraw::Reason::Register);
++        if (last != unset && !own_break) {
++            ++hidden_breaks;
++        }
++        const bool break_differs =
++            last == unset ? expected_break : own_break && last != expected_last;
++        std::string register_differences;
++        for (size_t i = 0; i < writes.size(); ++i) {
++            const u32 method = method_at(i);
++            if (stored[i * 2] != regs.reg_array[method] ||
++                stored[i * 2 + 1] != shadow_state.reg_array[method]) {
++                register_differences += fmt::format(" {:#x}={:#x}/{:#x} (one by one {:#x}/{:#x})",
++                                                    method, stored[i * 2], stored[i * 2 + 1],
++                                                    regs.reg_array[method],
++                                                    shadow_state.reg_array[method]);
++            }
++        }
++        const DirtyState::Flags flag_differences = stored_flags ^ dirty.flags;
++        if (!register_differences.empty() || flag_differences.any() || break_differs) {
++            ++differences;
++            if (++total_differences <= 16) {
++                std::string flag_list;
++                for (size_t i = 0; i < flag_differences.size(); ++i) {
++                    if (flag_differences[i]) {
++                        flag_list += fmt::format(" {}={}", i, stored_flags[i] ? 1 : 0);
++                    }
++                }
++                LOG_ERROR(HW_GPU,
++                          "EDEN_UP_L1585_STATE_BLOCKS_VERIFY: a block of {} writes differs from "
++                          "them one by one: registers (block/shadow){}, block dirty flags{}, fast "
++                          "draw break {} {:#x} against {} {:#x}",
++                          writes.size(), register_differences, flag_list, expected_break ? 1 : 0,
++                          expected_last, last != unset ? 1 : 0, last != unset ? last : 0);
++            }
++        }
++    }
++    const auto now = std::chrono::steady_clock::now();
++    const double seconds = std::chrono::duration<double>(now - last_report).count();
++    if (seconds < 10.0) {
++        return;
++    }
++    last_report = now;
++    LOG_INFO(HW_GPU,
++             "EDEN_UP_L1585_STATE_BLOCKS_VERIFY in {:.1f} s: {} blocks of {} writes compared with "
++             "the writes one by one, {} differ ({} in all, must stay 0), {} breaks not judged as "
++             "another thread's break came last; {} blocks written one by one",
++             seconds, blocks, block_writes, differences, total_differences, hidden_breaks,
++             by_write);
++    blocks = 0;
++    block_writes = 0;
++    by_write = 0;
++    differences = 0;
++    hidden_breaks = 0;
++}
++
+ void Maxwell3D::CallConstBufferWords(Core::System& system, const u32* methods, const u32* arguments,
+                                      u32 count) {
+     const u32 offset = regs.const_buffer.offset;
+@@ -1638,6 +1839,10 @@ struct Maxwell3D::FrontState {
+     /// belong to.
+     u64 read_ahead_generation{~u64{0}};
+     bool skip_same{}; ///< SkipSameValueWrites() && FrontSkipSame(), read once
++    /// EDEN_UP_L1585_STATE_BLOCKS=1 (zortos293/Lichii #1585), only on top of skip_same (the back
++    /// relies on every write it gets changing the front's copy): state writes go to the back as
++    /// State entries (GpuSplit::StateWrite). Read once with skip_same.
++    bool state_blocks{};
+     /// EDEN_UP_LOOP_SKIP=1 (zortos293/Lichii #178 + #488), read once with skip_same: the front
+     /// does not send the instance loop writes the back ignores (FrontSkipsLoopWrite). With it
+     /// off nothing below is read or written.
+@@ -1965,6 +2170,7 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
+         std::memcpy(front->shadow.data(), shadow_state.reg_array.data(), sizeof(front->shadow));
+         front->control = shadow_state.shadow_ram_control;
+         front->skip_same = SkipSameValueWrites() && FrontSkipSame();
++        front->state_blocks = front->skip_same && VideoCommon::GpuSplit::StateBlocksSwitch();
+         if (FrontLoopSkip()) [[unlikely]] {
+             // EDEN_UP_LOOP_SKIP: only on top of the same-value skip (#178 needs it).
+             front->loop_skip = front->skip_same;
+@@ -2024,7 +2230,10 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
+     // ran may have written is the front's again, and its write is sent even if the front's copies
+     // hold the value (FrontTakeOver; back_owned is never set with the switch off).
+     u32 value = argument;
+-    bool shadow_kept = !(fs.back_owned[method] && FrontTakeOver(split, fs, method));
++    // EDEN_UP_L1585_STATE_BLOCKS: a register a macro the back ran may have written keeps its own
++    // entry (as before FrontTakeOver gives it back to the front).
++    const bool back_owned = fs.back_owned[method];
++    bool shadow_kept = !(back_owned && FrontTakeOver(split, fs, method));
+     bool payload_release = false;
+     bool report_write = false;
+     if (fs.control == Regs::ShadowRamControl::Track ||
+@@ -2149,7 +2358,14 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
+     // entry. Only a plain Method entry of a state register leaves one there; a Regs or CbData
+     // block, a direct (macro) write and an executable method consume the sink when they run.
+     bool sink_left = false;
+-    if (!execution_mask[method] && split.RegBlocks()) {
++    if (fs.state_blocks && !execution_mask[method] && !back_owned &&
++        fs.control != Regs::ShadowRamControl::Replay) {
++        // EDEN_UP_L1585_STATE_BLOCKS (zortos293/Lichii #1585, 19ae2d1): sent with the state
++        // writes around it, dirty flags and the fast draw check worked out here. The back
++        // consumes its method sink first, so nothing is left in it.
++        split.StateWrite(this, method, value, {dirty.tables[0][method], dirty.tables[1][method]},
++                         !IsFastDrawParameter(method));
++    } else if (!execution_mask[method] && split.RegBlocks()) {
+         split.PlainWrite(this, method, argument);
+     } else if (method >= cb_data_first && method < cb_data_first + 16 && split.RegBlocks()) {
+         split.CbDataWrite(this, method, argument);
+diff --git a/src/video_core/engines/maxwell_3d.h b/src/video_core/engines/maxwell_3d.h
+index 2e1c6961d9..a41a207330 100644
+--- a/src/video_core/engines/maxwell_3d.h
++++ b/src/video_core/engines/maxwell_3d.h
+@@ -3217,6 +3217,19 @@ public:
+     void CallConstBufferWords(Core::System& system, const u32* methods, const u32* arguments,
+                               u32 count);
+ 
++    /// EDEN_UP_L1585_STATE_BLOCKS: no write of a state block ends fast draw reuse.
++    static constexpr u32 NoBreak = ~0U;
++    /// EDEN_UP_L1585_STATE_BLOCKS (zortos293/Lichii #1585, 19ae2d1), GpuSplit's back: state
++    /// register writes the front sent as one entry (GpuSplit::StateWrite), each
++    /// `method | value << 32`, in order. `flags`: the dirty flags they set, a bit each;
++    /// `last_break`: the last of them whose change ends fast draw reuse. As a CallMethod of each
++    /// when every write changes its register: the stores, then the flags and one break; else
++    /// (and with the write history, first-write trace or profile on, a macro running here, shadow
++    /// RAM replay or a deferred instanced draw) a CallMethod of each.
++    /// EDEN_UP_L1585_STATE_BLOCKS_VERIFY=1 also runs them one by one and compares.
++    void WriteStateRegisters(Core::System& system, std::span<const u64, 4> flags,
++                             std::span<const u64> writes, u32 last_break);
++
+     /// EDEN_UP_INSTANCE_RUNS=1 (repeat_draw_begin; zortos293/Lichii PR #1597): GpuSplit's back,
+     /// right after CallMethod ran one draw.begin of a run of identical entries: `count` more of
+     /// them, as as many CallMethod calls would run them. Only an instance loop's subsequent
+@@ -3480,6 +3493,14 @@ private:
+     /// EDEN_UP_REG_WRITE_ONE_CALL. All of it belongs to the thread that runs CallMethod and the
+     /// method sink: the split's back, or the one GPU thread without the split.
+     bool one_call_plain{};      ///< No write history and no first-write trace (constructor)
++    /// EDEN_UP_L1585_STATE_BLOCKS: WriteStateRegisters' stores and flags.
++    void StoreStateRegisters(std::span<const u64, 4> flags, std::span<const u64> writes);
++    /// EDEN_UP_L1585_STATE_BLOCKS_VERIFY: StoreStateRegisters against a CallMethod of each write.
++    void VerifyStateRegisters(Core::System& system, std::span<const u64, 4> flags,
++                              std::span<const u64> writes, u32 last_break, bool changes);
++    /// EDEN_UP_L1585_STATE_BLOCKS: blocks and writes stored at once or one by one (back thread),
++    /// for the line every 10 s.
++    void CountStateBlock(bool stored, size_t writes);
+     bool one_call_verify{};     ///< EDEN_UP_REG_WRITE_ONE_CALL_VERIFY=1, read in the constructor
+     bool one_call_short{};      ///< one_call_plain && !one_call_verify: one load on the hot path
+     bool one_call_verifying{};  ///< VerifyOneCall is running CallMethod's full path
+diff --git a/src/video_core/gpu_split.cpp b/src/video_core/gpu_split.cpp
+index 62b4f71df4..b57b42535c 100644
+--- a/src/video_core/gpu_split.cpp
++++ b/src/video_core/gpu_split.cpp
+@@ -238,6 +238,8 @@ void GpuSplit::Stop() {
+     ring.reset();
+     regs_entry = nullptr;
+     regs_count = 0;
++    state_break = 0;
++    state_breaks = false;
+     write_position = 0;
+     last_writer_position = 0;
+     dma_writer_at = dma_unranged_at = ~u64{0};
+@@ -341,6 +343,19 @@ void GpuSplit::Publish() {
+     }
+ }
+ 
++bool GpuSplit::StateBlocksSwitch() {
++    static const bool enabled = [] {
++        const char* const value = std::getenv("EDEN_UP_L1585_STATE_BLOCKS");
++        const bool on = value != nullptr && value[0] == '1';
++        if (on) {
++            LOG_INFO(HW_GPU, "EDEN_UP_L1585_STATE_BLOCKS=1: the split front sends changed 3D "
++                             "state register writes as State entries the back stores at once");
++        }
++        return on;
++    }();
++    return enabled;
++}
++
+ bool GpuSplit::PendingReleasesSwitch() {
+     if (!Common::PeSwitch("EDEN_PE_PENDING_RELEASES")) {
+         return false;
+@@ -1094,6 +1109,20 @@ size_t GpuSplit::Execute(const u64* entry, size_t words) {
+         engine->ConsumeSink(*system);
+         return 1 + count;
+     }
++    case Kind::State: {
++        // EDEN_UP_L1585_STATE_BLOCKS (zortos293/Lichii #1585): only the 3D engine sends these.
++        const u32 count = static_cast<u32>((head >> 8) & 0xff);
++        using Tegra::Engines::Maxwell3D;
++        const u32 last_break = (head & HasBreak) != 0 ? static_cast<u32>((head >> 16) & 0xffff)
++                                                      : Maxwell3D::NoBreak;
++        Nx2Profile::Scope method_scope{Nx2Profile::Zone::Method};
++        static_cast<Maxwell3D*>(back_engine)
++            ->WriteStateRegisters(*system,
++                                  std::span<const u64, StateFlagWords>{entry + 1, StateFlagWords},
++                                  std::span<const u64>{entry + 1 + StateFlagWords, count},
++                                  last_break);
++        return 1 + StateFlagWords + count;
++    }
+     case Kind::CbData: {
+         const u32 count = static_cast<u32>((head >> 8) & 0xff);
+         auto* const engine = back_engine;
+@@ -1165,6 +1194,8 @@ size_t GpuSplit::EntryWords(const u64* entry, size_t words) const {
+     case Kind::Regs:
+     case Kind::CbData:
+         return 1 + static_cast<size_t>((head >> 8) & 0xff);
++    case Kind::State:
++        return 1 + StateFlagWords + static_cast<size_t>((head >> 8) & 0xff);
+     case Kind::Call:
+         return 2 + static_cast<size_t>((head >> 8) & 0xffffff);
+     }
+diff --git a/src/video_core/gpu_split.h b/src/video_core/gpu_split.h
+index 9ee1bd8977..0cd272d562 100644
+--- a/src/video_core/gpu_split.h
++++ b/src/video_core/gpu_split.h
+@@ -261,6 +261,42 @@ public:
+     void CbDataWrite(Tegra::Engines::EngineInterface* engine, u32 method, u32 argument) {
+         BlockWrite(Kind::CbData, engine, method, argument);
+     }
++    /// EDEN_UP_L1585_STATE_BLOCKS=1 (zortos293/Lichii #1585, 19ae2d1, Zortos; after Damfortx's
++    /// state blocks 76548f0bf1 and stephenjayakar's StateDelta #641/#717): read once.
++    [[nodiscard]] static bool StateBlocksSwitch();
++    /// EDEN_UP_L1585_STATE_BLOCKS: a Maxwell3D state register write (not in execution_mask) from
++    /// the front, shadow RAM applied (not in replay) and sent because it changes the front's copy
++    /// (or its shadow entry). Writes in a row go to the back as one State entry, closed before any
++    /// other entry, publish or wait (as the Regs entry); the back stores them and sets their
++    /// dirty flags at once (Maxwell3D::WriteStateRegisters). `flags`: the dirty flags the register
++    /// sets (both tables); `breaks`: changing it ends EDEN_UP_FAST_DRAW reuse.
++    void StateWrite(Tegra::Engines::EngineInterface* engine, u32 method, u32 value,
++                    std::array<u8, 2> flags, bool breaks) {
++        SelectEngine(engine);
++        if (regs_entry != nullptr && regs_kind != Kind::State) {
++            CloseRegs();
++        }
++        if (regs_entry == nullptr) {
++            regs_entry = Reserve(1 + StateFlagWords + MaxRegs);
++            regs_kind = Kind::State;
++            for (size_t i = 0; i < StateFlagWords; ++i) {
++                regs_entry[1 + i] = 0;
++            }
++            state_breaks = false;
++            state_break = 0;
++        }
++        regs_entry[1 + StateFlagWords + regs_count] = (u64{value} << 32) | method;
++        for (const u8 flag : flags) {
++            regs_entry[1 + flag / 64] |= u64{1} << (flag % 64);
++        }
++        if (breaks) {
++            state_break = method;
++            state_breaks = true;
++        }
++        if (++regs_count == MaxRegs) {
++            CloseRegs();
++        }
++    }
+     /// A write made by a macro: CallMethod without the method sink, as the engines' macros do.
+     void MacroWrite(Tegra::Engines::EngineInterface* engine, u32 method, u32 argument) {
+         SelectEngine(engine);
+@@ -933,10 +969,16 @@ private:
+         Call,   ///< Bits 8-31 payload size in words; word 1 thunk, then the payload
+         Regs,   ///< Bits 8-15 count; then per word method (low 32 bits) and argument (high 32)
+         CbData, ///< As Regs, all constant-buffer data writes of the 3D engine
++        /// EDEN_UP_L1585_STATE_BLOCKS: bits 8-15 count, 16-31 the last method that ends fast
++        /// draw reuse (flag HasBreak); words 1-4 the dirty flags; then per write method (low 32
++        /// bits) and value (high 32), in order (StateWrite)
++        State,
+     };
+     static constexpr u64 IsLast = 1 << 4;
+     static constexpr u64 HasSegment = 1 << 5;
+     static constexpr u64 Direct = 1 << 6; ///< Method: call it even if not executable (macros)
++    static constexpr u64 HasBreak = 1 << 4; ///< State: a write ends fast draw reuse
++    static constexpr size_t StateFlagWords = 4; ///< State: 256 dirty flags
+ 
+     static constexpr size_t RingWords = size_t{1} << 20; // 8 MiB
+     static constexpr size_t RingMask = RingWords - 1;
+@@ -977,11 +1019,18 @@ private:
+         if (regs_entry == nullptr) {
+             return;
+         }
+-        regs_entry[0] = static_cast<u64>(regs_kind) | (u64{regs_count} << 8);
+-        regs_entry = nullptr;
+         const u32 count = regs_count;
++        size_t words = 1 + count;
++        if (regs_kind == Kind::State) {
++            regs_entry[0] = static_cast<u64>(Kind::State) | (state_breaks ? HasBreak : 0) |
++                            (u64{count} << 8) | (u64{state_break & 0xffff} << 16);
++            words += StateFlagWords;
++        } else {
++            regs_entry[0] = static_cast<u64>(regs_kind) | (u64{count} << 8);
++        }
++        regs_entry = nullptr;
+         regs_count = 0;
+-        Commit(1 + count);
++        Commit(words);
+     }
+     /// Room for an entry of `words` at the write position (never across the ring's end).
+     u64* Reserve(size_t words) {
+@@ -1089,6 +1138,9 @@ private:
+     /// The open Regs entry (reserved, not committed) and the writes in it.
+     u64* regs_entry{};
+     u32 regs_count{};
++    /// EDEN_UP_L1585_STATE_BLOCKS: the open State entry's last write that ends fast draw reuse.
++    u32 state_break{};
++    bool state_breaks{};
+     Kind regs_kind{Kind::Regs};
+     enum class FrontWriteKind : u8 { Exact, Add, Max, Unknown };
+     struct FrontWrite {

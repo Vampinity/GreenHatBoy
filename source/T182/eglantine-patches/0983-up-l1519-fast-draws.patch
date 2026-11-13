@@ -1,0 +1,360 @@
+From: EglantinePS5
+Subject: [PATCH] up: L1519 fast draws, handle words checked on one translation of their span (EDEN_UP_L1519_FAST_DRAWS), off by default
+
+Port of zortos293/Lichii PR #1519, commit 65745c2 (Zortos, "fast draws for computed texture
+handles, handle words and dynamic vertex input", from #1161). Ported by reading, onto our
+EDEN_UP_L1161_DRAW (0559), which already carries most of it from #1161 itself.
+
+Already in T181 with EDEN_UP_FAST_DRAW=1 + EDEN_UP_L1161_DRAW=1 (not ported again): delta draws for
+pipelines with computed texture handles (GraphicsPipeline::ComputedHandlesChanged under both cache
+locks), handle data compared word by word, secondary words included, vertex attribute formats as
+draw parameters with dynamic vertex input (IsL1161VertexFormat + the attribute type check), a full
+range list widened instead of ending reuse (AppendConservativeRange, no uniform keeps then), and
+verify counting only draws that held.
+
+New here, with EDEN_UP_L1519_FAST_DRAWS=1 (exact "1", read once; needs EDEN_UP_FAST_DRAW=1 and acts
+only while EDEN_UP_L1161_DRAW is on):
+- TakeReusableDraw translates a handle buffer only over the bytes its handle words span
+  (HandleRange), not the whole constant buffer, and compares the words on that one translation
+  (Delta::ReachesWords: by device address when the span maps to one run of device memory, else
+  any device write into the span counts). L1161 alone translated each word again, through one
+  shared DeviceSpans, whenever a write reached the buffer.
+- Words are sorted and merged per slot (MergedHandleWords) when the pipeline's word table is built.
+- A write that reaches the span only between handle words keeps the delta draw but no uniform
+  keeps (taken_delta.no_uniform_keeps), as upstream.
+- With EDEN_NX2_NULL_POINTER_HANDLE on, texture words that are a storage buffer's address are left
+  out of the merged words (ConfigureImpl binds no texture for them then). Upstream leaves them out
+  always; ours reads them as handles without that switch, so they stay in.
+- DeviceSpans records whether its range maps linearly (always computed in Update; read only here).
+
+Not taken: FixedPipelineState::DynamicAttributeTypes (fixed_pipeline_state.* is a translation id
+input; ours already has the function from an earlier patch), the pipeline cache's
+g_dynamic_vertex_input (ours has g_vertex_formats_dynamic), the Reason::DeltaOverflow removal
+(kept for the switch-off path), tests (src/tests not built here).
+
+Line (Render_Vulkan, the first 16 checks a write reached, then powers of two):
+"EDEN_UP_L1519_FAST_DRAWS: handle buffers checked over their words' span N, a write reached the
+span N (not one device run N), reached a handle word N (full draw), only between the words N
+(delta kept, no uniform keeps), merged words compared N, slots with no word left N".
+
+Off: one bool per TakeReusableDraw that reaches the handle loop with L1161 on; DeviceSpans::Update
+sets two fields more. Memory: per pipeline built with L1161 on, the merged word list and a
+5x18 range table (about 0.7 KiB). Not in the kept-store stamp: nx2_fast_draw.*, vk_rasterizer.*,
+vk_graphics_pipeline.* (KEEPS THE STORE).
+---
+diff --git a/src/video_core/nx2_fast_draw.cpp b/src/video_core/nx2_fast_draw.cpp
+index 5fdfd7cc95..be698c35ab 100644
+--- a/src/video_core/nx2_fast_draw.cpp
++++ b/src/video_core/nx2_fast_draw.cpp
+@@ -18,7 +18,12 @@ void DeviceSpans::Update(const Tegra::MemoryManager& memory_, GPUVAddr address_,
+     size = size_;
+     map_serial = serial;
+     spans.clear();
+-    for (const auto& [device, bytes] : memory_.GetSubmappedDeviceRange(address_, size_)) {
++    const auto submapped = memory_.GetSubmappedDeviceRange(address_, size_);
++    // EDEN_UP_L1519_FAST_DRAWS (Lichii #1519): segments come in GPU order, joined where device
++    // memory continues; one segment of the whole size maps linearly. Only ReachesWords reads it.
++    linear = submapped.size() == 1 && submapped[0].second == size_;
++    linear_base = linear ? submapped[0].first : 0;
++    for (const auto& [device, bytes] : submapped) {
+         spans.emplace_back(device, device + bytes);
+     }
+     std::ranges::sort(spans);
+diff --git a/src/video_core/nx2_fast_draw.h b/src/video_core/nx2_fast_draw.h
+index 6481f78db9..a8596061ec 100644
+--- a/src/video_core/nx2_fast_draw.h
++++ b/src/video_core/nx2_fast_draw.h
+@@ -122,6 +122,19 @@ inline constexpr std::array<const char*, static_cast<size_t>(Reason::Count)> rea
+     return Common::LiveSwitch::Peek<Common::LiveSwitch::Id::L1161Draw>() != 0;
+ }
+ 
++/// EDEN_UP_L1519_FAST_DRAWS=1 (exact "1") with EDEN_UP_FAST_DRAW=1, read once (zortos293/Lichii
++/// #1519, 65745c2, Zortos; from #1161): when EDEN_UP_L1161_DRAW's handle check runs, a handle
++/// buffer is translated only over the bytes its handle words span (not the whole constant
++/// buffer), and the words are compared on that one translation (Delta::ReachesWords) instead of
++/// translating each word again. A write that reaches the buffer only between its handles keeps
++/// the delta draw but no uniforms. With EDEN_NX2_NULL_POINTER_HANDLE on, the words read as a
++/// storage buffer address (never a texture then) are left out of the words. Does nothing
++/// without EDEN_UP_L1161_DRAW.
++[[nodiscard]] inline bool L1519FastDrawsEnabled() {
++    static const bool enabled = Enabled() && Common::PeSwitch("EDEN_UP_L1519_FAST_DRAWS");
++    return enabled;
++}
++
+ /// EDEN_UP_L949_UBO_KEEP=1 with EDEN_UP_FAST_DRAW=1 (zortos293/Lichii #949: 6b38851501 and
+ /// 3e86407514, zortos293): a delta draw binds a small streamed uniform buffer from the stream
+ /// allocation the previous draw made for the same stage, slot, address and size in the same
+@@ -207,11 +220,25 @@ public:
+     /// Whether [begin, end) of device memory overlaps the range's.
+     [[nodiscard]] bool Intersects(DAddr begin, DAddr end) const;
+ 
++    /// EDEN_UP_L1519_FAST_DRAWS (Lichii #1519): the GPU address the range starts at, and whether
++    /// it maps to one run of device memory in GPU order, starting at LinearBase.
++    [[nodiscard]] GPUVAddr Address() const noexcept {
++        return address;
++    }
++    [[nodiscard]] bool IsLinear() const noexcept {
++        return linear;
++    }
++    [[nodiscard]] DAddr LinearBase() const noexcept {
++        return linear_base;
++    }
++
+ private:
+     const Tegra::MemoryManager* memory{};
+     GPUVAddr address{};
+     u64 size{};
+     u64 map_serial{};
++    bool linear{};
++    DAddr linear_base{};
+     std::vector<std::pair<DAddr, DAddr>> spans; ///< Sorted, disjoint [begin, end) pairs
+ };
+ 
+@@ -264,6 +291,39 @@ struct Delta {
+         }
+         return false;
+     }
++
++    /// EDEN_UP_L1519_FAST_DRAWS (zortos293/Lichii #1519, 65745c2): Reaches for only the bytes
++    /// [base + first, base + second) of each of `words` (sorted byte offsets of one constant
++    /// buffer at `base`), all inside the range `spans` was updated with. Device writes are
++    /// compared word by word when that range maps linearly, else with the whole range (true when
++    /// one reaches it anywhere: conservative).
++    template <typename Words>
++    [[nodiscard]] bool ReachesWords(GPUVAddr base, const Words& words,
++                                    const DeviceSpans& spans) const {
++        for (u32 write = 0; write < num_writes; ++write) {
++            for (const auto& [first, second] : words) {
++                if (write_begin[write] < base + second && base + first < write_end[write]) {
++                    return true;
++                }
++            }
++        }
++        for (u32 write = 0; write < num_device_writes; ++write) {
++            if (!spans.Intersects(device_begin[write], device_end[write])) {
++                continue;
++            }
++            if (!spans.IsLinear()) {
++                return true;
++            }
++            for (const auto& [first, second] : words) {
++                const DAddr begin = spans.LinearBase() + (base + first - spans.Address());
++                const DAddr end = begin + (second - first);
++                if (device_begin[write] < end && begin < device_end[write]) {
++                    return true;
++                }
++            }
++        }
++        return false;
++    }
+ };
+ 
+ inline Delta g_delta;
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+index 7643e5f3bc..a876f4fb14 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -1113,27 +1113,59 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
+ 
+ void GraphicsPipeline::BuildHandleWords() {
+     handle_words = std::make_unique<HandleWordTable>();
++    // EDEN_UP_L1519_FAST_DRAWS (Lichii #1519): a texture element whose word is a storage buffer
++    // address binds no texture with EDEN_NX2_NULL_POINTER_HANDLE (ConfigureImpl), so a write to
++    // it changes nothing a full resolve gives. Left out of `merged` only, and only then.
++    const bool null_pointer_handles = VideoCommon::NullPointerHandlesEnabled();
+     {
+         for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
++            const auto& info = stage_infos[stage];
+             const auto add = [&](const auto& desc) {
+                 if (desc.handle_program != ~0U) return;
+-                const auto range = [&](u32 slot, u32 offset) {
++                const auto range = [&](u32 slot, u32 offset, bool primary) {
+                     precise_handle_buffers[stage] |= 1U << slot;
+                     for (u32 i = 0; i < desc.count; ++i) {
+                         const u32 first = offset + (i << desc.size_shift);
+                         handle_words->words[stage][slot].emplace_back(first, first + 4);
++                        if constexpr (std::is_same_v<std::remove_cvref_t<decltype(desc)>,
++                                                     Shader::TextureDescriptor>) {
++                            if (primary && null_pointer_handles &&
++                                VideoCommon::HandleIsStoragePointer(info, desc, i)) {
++                                continue;
++                            }
++                        }
++                        handle_words->merged[stage][slot].emplace_back(first, first + 4);
+                     }
+                 };
+-                range(desc.cbuf_index, desc.cbuf_offset);
++                range(desc.cbuf_index, desc.cbuf_offset, true);
+                 if constexpr (requires { desc.has_secondary; }) {
+-                    if (desc.has_secondary) range(desc.secondary_cbuf_index, desc.secondary_cbuf_offset);
++                    if (desc.has_secondary) {
++                        range(desc.secondary_cbuf_index, desc.secondary_cbuf_offset, false);
++                    }
+                 }
+             };
+-            const auto& info = stage_infos[stage];
+             for (const auto& desc : info.texture_buffer_descriptors) add(desc);
+             for (const auto& desc : info.image_buffer_descriptors) add(desc);
+             for (const auto& desc : info.texture_descriptors) add(desc);
+             for (const auto& desc : info.image_descriptors) add(desc);
++            // EDEN_UP_L1519_FAST_DRAWS: sorted, overlapping or touching words joined, and the
++            // span they cover (upstream's handle_words / handle_ranges).
++            for (u32 slot = 0; slot < Maxwell::MaxConstBuffers; ++slot) {
++                auto& list = handle_words->merged[stage][slot];
++                std::ranges::sort(list);
++                size_t joined = 0;
++                for (const auto& word : list) {
++                    if (joined != 0 && word.first <= list[joined - 1].second) {
++                        list[joined - 1].second = (std::max)(list[joined - 1].second, word.second);
++                    } else {
++                        list[joined++] = word;
++                    }
++                }
++                list.resize(joined);
++                if (!list.empty()) {
++                    handle_words->ranges[stage][slot] = {list.front().first, list.back().second};
++                }
++            }
+         }
+     }
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
+index 22914769bd..3590cb29b7 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
+@@ -274,6 +274,16 @@ public:
+     [[nodiscard]] std::span<const std::pair<u32, u32>> HandleWords(size_t stage, u32 slot) const {
+         return handle_words->words[stage][slot];
+     }
++    /// EDEN_UP_L1519_FAST_DRAWS (zortos293/Lichii #1519, 65745c2): the bytes [first, second) of
++    /// a PreciseHandleBuffers slot that handles are read from (first == second: none), and the
++    /// same bytes word by word, sorted and merged. Only after BuildHandleWords.
++    [[nodiscard]] std::pair<u32, u32> HandleRange(size_t stage, u32 slot) const {
++        return handle_words->ranges[stage][slot];
++    }
++    [[nodiscard]] std::span<const std::pair<u32, u32>> MergedHandleWords(size_t stage,
++                                                                         u32 slot) const {
++        return handle_words->merged[stage][slot];
++    }
+ 
+     /// EDEN_UP_FAST_DRAW: resolves and binds every buffer as Configure does (storage buffer
+     /// addresses are read from the constant buffers again) and records the draw's descriptors
+@@ -380,6 +390,15 @@ private:
+                               Tegra::Engines::Maxwell3D::Regs::MaxConstBuffers>,
+                    NUM_STAGES>
+             words;
++        /// EDEN_UP_L1519_FAST_DRAWS: `words` sorted and merged (with EDEN_NX2_NULL_POINTER_HANDLE,
++        /// without the storage pointer words), and the span of each slot's merged words.
++        std::array<std::array<std::vector<std::pair<u32, u32>>,
++                              Tegra::Engines::Maxwell3D::Regs::MaxConstBuffers>,
++                   NUM_STAGES>
++            merged;
++        std::array<std::array<std::pair<u32, u32>, Tegra::Engines::Maxwell3D::Regs::MaxConstBuffers>,
++                   NUM_STAGES>
++            ranges{};
+     };
+     bool handle_words_ready{};
+     std::array<u32, NUM_STAGES> precise_handle_buffers{};
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 31bcdc309a..1e655c7e1d 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -482,6 +482,10 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
+     }
+     const auto& handles = l1161 ? draw.pipeline->PreciseHandleBuffers()
+                                : draw.pipeline->HandleConstantBuffers();
++    // EDEN_UP_L1519_FAST_DRAWS (zortos293/Lichii #1519, 65745c2): refines EDEN_UP_L1161_DRAW's
++    // check; read once, nothing without both.
++    const bool l1519 = l1161 && FastDraw::L1519FastDrawsEnabled();
++    bool l1519_no_keeps = false;
+     for (size_t stage = 0; stage < handles.size() && !delta.Empty(); ++stage) {
+         if ((delta.binds[stage] & handles[stage]) != 0) {
+             return full(FullDraw::HandleBind);
+@@ -497,6 +501,33 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
+             }
+             const auto& cbuf = cbufs[slot];
+             FastDraw::DeviceSpans& spans = handle_spans[stage][slot];
++            if (l1519) {
++                // Only the bytes the handles are read from: draws write their own data next to
++                // them. One translation, the words compared on it (Delta::ReachesWords).
++                const auto [begin, end] = draw.pipeline->HandleRange(stage, slot);
++                if (begin == end) {
++                    ++l1519_stats.skipped_empty;
++                    continue;
++                }
++                ++l1519_stats.checked;
++                spans.Update(*gpu_memory, cbuf.address + begin, end - begin);
++                if (!delta.Reaches(cbuf.address + begin, end - begin, spans)) {
++                    continue;
++                }
++                const auto words = draw.pipeline->MergedHandleWords(stage, slot);
++                ++l1519_stats.reached;
++                l1519_stats.words_compared += words.size();
++                l1519_stats.not_linear += spans.IsLinear() ? 0 : 1;
++                const bool hit = delta.ReachesWords(cbuf.address, words, spans);
++                ++(hit ? l1519_stats.word_hits : l1519_stats.between);
++                ReportL1519();
++                if (hit) {
++                    return full(FullDraw::HandleData);
++                }
++                // Upstream: as when such writes ended draw reuse, the draw keeps no uniforms.
++                l1519_no_keeps = true;
++                continue;
++            }
+             spans.Update(*gpu_memory, cbuf.address, cbuf.size);
+             if (!delta.Reaches(cbuf.address, cbuf.size, spans)) {
+                 continue; // nothing written reaches the buffer: as without the switch
+@@ -520,7 +551,7 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
+     if (FastDraw::UboKeepEnabled()) {
+         // EDEN_UP_L949_UBO_KEEP (Lichii #949): what BeginGraphicsUniforms reads, before the delta
+         // is emptied on the way out (only the binds and the device ranges).
+-        taken_delta.no_uniform_keeps = delta.no_uniform_keeps;
++        taken_delta.no_uniform_keeps = delta.no_uniform_keeps || l1519_no_keeps;
+         taken_delta.binds = delta.binds;
+         taken_delta.num_device_writes = delta.num_device_writes;
+         std::copy_n(delta.device_begin.begin(), delta.num_device_writes,
+@@ -531,6 +562,21 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
+     return draw.pipeline;
+ }
+ 
++void RasterizerVulkan::ReportL1519() {
++    // EDEN_UP_L1519_FAST_DRAWS: the first 16 reached checks, then each power of two.
++    const L1519Stats& stats = l1519_stats;
++    if (stats.reached > 16 && (stats.reached & (stats.reached - 1)) != 0) {
++        return;
++    }
++    LOG_INFO(Render_Vulkan,
++             "EDEN_UP_L1519_FAST_DRAWS: handle buffers checked over their words' span {}, a write "
++             "reached the span {} (not one device run {}), reached a handle word {} (full draw), "
++             "only between the words {} (delta kept, no uniform keeps), merged words compared {}, "
++             "slots with no word left {}",
++             stats.checked, stats.reached, stats.not_linear, stats.word_hits, stats.between,
++             stats.words_compared, stats.skipped_empty);
++}
++
+ bool RasterizerVulkan::DeltaStillHolds(u64 serial, u64 map_serial) {
+     // Lichii #921 (1c25fbdfb4): TakeReusableDraw ran before the caches were locked, while other
+     // threads could still write, unmap or delete what the delta draw keeps.
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.h b/src/video_core/renderer_vulkan/vk_rasterizer.h
+index fc1db90a32..e924da2ba1 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.h
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.h
+@@ -403,6 +403,18 @@ private:
+     /// EDEN_UP_L1161_DRAW: one handle word's device memory, translated only when a write
+     /// reached its buffer.
+     VideoCommon::Nx2FastDraw::DeviceSpans handle_word_spans;
++    /// EDEN_UP_L1519_FAST_DRAWS (Lichii #1519): what its handle check did, counted on the back
++    /// and logged at the first 16 checks that a write reached, then at powers of two.
++    struct L1519Stats {
++        u64 checked{};       ///< handle buffers checked over their handle words' span
++        u64 reached{};       ///< a write reached that span
++        u64 word_hits{};     ///< ...and a handle word: full draw (handle data written)
++        u64 between{};       ///< ...only between the words: delta draw kept, no uniform keeps
++        u64 not_linear{};    ///< reached spans that map to more than one run of device memory
++        u64 words_compared{}; ///< merged words compared (EDEN_UP_L1161_DRAW alone translated each)
++        u64 skipped_empty{}; ///< slots with no handle word left (all storage pointers)
++    } l1519_stats;
++    void ReportL1519();
+     FastDrawStats fast_draw_stats;
+     /// EDEN_UP_TESS_TOPOLOGY: the primitive topology last recorded as dynamic state
+     /// (UpdateDynamicStates). Never read or written with the switch off.
