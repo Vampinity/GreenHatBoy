@@ -1,0 +1,60 @@
+# House to door, then a short look at the village (13 Nov 2026). Run on dev builds T160-T177 in handheld 1x.
+# Every line from the title WAIT to the third A at the door is the door route as it has run since 11 Nov.
+# Made from our earlier door script d3 (Continue, house,
+# door; proven route) with its waits unchanged, and a short open-loop walk in the village
+# added after the door instead of d3's 60 s stand. Every line from the title WAIT to the third A at the door is
+# d3's byte for byte.
+# The clock: seconds count from EDEN_GUEST_START (main.cpp: "the test script's clock starts here"), which the app
+# logs AFTER the boot's shader build (run1374: build done at 106 s, guest start 112 s, title met at script 53 s).
+# So no button can reach the boot screen, however long the store build takes. Title wait 180 s; on a cold
+# shader store raise it (our cold copy used 600 s).
+# Sections count from the moment the WAIT before them was met (test_harness.h).
+# House at spawn: the character FACING the camera, the door behind the camera to the left. Stick y=255 is down, x=0 left.
+# LOOK grids (make-look.py):
+#   title    the options line of the title menu, whichever item is lit
+#   load     the gold "Load" bar at the top of Continue's load screen
+#   hearts   the hearts top left, so the game is being played
+#   hint     "Move (L)  Change View (R)" at the bottom, shown from the first moment of control
+#   dialog   "Previous autosave data will be overwritten. Would you like to proceed?"
+#   start    the Start button lit (white outline); Cancel lit does not match
+#   newgame  the ornament right of a lit "New Game"
+#   skip     "Skip (+)" bottom right
+#   aopen    "(A) Open" next to the button diamond, at a door
+
+# Title: Continue is lit by default. The second A only plays if the load screen has not come 3 s after the first.
+0 WAIT 180 LOOK 403 848 194 42 24x3:0111010102010101010101010101010101010101010101013233454a4d43421c1e61343e622954453d5828513e444223092d372627231c1f0c221f1f0f140f1f0a211220181d291f
+1.5 A 150
+4.5 A 150
+1.0 WAIT 8 LOOK 400 0 200 75 16x4:3634333437373737393b3b3b3a3939394745454748484f494d554d4b49494b4b5d5c5e5e5d5e8091a78763636262626378787c7b7b7c817c7c827d7d7d7e7c7f
+# Load screen: A on the newest save, A on Load. A every 2 s until the screen goes, the rest is dropped.
+1.0 A 150
+3.0 A 150
+5.0 A 150
+7.0 A 150
+9.0 A 150
+0.5 WAIT 15 GONE 400 0 200 75 16x4:3634333437373737393b3b3b3a3939394745454748484f494d554d4b49494b4b5d5c5e5e5d5e8091a78763636262626378787c7b7b7c817c7c827d7d7d7e7c7f
+# Loading the house. No input. d3 (13 Nov): the ONLY change from d1 is this wait, 60 -> 240 s (cold load took over 60 s in run1347/run1348).
+0 WAIT 240 LOOK 390 917 215 35 24x3:1f1f02020250da5d020218350101010101131a02021db47f5c69535a4685e19201013c38435b51652c575255534bcfc81f21352720149b1900012338323b485911252f2c2d08984a
+# Control. Run down-left toward the door until "A Open" shows (the run is cut off there), at most 4 s.
+2.0 LSTICK 60 255 4000
+2.0 MAYBE 5 LOOK 568 782 75 48 12x3:20a7c280070c13030101020190da87f83f574a4b47573d332eb6d4970b1d27381c251414
+# Fallback if he stopped short: a short push forward in the new camera view. Dropped if A Open is already up
+# (looked for at 0 and 0.5 s, the push starts at 0.8 s).
+0.8 LSTICK 128 0 1500
+0 WAIT 3 LOOK 568 782 75 48 12x3:20a7c280070c13030101020190da87f83f574a4b47573d332eb6d4970b1d27381c251414
+# A Open is up: the stick is let go. A three times without looking: no picture readbacks in the 1 s where the
+# crash came (4 of 4 door openings). If the first A opened the door, the others land in its animation.
+0.4 A 150
+1.4 A 150
+2.4 A 150
+# NEW from here (not in d3; open loop): the village. No input while the village loads, the fly-over
+# with the place card and the short scene on arrival play (v6/d3 runs: both door waves at about A+2 s and A+10 s).
+# 45 s after the "(A) Open" wait, look up to 30 s for the hearts (top left: control is back). MAYBE: if they
+# never show, the script goes on anyway (wait_skipped), so the walk and the END still come.
+45 MAYBE 30 LOOK 44 56 63 26 9x3:45553b4c56325356296f80617680567f8046356e293b6b2046691a 80
+# A short walk: forward 6 s, then forward-right 4 s (open loop, camera-relative; where he ends up is not
+# checked and does not matter: this is a look at walking in the village, not a route).
+1.0 LSTICK 128 0 6000
+7.5 LSTICK 200 40 4000
+# Stand 15 s after the walk, then the script is done; our runner ends the test 10 s later.
+27 END
