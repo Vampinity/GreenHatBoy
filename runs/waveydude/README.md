@@ -87,3 +87,20 @@ An additional 851-second crash had the same ASTC request size. Its route is unco
 The install record links the executable to the t120-build-o-lichii-state-writes artifact. Signed eboot SHA-256 is 7220adbcb3db578afc48dc02b875c897d53491e842b660a680c27bd9ac31e74f. An exact source commit for this installed binary has not been verified. Both boot traces report build 01.219.028 and firmware SDK 0x09400008. The staged title override is included as env-title.txt. A 9.40 app-wide env.txt for these sessions was not verified.
 
 Controller-user lines were removed from copies. Included text was screened for credentials and identifiers. Originals were preserved. This archive contains the two prior captures.
+
+# 13 Nov 2026: W-13 to W-19 on base PS5 13.60 (seven sessions, five crashes)
+
+Packed by me with `tools/pack-run.py` (its redaction; counts in each `run.json`), plus `heap.log.gz` and, for a crash, `crash-summary.txt` through the same redaction. Each `env.txt` is the app-wide env.txt followed by the per-game overrides the session ran with. Place names in settings comments were replaced with "a later area". What they show: `docs/waveydude/pool-holes-in-place-pack-2026-11-13.md`.
+
+| Folder | Build | Ended |
+|---|---|---|
+| `2026-11-13-w13-crash-80m` | W-13 | SIGSEGV on a CPU core writing guest memory, 4,836 s |
+| `2026-11-13-w14-crash-13m` | W-14 | SIGSEGV on a CPU core, 772 s |
+| `2026-11-13-w15-crash-51m` | W-15 | SIGSEGV clearing guest memory for a heap growth of the game, 3,048 s |
+| `2026-11-13-w17-crash-19m` | W-17 | `std::bad_alloc` on the GPU back thread, 1,144 s |
+| `2026-11-13-w18-crash-38m` | W-18 | SIGSEGV on a CPU core, 2,303 s |
+| `2026-11-13-w19-run1-24m` | W-19 | closed by hand, 1,412 s |
+| `2026-11-13-w19-run2-16m` | W-19 | closed by hand, 973 s |
+
+Every one ended with the pool's largest free block at 1 to 48 MiB. Crash addresses are read with each build's own symbol file, which is not here.
+

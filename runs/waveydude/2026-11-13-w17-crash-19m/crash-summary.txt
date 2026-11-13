@@ -1,0 +1,42 @@
+EglantinePS5 crash report
+version: 01.219.028 (code size 0x2c31720)
+time: 2026-11-12 21:02:17, 1144 s after the app started
+what: the app stopped itself
+reason: std::bad_alloc
+where: eboot+0xb3a85
+thread: GPUBack (0x880f5e9c0)
+running: game The Legend of Zelda Ocarina of Time [0400486024DEC000][v131072].nup (0400486024dec000), Vulkan, resolution 0.75x, Bilinear, output 1080p, 60 Hz, mods: none
+memory: largest free block 1 MiB of 12352 MiB, heap 1024 MiB and 371 MiB in 255 large blocks
+registers:
+  rip 00000000004b3a85  rsp 00000004077937f0
+code: 0x0000000000400000 to 0x0000000003031720 (eboot+offset is an address in the build's llvm-pie.elf)
+calls found on the stack, most recent first ("?": not checked against a call instruction):
+  eboot+0xb3a85 ?
+  eboot+0x28a82e6 ?
+  eboot+0x28a9e2c ?
+  eboot+0x28a9e07 ?
+  eboot+0xb3a34 ?
+  eboot+0x470000 ?
+  eboot+0x28a8320 ?
+  eboot+0xf6760 ?
+  eboot+0x470000 ?
+  eboot+0x35cda6 ?
+  eboot+0x191c46a ?
+  eboot+0x191b688 ?
+  eboot+0x470000 ?
+  eboot+0x15b2b8d ?
+  eboot+0x191a84d ?
+  eboot+0x18f81ff ?
+  eboot+0xf86d8 ?
+  eboot+0x18f57ae ?
+  eboot+0x1523a9f ?
+  eboot+0x1574708 ?
+  eboot+0x2865afa ?
+  eboot+0x1573fcc ?
+  eboot+0x15bdce6 ?
+  eboot+0x1bf18f6 ?
+  eboot+0x1573ccf ?
+  eboot+0x1524170 ?
+  eboot+0x1528432 ?
+  eboot+0x28bcc89 ?
+then: the app starts again

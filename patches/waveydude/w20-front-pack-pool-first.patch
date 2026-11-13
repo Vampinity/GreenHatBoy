@@ -1,0 +1,372 @@
+From a20de8858e7f7fafa26053599354045aff624f10 Mon Sep 17 00:00:00 2001
+From: waveydude
+Date: Thu, 12 Nov 2026 23:16:21 -0800
+Subject: [PATCH] Wave Ocarina 20: EDEN_GUEST_SWAP_PACK_IN_PLACE=2 (a packed
+ slot's bytes go to a block of their own first, in place only when the pool
+ has no block; =1 left 430 to 1,340 MiB of the pool free in holes under 2 MiB
+ at every memory wall from W-13 to W-19)
+
+---
+ headless/build_label.h       |   2 +-
+ src/guest_memory_service.inc |  47 +++++++---
+ src/memory_pages.cpp         |   1 +
+ src/pack_place.h             |  41 +++++++++
+ tools/test-pack-place.cpp    | 163 +++++++++++++++++++++++++++++++++++
+ 5 files changed, 243 insertions(+), 11 deletions(-)
+ create mode 100644 src/pack_place.h
+ create mode 100644 tools/test-pack-place.cpp
+
+diff --git a/headless/build_label.h b/headless/build_label.h
+index c6049da..a3cfa40 100644
+--- a/headless/build_label.h
++++ b/headless/build_label.h
+@@ -3,7 +3,7 @@
+ #pragma once
+ 
+ #ifndef EDEN_BUILD_LABEL
+-#define EDEN_BUILD_LABEL "W-18"
++#define EDEN_BUILD_LABEL "W-20"
+ #endif
+ 
+ namespace Eden {
+diff --git a/src/guest_memory_service.inc b/src/guest_memory_service.inc
+index e580cf9..8cecc9c 100644
+--- a/src/guest_memory_service.inc
++++ b/src/guest_memory_service.inc
+@@ -908,16 +908,24 @@ bool SwapWrite(const void* from, std::uint32_t place) noexcept {
+ // block for the packed bytes and 900 MiB of cold slots waited. Asked once, at the first packed slot,
+ // as EDEN_CRAM_FINE_IN_PLACE asks: a block's second half is released on its own, then its first (run
+ // 126 saw the console take a tail back, 1,162 slots). A refusal leaves the switch off for the session.
++//
++// EDEN_GUEST_SWAP_PACK_IN_PLACE=2 (src/pack_place.h): a block of its own first, in place only when the
++// pool has none. A tail is a hole under 2 MiB that only another packed copy can take: W-19 stopped
++// with 1,138 slots packed in place, 1,342 MiB of the pool free and its largest free block 3 MiB, and
++// every crash from W-13 on had 430 to 1,245 MiB free the same way. A copy in a block of its own lands
++// in the lowest hole that fits it (an older tail), and its slot's block goes back whole.
+ std::atomic<int> pack_in_place{0}; // 0 not asked yet, 1 on, 2 off
+-std::atomic<std::uint64_t> packed_in_place{0}, pack_tail_refused{0};
++std::atomic<bool> pack_pool_first{false}; // =2, read with the first packed slot (PackInPlace)
++std::atomic<std::uint64_t> packed_in_place{0}, pack_tail_refused{0}, packed_pool_first{0};
+ bool PackInPlace() noexcept {
+     const int state = pack_in_place.load(std::memory_order_relaxed);
+     if (state != 0) return state == 1;
+-    const char* wanted = std::getenv("EDEN_GUEST_SWAP_PACK_IN_PLACE");
+-    if (wanted == nullptr || wanted[0] != '1') {
++    const Eden::PackPlace::Mode wanted = Eden::PackPlace::ModeOf(std::getenv("EDEN_GUEST_SWAP_PACK_IN_PLACE"));
++    if (wanted == Eden::PackPlace::Mode::Own) {
+         pack_in_place.store(2, std::memory_order_relaxed);
+         return false;
+     }
++    pack_pool_first.store(wanted == Eden::PackPlace::Mode::PoolFirst, std::memory_order_relaxed);
+     std::int64_t block = -1;
+     if (eden_direct_guest(SparseSlot, SparseSlot, 12, &block) != 0) return false; // no block now: asked again later
+     const int tail = sceKernelReleaseDirectMemory(block + SparseSlot / 2, SparseSlot / 2);
+@@ -925,7 +933,8 @@ bool PackInPlace() noexcept {
+     pack_in_place.store(tail == 0 ? 1 : 2, std::memory_order_relaxed);
+     char line[128];
+     const int length = std::snprintf(line, sizeof(line), "EDEN_SWAP_PACK_IN_PLACE %s: a block's tail %s (result %d)\n",
+-                                     tail == 0 ? "on" : "off", tail == 0 ? "went back on its own" : "was refused", tail);
++                                     tail != 0 ? "off" : wanted == Eden::PackPlace::Mode::PoolFirst ? "on when the pool has no block" : "on",
++                                     tail == 0 ? "went back on its own" : "was refused", tail);
+     if (length > 0) Report(line);
+     return tail == 0;
+ }
+@@ -950,7 +959,24 @@ bool PackOut(SparseRange& range, std::size_t slot) noexcept {
+     const bool worth = kept + PackMinGainPages <= FinePages;
+     std::int64_t block = -1;
+     void* view = reinterpret_cast<void*>(slot_view_hint.load(std::memory_order_relaxed));
+-    if (worth && PackInPlace()) {
++    using Eden::PackPlace::Mode;
++    using Eden::PackPlace::Place;
++    const Mode mode = !PackInPlace() ? Mode::Own
++                      : pack_pool_first.load(std::memory_order_relaxed) ? Mode::PoolFirst : Mode::InPlace;
++    // A block for the packed bytes, with a view to write them through. Nothing is held on a refusal.
++    bool have_block = false;
++    if (Eden::PackPlace::AsksPoolFirst(worth, mode)) {
++        if (eden_direct_guest(kept * FinePage, FinePage, 12, &block) == 0) {
++            have_block = sceKernelMapDirectMemory(&view, kept * FinePage, PROT_READ | PROT_WRITE, 0, block, FinePage) == 0;
++            if (!have_block) {
++                (void)sceKernelReleaseDirectMemory(block, kept * FinePage);
++                view = reinterpret_cast<void*>(slot_view_hint.load(std::memory_order_relaxed));
++            }
++        }
++        if (!have_block) block = -1;
++    }
++    const Place place = Eden::PackPlace::Choose(worth, mode, have_block);
++    if (place == Place::InPlace) {
+         // The slot's own block keeps the packed bytes in its first `kept` pages. The tail goes back
+         // first, while the packed copy holds every byte: a refusal leaves the block whole and the slot
+         // armed, nothing lost. Then the front is written through a view, as MakeFine writes a block.
+@@ -980,9 +1006,7 @@ bool PackOut(SparseRange& range, std::size_t slot) noexcept {
+         UnlockSlot(range, slot, SlotOut);
+         return true;
+     }
+-    if (!worth || eden_direct_guest(kept * FinePage, FinePage, 12, &block) != 0 ||
+-        sceKernelMapDirectMemory(&view, kept * FinePage, PROT_READ | PROT_WRITE, 0, block, FinePage) != 0) {
+-        if (block >= 0) (void)sceKernelReleaseDirectMemory(block, kept * FinePage);
++    if (place != Place::OwnBlock) {
+         if (mprotect(reinterpret_cast<void*>(at), SparseSlot, PROT_NONE) != 0) std::abort();
+         range.swap[slot] = swap_tick.load(std::memory_order_relaxed);
+         (worth ? swap_counters.failures : pack_not_worth).fetch_add(1, std::memory_order_relaxed);
+@@ -1001,6 +1025,7 @@ bool PackOut(SparseRange& range, std::size_t slot) noexcept {
+     range.swap[slot] = static_cast<std::uint32_t>(size);
+     guest_committed.fetch_sub(SparseSlot - kept * FinePage, std::memory_order_relaxed);
+     packed_pages_held.fetch_add(kept, std::memory_order_relaxed);
++    if (mode == Mode::PoolFirst) packed_pool_first.fetch_add(1, std::memory_order_relaxed);
+     swap_counters.out.fetch_add(1, std::memory_order_relaxed);
+     swap_counters.out_ns.fetch_add(NowNs() - start, std::memory_order_relaxed);
+     UnlockSlot(range, slot, SlotOut);
+@@ -2349,11 +2374,12 @@ void SwapReport(SparseRange& range) noexcept {
+     if (swap_mode.load(std::memory_order_relaxed) == 3) {
+         char pack[160];
+         const int packed_length = std::snprintf(pack, sizeof(pack),
+-                                                "EDEN_SWAP_PACK slots=%zu held=%zuMiB not_worth=%llu in_place=%llu tail_refused=%llu\n",
++                                                "EDEN_SWAP_PACK slots=%zu held=%zuMiB not_worth=%llu in_place=%llu tail_refused=%llu pool_first=%llu\n",
+                                                 out, packed_pages_held.load(std::memory_order_relaxed) * FinePage >> 20,
+                                                 (unsigned long long)pack_not_worth.load(std::memory_order_relaxed),
+                                                 (unsigned long long)packed_in_place.load(std::memory_order_relaxed),
+-                                                (unsigned long long)pack_tail_refused.load(std::memory_order_relaxed));
++                                                (unsigned long long)pack_tail_refused.load(std::memory_order_relaxed),
++                                                (unsigned long long)packed_pool_first.load(std::memory_order_relaxed));
+         if (packed_length > 0) Report(pack);
+     }
+     if (pack_shared.load(std::memory_order_relaxed) || pack_on_refusal.load(std::memory_order_relaxed) ||
+@@ -3112,6 +3138,7 @@ void ServiceStart(SparseRange& range) noexcept {
+ #endif
+     packed_pages_held.store(0, std::memory_order_relaxed);
+     packed_in_place.store(0, std::memory_order_relaxed);
++    packed_pool_first.store(0, std::memory_order_relaxed);
+     pack_tail_refused.store(0, std::memory_order_relaxed);
+     pack_not_worth.store(0, std::memory_order_relaxed);
+     ReadPackSwitches(); // EDEN_UP_PACK_* (the mode is final now)
+diff --git a/src/memory_pages.cpp b/src/memory_pages.cpp
+index 0be48a0..10dbd03 100644
+--- a/src/memory_pages.cpp
++++ b/src/memory_pages.cpp
+@@ -25,6 +25,7 @@
+ 
+ #include "fastmem.h"
+ #include "stall_probe.h" // EDEN_UP_STALL_PROBE (guest_memory_service.inc)
++#include "pack_place.h" // EDEN_GUEST_SWAP_PACK_IN_PLACE (guest_memory_service.inc)
+ #include "../headless/memory_wait.h" // WaitForBlock's limit (EDEN_GUEST_WRITE_WAIT_MS)
+ // headless/heap_arenas.inc: gives the heap's empty spaces back to the pool (WaitForBlock).
+ extern "C" std::size_t eden_heap_trim(void) __attribute__((weak));
+diff --git a/src/pack_place.h b/src/pack_place.h
+new file mode 100644
+index 0000000..da29309
+--- /dev/null
++++ b/src/pack_place.h
+@@ -0,0 +1,41 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// Where a packed guest slot's bytes go (src/guest_memory_service.inc, PackOut). Header only and free
++// of the PS5 SDK, so tools/test-pack-place.cpp tests it with a model of the pool on any host.
++//
++// EDEN_GUEST_SWAP_PACK_IN_PLACE:
++//   unset, 0  a block of its own from the pool; the slot's 2 MiB block goes back whole. With no block
++//             in the pool for the bytes the slot is not packed.
++//   1         always in the front of the slot's own block; the block's tail goes back. No block is
++//             asked of the pool, but the tail is a hole under 2 MiB in the middle of the pool that no
++//             guest slot, heap piece or graphics block (all whole 2 MiB pages) can take: W-13 to W-19
++//             ended with 430 to 1,340 MiB of the pool free and its largest free block 1 to 8 MiB.
++//   2         a block of its own first (the copies fill the holes, whole 2 MiB blocks go back); in
++//             place only when the pool has no block for the bytes, so packing never stops for memory.
++#pragma once
++
++namespace Eden::PackPlace {
++
++enum class Mode : int { Own = 0, InPlace = 1, PoolFirst = 2 };
++enum class Place { None, OwnBlock, InPlace };
++
++constexpr Mode ModeOf(const char* value) noexcept {
++    if (value == nullptr) return Mode::Own;
++    return value[0] == '1' ? Mode::InPlace : value[0] == '2' && value[1] == '\0' ? Mode::PoolFirst : Mode::Own;
++}
++
++// A block of the slot's own is asked of the pool before anything else.
++constexpr bool AsksPoolFirst(bool worth, Mode mode) noexcept {
++    return worth && mode != Mode::InPlace;
++}
++
++// `mode`: the setting while the console lets a block's tail go back on its own (asked once a
++// session), else Mode::Own. `pool_gave_block`: the pool had a block for the packed bytes (asked only
++// when AsksPoolFirst).
++constexpr Place Choose(bool worth, Mode mode, bool pool_gave_block) noexcept {
++    if (!worth) return Place::None;
++    if (mode == Mode::InPlace) return Place::InPlace;
++    if (pool_gave_block) return Place::OwnBlock;
++    return mode == Mode::PoolFirst ? Place::InPlace : Place::None;
++}
++
++} // namespace Eden::PackPlace
+diff --git a/tools/test-pack-place.cpp b/tools/test-pack-place.cpp
+new file mode 100644
+index 0000000..c5cb1ec
+--- /dev/null
++++ b/tools/test-pack-place.cpp
+@@ -0,0 +1,163 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// Host test for src/pack_place.h (EDEN_GUEST_SWAP_PACK_IN_PLACE, PackOut in src/guest_memory_service.inc).
++//   c++ -std=c++20 -O2 -fsanitize=address,undefined -Isrc tools/test-pack-place.cpp -o /tmp/pp && /tmp/pp
++// The pool is modelled in 16 KiB pages with the lowest room that fits (what the console does,
++// src/direct_memory.c): guest slots are 2 MiB blocks at 2 MiB steps, a packed slot keeps `kept` pages.
++// The pool starts full of guest slots, as at the memory wall of the W-13 to W-19 sessions.
++#include <algorithm>
++#include <cstdio>
++#include <cstring>
++#include <random>
++#include <vector>
++
++#include "pack_place.h"
++
++using namespace Eden::PackPlace;
++
++static int failures = 0;
++#define CHECK(c) do { if (!(c)) { std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); ++failures; } } while (0)
++
++namespace {
++constexpr int SlotPages = 128;
++struct Pool {
++    std::vector<char> used;
++    explicit Pool(int slots) : used(static_cast<size_t>(slots) * SlotPages, 0) {}
++    int Take(int pages, int align) {
++        const int n = static_cast<int>(used.size());
++        for (int at = 0; at + pages <= n;) {
++            const void* hit = std::memchr(used.data() + at, 1, static_cast<size_t>(pages));
++            if (hit == nullptr) {
++                std::fill_n(used.begin() + at, pages, 1);
++                return at;
++            }
++            const int taken = static_cast<int>(static_cast<const char*>(hit) - used.data());
++            at = (taken + 1 + align - 1) / align * align;
++        }
++        return -1;
++    }
++    void Give(int at, int pages) { std::fill_n(used.begin() + at, pages, 0); }
++    int FreePages() const { return static_cast<int>(std::count(used.begin(), used.end(), 0)); }
++    int WholeFreeSlots() const {
++        int whole = 0;
++        for (size_t slot = 0; slot * SlotPages < used.size(); ++slot)
++            whole += std::all_of(used.begin() + slot * SlotPages, used.begin() + (slot + 1) * SlotPages,
++                                 [](char page) { return page == 0; });
++        return whole;
++    }
++};
++struct Result { int free_mib, whole_mib, in_place, own_block, not_packed, unpack_refused; };
++
++// `slots` guest slots fill the pool; the swapper keeps about 60% packed while touches bring slots back.
++Result Run(Mode mode, unsigned seed, int slots = 512, int steps = 20000) {
++    std::mt19937 random{seed};
++    Pool pool{slots};
++    struct Slot { int at = -1, kept = 0; };
++    std::vector<Slot> guest(static_cast<size_t>(slots));
++    for (Slot& slot : guest) slot.at = pool.Take(SlotPages, SlotPages);
++    std::vector<int> own(static_cast<size_t>(slots)), out;
++    for (int i = 0; i < slots; ++i) own[static_cast<size_t>(i)] = i;
++    Result result{};
++    std::normal_distribution<double> packs_to{64.0, 18.0}; // about half, as the W-19 run packed
++    const auto pick = [&](std::vector<int>& from) {
++        const size_t index = random() % from.size();
++        const int id = from[index];
++        from[index] = from.back();
++        from.pop_back();
++        return id;
++    };
++    for (int step = 0; step < steps; ++step) {
++        const bool pack = static_cast<int>(out.size()) < slots * 6 / 10 && (out.empty() || random() % 100 < 55);
++        if (pack) {
++            const int id = pick(own);
++            Slot& slot = guest[static_cast<size_t>(id)];
++            const int kept = std::clamp(static_cast<int>(packs_to(random)), 8, 112);
++            int block = -1;
++            if (AsksPoolFirst(true, mode)) block = pool.Take(kept, 1);
++            switch (Choose(true, mode, block >= 0)) {
++            case Place::OwnBlock:
++                pool.Give(slot.at, SlotPages);
++                slot = Slot{block, kept};
++                ++result.own_block;
++                out.push_back(id);
++                break;
++            case Place::InPlace:
++                CHECK(block < 0); // nothing taken from the pool is left behind
++                pool.Give(slot.at + kept, SlotPages - kept);
++                slot.kept = kept;
++                ++result.in_place;
++                out.push_back(id);
++                break;
++            case Place::None:
++                CHECK(block < 0);
++                ++result.not_packed;
++                own.push_back(id);
++                break;
++            }
++        } else {
++            const int id = pick(out);
++            Slot& slot = guest[static_cast<size_t>(id)];
++            const int block = pool.Take(SlotPages, SlotPages);
++            if (block < 0) { // the guest touched a packed slot and the pool has no 2 MiB block
++                ++result.unpack_refused;
++                out.push_back(id);
++                continue;
++            }
++            pool.Give(slot.at, slot.kept);
++            slot = Slot{block, 0};
++            own.push_back(id);
++        }
++    }
++    result.free_mib = pool.FreePages() / 64;
++    result.whole_mib = pool.WholeFreeSlots() * 2;
++    return result;
++}
++} // namespace
++
++int main() {
++    // The setting. "1" keeps its old meaning (any value starting with 1); only "2" is the new mode.
++    CHECK(ModeOf(nullptr) == Mode::Own);
++    CHECK(ModeOf("") == Mode::Own);
++    CHECK(ModeOf("0") == Mode::Own);
++    CHECK(ModeOf("1") == Mode::InPlace);
++    CHECK(ModeOf("2") == Mode::PoolFirst);
++    CHECK(ModeOf("20") == Mode::Own);
++    CHECK(ModeOf("3") == Mode::Own);
++    CHECK(ModeOf("on") == Mode::Own);
++
++    // The choice, every case.
++    for (const Mode mode : {Mode::Own, Mode::InPlace, Mode::PoolFirst})
++        for (const bool gave : {false, true}) CHECK(Choose(false, mode, gave) == Place::None);
++    CHECK(AsksPoolFirst(true, Mode::Own) && AsksPoolFirst(true, Mode::PoolFirst));
++    CHECK(!AsksPoolFirst(true, Mode::InPlace)); // =1 asks the pool for nothing, as before
++    CHECK(!AsksPoolFirst(false, Mode::Own) && !AsksPoolFirst(false, Mode::PoolFirst));
++    CHECK(Choose(true, Mode::Own, true) == Place::OwnBlock);
++    CHECK(Choose(true, Mode::Own, false) == Place::None);       // as before: the slot waits
++    CHECK(Choose(true, Mode::InPlace, false) == Place::InPlace);
++    CHECK(Choose(true, Mode::PoolFirst, true) == Place::OwnBlock);
++    CHECK(Choose(true, Mode::PoolFirst, false) == Place::InPlace); // packing never stops for memory
++
++    for (const unsigned seed : {1u, 2u, 3u, 4u}) {
++        const Result in_place = Run(Mode::InPlace, seed);
++        const Result pool_first = Run(Mode::PoolFirst, seed);
++        const Result own = Run(Mode::Own, seed);
++        std::printf("seed %u  in place: %d MiB free, %d whole, %d unpacks refused | pool first: %d MiB free, %d whole, "
++                    "%d in place of %d, %d unpacks refused | own block only: %d not packed\n",
++                    seed, in_place.free_mib, in_place.whole_mib, in_place.unpack_refused, pool_first.free_mib,
++                    pool_first.whole_mib, pool_first.in_place, pool_first.in_place + pool_first.own_block,
++                    pool_first.unpack_refused, own.not_packed);
++        // What the consoles showed with =1: hundreds of MiB free and no whole block among them.
++        CHECK(in_place.free_mib > 200 && in_place.whole_mib == 0);
++        CHECK(in_place.unpack_refused > 0);
++        // =2: most of what is free is whole 2 MiB blocks, and about as much is free.
++        CHECK(pool_first.whole_mib * 10 >= pool_first.free_mib * 7);
++        CHECK(pool_first.free_mib * 10 >= in_place.free_mib * 9);
++        // With the pool full the first slots can only go in place; that is rare afterwards.
++        CHECK(pool_first.in_place >= 1);
++        CHECK(pool_first.in_place * 20 < pool_first.own_block);
++        CHECK(pool_first.not_packed == 0); // packing never stopped for memory
++        // Without the fallback a full pool packs nothing at all (run 161).
++        CHECK(own.own_block == 0 && own.not_packed > 0 && own.free_mib == 0);
++    }
++    if (failures == 0) std::puts("PASS");
++    return failures != 0;
++}
+-- 
+2.54.0
+

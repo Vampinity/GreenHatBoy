@@ -1277,3 +1277,10 @@ GrowingBlackBeans,2026-11-12,23:39:57,F1,t120-gbb7,,,F1,"GrowingBlackBeans Kokir
 GrowingBlackBeans,2026-11-12,23:44:04,XU1,t120-gbb7,,,XU1,"GrowingBlackBeans Kokiri benchmark: Continue, house, out, walk loop to the water",,True,hand_stopped,177.579754,115.0,28.34,46.7,645.3,13,,94,28565aaf77,runs/GrowingBlackBeans/2026-11-12-XU1
 GrowingBlackBeans,2026-11-12,23:50:19,P1,t120-gbb7,,,P1,"GrowingBlackBeans Kokiri benchmark: Continue, house, out, walk loop to the water",,True,hand_stopped,186.565043,120.0,27.61,70.9,687.1,0,,93,312dcbf6a4,runs/GrowingBlackBeans/2026-11-12-P1
 GrowingBlackBeans,2026-11-12,23:54:34,P2,t120-gbb7,,,P2,"GrowingBlackBeans Kokiri benchmark: Continue, house, out, walk loop to the water",,True,hand_stopped,181.376476,120.0,26.55,57.6,647.4,0,,93,312dcbf6a4,runs/GrowingBlackBeans/2026-11-12-P2
+waveydude,2026-11-13,03:16:52,w13-crash-80m,W-13,,w-series,w13-crash-80m,"hand-played, a later area",,,crash,4836,,36.49,,7486.3,,,131,,runs/waveydude/2026-11-13-w13-crash-80m
+waveydude,2026-11-13,03:34:28,w14-crash-13m,W-14,,w-series,w14-crash-13m,"hand-played, a later area",,,crash,772,,25.89,,3744.7,,,133,,runs/waveydude/2026-11-13-w14-crash-13m
+waveydude,2026-11-13,04:31:17,w15-crash-51m,W-15,,w-series,w15-crash-51m,"hand-played, a later area",,,crash,3048,,53.67,,8213.4,,,135,,runs/waveydude/2026-11-13-w15-crash-51m
+waveydude,2026-11-13,05:02:17,w17-crash-19m,W-17,,w-series,w17-crash-19m,"hand-played, a later area",,,crash,1144,,16.34,,3834.0,,,138,,runs/waveydude/2026-11-13-w17-crash-19m
+waveydude,2026-11-13,05:47:41,w18-crash-38m,W-18,,w-series,w18-crash-38m,"hand-played, a later area",,,crash,2303,,31.14,,4647.9,,,139,,runs/waveydude/2026-11-13-w18-crash-38m
+waveydude,2026-11-13,06:21:00,w19-run1-24m,W-19,,w-series,w19-run1-24m,"hand-played, a later area",,,hand_stopped,1412,,13.16,,16408.3,,,141,,runs/waveydude/2026-11-13-w19-run1-24m
+waveydude,2026-11-13,07:13:30,w19-run2-16m,W-19,,w-series,w19-run2-16m,"hand-played, a later area",,,hand_stopped,973,,18.09,,10554.0,,,141,,runs/waveydude/2026-11-13-w19-run2-16m

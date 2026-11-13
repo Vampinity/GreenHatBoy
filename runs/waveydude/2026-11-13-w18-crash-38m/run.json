@@ -1,0 +1,51 @@
+{
+ "format": 0,
+ "author": "waveydude",
+ "run_id": "w18-crash-38m",
+ "date": "2026-11-13",
+ "time": "05:47:41",
+ "batch": "w-series",
+ "test": "w18-crash-38m",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "W-18",
+  "commit": null,
+  "version": "01.219.028",
+  "eboot_sha256_16": null
+ },
+ "firmware": null,
+ "console": "PS5 base 13.60",
+ "route": {
+  "script": "hand-played, a later area",
+  "script_sha": null
+ },
+ "menu_settings": null,
+ "env_lines": 139,
+ "env_hash": null,
+ "control": null,
+ "ending": {
+  "kind": "crash",
+  "class": null,
+  "seconds": 2303,
+  "crash_app_s": 2303
+ },
+ "valid": null,
+ "gameplay_s": null,
+ "fps": {
+  "mean": 31.14,
+  "source": "nx2:vi2 5 s lines, whole session (frames / 5 s windows)",
+  "p99_ms": null,
+  "worst_ms": 4647.9
+ },
+ "worst_frame_ms": 4647.9,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": null,
+ "impressions": "W-18, texture marks 1536/2048. Parts of models missing (1,167 pipeline builds failed for host memory), then SIGSEGV on a CPU core. Pool ledger 2 s before: 11,922 MiB out, 430 MiB free in holes.",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 3,
+  "other_dump": 2,
+  "private_word": 4
+ }
+}
