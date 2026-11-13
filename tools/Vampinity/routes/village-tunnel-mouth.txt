@@ -1,0 +1,40 @@
+# Village: from the hill down the ravine and through the tunnel to its mouth (11 Nov 2026), by minimap steering.
+# The script of our run1076 (dev build T120, handheld 1x). The command lines are as they ran; only the comments
+# are rewritten for sharing. Read: README.md next to this file.
+#
+# Start: the owner's own save on the hill in the village (not shared; make your own, README). After the load the
+# player stands at minimap point 920,839. The STEER line follows a path the owner walked by hand, taken from his
+# recording with steer-route.py (tools/Vampinity/steer, --step 4 --radius 4): 13 points about 4 per mille apart.
+# A first try with 5 points 12 per mille apart cut a corner between points 2 and 3 and ran into a tree.
+# A blind replay of the same walk (recorded stick input, no steering) missed the spot in 2 of 3 starts: a start
+# that runs a little slower or faster ends against the ravine wall.
+# At the end the player stands at the tunnel mouth with the village and the water in view, for 132 s.
+#
+# Clock: seconds count from EDEN_GUEST_START. Lines after a WAIT or STEER count from the moment that line was met
+# (test_harness.h).
+#
+# LOOK grids (make-look.py):
+#   title    the options line of the title menu, whichever item is lit
+#   load     the gold "Load" bar at the top of Continue's load screen
+#   hearts   the hearts top left, so the game is being played
+
+# Title: Continue is lit by default. The second A only plays if the load screen has not come 3 s after the first.
+0 WAIT 180 LOOK 403 848 194 42 24x3:0111010102010101010101010101010101010101010101013233454a4d43421c1e61343e622954453d5828513e444223092d372627231c1f0c221f1f0f140f1f0a211220181d291f
+1.5 A 150
+4.5 A 150
+1.0 WAIT 8 LOOK 400 0 200 75 16x4:3634333437373737393b3b3b3a3939394745454748484f494d554d4b49494b4b5d5c5e5e5d5e8091a78763636262626378787c7b7b7c817c7c827d7d7d7e7c7f
+# Load screen: A on the newest save, A on Load. A every 2 s until the screen goes, the rest is dropped.
+1.0 A 150
+3.0 A 150
+5.0 A 150
+7.0 A 150
+9.0 A 150
+0.5 WAIT 15 GONE 400 0 200 75 16x4:3634333437373737393b3b3b3a3939394745454748484f494d554d4b49494b4b5d5c5e5e5d5e8091a78763636262626378787c7b7b7c817c7c827d7d7d7e7c7f
+# Loading (17-28 s on our saves). No input. Up to 60 s for the hearts.
+0 WAIT 60 LOOK 44 56 63 26 9x3:45553b4c56325356296f80617680567f8046356e293b6b2046691a 80
+# In the game: walk the owner's path on the minimap, 45 s at most (about 27 s in run1076).
+1 STEER 45 920,839 915,841 911,840 906,842 902,843 899,848 901,855 900,864 900,873 897,879 893,880 888,878 884,876 r=4
+# Met at once (the title is long gone). It only gave our runner a fixed line to count the stand from.
+1.0 WAIT 30 GONE 403 848 194 42 24x3:0111010102010101010101010101010101010101010101013233454a4d43421c1e61343e622954453d5828513e444223092d372627231c1f0c221f1f0f140f1f0a211220181d291f
+# At the tunnel mouth: stand still, then the script is done.
+132 END

@@ -1,0 +1,155 @@
+# Village: from the hill through the tunnel, across the village to the exit passage, a talk, then on through the
+# passage into the area change (11 Nov 2026), by minimap steering. The script of our run1110 (dev build T122,
+# handheld 1x). The command lines are as they ran; only the comments are rewritten for sharing.
+# Read: README.md next to this file.
+#
+# Start: the owner's own save on the hill in the village, the same save as village-tunnel-mouth.txt (not shared;
+# make your own, README). After the load the player stands at minimap point 920,839.
+# Every STEER point is on a path the owner walked by hand, taken from his recording with steer-route.py
+# (tools/Vampinity/steer, --step 4 --radius 4):
+#   32 points   the first 13 are village-tunnel-mouth.txt's, then 19 more west across the village to just east of
+#               the passage (806,824). He took 45 s for this; 120 s leaves room for a slow game and detours.
+#   1 point     close up to the one standing in the passage (802,821), where the talk prompt showed for him.
+#   5 points    into the passage (801,822 to 784,818), from his second walk there after the talk. The last point
+#               is about 3 s short of where his screen went black (775,819).
+# After the last STEER, a straight push (open loop) until the screen goes black, then a 35 s stand while the area
+# after the exit loads and its scenes play.
+# It replaced a blind replay of the same walk (recorded stick input, no steering) that never reached the village:
+# it went down the ravine, turned back and stood facing the hill.
+#
+# Buttons are the PS5 names, as in the owner's recording: CIRCLE starts the talk, CROSS moves it on.
+# Clock: seconds count from EDEN_GUEST_START. Lines after a WAIT or STEER count from the moment that line was met
+# (test_harness.h).
+#
+# LOOK grids (make-look.py):
+#   title    the options line of the title menu, whichever item is lit
+#   load     the gold "Load" bar at the top of Continue's load screen
+#   hearts   the hearts top left, so the game is being played
+
+# Title: Continue is lit by default. The second A only plays if the load screen has not come 3 s after the first.
+0 WAIT 180 LOOK 403 848 194 42 24x3:0111010102010101010101010101010101010101010101013233454a4d43421c1e61343e622954453d5828513e444223092d372627231c1f0c221f1f0f140f1f0a211220181d291f
+1.5 A 150
+4.5 A 150
+# Load screen: A on the newest save, A on Load. A every 2 s until the screen goes, the rest is dropped.
+1.0 WAIT 8 LOOK 400 0 200 75 16x4:3634333437373737393b3b3b3a3939394745454748484f494d554d4b49494b4b5d5c5e5e5d5e8091a78763636262626378787c7b7b7c817c7c827d7d7d7e7c7f
+1.0 A 150
+3.0 A 150
+5.0 A 150
+7.0 A 150
+9.0 A 150
+0.5 WAIT 15 GONE 400 0 200 75 16x4:3634333437373737393b3b3b3a3939394745454748484f494d554d4b49494b4b5d5c5e5e5d5e8091a78763636262626378787c7b7b7c817c7c827d7d7d7e7c7f
+# Loading (17-28 s on our saves). No input. Up to 60 s for the hearts.
+0 WAIT 60 LOOK 44 56 63 26 9x3:45553b4c56325356296f80617680567f8046356e293b6b2046691a 80
+# Walk the owner's path: hill, ravine, tunnel, then west across the village to just east of the passage.
+1 STEER 120 920,839 915,841 911,840 906,842 902,843 899,848 901,855 900,864 900,873 897,879 893,880 888,878 884,876 880,875 878,873 873,869 869,866 866,862 862,859 858,856 854,852 850,847 846,844 841,842 837,840 832,840 828,841 823,840 817,837 814,833 810,829 806,824 r=4
+# Close up to the one standing in the passage.
+0.3 STEER 15 802,821 r=3
+# Talk: a short push toward the passage (the camera is behind the player after walking west), then CIRCLE every
+# 1.5 s until the hearts go (the talk hides the HUD). Presses not yet made when the talk starts are dropped.
+0 LSTICK 128 0 600
+0.8 CIRCLE 120
+2.3 CIRCLE 120
+3.8 CIRCLE 120
+5.3 CIRCLE 120
+6.8 CIRCLE 120
+0.5 WAIT 10 GONE 44 56 63 26 9x3:45553b4c56325356296f80617680567f8046356e293b6b2046691a 80
+# The talk runs: CROSS every 0.6 s moves it on. The WAIT after them is met when the hearts are back: the talk is
+# over. The CROSS presses not yet made then are dropped (after the talk CROSS would only make the player act).
+0.6 CROSS 100
+1.2 CROSS 100
+1.8 CROSS 100
+2.4 CROSS 100
+3.0 CROSS 100
+3.6 CROSS 100
+4.2 CROSS 100
+4.8 CROSS 100
+5.4 CROSS 100
+6.0 CROSS 100
+6.6 CROSS 100
+7.2 CROSS 100
+7.8 CROSS 100
+8.4 CROSS 100
+9.0 CROSS 100
+9.6 CROSS 100
+10.2 CROSS 100
+10.8 CROSS 100
+11.4 CROSS 100
+12.0 CROSS 100
+12.6 CROSS 100
+13.2 CROSS 100
+13.8 CROSS 100
+14.4 CROSS 100
+15.0 CROSS 100
+15.6 CROSS 100
+16.2 CROSS 100
+16.8 CROSS 100
+17.4 CROSS 100
+18.0 CROSS 100
+18.6 CROSS 100
+19.2 CROSS 100
+19.8 CROSS 100
+20.4 CROSS 100
+21.0 CROSS 100
+21.6 CROSS 100
+22.2 CROSS 100
+22.8 CROSS 100
+23.4 CROSS 100
+24.0 CROSS 100
+24.6 CROSS 100
+25.2 CROSS 100
+25.8 CROSS 100
+26.4 CROSS 100
+27.0 CROSS 100
+27.6 CROSS 100
+28.2 CROSS 100
+28.8 CROSS 100
+29.4 CROSS 100
+30.0 CROSS 100
+30.6 CROSS 100
+31.2 CROSS 100
+31.8 CROSS 100
+32.4 CROSS 100
+33.0 CROSS 100
+33.6 CROSS 100
+34.2 CROSS 100
+34.8 CROSS 100
+35.4 CROSS 100
+36.0 CROSS 100
+36.6 CROSS 100
+37.2 CROSS 100
+37.8 CROSS 100
+38.4 CROSS 100
+39.0 CROSS 100
+39.6 CROSS 100
+40.2 CROSS 100
+40.8 CROSS 100
+41.4 CROSS 100
+42.0 CROSS 100
+42.6 CROSS 100
+43.2 CROSS 100
+43.8 CROSS 100
+44.4 CROSS 100
+45.0 CROSS 100
+45.6 CROSS 100
+46.2 CROSS 100
+46.8 CROSS 100
+47.4 CROSS 100
+48.0 CROSS 100
+48.6 CROSS 100
+49.2 CROSS 100
+49.8 CROSS 100
+50.4 CROSS 100
+51.0 CROSS 100
+51.6 CROSS 100
+52.2 CROSS 100
+52.8 CROSS 100
+53.4 CROSS 100
+1 WAIT 55 LOOK 44 56 63 26 9x3:45553b4c56325356296f80617680567f8046356e293b6b2046691a 80
+# Into the passage on the owner's own line west.
+0.3 STEER 20 801,822 797,820 793,818 789,817 784,818 r=4
+# The last metres: hold the stick forward (the camera is behind the player in the passage) until the screen goes
+# black.
+0 LSTICK 128 0 8000
+0.5 WAIT 20 GONE 44 56 63 26 9x3:45553b4c56325356296f80617680567f8046356e293b6b2046691a 80
+# The area change has started: the next area loads and its scenes play. No input, stand 35 s.
+35 END
