@@ -71,6 +71,11 @@ only, with the reason in the code.
 | `draw` share of all back-thread command time | 57% | 58% |
 | top four by time | draw, transform_feedback, inline_data, report_semaphore | identical |
 
-So the draw finding holds across sessions and builds. And the ~12% difference in per-call cost matches
-the one thing that differs between the runs: **the thread profiler is the expensive instrument**, not
-the back-call timer. That is why the timers-only run uses `EDEN_GBB_BACK_CALLS` alone.
+So the draw finding holds across sessions and builds. The ~12% difference in per-call cost matches the
+one thing that differs between the runs, so the thread profiler adds about 12% **on top of** the
+back-call timer.
+
+> **Corrected after `runGT1`:** I first wrote this as "the thread profiler is the expensive instrument,
+> not the back-call timer". That does not follow — the comparison says nothing about the back-call
+> timer's own cost. Measured against `runGP1`, `EDEN_GBB_BACK_CALLS` alone adds about **25%** to the back
+> thread's time. Both instruments are expensive. See `findings-2026-11-13-gt1-cost-per-draw.md`.

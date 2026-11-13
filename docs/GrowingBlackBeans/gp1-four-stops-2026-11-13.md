@@ -20,6 +20,11 @@ route with four standing stops, camera snapped behind Link at each, 60 s or more
 | C cliff edge | 27.7 | 36.1 | 142,047 | 190,531 | 29.8 | 83% |
 | D shop sign | **20.7** | **48.3** | **189,075** | 259,373 | 41.2 | 85% |
 
+**Stop C, after the fact:** pressing target at the cliff face panned the camera down, so C held a
+lower view than intended (in this run and in `runGT1`). It is still a valid point for the fit — frame
+time and GPU work are measured at the same moments, whatever the view — but it is not a fixed place, and
+it does not compare with C in another run.
+
 A two-to-one spread in demand between the lightest and heaviest places — the variation the fit was
 missing on one route — and a clean run, so the back shares are trustworthy, unlike the profiled runs.
 
