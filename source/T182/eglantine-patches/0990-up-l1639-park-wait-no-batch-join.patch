@@ -1,0 +1,122 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_L1639_PARK_WAIT, no batch-wide join after the fence action finished (fix to 0986; port of Lichii PR #1639 by DuskDarf1; off unless set)
+
+Upstream: zortos293/Lichii PR #1639 by DuskDarf1. Their scoped action joins "a callback already
+running under the syncpoint manager's action lock": upstream runs actions under that lock, so a
+deregister joins only its own action. Our SyncpointManager runs due actions outside the guard and a
+deregister that misses the list waits until running_actions (one count for all syncpoints) is 0.
+
+Defect in 0986 (read in source, not measured): after a normal wake the action has already left the
+list, so leaving the wait waited for the rest of the fence's due batch on the GPU thread, with the
+composite of that frame among it (gpu.cpp registers renderer->Composite on the same fence; ours sits
+before it in the list), plus any batch on any other syncpoint. That is a host-thread block on guest
+core 3 for the composite's length after every present, which 0986 did not have in mind.
+
+Fix: the action's last step sets a per-session flag. When it is set the waiter skips the deregister
+(the action is off the list and touches nothing of the session any more). Otherwise (timeout, power
+off, fence seen reached before its action ran) it deregisters as before, counted as "deregistered
+before their action finished" in the 600-wait line. Unset: nothing changes (code only runs parked).
+nx2_gsv.h is not a translation id input: KEEPS THE STORE.
+
+---
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index 8441e0a196..3984fe5e6c 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -1909,7 +1909,18 @@ public:
+           handle{syncpoints.RegisterGuestAction(id, value, std::forward<Callback>(callback))} {}
+ 
+     ~Nx2ScopedGuestFenceAction() {
+-        syncpoints.DeregisterGuestAction(id, handle);
++        if (!finished) {
++            syncpoints.DeregisterGuestAction(id, handle);
++        }
++    }
++
++    /// 0987: the action ran to its end (its last step marks it), so it is off the manager's list
++    /// and touches nothing of the waiter's any more. Then the destructor skips the deregister:
++    /// in our tree a deregister that misses the list waits until no due action runs anywhere
++    /// (running_actions is one count for all syncpoints), which after a normal wake meant waiting
++    /// for the rest of the fence's batch, the composite (renderer->Composite) among it.
++    void MarkFinished() {
++        finished = true;
+     }
+ 
+     Nx2ScopedGuestFenceAction(const Nx2ScopedGuestFenceAction&) = delete;
+@@ -1919,6 +1930,7 @@ private:
+     Tegra::Host1x::SyncpointManager& syncpoints;
+     const u32 id;
+     const Tegra::Host1x::SyncpointManager::ActionHandle handle;
++    bool finished{};
+ };
+ 
+ // Placeholder for the Switch 2 display session (nn::vi2::sdk), handed out by gsv 305. Reply
+@@ -2877,15 +2889,18 @@ private:
+         auto& syncpoints = system.Host1x().GetSyncpointManager();
+         m_park_event->Clear(kernel);
+         m_park_signal_ns.store(0, std::memory_order_relaxed);
++        m_park_fired.store(false, std::memory_order_relaxed);
+         // Runs on the GPU thread as it reaches the fence, or inline here if it already did.
++        // Its last step marks it finished (0987): nothing of this session is touched after it.
+         m_park_action.emplace(syncpoints, fence_id, fence_value,
+                               [event = m_park_event, kernel_ptr = &kernel,
+-                               signal_ns = &m_park_signal_ns] {
++                               signal_ns = &m_park_signal_ns, fired = &m_park_fired] {
+                                   signal_ns->store(std::chrono::steady_clock::now()
+                                                        .time_since_epoch()
+                                                        .count(),
+                                                    std::memory_order_relaxed);
+                                   event->Signal(*kernel_ptr);
++                                  fired->store(true, std::memory_order_release);
+                               });
+         Kernel::KSynchronizationObject* object = &m_park_event->GetReadableEvent();
+         while (!syncpoints.IsReadyGuest(fence_id, fence_value) && system.IsPoweredOn() &&
+@@ -2903,7 +2918,14 @@ private:
+                 break;
+             }
+         }
+-        // Join an action still signalling before the next wait clears the event.
++        // An action that finished needs no deregister (0987). Otherwise (timeout, power off, or
++        // the fence seen reached before its action ran) remove it, or join it if it is running,
++        // before the next wait clears the event; that join can wait for the fence's whole batch.
++        if (m_park_fired.load(std::memory_order_acquire)) {
++            m_park_action->MarkFinished();
++        } else {
++            ++m_park.deregistered;
++        }
+         m_park_action.reset();
+         const auto end = std::chrono::steady_clock::now();
+         const s64 signalled = m_park_signal_ns.load(std::memory_order_relaxed);
+@@ -2932,13 +2954,13 @@ private:
+         LOG_INFO(Service,
+                  "EDEN_UP_L1639_PARK_WAIT: last {} frame waits (to present #{}): {} parked "
+                  "(avg {} us, {} kernel waits, {} 50-ms timeouts, {} ended by termination), "
+-                 "signal-to-run avg {} us max {} us over {}; host wait kept: {} not on a guest "
+-                 "thread, {} without an event",
++                 "signal-to-run avg {} us max {} us over {}, {} deregistered before their action "
++                 "finished; host wait kept: {} not on a guest thread, {} without an event",
+                  m_park.waits, m_presents, m_park.parked,
+                  m_park.parked != 0 ? m_park.parked_us / m_park.parked : 0, m_park.kernel_waits,
+                  m_park.timeouts, m_park.terminated,
+                  m_park.woken != 0 ? m_park.wake_us / m_park.woken : 0, m_park.wake_max_us,
+-                 m_park.woken, m_park.host_thread, m_park.no_event);
++                 m_park.woken, m_park.deregistered, m_park.host_thread, m_park.no_event);
+         const bool first_logged = m_park.first_logged;
+         m_park = {};
+         m_park.first_logged = first_logged;
+@@ -2954,6 +2976,7 @@ private:
+         u64 woken{};
+         u64 wake_us{};
+         u64 wake_max_us{};
++        u64 deregistered{};
+         u64 host_thread{};
+         u64 no_event{};
+         bool first_logged{};
+@@ -2962,6 +2985,7 @@ private:
+     Kernel::KEvent* m_park_event{};
+     bool m_park_event_tried{};
+     std::atomic<s64> m_park_signal_ns{0};
++    std::atomic<bool> m_park_fired{false};
+     std::optional<Nx2ScopedGuestFenceAction> m_park_action;
+ 
+     /// Waits until the fence is reached. With `unless_gpu_waits`, gives up after a few ms once a

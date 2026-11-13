@@ -1,0 +1,56 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_BACKX_DRAW fix, only the split's back skips break adds (checker fix to 1005)
+
+Fix to 1005's port of lucastaonline's 865afaa4f3 (#1161), as taken into zortos293/Lichii
+5e428570d2 (PR #1586, Zortos (zortos293) with capy-ai).
+
+With EDEN_UP_BACKX_DRAW=1, any thread that called Nx2FastDraw::Serial() became a "reader" whose
+breaks skip the locked add once it has bumped the serial since its last read. The GPU thread
+draws (and reads the serial in PrepareDraw) before GpuSplit::MaybeStart starts the back; after
+that it is the front, reads the serial no more, and so would skip every break after its first for
+the rest of the session. A front break between two back draws then leaves the serial unchanged and
+the back's next draw takes a stale delta (wrong picture). Now only the thread GpuSplit::BackLoop
+marks (the back, the only thread whose draws can be reused: Ineligible::OffBackThread) re-arms in
+Serial(); every other thread always adds, as without the switch. Without the split nothing is a
+reader. Unset: as before. No translation id input: KEEPS THE STORE.
+
+diff --git a/src/video_core/gpu_split.cpp b/src/video_core/gpu_split.cpp
+index 47d5279da1..662e6a61ee 100644
+--- a/src/video_core/gpu_split.cpp
++++ b/src/video_core/gpu_split.cpp
+@@ -1201,6 +1201,7 @@ size_t GpuSplit::ExecuteCaught(const u64* entry, size_t words) {
+ void GpuSplit::BackLoop(std::stop_token stop_token) {
+     Common::SetCurrentThreadName("GPUBack");
+     on_back_thread = true;
++    VideoCommon::Nx2FastDraw::MarkSerialReaderThread(); // 1006, EDEN_UP_BACKX_DRAW only
+     Common::GuestReadThrough::MarkGpuThread(1); // 0900: the front's fault handler knows this thread
+     back_running.store(true, std::memory_order_release);
+     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
+diff --git a/src/video_core/nx2_fast_draw.h b/src/video_core/nx2_fast_draw.h
+index 656a8b5383..39203ea384 100644
+--- a/src/video_core/nx2_fast_draw.h
++++ b/src/video_core/nx2_fast_draw.h
+@@ -181,6 +181,14 @@ inline std::atomic<u32> g_last_break{};
+ /// write traps, unmaps) always bump.
+ inline thread_local bool t_reads_serial{};
+ inline thread_local bool t_serial_bumped{};
++/// 1006: only the split's back may become a reader (GpuSplit::BackLoop sets it). Before the back
++/// starts, the GPU thread (the front later) draws and reads the serial too; marked a reader then,
++/// it would skip its register breaks for the rest of the session (it reads no more), and the
++/// back's next draw would take a stale delta. Unmarked threads always bump, as before.
++inline thread_local bool t_serial_reader_thread{};
++inline void MarkSerialReaderThread() noexcept {
++    t_serial_reader_thread = true;
++}
+ 
+ /// Set once by Maxwell3D's constructor: the 10-second log line will be written
+ /// (EDEN_NX2_GPU_PROFILE or EDEN_UP_FAST_DRAW_VERIFY), so Break counts each reason.
+@@ -217,7 +225,7 @@ inline void Break(Reason reason, u32 method = 0) {
+ /// The thread that draws: what it compares fast draws with (with EDEN_UP_BACKX_DRAW, from then
+ /// on its next break bumps the serial again).
+ inline u64 Serial() {
+-    if (UpBackX::g_draw) [[unlikely]] {
++    if (UpBackX::g_draw && t_serial_reader_thread) [[unlikely]] {
+         t_reads_serial = true;
+         t_serial_bumped = false;
+     }

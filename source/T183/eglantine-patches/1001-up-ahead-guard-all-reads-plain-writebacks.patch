@@ -1,0 +1,191 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_AHEAD_GUARD_ALL_READS (1000), checker's fix: reads that are written back take memory's bytes, not the guard's copies
+
+Port of yuri2301/Eglantine c5145ace9 (yuri2301, "frame overlap copies"); the defect below is in
+upstream's version too.
+
+Why: with 1000 on, every block read of a page with a frame-in-flight copy gets the copy's bytes
+(the presented frame's), and GetSpan refuses such a range. Several GPU-side writers read the
+destination first and write the whole range back (read-modify-write):
+ - GuestMemoryScoped with a Write flag (DMA engine copies, upload engine, sw blitter, texture
+   write-back's UnsafeReadWrite, buffer cache): Read() reads by block when there is no span, and
+   the destructor writes the whole buffer back; a write-only range with its span refused writes
+   back a buffer it never read;
+ - the DMA engine's block-to-pitch stripes (StripeBlockToPitch);
+ - the texture write-back's bands, tail and verify (TrySwizzleLayerInBands) and the copy form.
+There the copy's bytes went back over memory: what the game wrote since the present (the reason
+the page has a copy) was undone, in the bytes the GPU write did not cover (padding, other
+columns, the tail).
+
+Fix: a thread-local PlainReads scope (src/common/ahead_guard_plain.h) under which Overlay does
+nothing (no copy over the read, no span refused). Held by GuestMemory::Read and the write-only
+constructor when FLAGS has Write, by the DMA stripe's destination read, and through
+TrySwizzleLayerInBands and SwizzleLayerCopyForm.
+
+Off (EDEN_UP_AHEAD_GUARD_ALL_READS unset): a thread-local count up and down around those reads,
+nothing else. No translation id input touched (guest_memory.h, maxwell_dma.cpp,
+texture_cache/util.cpp, ahead_guard.h, the new common header). KEEPS THE STORE.
+---
+diff --git a/src/common/ahead_guard_plain.h b/src/common/ahead_guard_plain.h
+new file mode 100644
+index 0000000000..c8565434c8
+--- /dev/null
++++ b/src/common/ahead_guard_plain.h
+@@ -0,0 +1,48 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#pragma once
++
++#include "common/common_types.h"
++
++// 1001 (checker's fix on 1000, EDEN_UP_AHEAD_GUARD_ALL_READS): while a PlainReads scope is up on
++// a thread, its block reads and spans of guest memory take memory's bytes, never the frame-ahead
++// guard's copies (video_core/ahead_guard.h, Overlay). For reads whose bytes are written back to
++// guest memory (a read-modify-write: GuestMemoryScoped with a Write flag, the DMA engine's
++// block-to-pitch stripes, the texture write-back's bands and tail): a copy there would write the
++// presented frame's bytes over what the game wrote since. Off: a thread-local count only.
++namespace Common::AheadGuardPlain {
++
++inline thread_local u32 depth = 0;
++
++struct PlainReads {
++    PlainReads() {
++        ++depth;
++    }
++    ~PlainReads() {
++        --depth;
++    }
++    PlainReads(const PlainReads&) = delete;
++    PlainReads& operator=(const PlainReads&) = delete;
++};
++
++/// A PlainReads scope when `on` (a Write range's read; see GuestMemory::Read).
++struct PlainReadsIf {
++    explicit PlainReadsIf(bool on_) : on{on_} {
++        if (on) {
++            ++depth;
++        }
++    }
++    ~PlainReadsIf() {
++        if (on) {
++            --depth;
++        }
++    }
++    PlainReadsIf(const PlainReadsIf&) = delete;
++    PlainReadsIf& operator=(const PlainReadsIf&) = delete;
++    const bool on;
++};
++
++inline bool Active() {
++    return depth != 0;
++}
++
++} // namespace Common::AheadGuardPlain
+diff --git a/src/core/guest_memory.h b/src/core/guest_memory.h
+index be06a55bc1..feb3a5be90 100644
+--- a/src/core/guest_memory.h
++++ b/src/core/guest_memory.h
+@@ -9,6 +9,7 @@
+ #include <span>
+ #include <vector>
+ 
++#include "common/ahead_guard_plain.h" // 1001
+ #include "common/assert.h"
+ #include "common/guest_read_through.h" // 0900
+ #include "common/scratch_buffer.h"
+@@ -47,6 +48,8 @@ public:
+         : m_memory{&memory}, m_addr{addr}, m_size{size} {
+         static_assert(FLAGS & GuestMemoryFlags::Read || FLAGS & GuestMemoryFlags::Write);
+         if constexpr (!(FLAGS & GuestMemoryFlags::Read)) {
++            // 1001: a write-only range keeps its span with EDEN_UP_AHEAD_GUARD_ALL_READS.
++            const Common::AheadGuardPlain::PlainReads plain;
+             if (!this->TrySetSpan()) {
+                 if (backup) {
+                     backup->resize_destructive(this->size());
+@@ -124,6 +127,9 @@ public:
+             m_is_data_copy = true;
+             return {};
+         }
++        // 1001: what a Write range reads goes back to memory whole: memory's bytes, never the
++        // frame-ahead guard's copies (EDEN_UP_AHEAD_GUARD_ALL_READS, ahead_guard_plain.h).
++        const Common::AheadGuardPlain::PlainReadsIf plain{(FLAGS & GuestMemoryFlags::Write) != 0};
+ 
+         bool span = this->TrySetSpan();
+         if constexpr (!(FLAGS & GuestMemoryFlags::Write)) {
+diff --git a/src/video_core/ahead_guard.h b/src/video_core/ahead_guard.h
+index 9f93ae64e2..8380a4e6e4 100644
+--- a/src/video_core/ahead_guard.h
++++ b/src/video_core/ahead_guard.h
+@@ -16,6 +16,7 @@
+ #include <utility>
+ #include <vector>
+ 
++#include "common/ahead_guard_plain.h" // 1001
+ #include "common/common_types.h"
+ #include "common/logging.h"
+ 
+@@ -1204,7 +1205,8 @@ enum class AnyReader : u32 { DeviceBlock = 0, GpuBlock = 1, Span = 2 };
+ /// Lock-free and false while no copy is up (one atomic and the range's bits).
+ inline bool Overlay(u64 device_addr, void* out, u64 size, AnyReader reader) {
+     constexpr u64 limit = u64{1} << AddressBits;
+-    if (!AllReads() || Detail::own_reads != 0 || size == 0 || device_addr >= limit) {
++    if (!AllReads() || Detail::own_reads != 0 || Common::AheadGuardPlain::Active() ||
++        size == 0 || device_addr >= limit) {
+         return false;
+     }
+     State& s = Get();
+diff --git a/src/video_core/engines/maxwell_dma.cpp b/src/video_core/engines/maxwell_dma.cpp
+index 665ee281e9..2dc66498e3 100644
+--- a/src/video_core/engines/maxwell_dma.cpp
++++ b/src/video_core/engines/maxwell_dma.cpp
+@@ -13,6 +13,7 @@
+ #include <mutex>
+ #include <new>
+ #include "common/algorithm.h"
++#include "common/ahead_guard_plain.h" // 1001
+ #include "common/assert.h"
+ #include "common/logging.h"
+ #include <ranges>
+@@ -237,7 +238,12 @@ bool StripeBlockToPitch(Tegra::MemoryManager& memory, const BlockSide& src, u32
+         const std::size_t bytes = std::size_t{count} * pitch;
+         const GPUVAddr out = dst_address + std::size_t{line} * pitch;
+         src.ReadGobRow(memory, y >> GOB_SIZE_Y_SHIFT, first, end, compact.data(), true);
+-        memory.ReadBlockUnsafe(out, space.linear.data(), bytes);
++        {
++            // 1001: the destination lines are read and written back whole: memory's bytes, not
++            // the frame-ahead guard's copies (EDEN_UP_AHEAD_GUARD_ALL_READS).
++            const Common::AheadGuardPlain::PlainReads plain;
++            memory.ReadBlockUnsafe(out, space.linear.data(), bytes);
++        }
+         UnswizzleSubrect(std::span<u8>(space.linear.data(), bytes), compact, src.bytes_per_pixel,
+                          src.width, 1U << GOB_SIZE_Y_SHIFT, 1, x_offset, in_gob, x_elements, count,
+                          0, 0, pitch, native_tiling);
+diff --git a/src/video_core/texture_cache/util.cpp b/src/video_core/texture_cache/util.cpp
+index 7e2869e4e3..ddfba4d256 100644
+--- a/src/video_core/texture_cache/util.cpp
++++ b/src/video_core/texture_cache/util.cpp
+@@ -44,6 +44,7 @@
+ #include "video_core/textures/bcn.h"
+ #include "video_core/textures/decoders.h"
+ #include "video_core/ubo_snapshot.h"
++#include "common/ahead_guard_plain.h" // 1001
+ 
+ // The front's heap wait scope (headless/heap_arenas.inc), the same weak hook as
+ // vk_pipeline_cache.cpp's HeapWaitScope. Only EDEN_TEST_WRITEBACK_SPLIT=1 calls it here, so that
+@@ -690,6 +691,9 @@ bool TrySwizzleLayerInBands(Tegra::MemoryManager& gpu_memory, GPUVAddr addr,
+                             size_t subresource_size, std::span<const u8> src,
+                             u32 bytes_per_block, const Extent3D& num_tiles,
+                             const Extent3D& block, VideoCore::Surface::PixelFormat format) {
++    // 1001: every read here is written back (bands, tail, verify): memory's bytes, never the
++    // frame-ahead guard's copies (EDEN_UP_AHEAD_GUARD_ALL_READS); the span test keeps its span.
++    const Common::AheadGuardPlain::PlainReads plain;
+     CountWriteback(WbWritebacks);
+     if (!g_band_test_split && gpu_memory.GetSpan(addr, subresource_size) != nullptr) {
+         CountWriteback(WbWholeSpan);
+@@ -825,6 +829,7 @@ void SwizzleLayerCopyForm(Tegra::MemoryManager& gpu_memory, GPUVAddr addr,
+                           size_t subresource_size, std::span<const u8> src, u32 bytes_per_block,
+                           const Extent3D& num_tiles, const Extent3D& block,
+                           Common::ScratchBuffer<u8>& tmp_buffer) {
++    const Common::AheadGuardPlain::PlainReads plain; // 1001: read and written back whole
+     CountWriteback(WbAidOldCopy);
+     if (subresource_size == 0) {
+         return;

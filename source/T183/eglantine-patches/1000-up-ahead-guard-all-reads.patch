@@ -1,0 +1,362 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_AHEAD_GUARD_ALL_READS=1, the frame-ahead guard's copies serve every GPU-side block read and span of guest memory (port of yuri2301/Eglantine c5145ace9), off by default
+
+Upstream: yuri2301/Eglantine branch pitoco, commit c5145ace9bea5ca3325b6e7e82970bcf11e6d3e3
+(yuri2301, 11 Nov 2026, "Ocarina of Time: frame overlap copies when running a frame ahead").
+Credit for the idea and the read sites: yuri2301.
+
+What upstream does: running a frame ahead, the game's first write to a page the frame in flight
+may still read saves a 4 KiB copy first; GPU-side reads (DeviceMemoryManager::ReadBlock,
+ReadBlockUnsafe, GetSpan, Tegra::MemoryManager::ReadBlockImpl, the buffer cache's direct
+pointers) put the copies over what they read until the frame's fence, where the copies go and
+their memory is marked written. PC, village spawn point: 44 -> 31.5 ms a frame, no flashes in 450 frames.
+
+What we had: EDEN_UP_AHEAD_GUARD=2/3 (live =3 in the play settings) is the same mechanism with
+its own trap, pool, slots and held writes, but its copies serve the buffer cache only (uploads,
+streamed uniforms, ReadGpu handles/pointers, the direct-pointer paths via HasCopy). Its header
+said "Not covered: texture data and descriptor tables the texture cache reads". This patch ports
+the part we lacked, on top of our guard, not upstream's second guard:
+
+EDEN_UP_AHEAD_GUARD_ALL_READS=1 (needs EDEN_UP_AHEAD_GUARD=2 or 3; read once; a warning line
+otherwise):
+ - DeviceMemoryManager::ReadBlock / ReadBlockUnsafe: after the read, AheadGuard::Overlay puts the
+   copy of each page copied for a frame the back still records over the bytes (after, as
+   upstream: a write that copies its page during the read is still covered);
+ - Tegra::MemoryManager::ReadBlockImpl (both page kinds) and the small ReadBlockUnsafe path
+   (descriptors): the same per device piece;
+ - DeviceMemoryManager::GetSpan (both): no span over a range with a copy, so GpuGuestMemory and
+   other callers read it by block;
+ - what a block read took from a copy goes on the slot's `served` list, so it is handed back as a
+   guest write when that frame is passed or lifted (TakeRedirty): a texture uploaded from a copy
+   is uploaded again from memory;
+ - implies EDEN_UP_AHEAD_GUARD_ALL_WRITES=1 unless that is set (upstream copies every page the
+   caches hold that the game writes; ALL_WRITES is ours for that).
+A thread-local mark keeps the guard's own reads (a copy being taken, Read's live part) from
+re-entering Overlay (no second lock, no copy over a new copy's source).
+
+Line, with the guard's 300-present window:
+"EDEN_UP_AHEAD_GUARD_ALL_READS: last 300 presents (to #<n>): <n> device block reads and <n>
+GPU-address block reads took <KiB> KiB from copies, <n> spans refused for a copy".
+Zero there means the extra sites never met a copy (upstream found all its hits in buffer
+uploads, which our guard already covered): then the switch cannot be what fixes a flash.
+
+Off: one cached bool test per block read and span. Not in the kept-store stamp: ahead_guard.h,
+memory_manager.cpp, device_memory_manager.inc are no translation id inputs. KEEPS THE STORE.
+---
+diff --git a/src/core/device_memory_manager.inc b/src/core/device_memory_manager.inc
+index 2b869624ab..050b7bba76 100644
+--- a/src/core/device_memory_manager.inc
++++ b/src/core/device_memory_manager.inc
+@@ -27,6 +27,7 @@
+ #include "core/device_memory.h"
+ #include "core/device_memory_manager.h"
+ #include "core/memory.h"
++#include "video_core/ahead_guard.h" // EDEN_UP_AHEAD_GUARD_ALL_READS
+ 
+ namespace Core {
+ 
+@@ -387,6 +388,13 @@ void DeviceMemoryManager<Traits>::TrackContinuityImpl(DAddr address, VAddr virtu
+ }
+ template <typename Traits>
+ u8* DeviceMemoryManager<Traits>::GetSpan(const DAddr src_addr, const std::size_t size) {
++    // EDEN_UP_AHEAD_GUARD_ALL_READS (video_core/ahead_guard.h; yuri2301 c5145ace9): no span over
++    // a page with a frame-in-flight copy, so the caller reads it by block and gets the copy.
++    if (VideoCommon::AheadGuard::AllReads() &&
++        VideoCommon::AheadGuard::Overlay(src_addr, nullptr, size,
++                                         VideoCommon::AheadGuard::AnyReader::Span)) [[unlikely]] {
++        return nullptr;
++    }
+     size_t page_index = src_addr >> page_bits;
+     size_t subbits = src_addr & page_mask;
+     if ((static_cast<size_t>(tracked_entries[page_index].continuity_tracker+1) << page_bits) >= size + subbits) {
+@@ -397,6 +405,13 @@ u8* DeviceMemoryManager<Traits>::GetSpan(const DAddr src_addr, const std::size_t
+ 
+ template <typename Traits>
+ const u8* DeviceMemoryManager<Traits>::GetSpan(const DAddr src_addr, const std::size_t size) const {
++    // EDEN_UP_AHEAD_GUARD_ALL_READS (video_core/ahead_guard.h; yuri2301 c5145ace9): no span over
++    // a page with a frame-in-flight copy, so the caller reads it by block and gets the copy.
++    if (VideoCommon::AheadGuard::AllReads() &&
++        VideoCommon::AheadGuard::Overlay(src_addr, nullptr, size,
++                                         VideoCommon::AheadGuard::AnyReader::Span)) [[unlikely]] {
++        return nullptr;
++    }
+     size_t page_index = src_addr >> page_bits;
+     size_t subbits = src_addr & page_mask;
+     if ((static_cast<size_t>(tracked_entries[page_index].continuity_tracker+1) << page_bits) >= size + subbits) {
+@@ -486,6 +501,15 @@ void DeviceMemoryManager<Traits>::WalkBlock(DAddr addr, std::size_t size, auto o
+ template <typename Traits>
+ void DeviceMemoryManager<Traits>::ReadBlock(DAddr address, void* dest_pointer, size_t size) {
+     device_inter->FlushRegion(address, size);
++    // EDEN_UP_AHEAD_GUARD_ALL_READS (video_core/ahead_guard.h; yuri2301 c5145ace9): the guard's
++    // copies of pages the frame in flight reads go over what was read, after the read.
++    void* const overlay_dest = dest_pointer;
++    SCOPE_EXIT {
++        if (VideoCommon::AheadGuard::AllReads()) [[unlikely]] {
++            VideoCommon::AheadGuard::Overlay(address, overlay_dest, size,
++                                             VideoCommon::AheadGuard::AnyReader::DeviceBlock);
++        }
++    };
+     const std::size_t page_offset = address & Memory::YUZU_PAGEMASK;
+     if (size <= Memory::YUZU_PAGESIZE - page_offset) {
+         const DAddr guest_page = address & ~static_cast<DAddr>(Memory::YUZU_PAGEMASK);
+@@ -551,6 +575,15 @@ void DeviceMemoryManager<Traits>::WriteBlock(DAddr address, const void* src_poin
+ 
+ template <typename Traits>
+ void DeviceMemoryManager<Traits>::ReadBlockUnsafe(DAddr address, void* dest_pointer, size_t size) {
++    // EDEN_UP_AHEAD_GUARD_ALL_READS (video_core/ahead_guard.h; yuri2301 c5145ace9): the guard's
++    // copies of pages the frame in flight reads go over what was read, after the read.
++    void* const overlay_dest = dest_pointer;
++    SCOPE_EXIT {
++        if (VideoCommon::AheadGuard::AllReads()) [[unlikely]] {
++            VideoCommon::AheadGuard::Overlay(address, overlay_dest, size,
++                                             VideoCommon::AheadGuard::AnyReader::DeviceBlock);
++        }
++    };
+     const std::size_t page_offset = address & Memory::YUZU_PAGEMASK;
+     if (size <= Memory::YUZU_PAGESIZE - page_offset) {
+         const DAddr guest_page = address & ~static_cast<DAddr>(Memory::YUZU_PAGEMASK);
+diff --git a/src/video_core/ahead_guard.h b/src/video_core/ahead_guard.h
+index 04fc69d89c..9f93ae64e2 100644
+--- a/src/video_core/ahead_guard.h
++++ b/src/video_core/ahead_guard.h
+@@ -82,7 +82,7 @@
+ ///   EDEN_UP_AHEAD_GUARD_SLOTS=2       two frames in flight, a guard each (SlotCount, below)
+ /// Covered: buffer uploads, streamed uniform blocks, and the texture handles and storage buffer
+ /// pointers read from constant buffers at a draw (ReadGpu). Not covered: texture data and
+-/// descriptor tables the texture cache reads.
++/// descriptor tables the texture cache reads, unless EDEN_UP_AHEAD_GUARD_ALL_READS=1 (below).
+ namespace VideoCommon::AheadGuard {
+ 
+ /// 0: off, 1: writers wait, 2: writers copy the page first, 3: as 2 and guest writes made while
+@@ -176,7 +176,47 @@ inline u32 Granule() {
+ inline bool AllWrites() {
+     static const bool on = [] {
+         const char* value = std::getenv("EDEN_UP_AHEAD_GUARD_ALL_WRITES");
+-        return value != nullptr && value[0] == '1' && value[1] == '\0';
++        if (value == nullptr) {
++            // EDEN_UP_AHEAD_GUARD_ALL_READS=1 implies it unless it is set (see AllReads).
++            const char* reads = std::getenv("EDEN_UP_AHEAD_GUARD_ALL_READS");
++            return reads != nullptr && reads[0] == '1' && reads[1] == '\0';
++        }
++        return value[0] == '1' && value[1] == '\0';
++    }();
++    return on;
++}
++
++/// EDEN_UP_AHEAD_GUARD_ALL_READS=1 (with =2 or =3; off by default). Port of yuri2301/Eglantine
++/// c5145ace9 (yuri2301, "frame overlap copies", 11 Nov 2026): there the copies a guest write
++/// takes for the frame in flight serve EVERY read the GPU side makes of guest memory, not only
++/// the buffer cache's. Here the guard's copies also serve
++///  - DeviceMemoryManager::ReadBlock / ReadBlockUnsafe (texture uploads through GpuGuestMemory,
++///    the DMA engine, everything that reads device memory by block),
++///  - Tegra::MemoryManager::ReadBlock / ReadBlockUnsafe (descriptor tables, small descriptor
++///    reads, macro and inline data), and
++///  - DeviceMemoryManager::GetSpan, which returns no span for a range with a copy, so its caller
++///    reads it by block (as for a range that is not continuous).
++/// The copy's bytes go over what the read took from memory, after the read, so a write that
++/// copied its page while the read ran is still covered. What a read took from a copy is handed
++/// back as a guest write once its frame is passed or lifted (TakeRedirty), as for uploads, so a
++/// texture uploaded from a copy is uploaded again from memory. Implies
++/// EDEN_UP_AHEAD_GUARD_ALL_WRITES=1 unless that is set (yuri's copies are taken for every page
++/// the caches hold, which is what ALL_WRITES does). Upstream measured, PC, village spawn point: 44 ->
++/// 31.5 ms a frame, a frame ahead with no one-frame flashes in 450 frames; all of its hits were
++/// buffer uploads, which our guard covered already. Line: "EDEN_UP_AHEAD_GUARD_ALL_READS: last
++/// 300 presents ...". Unset: nothing changes (one bool test per block read).
++inline bool AllReads() {
++    static const bool on = [] {
++        const char* value = std::getenv("EDEN_UP_AHEAD_GUARD_ALL_READS");
++        const bool asked = value != nullptr && value[0] == '1' && value[1] == '\0';
++        if (asked && CopyMode()) {
++            LOG_INFO(HW_GPU, "EDEN_UP_AHEAD_GUARD_ALL_READS=1: every GPU-side block read and span "
++                             "of guest memory takes the guard's copies (yuri2301 c5145ace9)");
++        } else if (asked) {
++            LOG_WARNING(HW_GPU, "EDEN_UP_AHEAD_GUARD_ALL_READS=1 needs EDEN_UP_AHEAD_GUARD=2 or 3: "
++                                "it changes nothing in this run");
++        }
++        return asked && CopyMode();
+     }();
+     return on;
+ }
+@@ -332,6 +372,10 @@ struct State {
+         u64 front_pages{}, front_late{};
+         u32 most_copies{}, pool_full{};
+         u64 armed_new_pages{}, armed_unguarded_pages{};
++        /// EDEN_UP_AHEAD_GUARD_ALL_READS: [device block, GPU-address block, span] reads that met
++        /// a copy, and the bytes the block reads took from copies.
++        std::array<u64, 3> any_reads{};
++        u64 any_read_bytes{};
+     } stats{};
+     u32 hold_lines{};
+ };
+@@ -343,6 +387,21 @@ inline State& Get() {
+ 
+ namespace Detail {
+ 
++/// EDEN_UP_AHEAD_GUARD_ALL_READS: set while this thread reads device memory for the guard itself
++/// (a copy being taken, the live part of Read), so Overlay neither takes the lock again nor puts
++/// a copy over the bytes a new copy is taken from.
++inline thread_local u32 own_reads = 0;
++struct OwnRead {
++    OwnRead() {
++        ++own_reads;
++    }
++    ~OwnRead() {
++        --own_reads;
++    }
++    OwnRead(const OwnRead&) = delete;
++    OwnRead& operator=(const OwnRead&) = delete;
++};
++
+ inline u64 Bit(u64 page) {
+     return u64{1} << (page % 64);
+ }
+@@ -456,8 +515,11 @@ u32 NewCopyLocked(State& s, u64 page, u32 slots, DeviceMemory& device_memory) {
+         // 0631: one slot notes the most copies at each lift only, as T137 did.
+         s.stats.most_copies = (std::max)(s.stats.most_copies, s.copies_used);
+     }
+-    device_memory.ReadBlockUnsafe(page << PageBits, s.copy_bytes.get() + u64{copy} * PageSize,
+-                                  PageSize);
++    {
++        const OwnRead own; // the page as memory holds it (EDEN_UP_AHEAD_GUARD_ALL_READS)
++        device_memory.ReadBlockUnsafe(page << PageBits,
++                                      s.copy_bytes.get() + u64{copy} * PageSize, PageSize);
++    }
+     s.copy_page[copy] = static_cast<u32>(page);
+     s.copy_mask[copy] = static_cast<u8>(slots);
+     IndexInsert(s, page, copy);
+@@ -648,6 +710,14 @@ inline void LogWindowLocked(State& s, u64 present_number) {
+                  st.armed_unguarded_pages, st.other_copies, st.other_skipped, st.front_pages,
+                  st.front_late, copies_tail);
+     }
++    if (AllReads()) {
++        LOG_INFO(HW_GPU,
++                 "EDEN_UP_AHEAD_GUARD_ALL_READS: last 300 presents (to #{}): {} device block "
++                 "reads and {} GPU-address block reads took {} KiB from copies, {} spans "
++                 "refused for a copy",
++                 present_number, st.any_reads[0], st.any_reads[1], st.any_read_bytes >> 10,
++                 st.any_reads[2]);
++    }
+     st = {};
+ }
+ 
+@@ -1088,6 +1158,7 @@ void CopyOtherBeforeWrite(u64 device_addr, u64 size, DeviceMemory& device_memory
+ template <class Live>
+ void Read(u64 device_addr, u8* out, u64 size, bool upload, Live&& live) {
+     State& s = Get();
++    const Detail::OwnRead own; // `live` reads memory; the copies are put in here
+     std::scoped_lock lk{s.mutex};
+     std::array<u32, MaxSlots> order{};
+     const u32 count = s.copies_used == 0 ? 0 : Detail::ReadOrderLocked(s, order);
+@@ -1123,6 +1194,59 @@ void Read(u64 device_addr, u8* out, u64 size, bool upload, Live&& live) {
+     }
+ }
+ 
++/// Which reader met a copy in Overlay (EDEN_UP_AHEAD_GUARD_ALL_READS).
++enum class AnyReader : u32 { DeviceBlock = 0, GpuBlock = 1, Span = 2 };
++
++/// EDEN_UP_AHEAD_GUARD_ALL_READS: [device_addr, device_addr + size) of guest memory was just read
++/// into `out` (null: only asks, for a span). Bytes of a page copied for a frame the back still
++/// records are put over it from the copy, as Read does for buffers, and noted to be handed back
++/// as a guest write when that frame is passed or lifted. Returns whether a copy met the range.
++/// Lock-free and false while no copy is up (one atomic and the range's bits).
++inline bool Overlay(u64 device_addr, void* out, u64 size, AnyReader reader) {
++    constexpr u64 limit = u64{1} << AddressBits;
++    if (!AllReads() || Detail::own_reads != 0 || size == 0 || device_addr >= limit) {
++        return false;
++    }
++    State& s = Get();
++    if (!s.active.load(std::memory_order_acquire) || !HasCopy(device_addr, size)) {
++        return false;
++    }
++    std::scoped_lock lk{s.mutex};
++    std::array<u32, MaxSlots> order{};
++    const u32 count = s.copies_used == 0 ? 0 : Detail::ReadOrderLocked(s, order);
++    if (count == 0) {
++        return false;
++    }
++    const u64 end = (std::min)(device_addr + size, limit);
++    bool met = false;
++    for (u64 at = device_addr; at < end;) {
++        const u64 page = at >> PageBits;
++        const u64 piece_end = (std::min)(end, (page + 1) << PageBits);
++        const auto [copy, rank] = Detail::CopyForRead(s, page, order, count);
++        if (copy != NoSlot) {
++            met = true;
++            if (out != nullptr) {
++                std::memcpy(static_cast<u8*>(out) + (at - device_addr),
++                            s.copy_bytes.get() + u64{copy} * PageSize + (at & (PageSize - 1)),
++                            piece_end - at);
++                s.stats.any_read_bytes += piece_end - at;
++                auto& served = s.slots[order[rank]].served;
++                const std::pair<u64, u32> range{at, static_cast<u32>(piece_end - at)};
++                if (served.empty() || served.back() != range) {
++                    served.push_back(range);
++                }
++            } else {
++                break; // a span: one copy is enough to refuse it
++            }
++        }
++        at = piece_end;
++    }
++    if (met) {
++        ++s.stats.any_reads[static_cast<u32>(reader)];
++    }
++    return met;
++}
++
+ /// Copy mode: a small value the GPU thread reads from guest memory at a GPU address when it draws
+ /// (a texture handle or a storage buffer's pointer in a constant buffer): from the page's copy
+ /// when it has one for the frame the back records. The page's bits are looked at without the
+diff --git a/src/video_core/memory_manager.cpp b/src/video_core/memory_manager.cpp
+index c3e3ad8707..52d5b38616 100644
+--- a/src/video_core/memory_manager.cpp
++++ b/src/video_core/memory_manager.cpp
+@@ -25,6 +25,7 @@
+ #include "core/hle/kernel/k_page_table.h"
+ #include "core/hle/kernel/k_process.h"
+ #include "memory_manager.h"
++#include "video_core/ahead_guard.h" // EDEN_UP_AHEAD_GUARD_ALL_READS
+ #include "video_core/guest_memory.h"
+ #include "video_core/nx2.h"
+ #include "video_core/host1x/host1x.h"
+@@ -652,6 +653,11 @@ void MemoryManager::ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std:
+         // A device page without memory (a sparse block nobody wrote yet) reads zero.
+         if (const u8* physical = memory.GetPointer<u8>(dev_addr_base)) [[likely]] {
+             Common::GuestReadThrough::Copy(dest_buffer, physical, copy_amount); // 0900
++            if (VideoCommon::AheadGuard::AllReads()) [[unlikely]] {
++                // EDEN_UP_AHEAD_GUARD_ALL_READS (ahead_guard.h; yuri2301 c5145ace9)
++                VideoCommon::AheadGuard::Overlay(dev_addr_base, dest_buffer, copy_amount,
++                                                 VideoCommon::AheadGuard::AnyReader::GpuBlock);
++            }
+         } else {
+             std::memset(dest_buffer, 0, copy_amount);
+         }
+@@ -668,7 +674,13 @@ void MemoryManager::ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std:
+                                                              : nullptr;
+         if (physical != nullptr) [[likely]] {
+             Common::GuestReadThrough::Copy(dest_buffer, physical, copy_amount); // 0900
++            if (VideoCommon::AheadGuard::AllReads()) [[unlikely]] {
++                // EDEN_UP_AHEAD_GUARD_ALL_READS (ahead_guard.h; yuri2301 c5145ace9)
++                VideoCommon::AheadGuard::Overlay(dev_addr_base, dest_buffer, copy_amount,
++                                                 VideoCommon::AheadGuard::AnyReader::GpuBlock);
++            }
+         } else {
++            // Through the device's ReadBlockUnsafe, which puts the copies over it itself.
+             memory.ReadBlockUnsafe(dev_addr_base, dest_buffer, copy_amount);
+         }
+         dest_buffer = static_cast<u8*>(dest_buffer) + copy_amount;
+@@ -692,6 +704,14 @@ void MemoryManager::ReadBlockUnsafe(GPUVAddr gpu_src_addr, void* dest_buffer, co
+     if (size <= SmallPage && (gpu_src_addr & (SmallPage - 1)) + size <= SmallPage) {
+         if (const u8* const pointer = GetPointer(gpu_src_addr)) {
+             Common::GuestReadThrough::Copy(dest_buffer, pointer, size); // 0900
++            if (VideoCommon::AheadGuard::AllReads()) [[unlikely]] {
++                // EDEN_UP_AHEAD_GUARD_ALL_READS (ahead_guard.h; yuri2301 c5145ace9): one device
++                // page, translated only while the switch is on.
++                if (const auto device = GpuToCpuAddress(gpu_src_addr)) {
++                    VideoCommon::AheadGuard::Overlay(*device, dest_buffer, size,
++                                                     VideoCommon::AheadGuard::AnyReader::GpuBlock);
++                }
++            }
+             return;
+         }
+     }

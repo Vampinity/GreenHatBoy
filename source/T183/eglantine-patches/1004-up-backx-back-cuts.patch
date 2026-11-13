@@ -1,0 +1,555 @@
+From: EglantinePS5
+Subject: [PATCH] up: back micro-cuts from #1586, the back side (EDEN_UP_BACKX=1, off unless set)
+
+Upstream: zortos293/Lichii 5e428570d2 (PR #1586, Zortos (zortos293) with capy-ai), its "skip back
+locks and gathers that change nothing" part, itself from jpkto/Lichii 7a5e5357cb and f5edeabdbb
+(the EDEN_NX2_BACKX_* switches). The page split of the same PR is our 0835; the draw side is 1005.
+
+EDEN_UP_BACKX=1 (exact "1"):
+- GPU::InvalidateGPUCache (~900 calls a frame) gathers only when a core's dirty memory manager shows
+  a write (GPUDirtyMemoryManager::MayHavePending: `current` has bits). A write collected after the
+  check is gathered by the next call, as one collected just after a gather is. Ours adds guards
+  the upstream base lacks: only with the page split on (0835; without it a crossing write can leave
+  `current` empty while back_buffer holds one), not with EDEN_UP_HELD_VS_DOWNLOAD (its rounds
+  release held pages), and with EDEN_UP_AHEAD_GUARD only while nothing gathered at a present, held
+  or re-dirtied waits for a gather (one lock and two empty checks).
+- AccelerateInlineToMemory (deferred inline path, Ampere) skips the buffer cache's lock when no
+  written 4 KiB page is marked GPU-written (g_nx2_gpu_written_pages: both places that add to
+  gpu_modified_ranges mark it, the bits never clear) or is a command list page. InlineMemory only
+  uploads into gpu_modified_ranges and Nx2NoteListHostWrite only acts on list pages, so the locked
+  section would change nothing.
+- UsageTracker::Reset clears only the words Track set since the last reset (a 1 GiB buffer's
+  tracker is 2 MiB of words, cleared every frame before).
+- OnCacheInvalidations takes each cache's lock once for all the writes (texture, then buffer with
+  ClaimCpuWrites first, then the shader cache) instead of twice per write.
+EDEN_UP_BACKX_VERIFY=1 (with it, diagnostic): every skip also does the work it replaces; the gather
+check counts collects to tell a raced write from a missed one; mismatches log
+"EDEN_UP_BACKX verify mismatch" (64 at most) and count as "misses" (must stay 0).
+Count line (HW_GPU, every 10 s, looked at every 4096 gathers): "EDEN_UP_BACKX in 10 s: gathers N
+skipped N (kept by a guard N), inline writes N lock skips N, tracker resets N words cleared N spared
+N, invalidation batches N writes N | draw: ... | verify races N misses N".
+Switches read in VideoCore::CreateGPU (after env.txt). Unset: as before.
+Files: core/gpu_dirty_memory_manager.h, video_core/gpu.cpp, video_core.cpp, up_backx.h (new),
+buffer_cache/usage_tracker.h, renderer_vulkan/vk_rasterizer.cpp. No translation id input: KEEPS
+THE STORE.
+
+---
+diff --git a/src/core/gpu_dirty_memory_manager.h b/src/core/gpu_dirty_memory_manager.h
+index 0407df3c90a42cb7aa6b176d0b7b01958bbf583b..1612a836bbab41af54702c51a0a60d86c438c33c 100644
+--- a/src/core/gpu_dirty_memory_manager.h
++++ b/src/core/gpu_dirty_memory_manager.h
+@@ -149,7 +149,33 @@ public:
+         return stored;
+     }
+ 
++    /// EDEN_UP_BACKX (zortos293/Lichii #1586, from jpkto 7a5e5357cb): false when Gather would
++    /// find nothing. With the page split every Collect that adds a write leaves its transform,
++    /// with bits, in `current` (by compare-exchange, or by exchange after pushing the one before
++    /// to back_buffer under `guard`), and only Gather, which takes back_buffer too, empties
++    /// `current` again. Without the locks: a Collect it misses is one the caller may order after
++    /// itself. Without the split a crossing write can leave `current` with no bits while
++    /// back_buffer holds a write, so callers ask this only with SplitAtPages().
++    [[nodiscard]] bool MayHavePending() const {
++        return current.load(std::memory_order_acquire).mask != 0;
++    }
++
++    /// EDEN_UP_BACKX_VERIFY only: count the Collects that add bits (set in VideoCore::CreateGPU).
++    static inline bool count_collects{};
++
++    /// Writes collected that added bits, ever (only while count_collects is set).
++    [[nodiscard]] u64 Collects() const {
++        return collects.load(std::memory_order_acquire);
++    }
++
+ private:
++    /// After the write is in `current`: a reader that sees the count sees the write.
++    void CountCollect() {
++        if (count_collects) [[unlikely]] {
++            collects.fetch_add(1, std::memory_order_release);
++        }
++    }
++
+     /// EDEN_UP_DIRTY_PAGE_SPLIT_COUNT=1 (ours, log only; exact "1"): counts the collected writes
+     /// that run past their 2 KiB page, and what the old single transform would have lost of them
+     /// (its shifts taken mod 32, as x86 and arm64 do them). Off: one cached test per write.
+@@ -199,6 +225,7 @@ private:
+                     std::scoped_lock lk(guard);
+                     back_buffer.emplace_back(tmp);
+                     current.exchange(t, std::memory_order_relaxed);
++                    CountCollect();
+                     return true;
+                 }
+                 tmp.address = t.address;
+@@ -213,6 +240,7 @@ private:
+                                                       std::memory_order_relaxed)
+                      : !current.compare_exchange_weak(original, tmp, std::memory_order_release,
+                                                       std::memory_order_relaxed));
++        CountCollect();
+         return true;
+     }
+ 
+@@ -381,6 +409,7 @@ private:
+ 
+     std::atomic<TransformAddress> current{};
+     std::atomic<u64> generation{}; ///< EDEN_UP_HELD_VS_DOWNLOAD / EDEN_UP_FRITCHII_LASTADDR only
++    std::atomic<u64> collects{};   ///< EDEN_UP_BACKX_VERIFY only (count_collects)
+     std::mutex guard;
+     std::mutex gather_guard;
+     std::vector<TransformAddress> back_buffer;
+diff --git a/src/video_core/buffer_cache/usage_tracker.h b/src/video_core/buffer_cache/usage_tracker.h
+index 4faf8090189ebe75868aa802c2d078a89ae05106..5cb752408fbda7c74cba1d6cce204313712c4518 100644
+--- a/src/video_core/buffer_cache/usage_tracker.h
++++ b/src/video_core/buffer_cache/usage_tracker.h
+@@ -9,6 +9,7 @@
+ #include <algorithm>
+ #include <array>
+ #include <atomic>
++#include <cstddef>
+ #include <utility>
+ #include <vector>
+ 
+@@ -17,6 +18,7 @@
+ #include "common/live_switch.h"
+ #include "common/logging.h"
+ #include "common/pe_switch.h"
++#include "video_core/up_backx.h" // 1004
+ 
+ namespace VideoCommon {
+ 
+@@ -36,7 +38,27 @@ public:
+             return;
+         }
+         tracked = false;
+-        std::ranges::fill(pages, 0ULL);
++        if (UpBackX::g_back) [[unlikely]] {
++            // EDEN_UP_BACKX (zortos293/Lichii #1586): only Track sets words, and only in
++            // [set_begin, set_end). A buffer of hundreds of MiB bound in part cleared all its
++            // words (8 bytes a 4 KiB page) every frame.
++            std::fill(pages.begin() + static_cast<std::ptrdiff_t>(set_begin),
++                      pages.begin() + static_cast<std::ptrdiff_t>(set_end), 0ULL);
++            auto& counts = UpBackX::g_counts;
++            UpBackX::Add(counts.tracker_resets);
++            UpBackX::Add(counts.tracker_words_cleared, set_end - set_begin);
++            UpBackX::Add(counts.tracker_words_spared, pages.size() - (set_end - set_begin));
++            if (UpBackX::g_verify &&
++                std::ranges::any_of(pages, [](u64 word) { return word != 0; })) {
++                UpBackX::Mismatch("usage tracker word set outside the tracked extent", set_begin,
++                                  set_end);
++                std::ranges::fill(pages, 0ULL);
++            }
++        } else {
++            std::ranges::fill(pages, 0ULL);
++        }
++        set_begin = 0;
++        set_end = 0;
+         recent.fill({~u64{0}, 0});
+         full_begin = 0;
+         full_end = 0;
+@@ -58,6 +80,9 @@ public:
+         if (page_end < page || page_end >= pages.size()) {
+             return;
+         }
++        // EDEN_UP_BACKX: TrackPage and FillPages below set words only in [page, page_end].
++        set_begin = set_end == 0 ? page : (std::min)(set_begin, page);
++        set_end = (std::max)(set_end, page_end + 1);
+         TrackPage(page, offset, size);
+         if (page == page_end) {
+             return;
+@@ -181,6 +206,10 @@ private:
+     /// Pages known to be all ones (FillPages, EDEN_UP_FRITCHII_USAGE_TRACKER).
+     size_t full_begin{};
+     size_t full_end{};
++    /// EDEN_UP_BACKX: the words set since the last reset lie in [set_begin, set_end) (none when
++    /// set_end is 0).
++    size_t set_begin{};
++    size_t set_end{};
+ };
+ 
+ } // namespace VideoCommon
+diff --git a/src/video_core/gpu.cpp b/src/video_core/gpu.cpp
+index 1e71f2138c87add8770e3956bf0e30ada54de5af..c1ae3c730c12236bbc49cdb5fe648499ab4f2970 100644
+--- a/src/video_core/gpu.cpp
++++ b/src/video_core/gpu.cpp
+@@ -14,6 +14,7 @@
+ #include <list>
+ #include <memory>
+ #include <mutex>
++#include <optional>
+ #include <thread>
+ #include <utility>
+ #include <vector>
+@@ -56,6 +57,7 @@
+ #include "video_core/nx2_async_readback.h"
+ #include "video_core/nx2_download_landing.h"
+ #include "video_core/nx2_fast_draw.h"
++#include "video_core/up_backx.h" // 1004
+ #include "video_core/gpu_badalloc_backstop.h" // 0922
+ #include "video_core/rasterizer_download_area.h"
+ #include "video_core/renderer_base.h"
+@@ -185,6 +187,90 @@ struct GPU::Impl {
+ 
+     /// Synchronizes CPU writes with Host GPU memory.
+     void InvalidateGPUCache() {
++        if (VideoCommon::UpBackX::g_back) [[unlikely]] {
++            if (SkipGatherBackX()) {
++                return;
++            }
++        } else if (VideoCommon::UpBackX::g_draw) [[unlikely]] {
++            // Only for the 10-second line of the draw cuts.
++            NoteGatherBackX();
++        }
++        InvalidateGPUCacheGather();
++    }
++
++    /// EDEN_UP_BACKX (1004): counts a gather and writes the 10-second line now and then.
++    void NoteGatherBackX() {
++        auto& counts = VideoCommon::UpBackX::g_counts;
++        const u64 calls = counts.gathers.fetch_add(1, std::memory_order_relaxed) + 1;
++        if ((calls & 4095) == 0) {
++            VideoCommon::UpBackX::MaybeLog();
++        }
++    }
++
++    /// EDEN_UP_BACKX (zortos293/Lichii #1586, from jpkto 7a5e5357cb): ~900 calls a frame, most
++    /// with nothing collected. Gathers (two locks per core's manager, std::function calls) only
++    /// when a manager shows a write. One collected after this check is gathered by the next call,
++    /// as one collected just after the gather would be. Returns true when the gather was skipped.
++    /// Not with the page split off (MayHavePending needs it), not with EDEN_UP_HELD_VS_DOWNLOAD
++    /// (its rounds release held pages), and with EDEN_UP_AHEAD_GUARD only while it has nothing
++    /// gathered at a present, held or re-dirtied waiting for a gather.
++    bool SkipGatherBackX() {
++        NoteGatherBackX();
++        auto& counts = VideoCommon::UpBackX::g_counts;
++        const auto managers = system.GetGPUDirtyMemoryManager();
++        const auto collects = [&managers] {
++            u64 sum = 0;
++            for (const Core::GPUDirtyMemoryManager& manager : managers) {
++                sum += manager.Collects();
++            }
++            return sum;
++        };
++        const bool verify = VideoCommon::UpBackX::g_verify;
++        const u64 collects_before = verify ? collects() : 0;
++        if (std::ranges::any_of(managers, [](const Core::GPUDirtyMemoryManager& manager) {
++                return manager.MayHavePending();
++            })) {
++            return false;
++        }
++        if (!Core::GPUDirtyMemoryManager::SplitAtPages() ||
++            Core::GPUDirtyMemoryManager::HeldVsDownload() || !AheadGuardIdle()) {
++            VideoCommon::UpBackX::Add(counts.gather_blocked);
++            return false;
++        }
++        VideoCommon::UpBackX::Add(counts.gathers_skipped);
++        if (verify) {
++            // The gather the skip replaces, made and applied as always: the skip is only checked.
++            const auto first_write = InvalidateGPUCacheGather();
++            if (first_write) {
++                if (collects() != collects_before) {
++                    counts.verify_races.fetch_add(1, std::memory_order_relaxed);
++                } else {
++                    counts.verify_misses.fetch_add(1, std::memory_order_relaxed);
++                    VideoCommon::UpBackX::Mismatch("collected CPU write while no manager showed one",
++                                                   first_write->first, first_write->second);
++                }
++            }
++        }
++        return true;
++    }
++
++    /// EDEN_UP_BACKX: with EDEN_UP_AHEAD_GUARD, a gather also applies writes gathered at a
++    /// present, held writes whose guard is lifted and the ranges uploads read from copies. Idle
++    /// when it holds none of them.
++    bool AheadGuardIdle() {
++        if (!VideoCommon::AheadGuard::Enabled()) [[likely]] {
++            return true;
++        }
++        if (VideoCommon::AheadGuard::Get().redirty_ready.load(std::memory_order_acquire)) {
++            return false;
++        }
++        std::scoped_lock lock{ahead_gather_mutex};
++        return ahead_gathered_writes.empty() && ahead_held_writes.empty();
++    }
++
++    /// The gather and apply InvalidateGPUCache always made. Returns the first write it applied
++    /// (EDEN_UP_BACKX_VERIFY).
++    std::optional<std::pair<DAddr, u64>> InvalidateGPUCacheGather() {
+         std::vector<std::pair<DAddr, u64>> writes;
+         std::function<void(PAddr, size_t)> callback_writes(
+             [&writes](PAddr address, size_t size) { writes.emplace_back(address, size); });
+@@ -198,6 +284,10 @@ struct GPU::Impl {
+         if (held_vs_download) {
+             renderer->ReadRasterizer()->EndCachedWrites();
+         }
++        if (writes.empty()) {
++            return std::nullopt;
++        }
++        return writes.front();
+     }
+ 
+     /// The guest writes to apply now. EDEN_UP_AHEAD_GUARD (ahead_guard.h):
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 31bcdc309a6ed4db692c763a15f8fbc9777f95b7..12a3c9367c9c727149f2ca250c7a4619a0a596c7 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -75,6 +75,7 @@
+ #include "video_core/nx2.h"
+ #include "video_core/nx2_async_readback.h"
+ #include "video_core/nx2_fast_draw.h"
++#include "video_core/up_backx.h" // 1004
+ #include "video_core/nx2_profile.h"
+ #include "video_core/query_dma.h"
+ #include "video_core/zpass_cut.h"
+@@ -2968,6 +2969,45 @@ void RasterizerVulkan::OnCacheInvalidations(std::span<const std::pair<DAddr, u64
+         buffer_cache.OverwriteNoteCpuWrites(ranges, ahead);
+         window.previous_fence = fence;
+     }
++    if (VideoCommon::UpBackX::g_back) [[unlikely]] {
++        // EDEN_UP_BACKX (zortos293/Lichii #1586, from jpkto f5edeabdbb): each cache's lock is
++        // taken once for all the writes, not once a write: guest CPU write traps hold the buffer
++        // cache's for long. The caches are independent (TextureCache::WriteMemory reads and
++        // changes only texture state, and the page counts both change commute), so each ends as
++        // with the writes applied one by one.
++        const auto valid = [](const std::pair<DAddr, u64>& range) {
++            return range.first != 0 && range.second != 0;
++        };
++        VideoCommon::UpBackX::Add(VideoCommon::UpBackX::g_counts.invalidation_batches);
++        VideoCommon::UpBackX::Add(VideoCommon::UpBackX::g_counts.invalidation_writes,
++                                  ranges.size());
++        {
++            std::scoped_lock lock{texture_cache.mutex};
++            for (const auto& range : ranges) {
++                if (valid(range)) {
++                    texture_cache.WriteMemory(range.first, range.second);
++                }
++            }
++        }
++        {
++            std::scoped_lock lock{buffer_cache.mutex};
++            // Out of the GPU-written ranges first: applying one write downloads the GPU's bytes
++            // elsewhere on its pages (WriteMemory), which would write over the next collected
++            // write.
++            buffer_cache.ClaimCpuWrites(ranges);
++            for (const auto& range : ranges) {
++                if (valid(range)) {
++                    buffer_cache.WriteMemory(range.first, range.second);
++                }
++            }
++        }
++        for (const auto& range : ranges) {
++            if (valid(range)) {
++                pipeline_cache.InvalidateRegion(range.first, range.second);
++            }
++        }
++        return;
++    }
+     {
+         std::scoped_lock lock{buffer_cache.mutex};
+         buffer_cache.ClaimCpuWrites(ranges);
+@@ -3748,8 +3788,48 @@ void RasterizerVulkan::AccelerateInlineToMemory(GPUVAddr address, size_t copy_si
+     }();
+     // One cache at a time: holding both while waiting for either (std::lock) waited longer, the
+     // fencing thread and CPU write traps holding one of them most of the time.
+-    bool uploaded;
+-    {
++    bool uploaded = false;
++    // EDEN_UP_BACKX (zortos293/Lichii #1586, from jpkto 7a5e5357cb): InlineMemory uploads only
++    // into GPU-written buffer data (gpu_modified_ranges), and Nx2NoteListHostWrite acts only on
++    // command list pages. Both places that add to gpu_modified_ranges (the buffer copy and the
++    // GPU-write path) mark the pages in Tegra::g_nx2_gpu_written_pages with it, under the lock,
++    // on Ampere, and the bits never clear within a session. So when no written page has either
++    // mark the locked section changes nothing, and the write skips the lock.
++    bool lock_free = false;
++    if (VideoCommon::UpBackX::g_back && defer) [[unlikely]] {
++        auto& counts = VideoCommon::UpBackX::g_counts;
++        VideoCommon::UpBackX::Add(counts.inline_writes);
++        const DAddr page_begin = Common::AlignDown(*cpu_addr, Core::DEVICE_PAGESIZE);
++        const DAddr page_end = Common::AlignUp(*cpu_addr + copy_size, Core::DEVICE_PAGESIZE);
++        const u64 table_pages = u64{Tegra::g_nx2_gpu_written_pages.size()} * 64;
++        const u64 first = page_begin >> Tegra::Nx2WrittenPageBits;
++        const u64 last = page_end > page_begin ? (page_end - 1) >> Tegra::Nx2WrittenPageBits : 0;
++        lock_free = copy_size != 0 && page_end > page_begin && last < table_pages &&
++                    Tegra::g_nx2_ampere.load(std::memory_order_relaxed);
++        const bool list_pages =
++            Tegra::g_nx2_has_command_list_pages.load(std::memory_order_relaxed);
++        for (u64 page = first; lock_free && page <= last; ++page) {
++            const u64 address = page << Tegra::Nx2WrittenPageBits;
++            if (Tegra::Nx2IsGpuWritten(address) ||
++                (list_pages && Tegra::Nx2IsCommandListPage(address))) {
++                lock_free = false;
++            }
++        }
++        if (lock_free) {
++            VideoCommon::UpBackX::Add(counts.inline_lock_skips);
++            if (VideoCommon::UpBackX::g_verify) {
++                std::scoped_lock lock{buffer_cache.mutex};
++                if (buffer_cache.IsRegionGpuModified(page_begin, page_end - page_begin)) {
++                    VideoCommon::UpBackX::Mismatch("inline write into GPU-written buffer data",
++                                                   *cpu_addr, copy_size);
++                    counts.verify_misses.fetch_add(1, std::memory_order_relaxed);
++                    buffer_cache.Nx2NoteListHostWrite(*cpu_addr, copy_size);
++                    uploaded = buffer_cache.InlineMemory(*cpu_addr, copy_size, memory);
++                }
++            }
++        }
++    }
++    if (!lock_free) {
+         std::scoped_lock lock{buffer_cache.mutex};
+         // Guest memory has the words now: a command list copy of the page no longer does.
+         buffer_cache.Nx2NoteListHostWrite(*cpu_addr, copy_size);
+diff --git a/src/video_core/up_backx.h b/src/video_core/up_backx.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..c6650427571aca0dd20cbdfeb085f9b6f5fafd27
+--- /dev/null
++++ b/src/video_core/up_backx.h
+@@ -0,0 +1,120 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <atomic>
++#include <chrono>
++#include <cstdlib>
++#include <mutex>
++#include <utility>
++
++#include "common/common_types.h"
++#include "common/logging.h"
++#include "common/pe_switch.h"
++
++/// The rest of zortos293/Lichii #1586 (5e428570d2, Zortos with capy-ai; from jpkto/Lichii
++/// 7a5e5357cb, f5edeabdbb, e7581fa9f6, DahBard/Lichii b95617b80f, skolvolt/Lichii 9267908a3d and
++/// lucastaonline's 865afaa4f3 of #1161): back micro-cuts. The page split of the same PR is 0835.
++///
++/// EDEN_UP_BACKX=1 (exact "1", 1004): the GPU back skips locks and passes that change nothing:
++///  - GPU::InvalidateGPUCache gathers only when a core's dirty memory manager shows a write
++///    (MayHavePending), with the page split on, EDEN_UP_HELD_VS_DOWNLOAD off and, with
++///    EDEN_UP_AHEAD_GUARD, no write gathered at a present, held or re-dirtied waiting;
++///  - AccelerateInlineToMemory skips the buffer cache's lock when no written page was ever
++///    GPU-written or is a command list page (Ampere, deferred inline path);
++///  - UsageTracker::Reset clears only the words tracked since the last reset;
++///  - OnCacheInvalidations takes each cache's lock once for all the writes.
++/// EDEN_UP_BACKX_DRAW=1 (exact "1", 1005): the draw side:
++///  - dynamic vertex input states kept in a 256-entry cache keyed by their registers;
++///  - the fast-draw prepare clock read only when its times are logged;
++///  - a uniform slot whose bytes changed 8 binds in a row binds its next 64 without the compare;
++///  - the drawing thread's fast-draw breaks skip the locked add once the serial moved.
++/// EDEN_UP_BACKX_VERIFY=1 (exact "1", with EDEN_UP_BACKX): every skip of 1004 also runs the work
++/// it replaces and logs "EDEN_UP_BACKX verify mismatch" where that work would have done
++/// something; the gather check tells a write collected after the check (a race the next call
++/// covers) from a missed one.
++/// Unset: as before. Read in VideoCore::CreateGPU (env.txt is read in main).
++namespace VideoCommon::UpBackX {
++
++inline bool g_back{};
++inline bool g_draw{};
++inline bool g_verify{};
++
++/// Counters. Most are kept by one thread (the back): a plain load and store, no locked add.
++struct Counts {
++    std::atomic<u64> gathers{};          ///< InvalidateGPUCache calls (switch on)
++    std::atomic<u64> gathers_skipped{};
++    std::atomic<u64> gather_blocked{};   ///< nothing pending, but a guard kept the gather
++    std::atomic<u64> inline_writes{};
++    std::atomic<u64> inline_lock_skips{};
++    std::atomic<u64> tracker_resets{};
++    std::atomic<u64> tracker_words_cleared{};
++    std::atomic<u64> tracker_words_spared{};
++    std::atomic<u64> invalidation_batches{};
++    std::atomic<u64> invalidation_writes{};
++    std::atomic<u64> vertex_input_builds{};
++    std::atomic<u64> vertex_input_hits{};
++    std::atomic<u64> draw_clock_skips{};
++    std::atomic<u64> uniform_streaks{};
++    std::atomic<u64> uniform_direct_binds{};
++    std::atomic<u64> break_add_skips{};
++    std::atomic<u64> verify_races{};
++    std::atomic<u64> verify_misses{};
++};
++
++inline Counts g_counts;
++
++inline void Add(std::atomic<u64>& counter, u64 value = 1) noexcept {
++    counter.store(counter.load(std::memory_order_relaxed) + value, std::memory_order_relaxed);
++}
++
++inline void ReadSwitches() {
++    g_back = Common::PeSwitch("EDEN_UP_BACKX");
++    g_draw = Common::PeSwitch("EDEN_UP_BACKX_DRAW");
++    g_verify = g_back && Common::PeSwitch("EDEN_UP_BACKX_VERIFY");
++    if (g_back || g_draw) {
++        LOG_INFO(HW_GPU, "EDEN_UP_BACKX: back cuts {}, draw cuts {}, verify {}", g_back ? "on" : "off",
++                 g_draw ? "on" : "off", g_verify ? "on" : "off");
++    }
++}
++
++/// Verify: a skip the locked work contradicts (logged 64 times at most).
++inline void Mismatch(const char* what, u64 address, u64 size) {
++    static std::atomic<u32> logged{};
++    if (logged.fetch_add(1, std::memory_order_relaxed) < 64) {
++        LOG_ERROR(HW_GPU, "EDEN_UP_BACKX verify mismatch: {} at {:#x}+{:#x}", what, address, size);
++    }
++}
++
++/// One line every 10 s while a switch is on, looked at every 4096 gathers (InvalidateGPUCache,
++/// ~900 a frame).
++inline void MaybeLog() {
++    static std::mutex mutex;
++    static auto last = std::chrono::steady_clock::now();
++    std::scoped_lock lock{mutex};
++    const auto now = std::chrono::steady_clock::now();
++    if (now - last < std::chrono::seconds{10}) {
++        return;
++    }
++    last = now;
++    Counts& c = g_counts;
++    const auto take = [](std::atomic<u64>& counter) {
++        return counter.exchange(0, std::memory_order_relaxed);
++    };
++    LOG_INFO(HW_GPU,
++             "EDEN_UP_BACKX in 10 s: gathers {} skipped {} (kept by a guard {}), inline writes {} "
++             "lock skips {}, tracker resets {} words cleared {} spared {}, invalidation batches {} "
++             "writes {} | draw: vertex input builds {} cache hits {}, clock skips {}, uniform "
++             "streaks {} direct binds {}, break adds skipped {} | verify races {} misses {} (must "
++             "stay 0)",
++             take(c.gathers), take(c.gathers_skipped), take(c.gather_blocked),
++             take(c.inline_writes), take(c.inline_lock_skips), take(c.tracker_resets),
++             take(c.tracker_words_cleared), take(c.tracker_words_spared),
++             take(c.invalidation_batches), take(c.invalidation_writes),
++             take(c.vertex_input_builds), take(c.vertex_input_hits), take(c.draw_clock_skips),
++             take(c.uniform_streaks), take(c.uniform_direct_binds), take(c.break_add_skips),
++             take(c.verify_races), take(c.verify_misses));
++}
++
++} // namespace VideoCommon::UpBackX
+diff --git a/src/video_core/video_core.cpp b/src/video_core/video_core.cpp
+index 54fb8f6239f3804627ff526549ebff82d704034c..6705cb68cfd65dfffd917e926c53a1bfdac5c981 100644
+--- a/src/video_core/video_core.cpp
++++ b/src/video_core/video_core.cpp
+@@ -11,6 +11,7 @@
+ #include "core/core.h"
+ #include "core/frontend/emu_window.h"
+ #include "core/frontend/graphics_context.h"
++#include "core/gpu_dirty_memory_manager.h"
+ #include "video_core/host1x/gpu_device_memory_manager.h"
+ #include "video_core/host1x/host1x.h"
+ #include "video_core/renderer_base.h"
+@@ -19,6 +20,7 @@
+ #include "video_core/renderer_opengl/renderer_opengl.h"
+ #endif
+ #include "video_core/renderer_vulkan/renderer_vulkan.h"
++#include "video_core/up_backx.h" // 1004
+ #include "video_core/video_core.h"
+ 
+ namespace {
+@@ -48,6 +50,9 @@ namespace VideoCore {
+ /// @brief Creates an emulated GPU instance using the given system context.
+ void CreateGPU(std::optional<Tegra::GPU>& gpu, Core::Frontend::EmuWindow& emu_window, Core::System& system) {
+     Settings::UpdateRescalingInfo();
++    // EDEN_UP_BACKX / _DRAW / _VERIFY (1004, 1005): before the caches and GPU threads exist.
++    VideoCommon::UpBackX::ReadSwitches();
++    Core::GPUDirtyMemoryManager::count_collects = VideoCommon::UpBackX::g_verify;
+ 
+     const auto nvdec_value = Settings::values.nvdec_emulation.GetValue();
+     const bool use_nvdec = nvdec_value != Settings::NvdecEmulation::Off;

@@ -1,0 +1,235 @@
+From: EglantinePS5
+Subject: [PATCH] up: checker fixes to 0984 (zortos293/Lichii #1520) and 0985 (#1585), off unless set
+
+Fixes found in review of T182c (read in source; compile-checked, not run). Credits as 0984/0985:
+zortos293/Lichii #1520 (8dcea11) and #1585 (19ae2d1), Zortos.
+
+- EDEN_UP_L1585_STATE_BLOCKS: the front worked out the fast draw check with
+  Maxwell3D::IsFastDrawParameter, whose EDEN_UP_L1161_DRAW branch (IsL1161VertexFormat) also sets
+  Nx2FastDraw::g_delta.vertex_formats_changed: a plain bool of the back's, written from the front
+  thread out of stream order, and never set by the back for a block it stores at once (with
+  EDEN_UP_L1161_DRAW switched off live in between, a delta draw could keep stale vertex input).
+  Now the front asks without the side effect (IsFastDrawParameter(method, false)) and marks a
+  State entry holding a vertex attribute format word (HasVertexFormat, bit 5 of the head); the
+  back, storing such a block at once with EDEN_UP_FAST_DRAW on, runs the check for those words
+  as WriteDirtyRegister would. Upstream has the same front call.
+- EDEN_UP_L1520_ASYNC_COPY: one line at the first channel saying whether it can act. It only
+  acts at resumes that refresh the queued lists: EDEN_NX2_RESNAPSHOT on and EDEN_NX2_FETCH_COUNT,
+  EDEN_NX2_DESYNC_FIX, EDEN_UP_RESUME_KEEP_COPY all 0. The play settings have
+  EDEN_NX2_RESNAPSHOT=0 and EDEN_NX2_FETCH_COUNT=1: there it says IDLE and does nothing.
+- EDEN_UP_L1520_WORDS_POOL: one line at the first channel with its state and cap.
+
+Unset: nothing here runs or prints. No file here is a translation id input and no name is added
+to TranslationSwitches: KEEPS THE STORE.
+
+---
+diff --git a/src/video_core/dma_pusher.cpp b/src/video_core/dma_pusher.cpp
+index b5f44e75be..764b81e1a4 100644
+--- a/src/video_core/dma_pusher.cpp
++++ b/src/video_core/dma_pusher.cpp
+@@ -1060,6 +1060,26 @@ DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Cont
+             KeepCopyParserClash(SplitCheckMode());
+         }
+     }
++    // EDEN_UP_L1520_ASYNC_COPY / _WORDS_POOL (0986): proves each switch was read, and says when
++    // ASYNC_COPY cannot act (its count line comes only from resumes that refresh the lists).
++    if (static std::atomic<bool> reported{}; AsyncCopyEnabled() && !reported.exchange(true)) {
++        const bool idle = !ResnapshotEnabled() || FetchCountMode() != 0 ||
++                          DesyncFixMode() != 0 || ResumeKeepCopyMode() != 0;
++        LOG_WARNING(HW_GPU,
++                    "EDEN_UP_L1520_ASYNC_COPY=1 {}: EDEN_NX2_RESNAPSHOT {}, EDEN_NX2_FETCH_COUNT={}, "
++                    "EDEN_NX2_DESYNC_FIX={}, EDEN_UP_RESUME_KEEP_COPY={} (it acts only with "
++                    "RESNAPSHOT on and the other three 0; DESYNC_FIX and KEEP_COPY also by title)",
++                    idle ? "IDLE" : "on", ResnapshotEnabled() ? "on" : "=0", FetchCountMode(),
++                    DesyncFixMode(), ResumeKeepCopyMode());
++    }
++    if (static std::atomic<bool> reported{};
++        std::getenv("EDEN_UP_L1520_WORDS_POOL") != nullptr && !reported.exchange(true)) {
++        const char* const value = std::getenv("EDEN_UP_L1520_WORDS_POOL");
++        LOG_WARNING(HW_GPU, "EDEN_UP_L1520_WORDS_POOL={} ({}): at most {} MiB of free command "
++                            "word blocks kept (EDEN_UP_L1520_WORDS_POOL_MIB)",
++                    value, CommandWordsPool::PoolEnabled() ? "on" : "off",
++                    CommandWordsPool::PoolCapBytes() >> 20);
++    }
+ }
+ 
+ DmaPusher::~DmaPusher() {
+diff --git a/src/video_core/engines/maxwell_3d.cpp b/src/video_core/engines/maxwell_3d.cpp
+index ecd33a8333..315f2cab10 100644
+--- a/src/video_core/engines/maxwell_3d.cpp
++++ b/src/video_core/engines/maxwell_3d.cpp
+@@ -634,7 +634,7 @@ void Maxwell3D::ReportOneCall() {
+              one_call_macro, one_call_sink, one_call_verified, one_call_differences);
+ }
+ 
+-bool Maxwell3D::IsFastDrawParameter(u32 method) {
++bool Maxwell3D::IsFastDrawParameter(u32 method, bool note) {
+     switch (method) {
+     case MAXWELL3D_REG_INDEX(const_buffer.size):
+     case MAXWELL3D_REG_INDEX(const_buffer.address_high):
+@@ -651,16 +651,21 @@ bool Maxwell3D::IsFastDrawParameter(u32 method) {
+     default:
+         return DrawManager::IsInstanceLoopMethod(method) || IsFastDrawDeltaMethod(method) ||
+                IsFastDrawVertexBuffer(method) || IsFastDrawExempt(method) ||
+-               IsL974DrawParameter(method) || IsL1161VertexFormat(method);
++               IsL974DrawParameter(method) || IsL1161VertexFormat(method, note);
+     }
+ }
+ 
+-bool Maxwell3D::IsL1161VertexFormat(u32 method) {
++bool Maxwell3D::IsVertexFormatWord(u32 method) {
++    constexpr u32 first = MAXWELL3D_REG_INDEX(vertex_attrib_format);
++    return method >= first && method < first + Regs::NumVertexAttributes;
++}
++
++bool Maxwell3D::IsL1161VertexFormat(u32 method, bool note) {
+     constexpr u32 first = MAXWELL3D_REG_INDEX(vertex_attrib_format);
+     const bool light = VideoCommon::Nx2FastDraw::L1161DrawEnabled() &&
+            VideoCommon::Nx2FastDraw::g_vertex_formats_dynamic.load(std::memory_order_relaxed) &&
+            method >= first && method < first + Regs::NumVertexAttributes;
+-    if (light) VideoCommon::Nx2FastDraw::g_delta.vertex_formats_changed = true;
++    if (light && note) VideoCommon::Nx2FastDraw::g_delta.vertex_formats_changed = true;
+     return light;
+ }
+ 
+@@ -937,7 +942,8 @@ void Maxwell3D::TraceFirstMethodWrite(u32 method, u32 argument) {
+ // Lichii PR 184 (commit 4a0bc9a007, with bfc3eb523d for the page limit): macros write constant
+ // buffers a word at a time, and each word walked the GPU page table on its own.
+ void Maxwell3D::WriteStateRegisters(Core::System& system, std::span<const u64, 4> flags,
+-                                    std::span<const u64> writes, u32 last_break) {
++                                    std::span<const u64> writes, u32 last_break,
++                                    bool vertex_formats) {
+     // EDEN_UP_L1585_STATE_BLOCKS (zortos293/Lichii #1585, 19ae2d1, Zortos; after Damfortx's
+     // 76548f0bf1 and stephenjayakar's #641/#717). Ported onto this tree's split: CallMethod's
+     // state register branch here is ProcessShadowRam, the same-value skip and WriteDirtyRegister
+@@ -970,6 +976,15 @@ void Maxwell3D::WriteStateRegisters(Core::System& system, std::span<const u64, 4
+         return;
+     }
+     StoreStateRegisters(flags, writes);
++    // 0986: WriteDirtyRegister's fast draw check also marks the delta for an EDEN_UP_L1161_DRAW
++    // vertex format word (IsL1161VertexFormat); the front's check has no side effect, so here.
++    if (vertex_formats && VideoCommon::Nx2FastDraw::Enabled()) [[unlikely]] {
++        for (const u64 write : writes) {
++            if (IsVertexFormatWord(static_cast<u32>(write))) {
++                static_cast<void>(IsFastDrawParameter(static_cast<u32>(write)));
++            }
++        }
++    }
+     if (last_break != NoBreak && VideoCommon::Nx2FastDraw::Enabled()) {
+         VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Register, last_break);
+     }
+@@ -2363,8 +2378,10 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
+         // EDEN_UP_L1585_STATE_BLOCKS (zortos293/Lichii #1585, 19ae2d1): sent with the state
+         // writes around it, dirty flags and the fast draw check worked out here. The back
+         // consumes its method sink first, so nothing is left in it.
++        // 0986: the check without IsL1161VertexFormat's side effect (the back's delta, marked
++        // where the block is stored).
+         split.StateWrite(this, method, value, {dirty.tables[0][method], dirty.tables[1][method]},
+-                         !IsFastDrawParameter(method));
++                         !IsFastDrawParameter(method, false), IsVertexFormatWord(method));
+     } else if (!execution_mask[method] && split.RegBlocks()) {
+         split.PlainWrite(this, method, argument);
+     } else if (method >= cb_data_first && method < cb_data_first + 16 && split.RegBlocks()) {
+diff --git a/src/video_core/engines/maxwell_3d.h b/src/video_core/engines/maxwell_3d.h
+index a41a207330..3e21186eb1 100644
+--- a/src/video_core/engines/maxwell_3d.h
++++ b/src/video_core/engines/maxwell_3d.h
+@@ -3227,8 +3227,10 @@ public:
+     /// (and with the write history, first-write trace or profile on, a macro running here, shadow
+     /// RAM replay or a deferred instanced draw) a CallMethod of each.
+     /// EDEN_UP_L1585_STATE_BLOCKS_VERIFY=1 also runs them one by one and compares.
++    /// `vertex_formats` (0986): a write of the block is a vertex attribute format word, for which
++    /// a store at once still marks the fast draw delta as the write one by one would.
+     void WriteStateRegisters(Core::System& system, std::span<const u64, 4> flags,
+-                             std::span<const u64> writes, u32 last_break);
++                             std::span<const u64> writes, u32 last_break, bool vertex_formats);
+ 
+     /// EDEN_UP_INSTANCE_RUNS=1 (repeat_draw_begin; zortos293/Lichii PR #1597): GpuSplit's back,
+     /// right after CallMethod ran one draw.begin of a run of identical entries: `count` more of
+@@ -3313,12 +3315,16 @@ public:
+     /// EDEN_UP_FAST_DRAW (nx2_fast_draw.h): registers that only parameterize the next draw, the
+     /// next constant buffer bind or the buffers a delta draw binds again, or that
+     /// ProcessMethodCall handles, so writing them doesn't end draw reuse.
+-    static bool IsFastDrawParameter(u32 method);
++    /// `note` false (EDEN_UP_L1585_STATE_BLOCKS' front, 0986): no side effect (IsL1161VertexFormat
++    /// marks the back's delta otherwise).
++    static bool IsFastDrawParameter(u32 method, bool note = true);
+     /// Methods fast draw records as light changes (constant buffer data and binds).
+     static bool IsFastDrawDeltaMethod(u32 method);
+     /// EDEN_UP_L1161_DRAW: a vertex attribute format word while vertex input is dynamic state;
+     /// marks the delta so TakeReusableDraw compares the pipeline's attribute types.
+-    static bool IsL1161VertexFormat(u32 method);
++    static bool IsL1161VertexFormat(u32 method, bool note = true);
++    /// EDEN_UP_L1585_STATE_BLOCKS (0986): `method` is a vertex attribute format word (no switch read).
++    static bool IsVertexFormatWord(u32 method);
+     /// EDEN_UP_L974_CHAIN: report operands, MME memory words (front macros only), the vertex id
+     /// base, counter resets and the render condition are draw parameters.
+     static bool IsL974DrawParameter(u32 method);
+diff --git a/src/video_core/gpu_split.cpp b/src/video_core/gpu_split.cpp
+index b57b42535c..e2948263d8 100644
+--- a/src/video_core/gpu_split.cpp
++++ b/src/video_core/gpu_split.cpp
+@@ -240,6 +240,7 @@ void GpuSplit::Stop() {
+     regs_count = 0;
+     state_break = 0;
+     state_breaks = false;
++    state_vertex_formats = false;
+     write_position = 0;
+     last_writer_position = 0;
+     dma_writer_at = dma_unranged_at = ~u64{0};
+@@ -1120,7 +1121,7 @@ size_t GpuSplit::Execute(const u64* entry, size_t words) {
+             ->WriteStateRegisters(*system,
+                                   std::span<const u64, StateFlagWords>{entry + 1, StateFlagWords},
+                                   std::span<const u64>{entry + 1 + StateFlagWords, count},
+-                                  last_break);
++                                  last_break, (head & HasVertexFormat) != 0);
+         return 1 + StateFlagWords + count;
+     }
+     case Kind::CbData: {
+diff --git a/src/video_core/gpu_split.h b/src/video_core/gpu_split.h
+index 0cd272d562..c8a1710120 100644
+--- a/src/video_core/gpu_split.h
++++ b/src/video_core/gpu_split.h
+@@ -271,7 +271,7 @@ public:
+     /// dirty flags at once (Maxwell3D::WriteStateRegisters). `flags`: the dirty flags the register
+     /// sets (both tables); `breaks`: changing it ends EDEN_UP_FAST_DRAW reuse.
+     void StateWrite(Tegra::Engines::EngineInterface* engine, u32 method, u32 value,
+-                    std::array<u8, 2> flags, bool breaks) {
++                    std::array<u8, 2> flags, bool breaks, bool vertex_format) {
+         SelectEngine(engine);
+         if (regs_entry != nullptr && regs_kind != Kind::State) {
+             CloseRegs();
+@@ -284,7 +284,9 @@ public:
+             }
+             state_breaks = false;
+             state_break = 0;
++            state_vertex_formats = false;
+         }
++        state_vertex_formats = state_vertex_formats || vertex_format;
+         regs_entry[1 + StateFlagWords + regs_count] = (u64{value} << 32) | method;
+         for (const u8 flag : flags) {
+             regs_entry[1 + flag / 64] |= u64{1} << (flag % 64);
+@@ -978,6 +980,7 @@ private:
+     static constexpr u64 HasSegment = 1 << 5;
+     static constexpr u64 Direct = 1 << 6; ///< Method: call it even if not executable (macros)
+     static constexpr u64 HasBreak = 1 << 4; ///< State: a write ends fast draw reuse
++    static constexpr u64 HasVertexFormat = 1 << 5; ///< State: a vertex attribute format write (0986)
+     static constexpr size_t StateFlagWords = 4; ///< State: 256 dirty flags
+ 
+     static constexpr size_t RingWords = size_t{1} << 20; // 8 MiB
+@@ -1023,6 +1026,7 @@ private:
+         size_t words = 1 + count;
+         if (regs_kind == Kind::State) {
+             regs_entry[0] = static_cast<u64>(Kind::State) | (state_breaks ? HasBreak : 0) |
++                            (state_vertex_formats ? HasVertexFormat : 0) |
+                             (u64{count} << 8) | (u64{state_break & 0xffff} << 16);
+             words += StateFlagWords;
+         } else {
+@@ -1141,6 +1145,7 @@ private:
+     /// EDEN_UP_L1585_STATE_BLOCKS: the open State entry's last write that ends fast draw reuse.
+     u32 state_break{};
+     bool state_breaks{};
++    bool state_vertex_formats{}; ///< 0986: the open State entry holds a vertex format write
+     Kind regs_kind{Kind::Regs};
+     enum class FrontWriteKind : u8 { Exact, Add, Max, Unknown };
+     struct FrontWrite {

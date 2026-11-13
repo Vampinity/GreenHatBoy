@@ -20,7 +20,7 @@ This repository is emulator work and test logs. It is not the game and does not 
 
 ## Is there a download?
 
-**Not for newcomers yet.** The game starts, the opening plays and the first village is playable. But on a fresh install the very first start still crashes on the way there about half the time, even with the best settings we have, and we do not want your first try to end like that. Starting again gets in: with the best settings, every second and third start in our tests reached the village.
+**Not for newcomers yet.** The game starts, the opening plays and the first village is playable. But played by hand it still crashes: on 13 November every start we played ended in a crash, the last three at the load from the field into the next area. We do not want your first try to end like that. The very first start on a fresh install, which crashed at the house door about half the time on 12 November, got through in 2 of 2 scripted first starts on 13 November (build T144, docked, 1x) with a graphics driver change.
 
 - Test builds are shared directly with people who already help test. There is no public download here.
 - **The first alpha** (an early test version) comes when a fresh install gets through its first start and into the first village without crashing on the way. We test exactly that on a real console, and the result goes on this page. No date until it passes.
@@ -31,7 +31,7 @@ This repository is emulator work and test logs. It is not the game and does not 
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/img/progress-dark.svg">
     <source media="(prefers-color-scheme: light)" srcset="docs/img/progress.svg">
-    <img src="docs/img/progress.svg" width="760" alt="What has been fixed, by date, on a base PS5: it starts (5 November); fog gone and leaves back (6 and 7 November); no dark flashes and movies closer to sync (8 November); shorter freezes on a first visit (9 November); 10% faster, and memory waits in tests (10 and 11 November); no black screen on first start, title movie smooth, no jumping icons (12 November). Now: a fresh install past the door, long-play crashes, then open-area speed. Goal: the whole game. Steps of work, not a share of the game.">
+    <img src="docs/img/progress.svg" width="760" alt="What has been fixed, by date, on a base PS5: it starts (5 November); fog gone and leaves back (6 and 7 November); no dark flashes and movies closer to sync (8 November); shorter freezes on a first visit (9 November); 10% faster, and memory waits in tests (10 and 11 November); no black screen on first start, title movie smooth, no jumping icons (12 November); a first start past the house door, in tests (13 November). Now: the load into the next area, crashes in long play, open-area speed. Goal: the whole game. Steps of work, not a share of the game.">
   </picture>
 </p>
 
@@ -84,9 +84,10 @@ Measured on 11 November on a base PS5, firmware 12.40, docked, full resolution, 
 - The opening movies were badly out of sync. They are much better now, not perfect yet.
 
 **Being improved right now**
-- **The very first start on a fresh install.** This is what holds the alpha back. From the second start on the house door is solved: with the best settings, 16 of 16 starts got through it in our tests. A true first start still crashes in its first ten minutes about half the time: with the best settings, 4 of 9 reached the village on 12 November. Starting again gets in. The cause: on a first start about 40 new drawing programs are built at once at the door, and that makes a wave of memory use of half a gigabyte or more in a few seconds. No setting we tried stops that wave. A first fix (building fewer at once) was written, but two reviews showed it would not make the wave smaller. The next build measures which part of the emulator takes that memory; the fix follows from that.
+- **The load from the field into the next area.** This is what holds the alpha back now. Played by hand on 13 November, every start crashed, the last three at this load. In our scripted starts (handheld, 1x) on build T179, the two starts that died there died the same way: a thread waited 10 seconds for one block of memory while no frame was drawn, so nothing freed any. Build T181 has a change for that: with it 3 of 3 scripted starts got through the load, against 2 of 3 with the same settings without it, in the same round. Not played by hand yet.
+- **The very first start on a fresh install.** On 12 November it crashed at the house door about half the time (4 of 9 reached the village with the best settings). The cause turned out to be one graphics driver compile that took up to 909 MB; with a driver change it takes 78 to 89 MB, and 2 of 2 scripted first starts (build T144, docked, 1x) got through into the village on 13 November. The change is a setting, in the play settings of test build T180, not on by default.
 - **Crashes after long play.** We know the cause, and the fix is being tested.
-- **Speed in wide open areas.** The more objects there are on screen, the slower it runs. The limit there is the emulator's own work for each object, not the PS5's graphics chip.
+- **Speed in wide open areas.** The more objects there are on screen, the slower it runs. The limit there is the emulator's own work for each object, not the PS5's graphics chip. The area after the field is different: it runs at about 15 fps in our scripted starts (build T180, handheld, 1x), and there the graphics chip itself is busy for about 41 ms a frame, against 17 to 19 in the field.
 - **The opening the first time you watch it**: stutter, and a white flash on one camera cut.
 - **A short stutter on the title screen** at the moment the logo comes up.
 
@@ -144,16 +145,16 @@ Three of us are in this together: Vampinity, GrowingBlackBeans and waveydude.
 
 ### [Vampinity](https://github.com/Vampinity) · started and runs the project
 
-Builds every version, tests it on a real base PS5 and writes the fixes that come out of that. From 5 to 12 November, in numbers (counted on the morning of 12 November):
+Builds every version, tests it on a real base PS5 and writes the fixes that come out of that. From 5 to 14 November, in numbers (counted early on 14 November):
 
 | | |
 |---:|---|
-| **88 hours** | of PS5 time in automated test batches |
-| **1,210** | test runs, in 340 batches |
-| **71 hours** | of recorded picture checked frame by frame, about 15 million frames |
-| **133** | test builds |
-| **498** | patches in the newest build: own work and ports of other people's work |
-| **515** | switches, own and ported, each tracked in a ledger with the runs that used it |
+| **112 hours** | of PS5 time in automated test batches |
+| **1,379** | test runs, in 394 batches |
+| **92 hours** | of recorded picture checked frame by frame, about 20 million frames |
+| **167** | test builds |
+| **626** | patches in the newest build: own work and ports of other people's work |
+| **675** | switches, own and ported, each tracked in a ledger with the runs that used it |
 
 He built the test bench that runs by itself on a real PS5: it starts the game, plays a set walk, records the picture and checks every frame for flashes and stutter. With it he found what causes the flashes in the fast settings and built a guard against them, cut the short freezes in play from over 4 seconds to about 1, and proved the fix that took the dark flashes out of the default settings. On 12 November he found why a fresh install crashed on its very first start and got past that point with two settings, and made the movie behind the title screen play smoothly. He also measured what holds the wide open areas back and where the memory runs out, which is where the work goes next.
 

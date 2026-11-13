@@ -1,0 +1,489 @@
+From: EglantinePS5
+Subject: [PATCH] up: back micro-cuts from #1586, the draw side (EDEN_UP_BACKX_DRAW=1, off unless set)
+
+Upstream: zortos293/Lichii 5e428570d2 (PR #1586, Zortos (zortos293) with capy-ai), micro-cuts 2-5:
+the vertex input cache from jpkto/Lichii e7581fa9f6, the fast-draw clock from DahBard/Lichii
+b95617b80f, uniform streaks from skolvolt/Lichii 9267908a3d, the break counter from lucastaonline's
+865afaa4f3 (#1161).
+
+EDEN_UP_BACKX_DRAW=1 (exact "1"):
+- UpdateVertexInput keeps built dynamic vertex input states in a 256-entry direct-mapped cache
+  (new video_core/vertex_input_cache.h) keyed by every register the build reads (attribute format
+  words, stream strides, divisors, instancing, repacked bindings, device limits) and records them
+  by shared reference. With EDEN_UP_FAST_DRAW_VERIFY a hit is also built fresh and compared (an
+  error line, and the fresh one is recorded, on a difference). Our build keeps its repacked offset
+  (+3) and stride (72), both covered by the repacked bits of the key.
+- PrepareDraw reads the fast-draw prepare clock (two fenced time stamps a draw) only when
+  ReportFastDraws logs it (EDEN_NX2_GPU_PROFILE or EDEN_UP_FAST_DRAW_VERIFY).
+- BindSmallUniformReusing: after 8 binds in a row whose bytes differ from the slot's last, the
+  slot's next 64 binds read guest memory straight into its bytes and stream them, without the
+  scratch read and memcmp; a bind of the same bytes ends a streak. The slot's ref, tick, range and
+  bytes stay the bind's own (EDEN_UP_L949_UBO_KEEP and its verify unchanged); EDEN_UP_UBO_SHARE
+  is tried first as before.
+- Nx2FastDraw::Break on the drawing thread skips the locked add once one of its breaks moved the
+  serial since its last Serial() read (every read re-arms); other threads always add. g_serial
+  moves to its own cache line (always; layout only).
+The count line is 1004's (HW_GPU, every 10 s): "draw: vertex input builds N cache hits N, clock
+skips N, uniform streaks N direct binds N, break adds skipped N". Unset: as before.
+Not taken: upstream's #1519 vertex-input verify plumbing (T182 ports #1519 separately; a merge
+will meet in UpdateVertexInput). No translation id input: KEEPS THE STORE.
+
+---
+diff --git a/src/video_core/buffer_cache/uniform_stream_reuse.h b/src/video_core/buffer_cache/uniform_stream_reuse.h
+index 52d9761bb578c99491c4296a5d53915d1a20e21e..b89bb4e30ea5e575995ba5cbb051bc58efad24eb 100644
+--- a/src/video_core/buffer_cache/uniform_stream_reuse.h
++++ b/src/video_core/buffer_cache/uniform_stream_reuse.h
+@@ -17,6 +17,7 @@
+ #include "common/live_switch.h"
+ #include "common/live_switch.h"
+ #include "common/logging.h"
++#include "video_core/up_backx.h" // 1005
+ 
+ namespace VideoCommon {
+ 
+@@ -82,6 +83,10 @@ public:
+     static constexpr u32 MaxBytes = 4096; // BufferCache's DEFAULT_SKIP_CACHE_SIZE
+     static constexpr size_t NumStages = 5;
+     static constexpr size_t NumSlots = 18; // Maxwell constant buffers per stage
++    /// EDEN_UP_BACKX_DRAW: after this many binds in a row with other bytes than the slot's last,
++    /// the slot's next DirectBinds binds skip the compare (per-draw matrices change every bind).
++    static constexpr u16 MissStreak = 8;
++    static constexpr u16 DirectBinds = 64;
+ 
+     struct Slot {
+         Ref ref{};
+@@ -89,6 +94,8 @@ public:
+         u64 device_addr{}; ///< Where BindSmallUniformReusing last read (EDEN_UP_L949_UBO_KEEP)
+         u64 serial{};      ///< `serial` below at this slot's last own bind (EDEN_UP_UBO_SHARE on)
+         u32 size{};        // 0: nothing streamed yet
++        u16 misses{};      ///< EDEN_UP_BACKX_DRAW: binds in a row whose bytes differed
++        u16 direct{};      ///< EDEN_UP_BACKX_DRAW: binds left that copy without comparing
+         std::array<u8, MaxBytes> bytes{};
+     };
+ 
+@@ -97,6 +104,8 @@ public:
+             for (Slot& slot : stage) {
+                 slot.size = 0;
+                 slot.tick = 0;
++                slot.misses = 0;
++                slot.direct = 0;
+             }
+         }
+     }
+@@ -269,6 +278,38 @@ template <class Runtime, class DeviceMemory>
+         ShareSmallUniform(runtime, device_memory, reuse, slot, stage, index, device_addr, size)) {
+         return true;
+     }
++    // EDEN_UP_BACKX_DRAW (zortos293/Lichii #1586, from skolvolt 9267908a3d): a slot whose bytes
++    // change every bind reads straight into its bytes, no compare. The slot's ref, tick, range
++    // and bytes stay the bind's own, so EDEN_UP_L949_UBO_KEEP and its verify see what it read.
++    const bool streaks = UpBackX::g_draw;
++    if (streaks && slot.direct != 0) [[unlikely]] {
++        --slot.direct;
++        device_memory.ReadBlockUnsafe(device_addr, slot.bytes.data(), size);
++        slot.size = size;
++        const std::span<u8> span = runtime.BindMappedUniformBuffer(stage, binding_index, size);
++        std::memcpy(span.data(), slot.bytes.data(), size);
++        slot.ref = runtime.LastStreamUniformRef();
++        slot.tick = runtime.CurrentTick();
++        if (share) {
++            slot.serial = ++reuse.serial;
++        }
++        UpBackX::Add(UpBackX::g_counts.uniform_direct_binds);
++        return true;
++    }
++    // A bind whose bytes differ from the slot's last: after MissStreak in a row, the next
++    // DirectBinds skip the compare. A bind of the same bytes ends a streak.
++    const auto note_bytes = [&](bool same) {
++        if (!streaks) [[likely]] {
++            return;
++        }
++        if (same) {
++            slot.misses = 0;
++        } else if (++slot.misses >= Reuse::MissStreak) {
++            slot.misses = 0;
++            slot.direct = Reuse::DirectBinds;
++            UpBackX::Add(UpBackX::g_counts.uniform_streaks);
++        }
++    };
+     // One live choice per bind. Both branches leave bytes/size/ref/tick complete,
+     // and both stream from their own captured bytes; a flip needs no slot reset.
+     // Test memories have no GetSpan.
+@@ -281,6 +322,7 @@ template <class Runtime, class DeviceMemory>
+         }
+         if (guest != nullptr) {
+             const bool same = slot.size == size && std::memcmp(slot.bytes.data(), guest, size) == 0;
++            note_bytes(same);
+             if (same && slot.tick == runtime.CurrentTick()) {
+                 runtime.RebindStreamUniform(slot.ref, size);
+                 if (share) {
+@@ -307,6 +349,7 @@ template <class Runtime, class DeviceMemory>
+ 
+     const bool same_bytes =
+         slot.size == size && std::memcmp(slot.bytes.data(), scratch, size) == 0;
++    note_bytes(same_bytes);
+     if (same_bytes && slot.tick == runtime.CurrentTick()) {
+         runtime.RebindStreamUniform(slot.ref, size);
+         if (share) {
+diff --git a/src/video_core/nx2_fast_draw.h b/src/video_core/nx2_fast_draw.h
+index 6481f78db926698a5e53b70a3b5126df95dc49fa..656a8b5383c38e6fc7e0e06c211ea92023975697 100644
+--- a/src/video_core/nx2_fast_draw.h
++++ b/src/video_core/nx2_fast_draw.h
+@@ -12,6 +12,7 @@
+ #include "common/common_types.h"
+ #include "common/live_switch.h"
+ #include "common/pe_switch.h"
++#include "video_core/up_backx.h" // 1005
+ 
+ namespace Tegra {
+ class MemoryManager;
+@@ -168,10 +169,19 @@ inline std::atomic<bool> g_strides_outside_key{false};
+ /// once by the Vulkan rasterizer. A subset of g_strides_outside_key.
+ inline std::atomic<bool> g_vertex_formats_dynamic{false};
+ 
+-inline std::atomic<u64> g_serial{1};
++/// On its own cache line, away from what every thread reads (EDEN_UP_BACKX_DRAW, 1005).
++alignas(64) inline std::atomic<u64> g_serial{1};
+ /// The last break's reason and, for Register and Method, its 3D method (diagnostics).
+ inline std::atomic<u32> g_last_break{};
+ 
++/// EDEN_UP_BACKX_DRAW (zortos293/Lichii #1586, from lucastaonline's 865afaa4f3 of #1161): the
++/// thread that draws reads the serial before each draw (Serial). Once one of its breaks bumped
++/// the serial since that read, more change nothing it compares, so they skip the locked add
++/// (every changed 3D register breaks). Threads that never read it (the front's puller, guest CPU
++/// write traps, unmaps) always bump.
++inline thread_local bool t_reads_serial{};
++inline thread_local bool t_serial_bumped{};
++
+ /// Set once by Maxwell3D's constructor: the 10-second log line will be written
+ /// (EDEN_NX2_GPU_PROFILE or EDEN_UP_FAST_DRAW_VERIFY), so Break counts each reason.
+ inline std::atomic<bool> g_chain_diagnostics{false};
+@@ -187,12 +197,30 @@ inline void Break(Reason reason, u32 method = 0) {
+         if (ChainDiagnosticsEnabled()) {
+             g_break_counts[static_cast<size_t>(reason)].fetch_add(1, std::memory_order_relaxed);
+         }
++        if (UpBackX::g_draw) [[unlikely]] {
++            // Stored by every break, also those that skip the add, so it names the last one.
++            g_last_break.store(static_cast<u32>(reason) | (method << 8),
++                               std::memory_order_relaxed);
++            if (t_reads_serial && t_serial_bumped) {
++                UpBackX::Add(UpBackX::g_counts.break_add_skips);
++                return;
++            }
++            g_serial.fetch_add(1, std::memory_order_relaxed);
++            t_serial_bumped = t_reads_serial;
++            return;
++        }
+         g_serial.fetch_add(1, std::memory_order_relaxed);
+         g_last_break.store(static_cast<u32>(reason) | (method << 8), std::memory_order_relaxed);
+     }
+ }
+ 
++/// The thread that draws: what it compares fast draws with (with EDEN_UP_BACKX_DRAW, from then
++/// on its next break bumps the serial again).
+ inline u64 Serial() {
++    if (UpBackX::g_draw) [[unlikely]] {
++        t_reads_serial = true;
++        t_serial_bumped = false;
++    }
+     return g_serial.load(std::memory_order_relaxed);
+ }
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 12a3c9367c9c727149f2ca250c7a4619a0a596c7..208062e4c0e3d8956ff3c915b72965833748a959 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -1136,7 +1136,16 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
+     // draw that is not eligible does. A delta draw therefore always follows a draw that
+     // captured for it, on whichever side of a change that draw fell.
+     const bool fast_draw_use = fast_draw_on && FastDraw::UseNow();
+-    const u64 fast_draw_start = fast_draw_on ? VideoCommon::Nx2Profile::Now() : 0;
++    // EDEN_UP_BACKX_DRAW (zortos293/Lichii #1586, from DahBard b95617b80f): the prepare time per
++    // draw (a fenced time stamp at each end) only when ReportFastDraws logs it (the profile or
++    // the verify on). Off: every fast draw is timed, as before.
++    const bool time_fast_draw =
++        fast_draw_on && (!VideoCommon::UpBackX::g_draw || VideoCommon::Nx2Profile::Enabled() ||
++                         FastDraw::VerifyEnabled());
++    if (fast_draw_on && !time_fast_draw) [[unlikely]] {
++        VideoCommon::UpBackX::Add(VideoCommon::UpBackX::g_counts.draw_clock_skips);
++    }
++    const u64 fast_draw_start = time_fast_draw ? VideoCommon::Nx2Profile::Now() : 0;
+     namespace Profile = VideoCommon::Nx2Profile;
+     {
+         Profile::Scope scope{Profile::Zone::FlushWork};
+@@ -1342,9 +1351,12 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
+             NoteResolvedDraw(pipeline, is_indexed, fast_draw_indirect, draw_serial,
+                              draw_map_serial);
+         }
+-        const size_t index = static_cast<size_t>(delta_draw ? DrawPath::Delta : DrawPath::Full);
+-        fast_draw_stats.prepare_ns[index] += Profile::Now() - fast_draw_start;
+-        ++fast_draw_stats.prepare_draws[index];
++        if (time_fast_draw) {
++            const size_t index =
++                static_cast<size_t>(delta_draw ? DrawPath::Delta : DrawPath::Full);
++            fast_draw_stats.prepare_ns[index] += Profile::Now() - fast_draw_start;
++            ++fast_draw_stats.prepare_draws[index];
++        }
+     }
+     static u32 native_capture_count{};
+     if (maxwell3d->GetNativeMacroEngine().native_turing &&
+@@ -4880,9 +4892,6 @@ void RasterizerVulkan::UpdateVertexInput(Tegra::Engines::Maxwell3D::Regs& regs)
+     }
+     dirty[Dirty::VertexInput] = false;
+ 
+-    boost::container::static_vector<VkVertexInputBindingDescription2EXT, 32> bindings;
+-    boost::container::static_vector<VkVertexInputAttributeDescription2EXT, 32> attributes;
+-
+     const u32 max_attributes =
+         static_cast<u32>(std::min<size_t>(Maxwell::NumVertexAttributes,
+                                           device.GetMaxVertexInputAttributes()));
+@@ -4890,14 +4899,96 @@ void RasterizerVulkan::UpdateVertexInput(Tegra::Engines::Maxwell3D::Regs& regs)
+         static_cast<u32>(std::min<size_t>(Maxwell::NumVertexArrays,
+                                           device.GetMaxVertexInputBindings()));
+ 
++    for (size_t index = 0; index < Maxwell::NumVertexAttributes; ++index) {
++        dirty[Dirty::VertexAttribute0 + index] = false;
++    }
++    for (size_t index = 0; index < Maxwell::NumVertexArrays; ++index) {
++        dirty[Dirty::VertexBinding0 + index] = false;
++    }
+ 
++    if (!VideoCommon::UpBackX::g_draw) [[likely]] {
++        VertexInputState state;
++        BuildVertexInput(regs, max_attributes, max_bindings, state);
++        scheduler.Record([bindings = state.bindings,
++                          attributes = state.attributes](vk::CommandBuffer cmdbuf) {
++            cmdbuf.SetVertexInputEXT(bindings, attributes);
++        });
++        return;
++    }
++
++    // EDEN_UP_BACKX_DRAW (zortos293/Lichii #1586, from jpkto e7581fa9f6): the state these
++    // registers built before, recorded by reference instead of built and copied into the command
++    // again (every attribute's format converted, both 32-entry arrays copied: ~0.5 ms a frame of
++    // Mario Kart World's back there). The key holds every register the build reads.
++    VideoCommon::VertexInputKey key{
++        .num_attributes = max_attributes,
++        .num_bindings = max_bindings,
++    };
++    for (u32 index = 0; index < max_attributes; ++index) {
++        key.attributes[index] = regs.vertex_attrib_format[index].hex;
++    }
++    for (u32 binding = 0; binding < max_bindings; ++binding) {
++        const auto& stream{regs.vertex_streams[binding]};
++        key.strides[binding] = stream.stride.Value();
++        key.divisors[binding] = stream.frequency;
++        key.instanced |= (regs.vertex_stream_instances.IsInstancingEnabled(binding) ? 1U : 0U)
++                         << binding;
++        key.repacked |= (buffer_cache_runtime.IsVertexRepacked(binding) ? 1U : 0U) << binding;
++    }
++    const u64 hash = key.Hash();
++    std::shared_ptr<const VertexInputState> state = vertex_input_cache.Find(key, hash);
++    auto& counts = VideoCommon::UpBackX::g_counts;
++    if (!state) {
++        auto built = std::make_shared<VertexInputState>();
++        BuildVertexInput(regs, max_attributes, max_bindings, *built);
++        state = std::move(built);
++        vertex_input_cache.Insert(key, hash, state);
++        VideoCommon::UpBackX::Add(counts.vertex_input_builds);
++    } else {
++        VideoCommon::UpBackX::Add(counts.vertex_input_hits);
++        if (VideoCommon::Nx2FastDraw::VerifyEnabled()) {
++            // EDEN_UP_FAST_DRAW_VERIFY: a hit is built fresh and compared too.
++            VertexInputState fresh;
++            BuildVertexInput(regs, max_attributes, max_bindings, fresh);
++            const bool same =
++                std::ranges::equal(fresh.bindings, state->bindings,
++                                   [](const auto& a, const auto& b) {
++                                       return a.binding == b.binding && a.stride == b.stride &&
++                                              a.inputRate == b.inputRate &&
++                                              a.divisor == b.divisor;
++                                   }) &&
++                std::ranges::equal(fresh.attributes, state->attributes,
++                                   [](const auto& a, const auto& b) {
++                                       return a.location == b.location && a.binding == b.binding &&
++                                              a.format == b.format && a.offset == b.offset;
++                                   });
++            if (!same) {
++                static std::atomic<u32> logged{};
++                if (logged.fetch_add(1, std::memory_order_relaxed) < 32) {
++                    LOG_ERROR(Render_Vulkan,
++                              "EDEN_UP_BACKX_DRAW verify: cached vertex input differs from a "
++                              "fresh build (key hash {:#x}); recorded the fresh one",
++                              hash);
++                }
++                state = std::make_shared<const VertexInputState>(fresh);
++            }
++        }
++    }
++    scheduler.Record([input = std::move(state)](vk::CommandBuffer cmdbuf) {
++        cmdbuf.SetVertexInputEXT(input->bindings, input->attributes);
++    });
++}
++
++void RasterizerVulkan::BuildVertexInput(const Tegra::Engines::Maxwell3D::Regs& regs,
++                                        u32 max_attributes, u32 max_bindings,
++                                        VertexInputState& state) {
+     for (u32 index = 0; index < max_attributes; ++index) {
+         const Maxwell::VertexAttribute attribute{regs.vertex_attrib_format[index]};
+         const u32 binding{attribute.buffer};
+         if (attribute.constant || binding >= max_bindings) {
+             continue;
+         }
+-        attributes.push_back({
++        state.attributes.push_back({
+             .sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT,
+             .pNext = nullptr,
+             .location = index,
+@@ -4911,7 +5002,7 @@ void RasterizerVulkan::UpdateVertexInput(Tegra::Engines::Maxwell3D::Regs& regs)
+     for (u32 binding = 0; binding < max_bindings; ++binding) {
+         const auto& input_binding{regs.vertex_streams[binding]};
+         const bool is_instanced{regs.vertex_stream_instances.IsInstancingEnabled(binding)};
+-        bindings.push_back({
++        state.bindings.push_back({
+             .sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_BINDING_DESCRIPTION_2_EXT,
+             .pNext = nullptr,
+             .binding = binding,
+@@ -4920,17 +5011,6 @@ void RasterizerVulkan::UpdateVertexInput(Tegra::Engines::Maxwell3D::Regs& regs)
+             .divisor = is_instanced ? input_binding.frequency : 1,
+         });
+     }
+-
+-    for (size_t index = 0; index < Maxwell::NumVertexAttributes; ++index) {
+-        dirty[Dirty::VertexAttribute0 + index] = false;
+-    }
+-    for (size_t index = 0; index < Maxwell::NumVertexArrays; ++index) {
+-        dirty[Dirty::VertexBinding0 + index] = false;
+-    }
+-
+-    scheduler.Record([bindings, attributes](vk::CommandBuffer cmdbuf) {
+-        cmdbuf.SetVertexInputEXT(bindings, attributes);
+-    });
+ }
+ 
+ void RasterizerVulkan::InitializeChannel(Tegra::Control::ChannelState& channel) {
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.h b/src/video_core/renderer_vulkan/vk_rasterizer.h
+index fc1db90a323f9b2ad8b4dfc733a1b3fa35e06d68..505fe249a94d81eb4299e755e78ce0c1ced96ec3 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.h
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.h
+@@ -29,6 +29,7 @@
+ #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
+ #include "video_core/renderer_vulkan/vk_texture_cache.h"
+ #include "video_core/renderer_vulkan/vk_update_descriptor.h"
++#include "video_core/vertex_input_cache.h" // 1005
+ #include "video_core/vulkan_common/vulkan_memory_allocator.h"
+ #include "video_core/vulkan_common/vulkan_wrapper.h"
+ 
+@@ -268,6 +269,19 @@ private:
+ 
+     void UpdateVertexInput(Tegra::Engines::Maxwell3D::Regs& regs);
+ 
++    /// A dynamic vertex input state: what vkCmdSetVertexInputEXT is given.
++    struct VertexInputState {
++        boost::container::static_vector<VkVertexInputBindingDescription2EXT, 32> bindings;
++        boost::container::static_vector<VkVertexInputAttributeDescription2EXT, 32> attributes;
++    };
++    /// Builds the state from the attribute formats, vertex streams and repacked bindings (the
++    /// registers VideoCommon::VertexInputKey holds).
++    void BuildVertexInput(const Tegra::Engines::Maxwell3D::Regs& regs, u32 max_attributes,
++                          u32 max_bindings, VertexInputState& state);
++    /// EDEN_UP_BACKX_DRAW (1005, zortos293/Lichii #1586 from jpkto e7581fa9f6): dynamic vertex
++    /// input states built before, by the registers they were built from.
++    VideoCommon::VertexInputCache<VertexInputState> vertex_input_cache;
++
+     Tegra::GPU& gpu;
+     Tegra::MaxwellDeviceMemoryManager& device_memory;
+ 
+diff --git a/src/video_core/vertex_input_cache.h b/src/video_core/vertex_input_cache.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..13f0184d12086c08e3da3d3e8dcddf57677d7b63
+--- /dev/null
++++ b/src/video_core/vertex_input_cache.h
+@@ -0,0 +1,87 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <array>
++#include <cstddef>
++#include <memory>
++#include <vector>
++
++#include "common/common_types.h"
++
++namespace VideoCommon {
++
++/// EDEN_UP_BACKX_DRAW (1005), zortos293/Lichii #1586 (5e428570d2, Zortos with capy-ai).
++/// The registers RasterizerVulkan::UpdateVertexInput builds a dynamic vertex input state from:
++/// every attribute's format word, every binding's stride, divisor and instancing, the bindings the
++/// buffer cache repacks, and how many of each the device takes. The build reads nothing else, so
++/// equal keys build equal states. From jpkto/Lichii e7581fa9f6.
++struct VertexInputKey {
++    static constexpr size_t MaxEntries = 32;
++
++    std::array<u32, MaxEntries> attributes{};
++    std::array<u32, MaxEntries> strides{};
++    std::array<u32, MaxEntries> divisors{};
++    u32 instanced{};
++    u32 repacked{};
++    u32 num_attributes{};
++    u32 num_bindings{};
++
++    [[nodiscard]] bool operator==(const VertexInputKey&) const = default;
++
++    [[nodiscard]] u64 Hash() const noexcept {
++        u64 hash = 0x9E3779B97F4A7C15ULL ^ ((u64{num_attributes} << 32) | num_bindings);
++        const auto mix = [&hash](u64 value) {
++            hash = (hash ^ value) * 0xFF51AFD7ED558CCDULL;
++            hash ^= hash >> 32;
++        };
++        for (size_t index = 0; index < MaxEntries; index += 2) {
++            mix(u64{attributes[index]} | (u64{attributes[index + 1]} << 32));
++            mix(u64{strides[index]} | (u64{strides[index + 1]} << 32));
++            mix(u64{divisors[index]} | (u64{divisors[index + 1]} << 32));
++        }
++        mix(u64{instanced} | (u64{repacked} << 32));
++        return hash;
++    }
++};
++
++/// Built vertex input states by their keys, direct-mapped. A state is immutable once built and
++/// shared with the recorded commands that set it, so replacing an entry never frees a state a
++/// pending command still reads.
++template <typename State>
++class VertexInputCache {
++public:
++    static constexpr size_t NumEntries = 256;
++
++    [[nodiscard]] std::shared_ptr<const State> Find(const VertexInputKey& key, u64 hash) const {
++        if (entries.empty()) {
++            return nullptr;
++        }
++        const Entry& entry = entries[hash % NumEntries];
++        if (entry.state == nullptr || entry.hash != hash || !(entry.key == key)) {
++            return nullptr;
++        }
++        return entry.state;
++    }
++
++    void Insert(const VertexInputKey& key, u64 hash, std::shared_ptr<const State> state) {
++        if (entries.empty()) {
++            entries.resize(NumEntries);
++        }
++        Entry& entry = entries[hash % NumEntries];
++        entry.hash = hash;
++        entry.key = key;
++        entry.state = std::move(state);
++    }
++
++private:
++    struct Entry {
++        u64 hash{};
++        VertexInputKey key{};
++        std::shared_ptr<const State> state;
++    };
++    std::vector<Entry> entries;
++};
++
++} // namespace VideoCommon

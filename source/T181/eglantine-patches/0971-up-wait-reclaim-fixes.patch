@@ -1,0 +1,273 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_WAIT_RECLAIM's pass, checkers' fixes on 0970 (the front's switch, off unless set)
+
+Why: two checkers of T181a (13 Nov) read 0970 in source and found:
+- WaitReclaimEvict took GPU-written images that are not downloadable (unbacked, MSAA, trimmed levels,
+  CPU-and-GPU-written) and BadOverlap ones with no write-back, at age 2 and pass after pass;
+- its delete reason started with "gc", so under EDEN_UP_TC_KEEP_REMADE every image it dropped was
+  recorded and kept for good when made again;
+- it ignored EDEN_UP_TC_OOM_SPARE_FRAMES's protection of recent ASTC (CostlyLoad);
+- the pass runs as a deferred Call entry, which rethrows (the 0921 backstop absorbs Method entries only),
+  and it allocates exactly when memory is short: a std::bad_alloc would end the app;
+- in synchronous GPU mode PushCommand blocks the front's helper (with the registry mutex held) until
+  the GPU thread ran the pass, and that thread may be the one waiting.
+
+What:
+- WaitReclaimEvict never takes a GpuModified image (stricter than CollectForBuffer and LoadHoldEvict);
+  reason "wait-reclaim" (not "gc", so EDEN_UP_TC_KEEP_REMADE does not count it); with
+  EDEN_UP_TC_OOM_SPARE_FRAMES=K, CostlyLoad images unused for under 2K frames go only in a third sweep,
+  and only when the front marks the wait urgent (eden_wait_reclaim_request's new `flags`, bit 0);
+  images are deleted one at a time and counted as they go.
+- The queued function catches everything: a throw ends the pass with outcome Failed (5); the cache
+  locks unlock on the way out.
+- QueueWaitReclaim queues nothing in synchronous GPU mode and the request returns 2 then (the front
+  stops asking). In asynchronous mode the GPU thread's queue is unbounded (host_command_queue.h).
+
+No request (the default): nothing here runs. No file here is a translation id input and no name is added
+to TranslationSwitches: KEEPS THE STORE.
+
+---
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 3685e41ab1..31bcdc309a 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -118,17 +118,25 @@ RasterizerVulkan* registered{};
+ } // namespace Vulkan::WaitReclaim
+ 
+ // The front's helper thread (never a signal handler, never a GPU thread): queues one pass on the
+-// GPU thread after the lists sent so far. 1 when queued, 0 when there is no rasterizer.
++// GPU thread after the lists sent so far. 1 when queued, 0 when there is no rasterizer or no memory
++// for the queued function, 2 in synchronous GPU mode (nothing queued: there PushCommand would block
++// the helper, with the registry mutex held, until the GPU thread ran the pass, and the GPU thread may
++// be the one waiting). In asynchronous mode the GPU thread's queue is unbounded (host_command_queue.h)
++// and the push takes its write_lock only for the push itself. `flags` bit 0: the wait is urgent (recent
++// ASTC under EDEN_UP_TC_OOM_SPARE_FRAMES may go too).
+ extern "C" int eden_wait_reclaim_request(unsigned long long seq, unsigned long long target_bytes,
+-                                         unsigned min_age, unsigned gpu_wait_ms) noexcept {
++                                         unsigned min_age, unsigned gpu_wait_ms,
++                                         unsigned flags) noexcept {
+     namespace WR = Vulkan::WaitReclaim;
+     try {
+         std::scoped_lock lock{WR::registry_mutex};
+         if (WR::registered == nullptr) {
+             return 0;
+         }
+-        WR::registered->QueueWaitReclaim(seq, target_bytes, min_age, gpu_wait_ms);
+-        return 1;
++        return WR::registered->QueueWaitReclaim(seq, target_bytes, min_age, gpu_wait_ms,
++                                                (flags & 1u) != 0)
++                   ? 1
++                   : 2;
+     } catch (...) {
+         return 0; // no memory for the queued function: nothing queued
+     }
+@@ -3523,14 +3531,31 @@ void RasterizerVulkan::PressureDrainLook(bool frame_end) {
+ }
+ 
+ // EDEN_UP_WAIT_RECLAIM (wait_reclaim.h). The front asks for at most one pass at a time and waits
+-// for its result before asking again, so at most one of these is queued.
+-void RasterizerVulkan::QueueWaitReclaim(u64 seq, u64 target_bytes, u32 min_age, u32 gpu_wait_ms) {
+-    gpu.RunInOrder([this, seq, target_bytes, min_age, gpu_wait_ms] {
+-        WaitReclaimPass(seq, target_bytes, min_age, gpu_wait_ms);
++// for its result before asking again, so at most one of these is queued. Asynchronous GPU mode only.
++bool RasterizerVulkan::QueueWaitReclaim(u64 seq, u64 target_bytes, u32 min_age, u32 gpu_wait_ms,
++                                        bool urgent) {
++    if (!gpu.IsAsync()) {
++        return false;
++    }
++    gpu.RunInOrder([this, seq, target_bytes, min_age, gpu_wait_ms, urgent] {
++        // A deferred Call entry rethrows (the 0921 backstop absorbs Method entries only), and the
++        // pass allocates exactly when memory is short: nothing leaves it. A throw ends the pass
++        // with outcome Failed (the locks unlock on the way out; WaitReclaimEvict deletes one image at
++        // a time, so an image is either deleted or still registered, except the one it was in).
++        try {
++            WaitReclaimPass(seq, target_bytes, min_age, gpu_wait_ms, urgent);
++        } catch (...) {
++            namespace WR = WaitReclaim;
++            WR::g_result.outcome.store(WR::Failed, std::memory_order_relaxed);
++            WR::g_result.passes.fetch_add(1, std::memory_order_relaxed);
++            WR::g_result.done_seq.store(seq, std::memory_order_release);
++        }
+     });
++    return true;
+ }
+ 
+-void RasterizerVulkan::WaitReclaimPass(u64 seq, u64 target_bytes, u32 min_age, u32 gpu_wait_ms) {
++void RasterizerVulkan::WaitReclaimPass(u64 seq, u64 target_bytes, u32 min_age, u32 gpu_wait_ms,
++                                       bool urgent) {
+     namespace WR = WaitReclaim;
+     const auto start = std::chrono::steady_clock::now();
+     const u64 largest_before = PressureDrain::LargestFree();
+@@ -3605,7 +3630,8 @@ void RasterizerVulkan::WaitReclaimPass(u64 seq, u64 target_bytes, u32 min_age, u
+             u64 used2 = used1;
+             if (reached && target_bytes != 0) {
+                 size_t count = 0;
+-                image_marked = texture_cache.WaitReclaimEvict(target_bytes, (std::max)(min_age, 1u), count);
++                image_marked =
++                    texture_cache.WaitReclaimEvict(target_bytes, (std::max)(min_age, 1u), urgent, count);
+                 images = count;
+                 if (count != 0) {
+                     const u64 tick = scheduler.CurrentTick();
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.h b/src/video_core/renderer_vulkan/vk_rasterizer.h
+index 7ef40f9797..fc1db90a32 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.h
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.h
+@@ -186,12 +186,13 @@ public:
+     void PressureDrainLook(bool frame_end);
+ 
+     /// EDEN_UP_WAIT_RECLAIM (wait_reclaim.h): queues the emergency pass on the GPU thread
+-    /// (RunInOrder). Any thread but the GPU threads; the front's helper only.
+-    void QueueWaitReclaim(u64 seq, u64 target_bytes, u32 min_age, u32 gpu_wait_ms);
++    /// (RunInOrder). Any thread but the GPU threads; the front's helper only. False (nothing
++    /// queued) in synchronous GPU mode, where the push would block until the pass ran.
++    bool QueueWaitReclaim(u64 seq, u64 target_bytes, u32 min_age, u32 gpu_wait_ms, bool urgent);
+ 
+     /// The pass itself, run by RunInOrder: the recording thread between two entries, no cache lock
+     /// held. Publishes WaitReclaim::g_result.
+-    void WaitReclaimPass(u64 seq, u64 target_bytes, u32 min_age, u32 gpu_wait_ms);
++    void WaitReclaimPass(u64 seq, u64 target_bytes, u32 min_age, u32 gpu_wait_ms, bool urgent);
+ 
+     /// EDEN_NX2_HANG_WATCH=1, the split's front in a long wait for the back: logs the caches' locks
+     /// and the scheduler's state. Never waits for the back or the worker.
+diff --git a/src/video_core/renderer_vulkan/wait_reclaim.h b/src/video_core/renderer_vulkan/wait_reclaim.h
+index a0439af557..ca5d64ec74 100644
+--- a/src/video_core/renderer_vulkan/wait_reclaim.h
++++ b/src/video_core/renderer_vulkan/wait_reclaim.h
+@@ -25,9 +25,10 @@
+ ///       when the GPU got there, the staging pool's finished buffers;
+ ///   (b) images deleted by least-recent use, larger ones (1 MiB and up) first, until the front's
+ ///       target: only ones unused for `age` frames or more (2: not in this frame or the last), not
+-///       a bound render target, and with nothing to copy back (CollectForBuffer's and
+-///       LoadHoldEvict's test: GPU-written images that can be downloaded stay); then the GPU
+-///       waited for again and the deleted images destroyed. They come back by upload when used;
++///       a bound render target, never one the GPU wrote (GpuModified: stricter than
++///       CollectForBuffer's and LoadHoldEvict's test, nothing the GPU drew is lost), recent ASTC
++///       under EDEN_UP_TC_OOM_SPARE_FRAMES only when the front says the wait is urgent; then the
++///       GPU waited for again and the deleted images destroyed. They come back by upload when used;
+ ///   (c) what of that went back to the driver (VMA's device memory before and after; the console's
+ ///       RADV frees memory the GPU is done with at once, radv_ps5_bo.c radv_ps5_memory_retire, and
+ ///       VMA frees empty blocks itself while the budget reads exceeded); with EDEN_UP_DRAIN_TO_POOL=1
+@@ -40,6 +41,7 @@ enum Outcome : u32 {
+     Busy = 2,        ///< A cache lock was held by another thread: nothing done
+     Conditional = 3, ///< The guest's conditional rendering is on: nothing done (as the drain)
+     Behind = 4,      ///< The GPU did not reach the recorded work in time: what it is past only
++    Failed = 5,      ///< An exception (std::bad_alloc) ended the pass early; the rest of it not done
+ };
+ 
+ /// The last finished pass, for the front (eden_wait_reclaim_stats). Written by the pass's thread,
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index c236825c3c..7262dc0fc2 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -215,7 +215,7 @@ constexpr u64 KeepRemadeWindow = 600;
+ /// and found, JoinImages ms, frame) and per image it deletes ("TCTRACE delete", with the reason:
+ /// gc, gc-high-priority, gc-aggressive, gc-old (unused for EDEN_NX2_TC_OLD_AGE frames), gc-buffer
+ /// (CollectForBuffer), gc-area (AreaEvict), gc-refusal (RefusalEvict), gc-refusal-copied
+-/// (RefusalDownloadEvict), cold (EDEN_UP_FRITCHII_COLD), area-stale (EDEN_UP_TC_AREA_STALE; not
++/// (RefusalDownloadEvict), wait-reclaim (EDEN_UP_WAIT_RECLAIM; not "gc"), cold (EDEN_UP_FRITCHII_COLD), area-stale (EDEN_UP_TC_AREA_STALE; not
+ /// "gc", so EDEN_UP_TC_KEEP_REMADE does not count it), unmap, join, join-ignored, other). Ours
+ /// also: "TCTRACE refused" when JoinImages makes nothing. EDEN_UP_TC_TRACE_MIB=<N> (digits,
+ /// 0..4096; unset or 0: every image, as upstream): only images of at least N MiB of guest memory.
+@@ -1343,19 +1343,25 @@ u64 TextureCache<P>::LoadHoldEvict(u64 min_age, size_t max_images, size_t& count
+ }
+ 
+ // EDEN_UP_WAIT_RECLAIM (renderer_vulkan/wait_reclaim.h): no frame-age floor beyond `min_age` (2 by
+-// default: not used in this frame or the last), a byte target instead. Two sweeps of the LRU, oldest
++// default: not used in this frame or the last), a byte target instead. Sweeps of the LRU, oldest
+ // first: images of 1 MiB and more, then the smaller ones, so the target is met by few large images
+-// where there are any. The images this frame used (render targets, sampled textures, anything a
+-// recorded command refers to) were touched at frame_tick and are never below the cutoff; the bound
+-// render targets are passed over by name too.
+-template <class P>
+-u64 TextureCache<P>::WaitReclaimEvict(u64 target, u64 min_age, size_t& count) {
++// where there are any; with EDEN_UP_TC_OOM_SPARE_FRAMES=K, ASTC (CostlyLoad) unused for under 2K
++// frames only in a last sweep, and only when the front says the wait is `urgent`. The images this
++// frame used (render targets, sampled textures, anything a recorded command refers to) were touched
++// at frame_tick and are never below the cutoff; the bound render targets are passed over by name
++// too. Never an image the GPU wrote (GpuModified), downloadable or not: an unbacked, MSAA, trimmed,
++// CPU-and-GPU-written or BadOverlap image would lose what the GPU drew (stricter than
++// CollectForBuffer's and LoadHoldEvict's test). Reason "wait-reclaim", not "gc...": an emergency
++// drop does not make EDEN_UP_TC_KEEP_REMADE keep the image when it is made again.
++template <class P>
++u64 TextureCache<P>::WaitReclaimEvict(u64 target, u64 min_age, bool urgent, size_t& count) {
+     count = 0;
+     if (target == 0 || min_age == 0 || frame_tick < min_age) {
+         return 0;
+     }
+     static constexpr size_t MAX_IMAGES = 512;
+     static constexpr u64 LARGE = 1_MiB;
++    const u64 spare = OomSpareFrames();
+     std::array<ImageId, NUM_RT + 1> bound{};
+     for (size_t index = 0; index < NUM_RT; ++index) {
+         if (const ImageViewId view_id = render_targets.color_buffer_ids[index]; view_id) {
+@@ -1367,20 +1373,24 @@ u64 TextureCache<P>::WaitReclaimEvict(u64 target, u64 min_age, size_t& count) {
+     }
+     boost::container::small_vector<ImageId, MAX_IMAGES> doomed;
+     u64 total = 0;
+-    for (int sweep = 0; sweep < 2 && total < target && doomed.size() < MAX_IMAGES; ++sweep) {
++    const int sweeps = spare != 0 && urgent ? 3 : 2;
++    for (int sweep = 0; sweep < sweeps && total < target && doomed.size() < MAX_IMAGES; ++sweep) {
+         lru_cache.ForEachItemBelow(frame_tick - min_age, [&](ImageId image_id) {
+             const Image& image = slot_images[image_id];
+             const u64 bytes =
+                 ImageMemoryBytes(image) + (image.HasScaled() ? GetScaledImageSizeBytes(image) : 0);
+-            // The second sweep takes what the first passed over for its size only.
+-            if (sweep == 0 ? bytes < LARGE : bytes >= LARGE) {
++            // EDEN_UP_TC_OOM_SPARE_FRAMES: recent ASTC is the spare's; the last sweep's alone.
++            const bool spared = spare != 0 && True(image.flags & ImageFlagBits::CostlyLoad) &&
++                                frame_tick - lru_cache.Tick(image.lru_index) < 2 * spare;
++            if (sweep == 2 ? !spared
++                           : (spared || (sweep == 0 ? bytes < LARGE : bytes >= LARGE))) {
+                 return false;
+             }
+             if (bytes == 0 || True(image.flags & ImageFlagBits::IsDecoding) ||
++                True(image.flags & ImageFlagBits::GpuModified) ||
+                 (KeepAsyncDecodedFrames() != 0 &&
+                  True(image.flags & ImageFlagBits::AsynchronousDecode)) ||
+                 KeptRemade(image) ||
+-                (IsDownloadable(image) && False(image.flags & ImageFlagBits::BadOverlap)) ||
+                 std::ranges::find(bound, image_id) != bound.end()) {
+                 return false;
+             }
+@@ -1389,16 +1399,18 @@ u64 TextureCache<P>::WaitReclaimEvict(u64 target, u64 min_age, size_t& count) {
+             return total >= target || doomed.size() >= MAX_IMAGES;
+         });
+     }
++    // One image at a time to the end; the pass's caller catches a std::bad_alloc, and `count` then
++    // says how many went before it (the rest stay registered, untouched).
+     for (const ImageId image_id : doomed) {
+         Image& image = slot_images[image_id];
+         if (True(image.flags & ImageFlagBits::Tracked)) {
+             UntrackImage(image, image_id);
+         }
+         UnregisterImage(image_id);
+-        trace_delete_reason = "gc-wait-reclaim";
++        trace_delete_reason = "wait-reclaim";
+         DeleteImage(image_id, image.scale_tick > frame_tick + 5);
++        ++count;
+     }
+-    count = doomed.size();
+     return total;
+ }
+ 
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index 9f0f5e8d99..a60d0eca7c 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -581,11 +581,11 @@ public:
+ 
+     /// EDEN_UP_WAIT_RECLAIM (renderer_vulkan/wait_reclaim.h): a thread waits for memory and no
+     /// frame is drawn. Deletes images by least-recent use until `target` bytes, those of 1 MiB and
+-    /// more first: only ones unused for `min_age` frames or more, not a bound render target, with
+-    /// nothing to copy back (LoadHoldEvict's test). At most 512. With mutex held, between two
+-    /// entries (nothing half set up). Returns their bytes (ImageMemoryBytes plus the scaled copy);
+-    /// `count` gets how many went.
+-    u64 WaitReclaimEvict(u64 target, u64 min_age, size_t& count);
++    /// more first: only ones unused for `min_age` frames or more, not a bound render target,
++    /// never one the GPU wrote; recent ASTC under EDEN_UP_TC_OOM_SPARE_FRAMES only when `urgent`.
++    /// At most 512. With mutex held, between two entries (nothing half set up). Returns their
++    /// bytes (ImageMemoryBytes plus the scaled copy); `count` gets how many went.
++    u64 WaitReclaimEvict(u64 target, u64 min_age, bool urgent, size_t& count);
+ 
+     /// EDEN_NX2_AREA_EVICT=<frames>: after a burst of new images (an area load), deletes images
+     /// unused for that many frames that need no copy back, 64 a frame for 120 frames. At the end

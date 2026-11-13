@@ -1,0 +1,223 @@
+From: EglantinePS5
+Subject: [PATCH] up: L1516 fencing thread woken only when waiting, flushed query lists kept (EDEN_UP_L1516_FENCE_CHEAP, off unless set)
+
+Ports the parts of zortos293/Lichii #1516, 342b839 (author Zortos; from Lucas Borges' #1161,
+bffeb662c0 and 792e12a47b) that our tree did not have yet. Gated by EDEN_UP_L1516_FENCE_CHEAP
+(exact "1"), read once at boot; off by default. Not built or measured with this tree yet.
+
+On:
+- FenceManager::SignalFence: cv.notify_all only when the fencing thread waits on cv for fences
+  (fence_thread_waiting, set in the wait's predicate under `guard`, read under `guard` before it
+  is unlocked). While it waits for the host GPU or runs operations it rechecks `fences` under the
+  same lock before it sleeps, so no fence is missed. Destructor's wake unchanged.
+- SamplesStreamer: PopUnsyncedQueries keeps the lists it is done with (at most 16, under
+  flush_guard); PushUnsyncedQueries takes one instead of growing a new list at each fence.
+Always (layout only, no behaviour): MasterSemaphore's gpu_tick, current_tick and wait_mutex on
+lines of their own (+~128 bytes, one object).
+
+Already in our tree, not taken again: the compact report operation, recycled fence operation
+lists, the read-back page bounds check before the buffer cache lock, the equal-tick semaphore
+store skip and the bank host reset on the Vulkan worker are 0560's EDEN_UP_REPORT_NO_ALLOC (ported
+from 792e12a47b before). Set EDEN_UP_REPORT_NO_ALLOC=1 too for the whole of #1516. Left out as
+upstream left them out: Nx2SemaphoreWaiters' watched-address filter, PresyncWrites scratch reuse,
+the Vulkan worker's spin. Upstream's buffer_cache_ports.cpp test not taken.
+Count lines (each logs at 1, 2, 4, ...): "EDEN_UP_L1516_FENCE_CHEAP count wakes_sent= /
+wakes_skipped= / lists_reused=". Boot line when on. Memory: at most 16 kept index lists.
+
+No file here is a translation id input and no name is added to TranslationSwitches: KEEPS THE STORE.
+---
+diff --git a/src/video_core/fence_manager.h b/src/video_core/fence_manager.h
+index 77f0a27424..7e0c273691 100644
+--- a/src/video_core/fence_manager.h
++++ b/src/video_core/fence_manager.h
+@@ -37,6 +37,7 @@
+ #include "video_core/rasterizer_interface.h"
+ #include "video_core/readback_wait.h"
+ #include "video_core/report_no_alloc.h"
++#include "video_core/up_l1516.h"
+ 
+ namespace VideoCommon {
+ 
+@@ -334,8 +335,19 @@ private:
+             rasterizer.FlushCommands();
+         }
+         if constexpr (can_async_check) {
++            // EDEN_UP_L1516_FENCE_CHEAP=1 (zortos293/Lichii #1516, Zortos, from Lucas Borges'
++            // #1161): the fencing thread waits for the host GPU while it has fences; it needs
++            // waking (a system call) only when it waits on cv for fences to be made.
++            const bool wake = !UpL1516::Enabled() || fence_thread_waiting;
+             guard.unlock();
+-            cv.notify_all();
++            if (wake) {
++                cv.notify_all();
++                if (UpL1516::Enabled()) {
++                    UpL1516::Add(UpL1516::Count::WakesSent);
++                }
++            } else {
++                UpL1516::Add(UpL1516::Count::WakesSkipped);
++            }
+         }
+         rasterizer.InvalidateGPUCache();
+     }
+@@ -691,7 +703,11 @@ private:
+         while (!stop_token.stop_requested()) {
+             {
+                 std::unique_lock lock(guard);
+-                cv.wait(lock, [&] { return stop_token.stop_requested() || !fences.empty(); });
++                cv.wait(lock, [&] {
++                    fence_thread_waiting = !stop_token.stop_requested() && fences.empty();
++                    return !fence_thread_waiting;
++                });
++                fence_thread_waiting = false;
+                 if (stop_token.stop_requested()) [[unlikely]] {
+                     return;
+                 }
+@@ -886,6 +902,8 @@ private:
+     std::mutex ring_guard;
+     std::mutex uncommitted_guard; ///< Guards uncommitted_operations
+     std::condition_variable cv;
++    /// The fencing thread waits on cv for fences (guarded by guard; EDEN_UP_L1516_FENCE_CHEAP).
++    bool fence_thread_waiting{};
+ 
+     std::jthread fence_thread;
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_master_semaphore.h b/src/video_core/renderer_vulkan/vk_master_semaphore.h
+index b1b934b898..dc4efddce4 100644
+--- a/src/video_core/renderer_vulkan/vk_master_semaphore.h
++++ b/src/video_core/renderer_vulkan/vk_master_semaphore.h
+@@ -82,9 +82,12 @@ private:
+ private:
+     const Device& device;             ///< Device.
+     vk::Semaphore semaphore;          ///< Timeline semaphore.
+-    std::atomic<u64> gpu_tick{0};     ///< Current known GPU tick.
+-    std::atomic<u64> current_tick{1}; ///< Current logical tick.
+-    std::mutex wait_mutex;
++    /// On their own cache lines (zortos293/Lichii #1516; layout only, no switch): the GPU thread
++    /// reads current_tick several times a draw, while threads refreshing gpu_tick would otherwise
++    /// make each of those reads miss.
++    alignas(64) std::atomic<u64> gpu_tick{0};     ///< Current known GPU tick.
++    alignas(64) std::atomic<u64> current_tick{1}; ///< Current logical tick.
++    alignas(64) std::mutex wait_mutex;
+     std::mutex free_mutex;
+     std::condition_variable_any wait_cv;
+     std::queue<Waitable> wait_queue;  ///< Queue for the fences to be waited on by the wait thread.
+diff --git a/src/video_core/renderer_vulkan/vk_query_cache.cpp b/src/video_core/renderer_vulkan/vk_query_cache.cpp
+index 392af9ae11..0858e568a6 100644
+--- a/src/video_core/renderer_vulkan/vk_query_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_query_cache.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include <cstdlib>
+ #include "video_core/report_no_alloc.h"
++#include "video_core/up_l1516.h"
+ #include <cstddef>
+ #include <limits>
+ #include <map>
+@@ -501,6 +502,19 @@ public:
+         {
+             std::scoped_lock lk(flush_guard);
+             pending_flush_sets.emplace_back(std::move(pending_flush_queries));
++            // EDEN_UP_L1516_FENCE_CHEAP=1 (zortos293/Lichii #1516, Zortos, from Lucas Borges'
++            // #1161): a list the fencing thread is done with, with its capacity: a fence made
++            // with reports pending grew a new one from nothing (~2,400 a second at Ocarina's
++            // water).
++            if (VideoCommon::UpL1516::Enabled()) {
++                if (!spare_flush_queries.empty()) {
++                    pending_flush_queries = std::move(spare_flush_queries.back());
++                    spare_flush_queries.pop_back();
++                    VideoCommon::UpL1516::Add(VideoCommon::UpL1516::Count::ListsReused);
++                } else {
++                    pending_flush_queries = {};
++                }
++            }
+         }
+     }
+ 
+@@ -526,6 +540,13 @@ public:
+             query->value = total;
+             query->flags |= VideoCommon::QueryFlagBits::IsFinalValueSynced;
+         }
++        if (VideoCommon::UpL1516::Enabled()) {
++            current_flush_queries.clear();
++            std::scoped_lock lk(flush_guard);
++            if (spare_flush_queries.size() < MaxSpareFlushQueries) {
++                spare_flush_queries.push_back(std::move(current_flush_queries));
++            }
++        }
+     }
+ 
+ private:
+@@ -728,6 +749,9 @@ private:
+     // flush levels
+     std::vector<size_t> pending_flush_queries;
+     std::deque<std::vector<size_t>> pending_flush_sets;
++    /// EDEN_UP_L1516_FENCE_CHEAP: lists PopUnsyncedQueries is done with (guarded by flush_guard).
++    static constexpr size_t MaxSpareFlushQueries = 16;
++    std::vector<std::vector<size_t>> spare_flush_queries;
+ 
+     // State Machine
+     size_t current_bank_slot;
+diff --git a/src/video_core/up_l1516.h b/src/video_core/up_l1516.h
+new file mode 100644
+index 0000000000..29b59d4f24
+--- /dev/null
++++ b/src/video_core/up_l1516.h
+@@ -0,0 +1,58 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++// Port of zortos293/Lichii #1516 (342b839, Zortos, from Lucas
++// Borges' #1161), behind its own switch, read once at boot (exact "1"), off by default:
++//   EDEN_UP_L1516_FENCE_CHEAP=1  the fencing thread is woken only when it waits for fences; the
++//                                samples streamer keeps its flushed query lists
++// Count lines: each counter logs when it reaches a power of two (1, 2, 4, ...), so a run shows
++// that the switch acted without a timer or a lock.
++
++#pragma once
++
++#include <atomic>
++#include <bit>
++
++#include "common/common_types.h"
++#include "common/logging.h"
++#include "common/pe_switch.h"
++
++namespace VideoCommon::UpL1516 {
++
++[[nodiscard]] inline bool Enabled() noexcept {
++    static const bool on = [] {
++        const bool enabled = Common::PeSwitch("EDEN_UP_L1516_FENCE_CHEAP");
++        if (enabled) {
++            LOG_INFO(HW_GPU, "EDEN_UP_L1516_FENCE_CHEAP=1: fencing thread woken only when it "
++                             "waits for fences; flushed query lists kept (at most 16)");
++        }
++        return enabled;
++    }();
++    return on;
++}
++
++enum class Count : u32 {
++    WakesSent,      ///< a fence was made while the fencing thread waited for one: woken
++    WakesSkipped,   ///< a fence was made while the fencing thread was busy: no wake
++    ListsReused,    ///< PushUnsyncedQueries took a kept list instead of a new one
++    Max,
++};
++
++inline const char* const Names[] = {"wakes_sent", "wakes_skipped", "lists_reused"};
++
++struct alignas(64) Counter {
++    std::atomic<u64> value{};
++};
++inline Counter counters[static_cast<u32>(Count::Max)];
++
++inline void Add(Count which, u64 amount = 1) noexcept {
++    const u64 before =
++        counters[static_cast<u32>(which)].value.fetch_add(amount, std::memory_order_relaxed);
++    const u64 after = before + amount;
++    if (before == 0 || (std::bit_width(before) != std::bit_width(after))) {
++        LOG_INFO(HW_GPU, "EDEN_UP_L1516_FENCE_CHEAP count {}={}", Names[static_cast<u32>(which)],
++                 after);
++    }
++}
++
++} // namespace VideoCommon::UpL1516

@@ -1,0 +1,580 @@
+From: EglantinePS5
+Subject: [PATCH] up: L1515 cheaper report lookups, frees and locks (EDEN_UP_L1515_QUERY_CHEAP, off unless set)
+
+Ports zortos293/Lichii #1515, 5b9012f (author Zortos; from #1161), read by hand onto our query
+cache (0446/0447/0560/0706 and the split). Gated by EDEN_UP_L1515_QUERY_CHEAP (exact "1"), read
+once at boot; off by default. Not built or measured with this tree yet. Upstream measured at
+Ocarina of Time's water: 51.2/51.9 fps against 49.8/51.4, 4.61/4.60 us of back thread per draw
+against 4.97/4.83 (their PC, not the PS5).
+
+On:
+- BankBase: references are two counters, `added` (GPU thread) and `dropped` (fencing thread), each
+  on its own cache line; References() = added - dropped (ASSERT on a double free).
+- UnregisterPending: the queries leave the cache under cache_mutex, then each streamer frees its
+  batch under its own lock once (StreamerInterface::FreeMany; SimpleStreamer and SamplesStreamer
+  override it).
+- SimpleStreamer::BuildQuery: the building thread takes free ids from its own `reusable` list,
+  refilled from the freed list (oldest first) under the lock once per batch. Not in upstream: the
+  first building thread owns the list; a build from any other thread (not expected) takes a new
+  slot under the lock, counts foreign_build, and the owner then builds under the lock too. With the
+  switch the free ids go to spare_queries (EDEN_UP_REPORT_NO_ALLOC's FIFO is not used).
+- InvalidateRegion, SemiFlushRegion, HasCachedReports, IsRegionGpuModified skip pages on which no
+  report was ever registered (page_filter). The filter exists only with
+  EDEN_NX2_INVALIDATION_FILTER=1 (page_filter.h); without it Any answers true and nothing skips.
+- IterateCache: a range of up to 32 candidate start offsets looks those offsets up instead of
+  walking every query of the page. Same queries; our EDEN_UP_FRITCHII_PR700 early-exit rule kept.
+Always (layout only, no behaviour): host_results and last_used_tick of SamplesQueryBank on lines
+of their own; BankBase's two new counters (+~192 bytes per bank).
+
+Not taken: upstream's unit test (src/tests); upstream's page_filter check in a report-range
+function our tree does not have (its 16-byte look-back variant).
+Count lines (each logs at 1, 2, 4, ...): "EDEN_UP_L1515_QUERY_CHEAP count free_batches= /
+freed_queries= / filter_skips= / probes= / id_refills= / foreign_build=". Boot line when on.
+Memory: per-streamer scratch vectors and the reusable id list (a few KiB); no GPU memory.
+
+No file here is a translation id input and no name is added to TranslationSwitches: KEEPS THE STORE.
+---
+diff --git a/src/video_core/query_cache/bank_base.h b/src/video_core/query_cache/bank_base.h
+index 44769ea971..fbc1ac5197 100644
+--- a/src/video_core/query_cache/bank_base.h
++++ b/src/video_core/query_cache/bank_base.h
+@@ -7,7 +7,9 @@
+ #include <deque>
+ #include <utility>
+ 
++#include "common/assert.h"
+ #include "common/common_types.h"
++#include "video_core/up_l1515.h"
+ 
+ namespace VideoCommon {
+ 
+@@ -17,6 +19,14 @@ protected:
+     size_t bank_size{};
+     std::atomic<size_t> references{};
+     size_t current_slot{};
++    // EDEN_UP_L1515_QUERY_CHEAP=1 (zortos293/Lichii #1515, Zortos): queries take their slots'
++    // references where they are recorded (the GPU thread) and drop them where their results land
++    // (the fencing thread), a report at a time: one counter each, on its own cache line, so
++    // neither thread pulls the line from the other at every report. Off: `references` as before.
++    alignas(64) std::atomic<size_t> added{};
++    alignas(64) std::atomic<size_t> dropped{};
++    /// Keeps a derived bank's members off dropped's line.
++    char dropped_padding[64 - sizeof(std::atomic<size_t>)]{};
+ 
+ public:
+     explicit BankBase(size_t bank_size_) : base_bank_size{bank_size_}, bank_size(bank_size_) {}
+@@ -34,6 +44,8 @@ public:
+     virtual void Reset() {
+         current_slot = 0;
+         references = 0;
++        added = 0;
++        dropped = 0;
+         bank_size = base_bank_size;
+     }
+ 
+@@ -42,16 +54,37 @@ public:
+     }
+ 
+     void AddReference(size_t how_many = 1) {
++        if (UpL1515::Enabled()) {
++            added.fetch_add(how_many, std::memory_order_relaxed);
++            return;
++        }
+         references.fetch_add(how_many, std::memory_order_relaxed);
+     }
+ 
+     void CloseReference(size_t how_many = 1) {
++        if (UpL1515::Enabled()) {
++            dropped.fetch_add(how_many, std::memory_order_relaxed);
++            return;
++        }
+         if (how_many > references.load(std::memory_order_relaxed)) {
+             UNREACHABLE();
+         }
+         references.fetch_sub(how_many, std::memory_order_relaxed);
+     }
+ 
++    /// The references taken and not dropped yet. With EDEN_UP_L1515_QUERY_CHEAP it is called
++    /// where references are taken, so every reference dropped was taken before: more dropped
++    /// than taken is a double free.
++    size_t References() const {
++        if (!UpL1515::Enabled()) {
++            return references.load(std::memory_order_relaxed);
++        }
++        const size_t dropped_now = dropped.load(std::memory_order_acquire);
++        const size_t added_now = added.load(std::memory_order_acquire);
++        ASSERT(dropped_now <= added_now);
++        return added_now - dropped_now;
++    }
++
+     void Close() {
+         bank_size = current_slot;
+     }
+@@ -61,7 +94,7 @@ public:
+     }
+ 
+     bool IsDead() const {
+-        return IsClosed() && references == 0;
++        return IsClosed() && References() == 0;
+     }
+ };
+ 
+diff --git a/src/video_core/query_cache/query_cache.h b/src/video_core/query_cache/query_cache.h
+index 60055f9957..91b16b543f 100644
+--- a/src/video_core/query_cache/query_cache.h
++++ b/src/video_core/query_cache/query_cache.h
+@@ -190,6 +190,10 @@ struct QueryCacheBase<Traits>::QueryCacheBaseImpl {
+     std::mutex flush_guard;
+     std::deque<u64> flushes_pending;
+     std::vector<QueryCacheBase<Traits>::QueryLocation> pending_unregister;
++    /// EDEN_UP_L1515_QUERY_CHEAP: UnregisterPending's ids to free, by streamer, kept with their
++    /// capacity.
++    std::array<std::vector<size_t>, static_cast<size_t>(QueryType::MaxQueryTypes)>
++        unregister_scratch;
+ };
+ 
+ template <typename Traits>
+@@ -517,6 +521,50 @@ void QueryCacheBase<Traits>::UnregisterPending() {
+         return std::make_pair<u64, u32>(cur_addr >> Core::DEVICE_PAGEBITS,
+                                         static_cast<u32>(cur_addr & Core::DEVICE_PAGEMASK));
+     };
++    if (UpL1515::Enabled()) {
++        // EDEN_UP_L1515_QUERY_CHEAP=1 (zortos293/Lichii #1515, Zortos): the fencing thread runs
++        // this for every fence's reports while the GPU thread registers and builds new ones: the
++        // queries leave the cache under its lock, then each streamer frees its batch under its own
++        // lock once, instead of a streamer lock per query inside the cache's.
++        auto& freed = impl->unregister_scratch;
++        for (auto& ids : freed) {
++            ids.clear();
++        }
++        {
++            std::scoped_lock lock(cache_mutex);
++            for (QueryLocation loc : impl->pending_unregister) {
++                const auto [streamer_id, query_id] = loc.unpack();
++                if (streamer_id >= freed.size()) [[unlikely]] {
++                    continue;
++                }
++                auto* streamer = impl->streamers[streamer_id];
++                if (!streamer) [[unlikely]] {
++                    continue;
++                }
++                auto* query = streamer->GetQuery(query_id);
++                auto [cont_addr, base] = gen_caching_indexing(query->guest_address);
++                auto it1 = cached_queries.find(cont_addr);
++                if (it1 != cached_queries.end()) {
++                    auto it2 = it1->second.find(base);
++                    if (it2 != it1->second.end()) {
++                        if (it2->second.raw == loc.raw) {
++                            it1->second.erase(it2);
++                        }
++                    }
++                }
++                freed[streamer_id].push_back(query_id);
++            }
++        }
++        impl->pending_unregister.clear();
++        for (size_t streamer_id = 0; streamer_id < freed.size(); ++streamer_id) {
++            if (!freed[streamer_id].empty()) {
++                impl->streamers[streamer_id]->FreeMany(freed[streamer_id]);
++                UpL1515::Add(UpL1515::Count::FreeBatches);
++                UpL1515::Add(UpL1515::Count::FreedQueries, freed[streamer_id].size());
++            }
++        }
++        return;
++    }
+     std::scoped_lock lock(cache_mutex);
+     for (QueryLocation loc : impl->pending_unregister) {
+         const auto [streamer_id, query_id] = loc.unpack();
+diff --git a/src/video_core/query_cache/query_cache_base.h b/src/video_core/query_cache/query_cache_base.h
+index d9c0c10e95..d3094cf051 100644
+--- a/src/video_core/query_cache/query_cache_base.h
++++ b/src/video_core/query_cache/query_cache_base.h
+@@ -6,6 +6,7 @@
+ 
+ #pragma once
+ 
++#include <algorithm>
+ #include <functional>
+ #include <mutex>
+ #include <optional>
+@@ -22,6 +23,7 @@
+ #include "video_core/page_filter.h"
+ #include "video_core/query_cache/query_base.h"
+ #include "video_core/query_cache/types.h"
++#include "video_core/up_l1515.h"
+ 
+ namespace VideoCore {
+ class RasterizerInterface;
+@@ -63,6 +65,13 @@ public:
+     ~QueryCacheBase();
+ 
+     void InvalidateRegion(VAddr addr, std::size_t size) {
++        // EDEN_UP_L1515_QUERY_CHEAP (zortos293/Lichii #1515): compute inline writes come by the
++        // thousand a frame, mostly where no report ever was: pages never registered need no look
++        // under cache_mutex. Acts only with EDEN_NX2_INVALIDATION_FILTER=1 (page_filter.h; without
++        // it Any answers true).
++        if (SkipByFilter(addr, size)) {
++            return;
++        }
+         IterateCache<true>(addr, size,
+                            [this](QueryLocation location) { InvalidateQuery(location); });
+     }
+@@ -75,6 +84,9 @@ public:
+ 
+     /// Writes out the finalized reports in the region. True when some still wait for host results.
+     bool SemiFlushRegion(VAddr addr, std::size_t size) {
++        if (SkipByFilter(addr, size)) {
++            return false;
++        }
+         bool result = false;
+         // Visits every query in the range: each final value not written yet is written here. The
+         // callback returns nothing, so EDEN_UP_FRITCHII_PR700's early exit never ends this walk
+@@ -97,6 +109,9 @@ public:
+     /// unregistered yet). Only the cache mutex: callable from the split front
+     /// (EDEN_NX2_DMA_SNAPSHOT).
+     [[nodiscard]] bool HasCachedReports(VAddr addr, size_t size) {
++        if (SkipByFilter(addr, size)) {
++            return false;
++        }
+         bool result = false;
+         IterateCache<false>(addr, size, [&result](QueryLocation) { result = true; });
+         return result;
+@@ -104,6 +119,9 @@ public:
+ 
+     /// Return true when a CPU region is modified from the GPU
+     [[nodiscard]] bool IsRegionGpuModified(VAddr addr, size_t size) {
++        if (SkipByFilter(addr, size)) {
++            return false;
++        }
+         bool result = false;
+         IterateCache<false>(addr, size, [this, &result](QueryLocation location) {
+             result |= IsQueryDirty(location);
+@@ -154,6 +172,53 @@ protected:
+         const u64 addr_begin = addr;
+         const u64 addr_end = addr_begin + size;
+ 
++        // EDEN_UP_L1515_QUERY_CHEAP=1 (zortos293/Lichii #1515, Zortos): a read of a few words
++        // (the macro DMA reads of reports, ~1,700 a frame at Ocarina of Time's water) looks up
++        // the offsets a query overlapping it can start at, instead of walking every query of the
++        // page (hundreds there). Same queries, from the same pages (a query starts on the first
++        // page or later, as in the walk below), removed the same way.
++        static constexpr u64 MaxProbes = 32;
++        if (UpL1515::Enabled()) {
++            const u64 page_first = (addr_begin >> Core::DEVICE_PAGEBITS) << Core::DEVICE_PAGEBITS;
++            const u64 probe_first =
++                (std::max)(addr_begin >= sizeof(u32) - 1 ? addr_begin - (sizeof(u32) - 1) : 0,
++                           page_first);
++            if (addr_end > probe_first && addr_end - probe_first <= MaxProbes) {
++                UpL1515::Add(UpL1515::Count::Probes);
++                std::scoped_lock lock(cache_mutex);
++                u64 cached_page = ~u64{0};
++                typename ContentCache::mapped_type* contents = nullptr;
++                for (u64 query_addr = probe_first; query_addr < addr_end; ++query_addr) {
++                    const u64 page = query_addr >> Core::DEVICE_PAGEBITS;
++                    if (page != cached_page) {
++                        cached_page = page;
++                        const auto it = cached_queries.find(page);
++                        contents = it != cached_queries.end() ? &it->second : nullptr;
++                    }
++                    if (contents == nullptr) {
++                        continue;
++                    }
++                    const auto query =
++                        contents->find(static_cast<u32>(query_addr & Core::DEVICE_PAGEMASK));
++                    if (query == contents->end()) {
++                        continue;
++                    }
++                    const QueryLocation location = query->second;
++                    if constexpr (remove_from_cache) {
++                        contents->erase(query);
++                    }
++                    if constexpr (RETURNS_BOOL) {
++                        if (func(location) && WalkEarlyExit()) {
++                            return;
++                        }
++                    } else {
++                        func(location);
++                    }
++                }
++                return;
++            }
++        }
++
+         const u64 page_end = addr_end >> Core::DEVICE_PAGEBITS;
+         std::scoped_lock lock(cache_mutex);
+         for (u64 page = addr_begin >> Core::DEVICE_PAGEBITS; page <= page_end; ++page) {
+@@ -197,6 +262,15 @@ protected:
+         }
+     }
+ 
++    /// EDEN_UP_L1515_QUERY_CHEAP=1: no report was ever registered on these pages.
++    bool SkipByFilter(VAddr addr, std::size_t size) const {
++        if (!UpL1515::Enabled() || page_filter.Any(addr, size)) {
++            return false;
++        }
++        UpL1515::Add(UpL1515::Count::FilterSkips);
++        return true;
++    }
++
+     /// EDEN_UP_FRITCHII_PR700=1: an IterateCache callback returning true ends the walk.
+     static bool WalkEarlyExit() noexcept {
+         static const bool on = ::Common::PeSwitch("EDEN_UP_FRITCHII_PR700");
+diff --git a/src/video_core/query_cache/query_stream.h b/src/video_core/query_cache/query_stream.h
+index 1054610827..f5911604b5 100644
+--- a/src/video_core/query_cache/query_stream.h
++++ b/src/video_core/query_cache/query_stream.h
+@@ -7,8 +7,12 @@
+ #pragma once
+ 
+ #include <cstddef>
++#include <atomic>
+ #include <deque>
++#include <mutex>
+ #include <optional>
++#include <span>
++#include <thread>
+ #include <vector>
+ 
+ #include "common/assert.h"
+@@ -17,6 +21,7 @@
+ #include "video_core/query_cache/query_base.h"
+ #include "video_core/zpass_cut.h"
+ #include "video_core/report_no_alloc.h"
++#include "video_core/up_l1515.h"
+ 
+ namespace VideoCommon {
+ 
+@@ -77,6 +82,13 @@ public:
+ 
+     virtual void Free(size_t query_id) = 0;
+ 
++    /// Free for each id, as one batch (EDEN_UP_L1515_QUERY_CHEAP's UnregisterPending).
++    virtual void FreeMany(std::span<const size_t> query_ids) {
++        for (const size_t query_id : query_ids) {
++            Free(query_id);
++        }
++    }
++
+     size_t GetId() const {
+         return id;
+     }
+@@ -129,8 +141,18 @@ protected:
+         ReleaseQuery(query_id);
+     }
+ 
++    virtual void FreeMany(std::span<const size_t> query_ids) override {
++        std::scoped_lock lk(guard);
++        for (const size_t query_id : query_ids) {
++            ReleaseQuery(query_id);
++        }
++    }
++
+     template <typename... Args, typename = decltype(QueryType(std::declval<Args>()...))>
+     size_t BuildQuery(Args&&... args) {
++        if (UpL1515::Enabled()) {
++            return BuildQueryBatched(std::forward<Args>(args)...);
++        }
+         std::scoped_lock lk(guard);
+         if (ReportNoAllocEnabled() && old_queries_head != spare_queries.size()) {
+             const size_t new_id = spare_queries[old_queries_head++];
+@@ -152,9 +174,66 @@ protected:
+         return new_id;
+     }
+ 
++    /// EDEN_UP_L1515_QUERY_CHEAP=1 (zortos293/Lichii #1515, Zortos): called by the one thread
++    /// that records reports (the GPU thread, or the split's back while it runs). Free ids are
++    /// taken from `reusable`, which only that thread touches, and moved there from
++    /// `spare_queries` in batches: one lock per batch instead of one per query (a report per draw
++    /// builds two). Oldest first, as they were freed. Should a second thread ever build (not
++    /// expected; counted as foreign_build), it takes a new slot under the lock and from then on
++    /// the first thread builds under the lock too.
++    template <typename... Args>
++    size_t BuildQueryBatched(Args&&... args) {
++        const std::thread::id self = std::this_thread::get_id();
++        std::thread::id owner = builder.load(std::memory_order_relaxed);
++        if (owner == std::thread::id{}) {
++            if (builder.compare_exchange_strong(owner, self, std::memory_order_relaxed)) {
++                owner = self;
++            }
++        }
++        if (owner != self) [[unlikely]] {
++            std::scoped_lock lk(guard);
++            shared_builders.store(true, std::memory_order_release);
++            UpL1515::Add(UpL1515::Count::ForeignBuild);
++            const size_t new_id = slot_queries.size();
++            slot_queries.emplace_back(std::forward<Args>(args)...);
++            return new_id;
++        }
++        if (shared_builders.load(std::memory_order_acquire)) [[unlikely]] {
++            std::scoped_lock lk(guard);
++            return TakeReusable<true>(std::forward<Args>(args)...);
++        }
++        return TakeReusable<false>(std::forward<Args>(args)...);
++    }
++
++    template <bool locked, typename... Args>
++    size_t TakeReusable(Args&&... args) {
++        if (reusable_head == reusable.size()) {
++            reusable.clear();
++            reusable_head = 0;
++            std::unique_lock<std::mutex> lk;
++            if constexpr (!locked) {
++                lk = std::unique_lock{guard};
++            }
++            if (spare_queries.empty()) {
++                const size_t new_id = slot_queries.size();
++                slot_queries.emplace_back(std::forward<Args>(args)...);
++                return new_id;
++            }
++            reusable.swap(spare_queries);
++            UpL1515::Add(UpL1515::Count::IdRefills);
++        }
++        const size_t new_id = reusable[reusable_head++];
++        new (&slot_queries[new_id]) QueryType(std::forward<Args>(args)...);
++        return new_id;
++    }
++
+     void ReleaseQuery(size_t query_id) {
+ 
+         if (query_id < slot_queries.size()) {
++            if (UpL1515::Enabled()) {
++                spare_queries.push_back(query_id);
++                return;
++            }
+             if (ReportNoAllocEnabled()) {
+                 if (old_queries_head >= 1024 && old_queries_head >= spare_queries.size() / 2) {
+                     spare_queries.erase(spare_queries.begin(),
+@@ -175,6 +254,12 @@ protected:
+     std::deque<size_t> old_queries; // baseline FIFO, used only with the switch off
+     std::vector<size_t> spare_queries;
+     size_t old_queries_head{};
++    /// EDEN_UP_L1515_QUERY_CHEAP: free ids BuildQuery took from spare_queries, used from
++    /// reusable_head (the builder's thread only), and that thread.
++    std::vector<size_t> reusable;
++    size_t reusable_head{};
++    std::atomic<std::thread::id> builder{};
++    std::atomic<bool> shared_builders{};
+ };
+ 
+ } // namespace VideoCommon
+diff --git a/src/video_core/renderer_vulkan/vk_query_cache.cpp b/src/video_core/renderer_vulkan/vk_query_cache.cpp
+index 3709a6ae99..392af9ae11 100644
+--- a/src/video_core/renderer_vulkan/vk_query_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_query_cache.cpp
+@@ -64,7 +64,7 @@ public:
+     ~SamplesQueryBank() = default;
+ 
+     void Reset() override {
+-        ASSERT(references == 0);
++        ASSERT(References() == 0);
+         VideoCommon::BankBase::Reset();
+         if (device.IsHostQueryResetSupported()) {
+             if (VideoCommon::ReportNoAllocEnabled()) {
+@@ -129,8 +129,10 @@ private:
+     Scheduler& scheduler;
+     const size_t index;
+     vk::QueryPool query_pool;
+-    std::array<u64, BANK_SIZE> host_results;
+-    u64 last_used_tick{};
++    /// The fencing thread writes the results (Sync): on lines of their own, away from the
++    /// members the GPU thread reads at every report (zortos293/Lichii #1515; layout only).
++    alignas(64) std::array<u64, BANK_SIZE> host_results;
++    alignas(64) u64 last_used_tick{};
+ };
+ 
+ using BaseStreamer = VideoCommon::SimpleStreamer<VideoCommon::HostQueryBase>;
+@@ -626,6 +628,17 @@ private:
+         ReleaseQuery(query_id);
+     }
+ 
++    void FreeMany(std::span<const size_t> query_ids) override {
++        std::scoped_lock lk(guard);
++        for (const size_t query_id : query_ids) {
++            auto* query = GetQuery(query_id);
++            ApplyBankOp(query, [](SamplesQueryBank* bank, size_t start, size_t amount) {
++                bank->CloseReference(amount);
++            });
++            ReleaseQuery(query_id);
++        }
++    }
++
+     void AbandonCurrentQuery() {
+         if (!current_query) {
+             return;
+@@ -763,7 +776,7 @@ public:
+     ~TFBQueryBank() = default;
+ 
+     void Reset() override {
+-        ASSERT(references == 0);
++        ASSERT(References() == 0);
+         VideoCommon::BankBase::Reset();
+     }
+ 
+diff --git a/src/video_core/up_l1515.h b/src/video_core/up_l1515.h
+new file mode 100644
+index 0000000000..69ee84f78b
+--- /dev/null
++++ b/src/video_core/up_l1515.h
+@@ -0,0 +1,62 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++// Port of zortos293/Lichii #1515 (5b9012f, Zortos), behind its own switch, read once at boot
++// (exact "1"), off by default:
++//   EDEN_UP_L1515_QUERY_CHEAP=1  cheaper report lookups, frees and locks (query cache)
++// Count lines: each counter logs when it reaches a power of two (1, 2, 4, ...), so a run shows
++// that the switch acted without a timer or a lock.
++
++#pragma once
++
++#include <atomic>
++#include <bit>
++
++#include "common/common_types.h"
++#include "common/logging.h"
++#include "common/pe_switch.h"
++
++namespace VideoCommon::UpL1515 {
++
++[[nodiscard]] inline bool Enabled() noexcept {
++    static const bool on = [] {
++        const bool enabled = Common::PeSwitch("EDEN_UP_L1515_QUERY_CHEAP");
++        if (enabled) {
++            LOG_INFO(HW_GPU, "EDEN_UP_L1515_QUERY_CHEAP=1: split bank references, batched query "
++                             "frees, filtered and probed report walks, batched query ids");
++        }
++        return enabled;
++    }();
++    return on;
++}
++
++enum class Count : u32 {
++    FreeBatches,  ///< UnregisterPending freed a streamer's queries as one batch
++    FreedQueries, ///< queries freed in those batches
++    FilterSkips,  ///< a region walk skipped: no report was ever registered on its pages
++    Probes,       ///< a small region walk looked up its few offsets instead of whole pages
++    IdRefills,    ///< BuildQuery took the streamer's lock to take a batch of free ids
++    ForeignBuild, ///< BuildQuery from a second thread (fully locked from then on)
++    Max,
++};
++
++inline const char* const Names[] = {"free_batches", "freed_queries", "filter_skips",
++                                    "probes",       "id_refills",    "foreign_build"};
++
++struct alignas(64) Counter {
++    std::atomic<u64> value{};
++};
++inline Counter counters[static_cast<u32>(Count::Max)];
++
++inline void Add(Count which, u64 amount = 1) noexcept {
++    const u64 before =
++        counters[static_cast<u32>(which)].value.fetch_add(amount, std::memory_order_relaxed);
++    const u64 after = before + amount;
++    // Logs once each time the count passes a power of two.
++    if (before == 0 || (std::bit_width(before) != std::bit_width(after))) {
++        LOG_INFO(HW_GPU, "EDEN_UP_L1515_QUERY_CHEAP count {}={}", Names[static_cast<u32>(which)],
++                 after);
++    }
++}
++
++} // namespace VideoCommon::UpL1515
