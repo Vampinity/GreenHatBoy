@@ -390,6 +390,343 @@ def cmd_fit(args):
     return 0
 
 
+INSTRUMENTED = ("EDEN_GBB_BACK_CALLS", "EDEN_GBB_SVC_PROFILE", "EDEN_NX2_GPU_PROFILE", "EDEN_GBB_COST",
+                "EDEN_UP_AHEAD_READ_SYNC_VERIFY", "EDEN_GBB_READ_SYNC_REGIONS_AUDIT",
+                "EDEN_GBB_READ_SYNC_CENSUS")
+VITALS_CLASSES = [("ring_words", "ring words"), ("gpu_subs", "host GPU submissions"),
+                  ("fence_pops", "fence pops"), ("front_waits", "front drains")]
+
+
+def read_env(rundir):
+    env = {}
+    path = os.path.join(rundir, "env.txt")
+    if os.path.exists(path):
+        with io.open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if "=" in line and not line.startswith("#"):
+                    k, _, v = line.strip().partition("=")
+                    env[k] = v
+    return env
+
+
+def run_verdict(rundir):
+    """Why a run should not be in a timing fit, or None if it is clean."""
+    env = read_env(rundir)
+    on = [k for k in INSTRUMENTED if env.get(k) not in (None, "", "0")]
+    if on:
+        return "instrumented: " + ", ".join(on)
+    if env.get("EDEN_UP_AHEAD_READ_SYNC") == "1":
+        return "read sync on (adds guest-side waiting that is not demand)"
+    return None
+
+
+def solve(X, y, collinear):
+    """Least squares with the collinearity guard; returns (kept indices, coef, dropped, cond, r2, rms)."""
+    keep = [i for i in range(X.shape[1]) if X[:, i].std() > 1e-9]
+    dropped = []
+    for a_i in list(keep):
+        for b_i in list(keep):
+            if b_i <= a_i or b_i not in keep or a_i not in keep:
+                continue
+            r = float(np.corrcoef(X[:, a_i], X[:, b_i])[0, 1])
+            if abs(r) >= collinear:
+                keep.remove(b_i)
+                dropped.append((b_i, a_i, r))
+    A = np.column_stack([np.ones(len(y))] + [X[:, i] for i in keep])
+    scale = np.where(np.abs(A).max(axis=0) > 0, np.abs(A).max(axis=0), 1.0)
+    coef_s, *_ = np.linalg.lstsq(A / scale, y, rcond=None)
+    coef = coef_s / scale
+    # residuals from the scaled system: identical in exact arithmetic, and it does not overflow when one
+    # class is counted in hundreds of thousands and another in dozens
+    resid = y - (A / scale) @ coef_s
+    ss_tot = float(((y - y.mean()) ** 2).sum())
+    r2 = 1 - float((resid ** 2).sum()) / ss_tot if ss_tot else float("nan")
+    rms = float(np.sqrt((resid ** 2).mean()))
+    return keep, coef, dropped, float(np.linalg.cond(A)), r2, rms
+
+
+GPFIFO_CH = re.compile(
+    r"EDEN_GBB_GPFIFO: last 10 s channel (\d+) entries (\d+), words (\d+), headers (\d+)")
+GPFIFO_ALL = re.compile(
+    r"EDEN_GBB_GPFIFO: last 10 s all channels entries (\d+), words (\d+), headers (\d+)")
+
+
+def cmd_gpfifo(args):
+    """What the game submitted against what reached the back: the first question of the anatomy.
+
+    Patch 0934 (EDEN_GBB_GPFIFO=1) logs, every 10 s, the GPFIFO entries parsed and the words those
+    entries declare, before the front expands anything. EDEN_GBB_VITALS logs ring_kwords_s every
+    second: the words the front handed the back, after expansion. Each 10 s GPFIFO window is lined up
+    with the vitals seconds inside it.
+
+        ratio = ring words / GPFIFO words
+
+    Decision rule, from the gbb8 README: within about 20% (ratio under 1.2) the demand is the game's
+    own and M2 is back-thread throughput on the draw path; well above, the front is inflating it and
+    the work is upstream of the back.
+
+    Caution on units, until a run proves otherwise: a GPFIFO entry's size counts every 32-bit word in
+    the pushbuffer, method headers included; ring words count what the front pushes to the back. They
+    should be comparable but have never been put side by side, so the first run is also a calibration.
+    """
+    for rundir in args.rundirs:
+        log = os.path.join(rundir, "eden_log.txt")
+        if not os.path.exists(log):
+            print(f"{rundir}: no eden_log.txt")
+            continue
+        totals, vitals = [], []
+        per_channel = defaultdict(lambda: [0, 0, 0])
+        for t, line in read_lines(log):
+            if t is None:
+                continue
+            m = GPFIFO_ALL.search(line)
+            if m:
+                totals.append((t, int(m.group(1)), int(m.group(2)), int(m.group(3))))
+                continue
+            m = GPFIFO_CH.search(line)
+            if m:
+                c = per_channel[int(m.group(1))]
+                c[0] += int(m.group(2)); c[1] += int(m.group(3)); c[2] += int(m.group(4))
+                continue
+            m = VITALS.search(line)
+            if m:
+                vitals.append((t, float(m.group(3)), int(m.group(11))))  # t, fps, ring_kwords_s
+        run = os.path.basename(rundir.rstrip("/"))
+        print(f"\n=== {run}: what the game submitted against what reached the back ===")
+        if not totals:
+            print("  no EDEN_GBB_GPFIFO lines. Was EDEN_GBB_GPFIFO=1 set, and is the build 01.219.924 or later?")
+            continue
+        if not vitals:
+            print("  GPFIFO lines found but no EDEN_GBB_VITALS: nothing to compare against.")
+            continue
+        print(f"  {'window end':>10} {'fps':>6} {'entries/f':>10} {'GPFIFO words/f':>15} "
+              f"{'ring words/f':>13} {'ratio':>7}")
+        ratios = []
+        for t, entries, words, headers in totals:
+            if t < args.skip:
+                continue
+            inside = [(f, k) for tv, f, k in vitals if t - 10.0 < tv <= t and f >= 8.0]
+            if len(inside) < 5:
+                continue
+            fps = sum(f for f, _ in inside) / len(inside)
+            ring_s = sum(k for _, k in inside) / len(inside) * 1000.0
+            frames = fps * 10.0
+            gw = words / frames
+            rw = ring_s / fps
+            ratio = rw / gw if gw else float("nan")
+            ratios.append(ratio)
+            print(f"  {t:10.1f} {fps:6.1f} {entries / frames:10.1f} {gw:15,.0f} {rw:13,.0f} {ratio:7.2f}")
+        if not ratios:
+            print(f"  no window after t={args.skip:.0f}s had enough vitals seconds to compare")
+            continue
+        ratios.sort()
+        med = ratios[len(ratios) // 2]
+        print(f"\n  ratio over {len(ratios)} windows: median {med:.2f}, range {ratios[0]:.2f}-{ratios[-1]:.2f}")
+        if med < 1.2:
+            print("  VERDICT: within 20%. The demand is the game's own. M2 is back-thread throughput.")
+        else:
+            print(f"  VERDICT: the back receives {med:.1f}x what the game submitted. The front is inflating it.")
+        if per_channel:
+            print("\n  by channel, whole run:")
+            for ch in sorted(per_channel):
+                e, w, h = per_channel[ch]
+                print(f"    channel {ch:2d}: {e:9,} entries, {w:12,} words, "
+                      f"{w / e if e else 0:6.1f} words an entry")
+    return 0
+
+
+def find_stops(vitals, min_len=40, max_cv=0.05, skip=60.0):
+    """Stretches where the player stood still: ring words per second go flat.
+
+    eglog.py already marks one standing phase, at a fixed 10-60 s after the loading hitch at the house
+    door. That suits the old benchmark, which paused once. A run that stops at several landmarks needs
+    the stops found from the data, so: standing with the camera snapped behind Link stops the picture
+    changing, and the GPU thread's work per second goes flat (standing windows repeat to within about
+    1%). A stop is a run of at least `min_len` seconds whose ring words vary by under `max_cv`
+    (coefficient of variation), grown greedily from each flat seed.
+
+    vitals: list of (t, fps, ring_kwords_s). Returns a list of (start_t, end_t, seconds).
+    """
+    # PER FRAME, not per second. Ring words per second follow the frame rate, which wobbles ~4% even
+    # standing still; per frame they vary 1.3% standing against 19.5% walking (runRX2). Using per
+    # second was a units mistake on 13 Nov and found no stop at all in a run that has one.
+    v = [(x[0], x[1], x[2] / x[1]) for x in vitals if x[0] >= skip and x[1] >= 8.0]
+    stops, i = [], 0
+    while i < len(v):
+        j = i + 1
+        while j < len(v):
+            seg = [x[2] for x in v[i:j + 1]]
+            mean = sum(seg) / len(seg)
+            sd = (sum((s - mean) ** 2 for s in seg) / len(seg)) ** 0.5
+            if mean <= 0 or sd / mean > max_cv:
+                break
+            j += 1
+        if j - i >= min_len:
+            stops.append((v[i][0], v[j - 1][0], j - i))
+            i = j
+        else:
+            i += 1
+    return stops
+
+
+def cmd_stops(args):
+    """Find the stops in a run, then report demand and supply per stop."""
+    for rundir in args.rundirs:
+        log = os.path.join(rundir, "eden_log.txt")
+        if not os.path.exists(log):
+            print(f"{rundir}: no eden_log.txt")
+            continue
+        vitals, gp = [], []
+        for t, line in read_lines(log):
+            if t is None:
+                continue
+            m = VITALS.search(line)
+            if m:
+                vitals.append((t, float(m.group(3)), int(m.group(11)),
+                               float(m.group(8)), float(m.group(12))))
+                continue
+            m = GPFIFO_ALL.search(line)
+            if m:
+                gp.append((t, int(m.group(1)), int(m.group(2))))
+        run = os.path.basename(rundir.rstrip("/"))
+        stops = find_stops([(t, f, k) for t, f, k, _, _ in vitals], args.min_len, args.max_cv, args.skip)
+        print(f"\n=== {run}: {len(stops)} stop(s) found "
+              f"(flat for {args.min_len}+ s, ring words per frame within {args.max_cv:.0%}) ===")
+        if not stops:
+            print("  none. Lower --max-cv or --min-len, or the run had no stops.")
+            continue
+        print(f"  {'stop':>4} {'from':>7} {'to':>7} {'secs':>5} {'fps':>6} {'ring words/f':>13} "
+              f"{'back ms/f':>10} {'GPU ms/f':>9} {'GPFIFO words/f':>15} {'ratio':>6}")
+        for n, (a, b, secs) in enumerate(stops, 1):
+            inside = [x for x in vitals if a <= x[0] <= b]
+            fps = sum(x[1] for x in inside) / len(inside)
+            ring = sum(x[2] for x in inside) / len(inside) * 1000.0 / fps
+            back = sum(x[3] for x in inside) / len(inside) / fps
+            gpu = sum(x[4] for x in inside) / len(inside) / fps
+            # GPFIFO windows are 10 s; use those that end inside the stop
+            gw = [w for t, e, w in gp if a + 10.0 <= t <= b]
+            gpw = (sum(gw) / len(gw)) / (fps * 10.0) if gw else None
+            ratio = (ring / gpw) if gpw else None
+            print(f"  {n:>4} {a:7.0f} {b:7.0f} {secs:5d} {fps:6.1f} {ring:13,.0f} {back:10.1f} {gpu:9.1f} "
+                  f"{(f'{gpw:,.0f}' if gpw else '-'):>15} {(f'{ratio:.2f}' if ratio else '-'):>6}")
+        if not gp:
+            print("  (no EDEN_GBB_GPFIFO lines in this run, so no GPFIFO column)")
+    return 0
+
+
+# numpy 2.0.2 on macOS uses Apple's Accelerate for matmul, which raises "divide by zero" and
+# "overflow encountered in matmul" on perfectly finite inputs. Checked 13 Nov: the same three warnings
+# fire on synthetic finite data, and the product agrees with a pure-numpy einsum to 1.4e-14. So they are
+# silenced around the solves only, and a real NaN or Inf would still show up in the printed results.
+_QUIET = dict(divide="ignore", over="ignore", invalid="ignore")
+
+
+def cmd_fitall(args):
+    """frame_ms on vitals demand, across many runs, split by who sets the pace.
+
+    Why split: on 11 Nov the same kind of fit over 128 runs found frame time tracks GPU-thread work
+    only while the back thread sets the pace; while the game's own CPU sets it, the frame sits flat at
+    about 33.7 ms whatever the GPU does. Pooling the two would blur both answers.
+
+    Two fits per split, because seconds inside one run are not independent (the same caveat
+    abcompare.py makes): one over every second, which estimates the slope well but flatters R^2, and
+    one with each run collapsed to its mean, which is honest about the spread but has few points.
+    """
+    if np is None:
+        print("numpy is needed")
+        return 1
+    with np.errstate(**_QUIET):
+        return _fitall(args)
+
+
+def _fitall(args):
+    rundirs = list(args.rundirs)
+    if args.list:
+        with io.open(args.list, encoding="utf-8") as fh:
+            rundirs += [l.strip() for l in fh if l.strip()]
+    used, skipped = [], []
+    per_second = {"back": [], "other": []}
+    per_run = {"back": [], "other": []}
+    for rundir in rundirs:
+        why = run_verdict(rundir)
+        if why and not args.keep_instrumented:
+            skipped.append((os.path.basename(rundir.rstrip("/")), why))
+            continue
+        data = collect(rundir)
+        if data is None:
+            continue
+        rows = windows(data, skip_before=args.skip)
+        if not rows:
+            continue
+        used.append(data["run"])
+        buckets = {"back": [], "other": []}
+        for r in rows:
+            share = (r["back_busy"] or 0) / r["frame_ms"] if r["frame_ms"] else 0
+            key = "back" if share >= args.back_share else "other"
+            vec = [r[k] for k, _ in VITALS_CLASSES]
+            per_second[key].append((vec, r["frame_ms"]))
+            buckets[key].append((vec, r["frame_ms"]))
+        for key, b in buckets.items():
+            if len(b) >= args.min_seconds:
+                per_run[key].append(([sum(v[i] for v, _ in b) / len(b) for i in range(len(VITALS_CLASSES))],
+                                     sum(f for _, f in b) / len(b)))
+    print(f"\n=== frame time on demand, {len(used)} runs used, {len(skipped)} left out ===")
+    if skipped and args.verbose:
+        for run, why in skipped:
+            print(f"  left out {run}: {why}")
+    elif skipped:
+        print(f"  left out: {sum(1 for _, w in skipped if w.startswith('instr'))} instrumented, "
+              f"{sum(1 for _, w in skipped if w.startswith('read'))} with read sync (--verbose to list)")
+    print(f"  split at back busy >= {args.back_share:.0%} of the frame")
+    for key, label in (("back", "BACK SETS THE PACE"), ("other", "BACK DOES NOT SET THE PACE")):
+        sec = per_second[key]
+        print(f"\n--- {label}: {len(sec)} seconds, {len(per_run[key])} runs ---")
+        if len(sec) < len(VITALS_CLASSES) + 5:
+            print("  too few seconds to fit")
+            continue
+        X = np.asarray([v for v, _ in sec], float)
+        y = np.asarray([f for _, f in sec], float)
+        print(f"  frame {y.min():.1f}-{y.max():.1f} ms, mean {y.mean():.1f}")
+        print(f"\n  one class at a time, every second (upper bound per class):")
+        print(f"  {'class':>22} {'per frame, mean':>16} {'us per unit':>12} {'R^2 alone':>10}")
+        ss_tot = float(((y - y.mean()) ** 2).sum())
+        for i, (k, name) in enumerate(VITALS_CLASSES):
+            col = X[:, i]
+            if col.std() <= 1e-9:
+                continue
+            A = np.column_stack([np.ones(len(y)), col])
+            sc = np.abs(A).max(axis=0)
+            c = np.linalg.lstsq(A / sc, y, rcond=None)[0] / sc
+            res = y - A @ c
+            r2 = 1 - float((res ** 2).sum()) / ss_tot if ss_tot else float("nan")
+            print(f"  {name:>22} {col.mean():16,.0f} {c[1] * 1000:12.4f} {r2:10.3f}")
+        keep, coef, dropped, cond, r2, rms = solve(X, y, args.collinear)
+        print(f"\n  joint fit, every second: R^2 {r2:.3f}, residual rms {rms:.2f} ms "
+              f"({100 * rms / y.mean():.0f}% of frame), condition {cond:,.0f}")
+        print(f"  {'fixed cost':>22} {coef[0]:12.2f} ms")
+        for j, i in enumerate(keep):
+            flag = "   NEGATIVE: not identified" if coef[j + 1] < 0 else ""
+            print(f"  {VITALS_CLASSES[i][1]:>22} {coef[j + 1] * 1000:12.4f} us/unit "
+                  f"= {coef[j + 1] * X[:, i].mean():6.2f} ms at mean{flag}")
+        for b_i, a_i, r in dropped:
+            print(f"  dropped {VITALS_CLASSES[b_i][1]}: r={r:+.3f} with {VITALS_CLASSES[a_i][1]}")
+        pr = per_run[key]
+        if len(pr) >= 4:
+            Xr = np.asarray([v for v, _ in pr], float)
+            yr = np.asarray([f for _, f in pr], float)
+            i0 = 0
+            A = np.column_stack([np.ones(len(yr)), Xr[:, i0]])
+            sc = np.abs(A).max(axis=0)
+            c = np.linalg.lstsq(A / sc, yr, rcond=None)[0] / sc
+            res = yr - A @ c
+            sst = float(((yr - yr.mean()) ** 2).sum())
+            r2r = 1 - float((res ** 2).sum()) / sst if sst else float("nan")
+            print(f"\n  one point per run ({len(pr)} runs), ring words only: "
+                  f"frame = {c[0]:.2f} ms + {c[1] * 1000:.3f} ms per 1k words, R^2 {r2r:.3f}")
+            print(f"  (11 Nov over 128 runs, all regimes: 15.7 ms + 0.213 ms per 1k words)")
+    return 0
+
+
 def cmd_budget(args):
     """Measured cost per unit against what 30 fps can afford."""
     if np is None:
@@ -445,6 +782,30 @@ def main():
         q.add_argument("--collinear", type=float, default=0.95,
                        help="fit: drop a class correlated above this with an earlier one (default 0.95)")
         q.set_defaults(fn=fn)
+    q = sub.add_parser("fitall", help="frame time on vitals demand across many runs, split by who sets the pace")
+    q.add_argument("rundirs", nargs="*")
+    q.add_argument("--list", help="a file with one run folder per line")
+    q.add_argument("--skip", type=float, default=60.0)
+    q.add_argument("--collinear", type=float, default=0.95)
+    q.add_argument("--back-share", type=float, default=0.8,
+                   help="a second is back-paced when back busy is at least this share of the frame")
+    q.add_argument("--min-seconds", type=int, default=10,
+                   help="a run needs this many seconds in a split to count as one point in the per-run fit")
+    q.add_argument("--keep-instrumented", action="store_true",
+                   help="include instrumented and read-sync runs (their timings are distorted)")
+    q.add_argument("--verbose", action="store_true")
+    q.set_defaults(fn=cmd_fitall)
+    q = sub.add_parser("gpfifo", help="GPFIFO words the game submitted against ring words that reached the back")
+    q.add_argument("rundirs", nargs="+")
+    q.add_argument("--skip", type=float, default=60.0)
+    q.set_defaults(fn=cmd_gpfifo)
+    q = sub.add_parser("stops", help="find where the player stood still, and report demand per stop")
+    q.add_argument("rundirs", nargs="+")
+    q.add_argument("--skip", type=float, default=60.0)
+    q.add_argument("--min-len", type=int, default=40, help="seconds a stop must last (default 40)")
+    q.add_argument("--max-cv", type=float, default=0.05,
+                   help="how flat ring words PER FRAME must be (default 5%%; standing is ~1.3%%, walking ~19.5%%)")
+    q.set_defaults(fn=cmd_stops)
     a = p.parse_args()
     return a.fn(a) or 0
 
