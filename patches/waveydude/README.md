@@ -12,3 +12,5 @@ Not a core patch: `EDEN_UP_STALL_PROBE=1` (W-12, outer repo `src/stall_probe.h` 
 Settings for the test: `envs/waveydude/w13-game.env.txt` (the whole per-game env, with the switches above on).
 
 Also used, from others: `EDEN_UP_AHEAD_LOAD_WAIT=1` (in the core already) stops the title-screen freeze with two frames ahead.
+
+- **0936** — W-19 experiment, `EDEN_NX2_GRAPHICS_PIPELINE_OOM_WAIT_RECOVERY=1`. Gives the existing graphics worker retry up to 128 ms to observe memory recovery. Off by default.
