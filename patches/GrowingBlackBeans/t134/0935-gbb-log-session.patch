@@ -1,0 +1,164 @@
+diff --git a/src/video_core/gbb_flash.h b/src/video_core/gbb_flash.h
+index f331848..6813f02 100644
+--- a/src/video_core/gbb_flash.h
++++ b/src/video_core/gbb_flash.h
+@@ -42,6 +42,7 @@
+ 
+ #include "common/common_types.h"
+ #include "common/logging.h"
++#include "video_core/gbb_log_dir.h" // 0935
+ 
+ namespace VideoCore::GbbFlash {
+ 
+@@ -49,6 +50,9 @@ namespace VideoCore::GbbFlash {
+ /// ones along. Before a writer's first file this session, delete that writer's files from other
+ /// sessions: names "<prefix><pid>" followed by '.' or '-', for another pid. Nothing else is touched.
+ inline void DeleteOtherSessions(const char* prefix) {
++    if (VideoCommon::GbbLogDir::PerSession()) {
++        return; // 0935: this session has a folder of its own; nothing here belongs to another
++    }
+     std::error_code ec;
+     const std::string pre{prefix};
+     const std::string pid = std::to_string(unsigned(getpid()));
+@@ -222,7 +226,8 @@ public:
+     static Writer* Open() {
+         DeleteOtherSessions("gbb-flash-"); // 0929
+         char path[128];
+-        std::snprintf(path, sizeof(path), "/data/eglantineps5/logs/gbb-flash-%u.bin", unsigned(getpid()));
++        // 0935: one folder per session when EDEN_GBB_LOG_SESSION=1, else exactly the old path.
++        VideoCommon::GbbLogDir::Path(path, sizeof(path), "gbb-flash-%u.bin", unsigned(getpid()));
+         std::FILE* f = std::fopen(path, "wb");
+         if (f == nullptr) {
+             LOG_WARNING(HW_GPU, "EDEN_GBB_FLASH: can't write {}; counting only", path);
+diff --git a/src/video_core/gbb_log_dir.h b/src/video_core/gbb_log_dir.h
+index e69de29..5daf1ef 100644
+--- /dev/null
++++ b/src/video_core/gbb_log_dir.h
+@@ -0,0 +1,85 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++/// GrowingBlackBeans 0935: one folder per session for the files we write.
++///
++/// EDEN_GBB_LOG_SESSION=1 (boot; off by default): the dumps this build writes go to
++///   /data/eglantineps5/logs/s<YYYYMMDD-HHMMSS>-<pid>/ instead of straight into logs/. Unset, every
++///   path is exactly what it was.
++///
++/// Why: the console's logs/ folder keeps every session's dumps, so copying it after a run brings all
++/// the earlier ones along. Every `checkrun.py` of ours says so — "183 files in logs/ are not from this
++/// session" — and on 13 Nov it nearly cost a conclusion: twelve runs each held twelve sessions' grid
++/// files, and the right one could only be found by reading the pid out of each run's own log.
++///
++/// 0929 already deletes *our own* writers' files from other sessions before writing (DeleteOtherSessions
++/// in gbb_flash.h and gbb_trace.h). That only covers prefixes we pass it, and the bulk of the clutter is
++/// not ours: guest code dumps (core.cpp), the stack sampler's windows, crash reports. A folder per
++/// session fixes it for whoever opts in, one writer at a time, without changing anyone else's paths.
++///
++/// **Not moved by this patch**, because they belong to other people's code and the layout is shared:
++/// `guest-main+<offset>.bin`, `sample-<pid>-<window>-<thread>.bin`, crash reports, and the launcher's
++/// own `eden_log.txt` / `stderr.log`. Each is a one-line change to use LogDir(); they are left for
++/// their owners to make, or to agree on first. The emulator-side readers that scan logs/ by name keep
++/// working either way, because unset changes nothing.
++///
++/// One line at the first use: "EDEN_GBB_LOG_SESSION: writing this session's dumps to <path>".
++
++#include <cstdio>
++#include <ctime>
++#include <filesystem>
++#include <string>
++
++#include "common/logging.h"
++
++namespace VideoCommon::GbbLogDir {
++
++inline constexpr const char* Base = "/data/eglantineps5/logs";
++
++/// The folder this session's dumps go in. Read once; creates the folder on first use. Falls back to
++/// the flat logs/ folder if it cannot be made, so a writer never loses its output over this.
++[[nodiscard]] inline const std::string& Dir() {
++    static const std::string dir = [] {
++        const char* value = std::getenv("EDEN_GBB_LOG_SESSION");
++        if (value == nullptr || value[0] != '1' || value[1] != '\0') {
++            return std::string{Base};
++        }
++        const std::time_t now = std::time(nullptr);
++        std::tm tm{};
++#if defined(_WIN32)
++        localtime_s(&tm, &now);
++#else
++        localtime_r(&now, &tm);
++#endif
++        char stamp[64];
++        std::snprintf(stamp, sizeof(stamp), "%s/s%04d%02d%02d-%02d%02d%02d-%u", Base,
++                      tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec,
++                      unsigned(getpid()));
++        std::error_code ec;
++        std::filesystem::create_directories(stamp, ec);
++        if (ec) {
++            LOG_WARNING(HW_GPU, "EDEN_GBB_LOG_SESSION: can't make {}; using {}", stamp, Base);
++            return std::string{Base};
++        }
++        LOG_INFO(HW_GPU, "EDEN_GBB_LOG_SESSION: writing this session's dumps to {}", stamp);
++        return std::string{stamp};
++    }();
++    return dir;
++}
++
++/// True when a session folder is in use, so a writer can skip 0929's delete-other-sessions sweep:
++/// inside its own folder there is nothing of anyone else's to delete.
++[[nodiscard]] inline bool PerSession() {
++    return Dir() != Base;
++}
++
++/// "<session dir>/<name>" into a caller's buffer, so the call sites keep their snprintf shape.
++inline void Path(char* out, std::size_t size, const char* name_format, auto... args) {
++    char name[96];
++    std::snprintf(name, sizeof(name), name_format, args...);
++    std::snprintf(out, size, "%s/%s", Dir().c_str(), name);
++}
++
++} // namespace VideoCommon::GbbLogDir
+diff --git a/src/video_core/gbb_trace.h b/src/video_core/gbb_trace.h
+index a8110e3..5e3ad96 100644
+--- a/src/video_core/gbb_trace.h
++++ b/src/video_core/gbb_trace.h
+@@ -16,6 +16,7 @@
+ 
+ #include "common/common_types.h"
+ #include "common/logging.h"
++#include "video_core/gbb_log_dir.h" // 0935
+ #include "common/cpu_features.h"
+ 
+ /// GrowingBlackBeans 0922/0923: two cheap, always-comparable views of where a frame goes.
+@@ -51,6 +52,9 @@ namespace VideoCore::GbbTrace {
+ /// ones along. Before a writer's first file this session, delete that writer's files from other
+ /// sessions: names "<prefix><pid>" followed by '.' or '-', for another pid. Nothing else is touched.
+ inline void DeleteOtherSessions(const char* prefix) {
++    if (VideoCommon::GbbLogDir::PerSession()) {
++        return; // 0935: this session has a folder of its own; nothing here belongs to another
++    }
+     std::error_code ec;
+     const std::string pre{prefix};
+     const std::string pid = std::to_string(unsigned(getpid()));
+@@ -274,7 +278,8 @@ inline void DumpFlight(u64 now_ns, u64 interval_ns) {
+     static const bool cleaned = (DeleteOtherSessions("gbb-flight-"), true); // 0929
+     (void)cleaned;
+     char path[128];
+-    std::snprintf(path, sizeof(path), "/data/eglantineps5/logs/gbb-flight-%u-%u.bin", unsigned(getpid()),
++    // 0935: one folder per session when EDEN_GBB_LOG_SESSION=1, else exactly the old path.
++    VideoCommon::GbbLogDir::Path(path, sizeof(path), "gbb-flight-%u-%u.bin", unsigned(getpid()),
+                   s.flight_dumps);
+     bool ok = false;
+     if (std::FILE* f = std::fopen(path, "wb")) {
+@@ -295,7 +300,8 @@ inline void WriteTimeline() {
+     const u64 n = (std::min)(s.next.load(), State::Capacity);
+     DeleteOtherSessions("gbb-timeline-"); // 0929
+     char path[128];
+-    std::snprintf(path, sizeof(path), "/data/eglantineps5/logs/gbb-timeline-%u.bin", unsigned(getpid()));
++    // 0935: one folder per session when EDEN_GBB_LOG_SESSION=1, else exactly the old path.
++    VideoCommon::GbbLogDir::Path(path, sizeof(path), "gbb-timeline-%u.bin", unsigned(getpid()));
+     bool ok = false;
+     if (std::FILE* f = std::fopen(path, "wb")) {
+         const char magic[8] = {'G', 'B', 'B', 'T', 'L', '1', 0, 0};

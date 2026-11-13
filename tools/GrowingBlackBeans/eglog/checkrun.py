@@ -20,6 +20,7 @@ import glob
 import hashlib
 import os
 import re
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -137,6 +138,15 @@ def main():
                 stale.append(f)
             elif f.startswith("crash-"):
                 stale.append(f)
+        # 0935: a run made with EDEN_GBB_LOG_SESSION=1 keeps our dumps in logs/s<stamp>-<pid>/.
+        # Name that folder, so the fix is visible rather than only the clutter it avoids.
+        session_dirs = sorted(d for d in os.listdir(logs)
+                              if re.fullmatch(r"s\d{8}-\d{6}-\d+", d)
+                              and os.path.isdir(os.path.join(logs, d)))
+        if session_dirs:
+            extra = f"; {len(session_dirs)} session folders present" if len(session_dirs) > 1 else ""
+            notes.append(f"this session's dumps are in logs/{session_dirs[-1]}/ "
+                         f"(EDEN_GBB_LOG_SESSION): copy that folder, not all of logs/{extra}")
         if stale:
             dumps = sum(1 for f in stale if f.startswith("guest-main"))
             notes.append(f"{len(stale)} files in logs/ are not from this session or must never be shared "
