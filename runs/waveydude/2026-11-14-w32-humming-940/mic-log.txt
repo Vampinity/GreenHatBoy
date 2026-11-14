@@ -1,0 +1,194 @@
+[  13.162177] Debug.Emulated <Info> core/hle/kernel/svc/svc_debug_string.cpp:25:OutputDebugString: ZELDA_MIC_TRACE_BOOT v2 0f7d2d79
+[  25.744403] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  25.745792] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  26.744401] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  26.745693] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  27.744411] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  27.745669] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  28.744403] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  28.745375] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  29.744405] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  29.745349] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  30.744401] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  30.745808] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  31.744407] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  31.745714] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  32.744420] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  32.745630] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  33.744428] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  33.745372] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  34.744434] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  34.745627] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  35.744405] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  35.745373] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  36.744405] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  36.745416] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  37.744402] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  37.745669] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  38.744386] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  38.745228] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  39.744405] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  39.745135] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  40.744401] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  40.745386] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  41.744401] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  41.745464] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  42.744325] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  42.745581] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  43.744403] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  43.745125] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  44.745159] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  44.746200] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  45.744409] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  45.745194] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  46.744421] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  46.745323] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  47.744422] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  47.745451] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  48.747676] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  48.764614] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  49.744431] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  49.745794] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  50.744403] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  50.745460] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  51.744401] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  51.745424] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  52.744408] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  52.746241] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  53.744407] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  53.745332] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  54.744401] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  54.745522] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  55.744403] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  55.745642] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  56.744406] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  56.745641] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  57.744399] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  57.745645] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  58.744404] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  58.745252] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  59.744399] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  59.745613] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  60.744401] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  60.745338] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  61.744400] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  61.745695] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  62.744399] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  62.745531] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  63.744366] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  63.745371] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  64.744404] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  64.745530] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  65.744401] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  65.745573] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  66.744403] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  66.745312] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  67.744402] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  67.745487] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  68.744405] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  68.745677] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  69.744436] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  69.745432] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  70.744398] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  70.745253] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  71.759393] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  71.760382] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  72.744396] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  72.745409] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  73.744397] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  73.745741] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  74.744403] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  74.745578] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  75.744322] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  75.745694] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  76.744402] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  76.745376] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  77.744289] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  77.745397] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  78.744398] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  78.745361] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  79.744398] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  79.745339] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  80.744395] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  80.745474] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  81.744398] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  81.745588] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  82.744402] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  82.745338] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  83.744396] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  83.745456] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  84.744348] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  84.745189] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  85.744395] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  85.745540] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  86.744412] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  86.745706] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  87.744397] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  87.745174] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  88.744397] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  88.745204] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  89.744407] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  89.745724] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  90.744396] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  90.745195] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  91.744414] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  91.745471] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  92.744409] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  92.745783] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  93.744402] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  93.745099] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  94.744402] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  94.745376] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  95.744403] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  95.745347] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  96.744399] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  96.745608] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  97.744395] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  97.745324] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  98.744398] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  98.745250] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  99.744398] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  99.745108] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[ 100.744396] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[ 100.745473] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[ 101.744394] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[ 101.745379] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[ 102.744315] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[ 102.745480] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[ 103.744403] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[ 103.745284] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[ 104.744395] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[ 104.746009] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[ 105.195573] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:273:AttachStream: attach stream 3 to AudioVirtualOutput0 (functionality 2)
+[ 105.197345] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:273:AttachStream: attach stream 4 to TrueRawAudioIn (functionality 2)
+[ 105.263584] Debug.Emulated <Info> core/hle/kernel/svc/svc_debug_string.cpp:25:OutputDebugString: ZELDA_MIC_ROUTE count=0x0000000000000001 packed=0x0000000001010100
+[ 105.268740] Debug.Emulated <Info> core/hle/kernel/svc/svc_debug_string.cpp:25:OutputDebugString: ZELDA_MIC_READB calls=0x0000000000000001 frames=0x0000000000000100
+[ 105.284171] Debug.Emulated <Info> core/hle/kernel/svc/svc_debug_string.cpp:25:OutputDebugString: ZELDA_MIC_BLOCK count=0x0000000000000001 packed=0x00000000c2980000
+[ 106.180757] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 3 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[ 106.185810] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 4 indices: read(+0x44) 2023 write(+0x1004) 4071 of 4801, engaged true
+[ 106.195813] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 377, peak 1782, 0 clipped, first clear pitch 332.5 Hz
+[ 106.196827] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 4: fed 48000 (48000 mic, 0 silence); sys_idx 4791 game_idx 2631 (waiting 2160) room 2640
+[ 106.270350] Debug.Emulated <Info> core/hle/kernel/svc/svc_debug_string.cpp:25:OutputDebugString: ZELDA_MIC_READB calls=0x00000000000000ce frames=0x000000000000c190
+[ 106.280506] Debug.Emulated <Info> core/hle/kernel/svc/svc_debug_string.cpp:25:OutputDebugString: ZELDA_MIC_ROUTE count=0x0000000000000018 packed=0x0000000001010100
+[ 106.290053] Debug.Emulated <Info> core/hle/kernel/svc/svc_debug_string.cpp:25:OutputDebugString: ZELDA_MIC_BLOCK count=0x0000000000000062 packed=0x00000001c28fb69f
+[ 107.180748] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 3 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[ 107.185807] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 4 indices: read(+0x44) 2189 write(+0x1004) 4061 of 4801, engaged true
+[ 107.195821] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 12118, peak 32310, 0 clipped, first clear pitch 203.0 Hz
+[ 107.197095] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 4: fed 96000 (96000 mic, 0 silence); sys_idx 4781 game_idx 2445 (waiting 2336) room 2464
+[ 107.277738] Debug.Emulated <Info> core/hle/kernel/svc/svc_debug_string.cpp:25:OutputDebugString: ZELDA_MIC_READB calls=0x0000000000000196 frames=0x0000000000017cd0
+[ 107.294500] Debug.Emulated <Info> core/hle/kernel/svc/svc_debug_string.cpp:25:OutputDebugString: ZELDA_MIC_BLOCK count=0x00000000000000bf packed=0x00000101c0c4ec00
+[ 107.310904] Debug.Emulated <Info> core/hle/kernel/svc/svc_debug_string.cpp:25:OutputDebugString: ZELDA_MIC_ROUTE count=0x0000000000000031 packed=0x0000000001010100
+[ 108.180761] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 3 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[ 108.185807] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 4 indices: read(+0x44) 2163 write(+0x1004) 4051 of 4801, engaged true
+[ 108.195823] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 11662, peak 31404, 0 clipped, first clear pitch 145.4 Hz
+[ 108.197039] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 4: fed 144000 (144000 mic, 0 silence); sys_idx 4771 game_idx 2419 (waiting 2352) room 2448
+[ 108.283624] Debug.Emulated <Info> core/hle/kernel/svc/svc_debug_string.cpp:25:OutputDebugString: ZELDA_MIC_READB calls=0x0000000000000260 frames=0x0000000000023a50
+[ 108.305281] Debug.Emulated <Info> core/hle/kernel/svc/svc_debug_string.cpp:25:OutputDebugString: ZELDA_MIC_BLOCK count=0x000000000000011f packed=0x00000101c0c71332
+[ 108.333813] Debug.Emulated <Info> core/hle/kernel/svc/svc_debug_string.cpp:25:OutputDebugString: ZELDA_MIC_ROUTE count=0x000000000000004a packed=0x0000000001010100
+[ 109.180745] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 3 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[ 109.185809] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 4 indices: read(+0x44) 2169 write(+0x1004) 4041 of 4801, engaged true
+[ 109.195819] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 10508, peak 31608, 0 clipped, first clear pitch 145.8 Hz
+[ 109.196675] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 4: fed 192000 (192000 mic, 0 silence); sys_idx 4761 game_idx 2681 (waiting 2080) room 2720
+[ 109.286248] Debug.Emulated <Info> core/hle/kernel/svc/svc_debug_string.cpp:25:OutputDebugString: ZELDA_MIC_READB calls=0x000000000000032b frames=0x000000000002f860
+[ 109.307540] Debug.Emulated <Info> core/hle/kernel/svc/svc_debug_string.cpp:25:OutputDebugString: ZELDA_MIC_BLOCK count=0x000000000000017d packed=0x00000001c2980000
+[ 109.360772] Debug.Emulated <Info> core/hle/kernel/svc/svc_debug_string.cpp:25:OutputDebugString: ZELDA_MIC_ROUTE count=0x0000000000000064 packed=0x0000000001010100
