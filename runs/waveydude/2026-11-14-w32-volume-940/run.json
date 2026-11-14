@@ -1,0 +1,47 @@
+{
+ "format": 0,
+ "author": "waveydude",
+ "run_id": "w32-volume-940",
+ "date": "2026-11-14",
+ "time": null,
+ "batch": "w32-mic",
+ "test": "Instruments mode and capture-level comparison",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "W-32-mic-signal",
+  "commit": null,
+  "version": null,
+  "eboot_sha256_16": null
+ },
+ "firmware": "9.40",
+ "console": "PS5 base 9.40",
+ "route": {
+  "script": "Instruments mode and capture-level comparison",
+  "script_sha": null
+ },
+ "menu_settings": null,
+ "env_lines": 0,
+ "env_hash": null,
+ "control": null,
+ "ending": {
+  "kind": null,
+  "class": null,
+  "seconds": null,
+  "crash_app_s": null
+ },
+ "valid": null,
+ "gameplay_s": null,
+ "fps": {
+  "mean": null,
+  "source": null,
+  "p99_ms": null,
+  "worst_ms": null
+ },
+ "worst_frame_ms": null,
+ "runtime_pipeline_builds": null,
+ "flashes_per_min": null,
+ "note": "Filtered emulator log snapshot. No raw audio, saves or console settings included.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {}
+}
