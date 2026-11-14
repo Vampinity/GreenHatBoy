@@ -1,0 +1,31 @@
+Subject: [PATCH] sysmix: correct the raw mono mic ring layout
+
+The guest audio SDK reads input PCM after the second control page header
+when no per-frame timestamps are requested. The second page owns the producer
+cursor; the guest advances the consumer cursor in the first page.
+
+--- a/src/core/hle/service/audio/nx2_audio_device_manager.h
++++ b/src/core/hle/service/audio/nx2_audio_device_manager.h
+@@ -88,7 +88,8 @@
+ // the frames due at its rate are written at <data> + 2 * index (mono 16-bit, ring capacity being
+ // frames + 1), as many as the ring has room for, and the system's index is moved past them; the
+ // game's index is only read. With no mic sample to hand, silence is written, as a quiet mic would
+-// give. Default layout: data +0x2000, system index +0x44, game index +0x1004. Lines: EDEN_MIC_FEED.
++// give. Default layout for raw mono Q15 input without timestamps: data +0x1040,
++// system index +0x1004, game index +0x44. Lines: EDEN_MIC_FEED.
+ struct Nx2MicFeed {
+     bool on{};
+     u64 data{}, system_index{}, game_index{};
+@@ -103,10 +104,10 @@
+         }
+         if (std::strcmp(value, "1") == 0 || std::strcmp(value, "auto") == 0 ||
+             std::strcmp(value, "true") == 0 || std::strcmp(value, "on") == 0) {
+-            feed = {true, 0x2000, 0x44, 0x1004};
++            feed = {true, 0x1040, 0x1004, 0x44};
+             LOG_INFO(Service_Audio,
+                      "EDEN_UP_MIC_FEED: auto layout enabled: controller mic goes into raw mic streams: "
+-                     "data at +0x2000, system index at +0x44, game index at +0x1004");
++                     "data at +0x1040, system index at +0x1004, game index at +0x44");
+             return feed;
+         }
+         unsigned long long data = 0, system_index = 0, game_index = 0;

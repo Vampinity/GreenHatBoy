@@ -1,0 +1,27 @@
+Subject: [PATCH] sysmix: feed raw mic PCM only while the stream is engaged
+
+--- a/src/core/hle/service/audio/nx2_audio_device_manager.h
++++ b/src/core/hle/service/audio/nx2_audio_device_manager.h
+@@ -393,8 +393,11 @@
+             stream->frames = frames;
+             stream->owed_frames = 0;
+             stream->open = true;
+-            if (stream->kind == 1) {
+-                // Input streams (microphone / capture) are active as soon as they are open.
++            if (stream->raw_mic) {
++                // Raw capture starts when the game attaches the stream.
++                stream->engaged = false;
++            } else if (stream->kind == 1) {
++                // Preserve the existing startup behavior for other inputs.
+                 stream->engaged = true;
+             }
+             Nx2MicDumpStream(system, *stream, "open");
+@@ -550,7 +553,7 @@
+             if (const auto& feed = Nx2MicFeedLayout();
+                 feed.on && stream->raw_mic && stream->channels == 1 &&
+                 feed.data + u64{capacity} * 2 <= stream->size) {
+-                if (stream->open) {
++                if (stream->engaged) {
+                     const u32 produced = memory.Read32(stream->buffer + feed.system_index);
+                     const u32 consumed = memory.Read32(stream->buffer + feed.game_index);
+                     if (produced < capacity && consumed < capacity) {
