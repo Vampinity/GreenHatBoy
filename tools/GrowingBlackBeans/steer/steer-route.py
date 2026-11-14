@@ -72,6 +72,12 @@ def cmd_track(a):
                            "stream=width,height", "-of", "csv=p=0:s=x", a.video],
                           capture_output=True, text=True, check=True).stdout.strip().split("x")
     w, h = int(size[0]), int(size[1])
+    # PS5 captures (VP9 .webm) say 1920x1088 in the header but decode to 1920x1080: trust one decoded frame.
+    one = subprocess.run(["ffmpeg", "-v", "error", "-i", a.video, "-frames:v", "1", "-f", "rawvideo",
+                          "-pix_fmt", "gray", "-"], capture_output=True).stdout
+    if one and len(one) % w == 0 and len(one) // w != h:
+        print(f"the header says {w}x{h}, the frames are {w}x{len(one) // w}: using the frames")
+        h = len(one) // w
     out = a.o or os.path.splitext(a.video)[0] + ".track.txt"
     ff = subprocess.Popen(["ffmpeg", "-v", "error", "-i", a.video, "-vf", f"fps={a.fps}", "-f", "rawvideo",
                            "-pix_fmt", "bgra", "-"], stdout=subprocess.PIPE)

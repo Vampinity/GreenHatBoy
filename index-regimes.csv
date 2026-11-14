@@ -203,6 +203,7 @@ runs/GrowingBlackBeans/2026-11-13-RO1,GrowingBlackBeans,2026-11-13-RO1,01.219.92
 runs/GrowingBlackBeans/2026-11-13-RO2,GrowingBlackBeans,2026-11-13-RO2,01.219.920 (Nov 12 2026 22:10:46),ahead-1,96.288685,19.84,18.98,0.0,19.35,23,,0,,0,19.4,1,31.8,18.55,275.9,0,1827,1042,80,,True,True
 runs/GrowingBlackBeans/2026-11-13-RX1,GrowingBlackBeans,2026-11-13-RX1,01.219.920 (Nov 12 2026 22:10:46),ahead-1,72.075276,27.79,25.51,0.0,27.15,6,26.57,17,,0,24.9,1,33.0,19.07,358.0,0,1850,909,110,,True,True
 runs/GrowingBlackBeans/2026-11-13-RX2,GrowingBlackBeans,2026-11-13-RX2,01.219.920 (Nov 12 2026 22:10:46),ahead-1,72.277353,27.9,26.4,0.0,26.47,7,26.88,13,,0,24.8,1,32.79,21.71,395.5,0,1806,984,0,,True,True
+runs/GrowingBlackBeans/2026-11-14-KW2,GrowingBlackBeans,2026-11-14-KW2,01.219.925 (Nov 13 2026 20:08:50),ahead-1,87.12819,23.98,25.1,0.0,32.53,20,21.82,48,19.9,2,,0,,,225.6,0,1584,780,307,,True,True
 runs/Vampinity/2026-11-05-run10-newgame-0321,Vampinity,2026-11-05-run10-newgame-0321,,unknown,,,,,,0,,0,,0,,0,,,,0,,,0,,False,False
 runs/Vampinity/2026-11-05-run11-0324,Vampinity,2026-11-05-run11-0324,,unknown,,,,,,0,,0,,0,,0,,,,0,,,,,False,False
 runs/Vampinity/2026-11-05-run12-pb-0329,Vampinity,2026-11-05-run12-pb-0329,,unknown,,,,,,0,,0,,0,,0,,,,0,,,,,False,False
@@ -1290,6 +1291,10 @@ runs/Vampinity/2026-11-11-run996-u1-walk-fast-guard3-control,Vampinity,2026-11-1
 runs/Vampinity/2026-11-11-run997-v1-walk-fast-guard3-two,Vampinity,2026-11-11-run997-v1-walk-fast-guard3-two,01.219.028 (Nov 10 2026 23:26:29),ahead-1,,,,,31.4,1,,0,23.1,1,19.3,6,,,176.5,5,1019,1901,10,,False,False
 runs/Vampinity/2026-11-11-run998-u2-walk-fast-guard3-control,Vampinity,2026-11-11-run998-u2-walk-fast-guard3-control,01.219.028 (Nov 10 2026 23:26:29),ahead-1,,,,,30.6,1,,0,,0,19.32,6,,,193.4,2,981,1895,7,,False,False
 runs/Vampinity/2026-11-11-run999-v2-walk-fast-guard3-two,Vampinity,2026-11-11-run999-v2-walk-fast-guard3-two,01.219.028 (Nov 10 2026 23:26:29),ahead-1,,,,,31.0,1,,0,,0,19.32,6,,,156.4,4,988,1910,0,,False,False
+runs/Vampinity/2026-11-14-run1469-w20-W1-packinplace,Vampinity,2026-11-14-run1469-w20-W1-packinplace,01.219.028,ahead-1,,,,,30.7,1,,0,27.3,1,15.4,66,39.61,40.98,370.7,0,1906,1000,342,,True,True
+runs/Vampinity/2026-11-14-run1470-w20-V1-play39,Vampinity,2026-11-14-run1470-w20-V1-play39,01.219.028,ahead-1,,,,,31.0,1,,0,27.4,1,15.49,68,40.37,40.38,494.7,1,2003,1083,395,,True,True
+runs/Vampinity/2026-11-14-run1471-w20-W2-packinplace,Vampinity,2026-11-14-run1471-w20-W2-packinplace,01.219.028,ahead-1,,,,,30.6,1,,0,27.6,1,17.2,24,37.63,30.22,295.5,0,1002,991,99,,True,True
+runs/Vampinity/2026-11-14-run1472-w20-V2-play39,Vampinity,2026-11-14-run1472-w20-V2-play39,01.219.028,ahead-1,,,,,34.85,2,,0,,0,20.07,15,31.82,30.08,209.5,1,345,861,7,,True,True
 runs/waveydude/2026-11-11-astc-crash-18m58s,waveydude,2026-11-11-astc-crash-18m58s,01.219.028 (Nov 11 2026 17:28:48),full-wait,118.440538,15.18,19.57,0.71,27.21,11,27.6,3,19.88,11,17.53,66,43.08,27.02,437.2,190,12158,6252,1920,,True,True
 runs/waveydude/2026-11-11-fw940-black-screen,waveydude,2026-11-11-fw940-black-screen,01.219.028 (Nov 11 2026 05:08:26),unknown,,,,,,0,,0,,0,,0,,,,0,,,0,,False,False
 runs/waveydude/2026-11-11-fw940-rendered,waveydude,2026-11-11-fw940-rendered,01.219.028 (Nov 11 2026 05:08:26),unknown,,,,,,0,,0,,0,,0,,,,0,,,0,,False,False
