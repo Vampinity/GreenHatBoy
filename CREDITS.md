@@ -30,13 +30,13 @@ What came out of it:
 
 ## [GrowingBlackBeans](https://github.com/GrowingBlackBeans) · collaborator
 
-The project's second developer. Since 7 November he has tested the builds on his own base PS5, traced several of the worst bugs and written the fix that lets the game run one frame ahead. Since 11 November his runs, patches, tools and notes are in this repo, in his own folders.
+The project's second developer. Since 7 November he has tested the builds on his own base PS5, traced several of the worst bugs and written the fix that lets the game run one frame ahead. Since 11 November his runs, patches, tools and notes are in this repo, in his own folders. In numbers (counted early on 14 November):
 
 | | |
 |---:|---|
-| **148** | test runs on firmware 13.60, about 4 hours of play: 132 from 7 to 11 November on one fixed route played by hand (from the house into the village and a loop to the water), and 16 in the night of 11 to 12 November |
-| **18** | patches on top of T120 ([`patches/GrowingBlackBeans/`](patches/GrowingBlackBeans/)), one of them a port of a Lichii fix, all meant to be off unless their switch is set |
-| **15** | dev builds of his own (t83-gbb8, t85-gbb5 to gbb11, t120-gbb1 to gbb7). They are test builds for people who already know the setup |
+| **204** | test runs on firmware 13.60, about 7 hours of play: 132 from 7 to 11 November on one fixed route played by hand (from the house into the village and a loop to the water), and 72 from 12 to 13 November |
+| **19** | patches on top of T120 ([`patches/GrowingBlackBeans/`](patches/GrowingBlackBeans/)), one of them a port of a Lichii fix, all meant to be off unless their switch is set |
+| **27** | dev builds of his own (t83-gbb6, t83-gbb8, t85-gbb5 to gbb11, t120-gbb1 to gbb9, t134-gbb1 to gbb9). They are test builds for people who already know the setup |
 
 - **Wrote the fix that makes the fast settings possible** (`EDEN_GBB_TRUST_COPY`). Running one frame ahead used to crash, because the emulator read a list of drawing commands from memory again and got the next frame's commands. On his console it took walking from 20.4 to 23.4 fps.
 - **Made each session build on the last one** (`EDEN_GBB_PIPELINE_SAVE_20S`, on for everyone). The graphics a session has built are now saved every 20 seconds, so they survive closing the game. On his walk, 8.3 seconds of stalls became 1.8. It is also why a start after a crash is smoother.
@@ -49,12 +49,12 @@ The project's second developer. Since 7 November he has tested the builds on his
 
 ## [waveydude](https://github.com/waveydude) · collaborator
 
-He started as a tester and now also writes fixes for the build, most of them for memory and crashes. He tests on two base PS5s and plays much further into the game than our test routes go: on 13.60 one session ran 24 minutes through later areas without a crash.
+He started as a tester and now also writes fixes for the build, most of them for memory and crashes. He tests on two base PS5s and plays much further into the game than our test routes go: on 13.60 one session ran 24 minutes through later areas without a crash. In numbers (counted early on 14 November):
 
 | | |
 |---:|---|
 | **2** | base PS5s he tests on, firmware 13.60 and 9.40 |
-| **6** | runs shared as full logs on 11 November: four sessions on 13.60 (about 88 minutes in all) and two starts on 9.40, in [`runs/waveydude/`](runs/waveydude/) |
+| **13** | runs shared as full logs on 11 and 13 November: eleven sessions on 13.60 (about 5.5 hours in all) and two starts on 9.40, in [`runs/waveydude/`](runs/waveydude/) |
 | **12** | messages with fixes, logs and numbers on the old project thread, 10 to 12 November |
 
 What he made that is in the build:
