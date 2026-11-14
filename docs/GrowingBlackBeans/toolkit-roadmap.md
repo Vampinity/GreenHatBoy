@@ -15,7 +15,7 @@ GrowingBlackBeans, 11 Nov 2026, brought up to date 13 Nov (late). The tools live
 | Flight recorder, effective env line, touchpad + R3 marker | patch 0923 | ran; the marker is too awkward to press while playing |
 | Flash counter (`EDEN_GBB_FLASH`) | patch 0928, `eglog/flashes.py` | **retracted as a flicker measure**. Use Vampinity's `tools/Vampinity/flash-counter/` on capture video |
 | GPFIFO counter (`EDEN_GBB_GPFIFO`): what the game submits, per channel | patch 0934, host test 16/16 | ran twice (GP1, GS1): ring/GPFIFO 0.73-0.86, the demand is the game's own |
-| Per-session log folders (`EDEN_GBB_LOG_SESSION`) | patch 0935 | built (gbb9); not yet switched on in a run |
+| Per-session log folders (`EDEN_GBB_LOG_SESSION`) | patch 0935 | built (gbb9). On in runKW1, but none of the three writers it moves was on, so it is still untested |
 | Frame anatomy: per-window demand and supply, per-method cost, fit, 30 fps budget, fit across many runs, GPFIFO ratio, stops found from the data, `EDEN_UP_SUBMIT_STATS` reader | `eglog/anatomy.py` (`table methods fit budget fitall gpfifo stops submits`) | tested on RD1/RD2/V1, 45 clean runs, GP1/GT1/GS1 |
 | The copy guard's own counters (arming, exposure, two frames in flight) | `eglog/guard.py` | tested on 77 runs |
 | LOOK grids for the test harness, cut from a picture with the harness's own arithmetic | `eglog/make-look.py` | self-test 8/8; Vampinity's routes README points at it |
@@ -30,9 +30,9 @@ GrowingBlackBeans, 11 Nov 2026, brought up to date 13 Nov (late). The tools live
 - **How:** Vampinity's test harness (`headless/test_harness.h`, STEER over `minimap_steer.h`) is
   already in t134-gbb9, with `EDEN_TEST_RECORD` and `EDEN_TEST_DISCARD_SAVE`. The plan:
   `docs/GrowingBlackBeans/scripted-route-plan-2026-11-13.md`. It needs no new build.
-- **Missing:** Kokiri STEER point lists, and a tool to turn a recorded walk into points
-  (`steer-route.py`, named in the harness, not public). Asked for first. If they can't be shared, we
-  write it as a Python port of `minimap_steer::Find`, the way `make-look.py` ports `GridOf`.
+- **Nothing missing since 14 Nov:** Vampinity shared his Kokiri scripts and steer tool
+  (`tools/Vampinity/routes/`, `tools/Vampinity/steer/`). Ours (`tools/GrowingBlackBeans/steer/`) keeps
+  only the stop assembly. Next: one recorded walk with video, then a scripted test.
 
 ### Where the player is
 

@@ -9,7 +9,9 @@
 `track` runs the harness's own finder (`minimap_steer.h`, unchanged, built into `steer_cli`) over the
 video through ffmpeg, so the numbers are the ones STEER will see on the console. Nothing here
 re-implements Find. The harness header names a `steer-route.py` that "prints them from a recording";
-that tool isn't public, so this one was written to the same description (13 Nov 2026).
+it wasn't public on 13 Nov, so this one was written to the same description. Since 14 Nov it is:
+tools/Vampinity/steer/steer-route.py, checked on real video. Prefer it for points; use `route` here for
+assembling the fixed stops.
 
 Units are the harness's own: x, y in per mille of the picture; distances in per mille of the picture's
 WIDTH (a per mille of height is 9/16 of one of width), as minimap_steer::Distance measures them.
