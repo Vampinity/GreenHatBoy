@@ -1,0 +1,93 @@
+{
+  "accessibility": {
+    "high_contrast": false,
+    "large_text": false,
+    "reduce_motion": false
+  },
+  "audio": {
+    "menu_volume": 70,
+    "mute": false,
+    "volume": 100
+  },
+  "controls": {
+    "vibration": true
+  },
+  "diagnostics": {
+    "detailed_logging": false,
+    "immediate_logs": false
+  },
+  "game_files": "/mnt/usb2/EglantinePS5",
+  "games": {
+    "0400486024DEC000": {
+      "console_mode": "handheld",
+      "performance": {
+        "fast_gpu": true,
+        "reactive_flushing": false,
+        "block_list": false,
+        "async_shaders": false,
+        "unsafe_cpu": false,
+        "unsafe_dma": false,
+        "skip_invalidation": false
+      },
+      "renderer": "vulkan",
+      "fps_overlay": true,
+      "resolution": "1x",
+      "upscaling_filter": "bilinear",
+      "refresh_rate": "60",
+      "frame_gen": false,
+      "frame_gen_type": "fsr3",
+      "frame_gen_target": "auto",
+      "frame_gen_multiplier": "2"
+    },
+    "<other title 1>": {
+      "console_mode": "docked",
+      "performance": {
+        "fast_gpu": false,
+        "reactive_flushing": true
+      }
+    },
+    "<other title 2>": {
+      "performance": {
+        "reactive_flushing": false
+      }
+    }
+  },
+  "library": {
+    "last_game": "The Legend of Zelda Ocarina of Time [0400486024DEC000].nup",
+    "recent": [
+      "The Legend of Zelda Ocarina of Time [0400486024DEC000].nup",
+      "<other title>",
+      "<other title>",
+      "<other title>"
+    ]
+  },
+  "performance": {
+    "async_shaders": false,
+    "block_list": false,
+    "fast_gpu": false,
+    "reactive_flushing": true,
+    "skip_invalidation": false,
+    "unsafe_cpu": false,
+    "unsafe_dma": false
+  },
+  "profiles": {
+    "current": "<profile>",
+    "first": "<profile>"
+  },
+  "system": {
+    "language": "en-US"
+  },
+  "version": 1,
+  "video": {
+    "fps_overlay": true,
+    "frame_gen": false,
+    "frame_gen_multiplier": "2",
+    "frame_gen_target": "auto",
+    "frame_gen_type": "fsr3",
+    "output_resolution": "1080p",
+    "refresh_rate": "60",
+    "renderer": "vulkan",
+    "resolution": "1x",
+    "upscaling_filter": "bilinear"
+  }
+}
