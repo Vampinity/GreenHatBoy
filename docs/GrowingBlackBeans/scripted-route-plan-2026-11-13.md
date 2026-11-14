@@ -16,10 +16,10 @@ point, facing the same way, on every run, with nobody at the controller.
 | LOOK-grid cutter | our `eglog/make-look.py` | tested; Vampinity's README now points at it |
 | House → door opening (title, Continue, load, door) | `tools/Vampinity/routes/house-door-village.txt` | 16 of 18 starts got through the door |
 | **Kokiri STEER scripts** | Vampinity runs `run1076` (tunnel mouth, 13 points, met) and `run1110` (exit control, 32 + 1 + 5 points, all met, script done) | **the script files aren't in GHB**; only three other routes are shared |
-| Turning a recorded walk into STEER points | `steer-route.py` / `tools/steer_cli.cpp` (named in the harness headers) | **not public**; README: "that tool is not in this folder yet" |
+| Turning a recorded walk into STEER points | **`tools/Vampinity/steer/steer-route.py`** (shared 14 Nov) | checked on real recordings: 90% marker reads, 13 points matching a working route. Check points by eye |
+| Kokiri STEER scripts | **`tools/Vampinity/routes/village-tunnel-mouth.txt`, `village-exit.txt`** (shared 14 Nov) | as run in run1076 and run1110 |
 
-So almost everything is built. Two pieces are missing: Vampinity's Kokiri point lists, and the tool
-that turns a recording into points.
+**Update 14 Nov: nothing is missing now.** Vampinity shared both the Kokiri scripts and his steer tool.
 
 ## How each part of "a fixed stop" is pinned, without a new build
 
@@ -51,7 +51,9 @@ the minimap path; `recorded-input.txt` gives the stick and button timings for th
 do: the ivy-wall climb and the hops. This is also a normal counts run, a fourth sample of A-D.
 
 **2. Desk: build the script.**
-- If Vampinity's tool doesn't come: write `steer-route.py`, a faithful Python port of
+- Points: Vampinity's `steer-route.py` on the KW2 video, checked by eye. (The fallback below is no
+  longer needed; `tools/GrowingBlackBeans/steer/` was written as it, and keeps only the stop assembly.)
+- Fallback, not needed: `steer-route.py`, a faithful Python port of
   `minimap_steer::Find`, run over the capture video, the same way `make-look.py` ports `GridOf`.
   Test it against the C++ on the same frames: `minimap_steer.h` has no dependencies, so a ten-line
   host program can run the real `Find` on the same extracted frames.
