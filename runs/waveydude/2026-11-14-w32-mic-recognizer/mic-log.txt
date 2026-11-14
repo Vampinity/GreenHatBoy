@@ -1,0 +1,309 @@
+[   5.560476] Audio.Sink <Info> headless/mic_capture.cpp:82:LoadApi: EDEN_MIC functions imported: open 0x800994440, input 0x800994f90, close 0x800994e80
+[   5.561811] Audio.Sink <Info> headless/mic_capture.cpp:206:Run: EDEN_MIC foreground user: result 0x0
+[   5.563602] Audio.Sink <Info> headless/mic_capture.cpp:218:Run: EDEN_MIC open type 0 48000 Hz 256 frames: 0x30000007
+[   6.565234] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 38 (-58.8 dBFS), peak 416, vad 3% active, 48128 frames in 188 reads (5325 us/read, 0 failed), ring 4800/4800 (drops 43328)
+[   6.987422] Loader <Info> build/headless/patch_manager.cpp:869:PatchNSO:     - Applying IPS patch from mod "ZeldaMicTrace"
+[   7.567939] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 197 (-44.4 dBFS), peak 2671, vad 31% active, 48128 frames in 188 reads (5347 us/read, 0 failed), ring 4800/4800 (drops 91456)
+[   8.565277] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 95 (-50.8 dBFS), peak 877, vad 26% active, 47872 frames in 187 reads (5325 us/read, 0 failed), ring 4800/4800 (drops 139328)
+[   9.567953] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 22 (-63.5 dBFS), peak 804, vad 1% active, 48128 frames in 188 reads (5330 us/read, 0 failed), ring 4800/4800 (drops 187456)
+[  10.565256] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 7 (-73.8 dBFS), peak 56, vad 0% active, 47872 frames in 187 reads (5306 us/read, 0 failed), ring 4800/4800 (drops 235328)
+[  11.567953] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-74.5 dBFS), peak 22, vad 0% active, 48128 frames in 188 reads (5350 us/read, 0 failed), ring 4800/4800 (drops 283456)
+[  12.565236] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 7 (-73.8 dBFS), peak 84, vad 0% active, 47872 frames in 187 reads (5304 us/read, 0 failed), ring 4800/4800 (drops 331328)
+[  13.567919] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-75.2 dBFS), peak 28, vad 0% active, 48128 frames in 188 reads (5352 us/read, 0 failed), ring 4800/4800 (drops 379456)
+[  14.565232] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-74.9 dBFS), peak 22, vad 0% active, 47872 frames in 187 reads (5302 us/read, 0 failed), ring 4800/4800 (drops 427328)
+[  15.567934] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-75.4 dBFS), peak 22, vad 0% active, 48128 frames in 188 reads (5362 us/read, 0 failed), ring 4800/4800 (drops 475456)
+[  16.565233] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-75.3 dBFS), peak 22, vad 0% active, 47872 frames in 187 reads (5301 us/read, 0 failed), ring 4800/4800 (drops 523328)
+[  17.567939] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-75.3 dBFS), peak 22, vad 0% active, 48128 frames in 188 reads (5348 us/read, 0 failed), ring 4800/4800 (drops 571456)
+[  18.565235] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-75.3 dBFS), peak 28, vad 0% active, 47872 frames in 187 reads (5300 us/read, 0 failed), ring 4800/4800 (drops 619328)
+[  19.567927] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-75.2 dBFS), peak 22, vad 0% active, 48128 frames in 188 reads (5349 us/read, 0 failed), ring 4800/4800 (drops 667456)
+[  20.565233] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-75.0 dBFS), peak 28, vad 0% active, 47872 frames in 187 reads (5325 us/read, 0 failed), ring 4800/4800 (drops 715328)
+[  21.565227] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-75.3 dBFS), peak 22, vad 0% active, 47872 frames in 187 reads (5317 us/read, 0 failed), ring 4800/4800 (drops 763200)
+[  22.567894] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-74.5 dBFS), peak 67, vad 0% active, 48128 frames in 188 reads (5324 us/read, 0 failed), ring 4800/4800 (drops 811328)
+[  23.565224] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-75.1 dBFS), peak 22, vad 0% active, 47872 frames in 187 reads (5314 us/read, 0 failed), ring 4800/4800 (drops 859200)
+[  24.567914] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-75.1 dBFS), peak 22, vad 0% active, 48128 frames in 188 reads (5313 us/read, 0 failed), ring 4800/4800 (drops 907328)
+[  25.565239] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-75.1 dBFS), peak 22, vad 0% active, 47872 frames in 187 reads (5336 us/read, 0 failed), ring 4800/4800 (drops 955200)
+[  26.567905] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-75.3 dBFS), peak 22, vad 0% active, 48128 frames in 188 reads (5312 us/read, 0 failed), ring 4800/4800 (drops 1003328)
+[  26.716127] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:640:CreateStream: stream 1 'InputStream-0<=1ch48kQ15<=AudioVirtualOutput0': kind 1, flags 0x2, buffer 0x228207c000 size 0xd000
+[  26.720118] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:161:Nx2MicDumpStream: EDEN_MIC_DUMP stream 1 open: size 0xd000, 4800 frames, 1 ch, 48000 Hz, type 2, engaged true, non-zero words in the first 0x3000 bytes: 0x0=0x1
+[  26.721435] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:640:CreateStream: stream 2 'InputStream-1<=1ch48kQ15<=TrueRawAudioIn': kind 1, flags 0x2, buffer 0x228208a000 size 0xd000
+[  26.722951] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:161:Nx2MicDumpStream: EDEN_MIC_DUMP stream 2 open: size 0xd000, 4800 frames, 1 ch, 48000 Hz, type 2, engaged false, non-zero words in the first 0x3000 bytes: 0x0=0x1
+[  27.565224] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-75.0 dBFS), peak 28, vad 0% active, 47872 frames in 187 reads (5303 us/read, 0 failed), ring 4800/4800 (drops 1051200)
+[  27.718228] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  27.719254] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  28.567921] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-75.4 dBFS), peak 22, vad 0% active, 48128 frames in 188 reads (5330 us/read, 0 failed), ring 4800/4800 (drops 1099328)
+[  28.718230] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  28.719578] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  29.565236] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-75.4 dBFS), peak 22, vad 0% active, 47872 frames in 187 reads (5326 us/read, 0 failed), ring 4800/4800 (drops 1147200)
+[  29.718228] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  29.719295] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  30.567893] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-74.9 dBFS), peak 22, vad 0% active, 48128 frames in 188 reads (5315 us/read, 0 failed), ring 4800/4800 (drops 1195328)
+[  30.718228] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  30.719144] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  31.565223] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 13 (-68.1 dBFS), peak 112, vad 0% active, 47872 frames in 187 reads (5311 us/read, 0 failed), ring 4800/4800 (drops 1243200)
+[  31.718231] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  31.719251] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  32.567904] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 27 (-61.7 dBFS), peak 208, vad 1% active, 48128 frames in 188 reads (5300 us/read, 0 failed), ring 4800/4800 (drops 1291328)
+[  32.718252] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  32.719213] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  33.565254] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 36 (-59.2 dBFS), peak 477, vad 4% active, 47872 frames in 187 reads (5336 us/read, 0 failed), ring 4800/4800 (drops 1339200)
+[  33.718229] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  33.719579] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  34.567926] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-74.9 dBFS), peak 22, vad 0% active, 48128 frames in 188 reads (5311 us/read, 0 failed), ring 4800/4800 (drops 1387328)
+[  34.718233] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  34.719028] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  35.565232] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-74.7 dBFS), peak 39, vad 0% active, 47872 frames in 187 reads (5293 us/read, 0 failed), ring 4800/4800 (drops 1435200)
+[  35.718235] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  35.719630] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  36.567916] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-74.4 dBFS), peak 33, vad 0% active, 48128 frames in 188 reads (5294 us/read, 0 failed), ring 4800/4800 (drops 1483328)
+[  36.718199] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  36.718947] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  37.565243] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 9 (-71.6 dBFS), peak 67, vad 0% active, 47872 frames in 187 reads (5295 us/read, 0 failed), ring 4800/4800 (drops 1531200)
+[  37.718230] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  37.719085] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  38.565233] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 12 (-68.8 dBFS), peak 134, vad 0% active, 47872 frames in 187 reads (5300 us/read, 0 failed), ring 4800/4800 (drops 1579072)
+[  38.718228] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  38.719287] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  39.568251] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 14 (-67.5 dBFS), peak 140, vad 0% active, 47616 frames in 186 reads (16316 us/read, 0 failed), ring 4800/4800 (drops 1626688)
+[  39.718230] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  39.719045] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  40.567910] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 20 (-64.3 dBFS), peak 157, vad 0% active, 48128 frames in 188 reads (5311 us/read, 0 failed), ring 4800/4800 (drops 1674816)
+[  40.718228] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  40.719421] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  41.565227] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 572 (-35.2 dBFS), peak 3851, vad 38% active, 47616 frames in 186 reads (5297 us/read, 0 failed), ring 4800/4800 (drops 1722432)
+[  41.718227] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  41.719172] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  42.565236] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 66 (-53.9 dBFS), peak 551, vad 11% active, 47360 frames in 185 reads (5288 us/read, 0 failed), ring 4800/4800 (drops 1769792)
+[  42.718227] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  42.719500] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  43.565252] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 140 (-47.4 dBFS), peak 944, vad 26% active, 47616 frames in 186 reads (5340 us/read, 0 failed), ring 4800/4800 (drops 1817408)
+[  43.718241] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  43.719366] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  44.565256] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 191 (-44.7 dBFS), peak 1074, vad 64% active, 47616 frames in 186 reads (5337 us/read, 0 failed), ring 4800/4800 (drops 1865024)
+[  44.718150] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  44.719102] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  45.567944] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 594 (-34.8 dBFS), peak 4014, vad 64% active, 47616 frames in 186 reads (5326 us/read, 0 failed), ring 4800/4800 (drops 1912640)
+[  45.718239] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  45.719593] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  46.565251] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 39 (-58.6 dBFS), peak 416, vad 5% active, 47616 frames in 186 reads (5279 us/read, 0 failed), ring 4800/4800 (drops 1960256)
+[  46.718195] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  46.719161] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  47.567918] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 10 (-70.4 dBFS), peak 39, vad 0% active, 48128 frames in 188 reads (5339 us/read, 0 failed), ring 4800/4800 (drops 2008384)
+[  47.718231] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  47.719072] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  48.565248] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 9 (-71.3 dBFS), peak 39, vad 0% active, 47872 frames in 187 reads (5337 us/read, 0 failed), ring 4800/4800 (drops 2056256)
+[  48.718229] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  48.719594] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  49.567931] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 8 (-71.9 dBFS), peak 33, vad 0% active, 48128 frames in 188 reads (5330 us/read, 0 failed), ring 4800/4800 (drops 2104384)
+[  49.718233] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  49.719800] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  50.565229] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 9 (-71.5 dBFS), peak 39, vad 0% active, 47872 frames in 187 reads (5313 us/read, 0 failed), ring 4800/4800 (drops 2152256)
+[  50.718230] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  50.719050] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  51.567930] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 9 (-71.5 dBFS), peak 39, vad 0% active, 48128 frames in 188 reads (5343 us/read, 0 failed), ring 4800/4800 (drops 2200384)
+[  51.718234] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  51.719432] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  52.565247] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 8 (-72.2 dBFS), peak 33, vad 0% active, 47872 frames in 187 reads (5320 us/read, 0 failed), ring 4800/4800 (drops 2248256)
+[  52.718227] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  52.718937] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  53.567926] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 9 (-71.5 dBFS), peak 67, vad 0% active, 48128 frames in 188 reads (5316 us/read, 0 failed), ring 4800/4800 (drops 2296384)
+[  53.718162] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  53.719311] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  54.565255] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 93 (-50.9 dBFS), peak 1248, vad 13% active, 47872 frames in 187 reads (5350 us/read, 0 failed), ring 4800/4800 (drops 2344256)
+[  54.718119] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  54.719240] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  55.567911] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 15 (-66.7 dBFS), peak 112, vad 0% active, 48128 frames in 188 reads (5316 us/read, 0 failed), ring 4800/4800 (drops 2392384)
+[  55.718254] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  55.719141] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  56.565260] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 7 (-72.9 dBFS), peak 33, vad 0% active, 47872 frames in 187 reads (5347 us/read, 0 failed), ring 4800/4800 (drops 2440256)
+[  56.718119] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  56.719476] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  57.567935] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 94 (-50.9 dBFS), peak 1327, vad 9% active, 48128 frames in 188 reads (5352 us/read, 0 failed), ring 4800/4800 (drops 2488384)
+[  57.718226] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  57.719262] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  58.565235] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 166 (-45.9 dBFS), peak 1805, vad 17% active, 47872 frames in 187 reads (5329 us/read, 0 failed), ring 4800/4800 (drops 2536256)
+[  58.718226] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  58.719250] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  59.567910] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 8 (-72.7 dBFS), peak 39, vad 0% active, 48128 frames in 188 reads (5320 us/read, 0 failed), ring 4800/4800 (drops 2584384)
+[  59.718227] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  59.719284] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  60.565252] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 7 (-72.8 dBFS), peak 33, vad 0% active, 47872 frames in 187 reads (5345 us/read, 0 failed), ring 4800/4800 (drops 2632256)
+[  60.718227] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  60.719305] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  61.567931] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 7 (-73.3 dBFS), peak 33, vad 0% active, 48128 frames in 188 reads (5329 us/read, 0 failed), ring 4800/4800 (drops 2680384)
+[  61.718228] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  61.719461] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  62.565269] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 7 (-73.6 dBFS), peak 33, vad 0% active, 47872 frames in 187 reads (5335 us/read, 0 failed), ring 4800/4800 (drops 2728256)
+[  62.718190] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  62.718907] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  63.567934] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 7 (-73.1 dBFS), peak 39, vad 0% active, 48128 frames in 188 reads (5322 us/read, 0 failed), ring 4800/4800 (drops 2776384)
+[  63.718237] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  63.719515] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  64.565251] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 8 (-72.5 dBFS), peak 39, vad 0% active, 47872 frames in 187 reads (5311 us/read, 0 failed), ring 4800/4800 (drops 2824256)
+[  64.718253] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  64.719480] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  65.567916] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 8 (-72.5 dBFS), peak 33, vad 0% active, 48128 frames in 188 reads (5331 us/read, 0 failed), ring 4800/4800 (drops 2872384)
+[  65.718227] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  65.719514] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  66.565256] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 481 (-36.7 dBFS), peak 3042, vad 29% active, 47872 frames in 187 reads (5341 us/read, 0 failed), ring 4800/4800 (drops 2920256)
+[  66.718145] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  66.719139] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  67.567974] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 18 (-65.0 dBFS), peak 174, vad 0% active, 48128 frames in 188 reads (5357 us/read, 0 failed), ring 4800/4800 (drops 2968384)
+[  67.718125] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  67.718903] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  68.565242] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 75 (-52.9 dBFS), peak 567, vad 12% active, 47872 frames in 187 reads (5307 us/read, 0 failed), ring 4800/4800 (drops 3016256)
+[  68.718230] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  68.719342] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  69.567963] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 76 (-52.7 dBFS), peak 382, vad 16% active, 48128 frames in 188 reads (5337 us/read, 0 failed), ring 4800/4800 (drops 3064384)
+[  69.718226] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 1 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  69.719445] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 2 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  70.090745] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:640:CreateStream: stream 3 'InputStream-0<=1ch48kQ15<=AudioVirtualOutput0': kind 1, flags 0x2, buffer 0x228207c000 size 0xd000
+[  70.093233] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:161:Nx2MicDumpStream: EDEN_MIC_DUMP stream 3 open: size 0xd000, 4800 frames, 1 ch, 48000 Hz, type 2, engaged true, non-zero words in the first 0x3000 bytes: 0x0=0x1
+[  70.094975] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:640:CreateStream: stream 4 'InputStream-1<=1ch48kQ15<=TrueRawAudioIn': kind 1, flags 0x2, buffer 0x228208a000 size 0xd000
+[  70.098419] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:161:Nx2MicDumpStream: EDEN_MIC_DUMP stream 4 open: size 0xd000, 4800 frames, 1 ch, 48000 Hz, type 2, engaged false, non-zero words in the first 0x3000 bytes: 0x0=0x1
+[  70.101738] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:273:AttachStream: attach stream 3 to AudioVirtualOutput0 (functionality 2)
+[  70.102485] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:161:Nx2MicDumpStream: EDEN_MIC_DUMP stream 3 attach: size 0xd000, 4800 frames, 1 ch, 48000 Hz, type 2, engaged true, non-zero words in the first 0x3000 bytes: 0x0=0x1
+[  70.103496] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:273:AttachStream: attach stream 4 to TrueRawAudioIn (functionality 2)
+[  70.104613] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:161:Nx2MicDumpStream: EDEN_MIC_DUMP stream 4 attach: size 0xd000, 4800 frames, 1 ch, 48000 Hz, type 2, engaged true, non-zero words in the first 0x3000 bytes: 0x0=0x1
+[  70.565244] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 64 (-54.2 dBFS), peak 320, vad 11% active, 47872 frames in 187 reads (5323 us/read, 0 failed), ring 4784/4800 (drops 3090384)
+[  71.090721] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 3 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  71.095719] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 4 indices: read(+0x44) 2215 write(+0x1004) 4119 of 4801, engaged true
+[  71.100731] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 4: fed 47808 (47808 mic, 0 silence); sys_idx 4599 game_idx 2471 (waiting 2128) room 2672
+[  71.105633] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48048 frames, rms 46, peak 865, 0 clipped, first clear pitch 0.0 Hz
+[  71.567923] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 31 (-60.5 dBFS), peak 865, vad 2% active, 48128 frames in 188 reads (5302 us/read, 0 failed), ring 4672/4800 (drops 3090384)
+[  72.090728] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 3 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  72.095725] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 4 indices: read(+0x44) 2237 write(+0x1004) 4109 of 4801, engaged true
+[  72.100732] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 4: fed 95808 (95808 mic, 0 silence); sys_idx 4589 game_idx 2493 (waiting 2096) room 2704
+[  72.105627] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 373, peak 10054, 0 clipped, first clear pitch 0.0 Hz
+[  72.565248] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 11182 (-9.3 dBFS), peak 32766, vad 57% active, 47872 frames in 187 reads (5312 us/read, 0 failed), ring 4768/4800 (drops 3090400)
+[  73.090727] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 3 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  73.095731] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 4 indices: read(+0x44) 2291 write(+0x1004) 4099 of 4801, engaged true
+[  73.100638] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 4: fed 143808 (143808 mic, 0 silence); sys_idx 4579 game_idx 2675 (waiting 1904) room 2896
+[  73.105650] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 13279, peak 32766, 0 clipped, first clear pitch 303.6 Hz
+[  73.567953] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 9929 (-10.4 dBFS), peak 32307, vad 82% active, 48128 frames in 188 reads (5355 us/read, 0 failed), ring 4656/4800 (drops 3090400)
+[  74.090729] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 3 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  74.095722] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 4 indices: read(+0x44) 2265 write(+0x1004) 4089 of 4801, engaged true
+[  74.100729] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 4: fed 191808 (191808 mic, 0 silence); sys_idx 4569 game_idx 2521 (waiting 2048) room 2752
+[  74.105636] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 6861, peak 32136, 0 clipped, first clear pitch 266.2 Hz
+[  74.565248] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 7 (-73.4 dBFS), peak 44, vad 0% active, 47872 frames in 187 reads (5321 us/read, 0 failed), ring 4768/4800 (drops 3090400)
+[  75.090725] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 3 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  75.095724] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 4 indices: read(+0x44) 2431 write(+0x1004) 4079 of 4801, engaged true
+[  75.100729] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 4: fed 239808 (239808 mic, 0 silence); sys_idx 4559 game_idx 2687 (waiting 1872) room 2928
+[  75.105728] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 7261, peak 32540, 0 clipped, first clear pitch 537.3 Hz
+[  75.567921] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 7917 (-12.3 dBFS), peak 32540, vad 91% active, 48128 frames in 188 reads (5328 us/read, 0 failed), ring 4656/4800 (drops 3090400)
+[  76.090722] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 3 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  76.095722] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 4 indices: read(+0x44) 2261 write(+0x1004) 4069 of 4801, engaged true
+[  76.100632] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 4: fed 287808 (287808 mic, 0 silence); sys_idx 4549 game_idx 2645 (waiting 1904) room 2896
+[  76.105734] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 6280, peak 32210, 0 clipped, first clear pitch 589.6 Hz
+[  76.565236] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6782 (-13.7 dBFS), peak 32210, vad 98% active, 47872 frames in 187 reads (5318 us/read, 0 failed), ring 4768/4800 (drops 3090400)
+[  77.090730] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 3 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  77.095646] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 4 indices: read(+0x44) 2155 write(+0x1004) 4059 of 4801, engaged true
+[  77.100732] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 4: fed 335808 (335808 mic, 0 silence); sys_idx 4539 game_idx 2411 (waiting 2128) room 2672
+[  77.105728] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 5909, peak 32111, 0 clipped, first clear pitch 0.0 Hz
+[  77.567917] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 7131 (-13.2 dBFS), peak 32098, vad 98% active, 48128 frames in 188 reads (5294 us/read, 0 failed), ring 4656/4800 (drops 3090400)
+[  78.090719] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 3 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  78.095725] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 4 indices: read(+0x44) 2433 write(+0x1004) 4049 of 4801, engaged true
+[  78.100731] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 4: fed 383808 (383808 mic, 0 silence); sys_idx 4529 game_idx 2433 (waiting 2096) room 2704
+[  78.105996] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 7304, peak 32302, 0 clipped, first clear pitch 0.0 Hz
+[  78.565256] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 5688 (-15.2 dBFS), peak 32302, vad 98% active, 47872 frames in 187 reads (5330 us/read, 0 failed), ring 4768/4800 (drops 3090400)
+[  79.090722] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 3 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  79.095725] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 4 indices: read(+0x44) 2167 write(+0x1004) 4039 of 4801, engaged true
+[  79.100726] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 4: fed 431808 (431808 mic, 0 silence); sys_idx 4519 game_idx 2423 (waiting 2096) room 2704
+[  79.105730] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 6399, peak 31587, 0 clipped, first clear pitch 891.3 Hz
+[  79.299483] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:282:DetachStream: detach stream 3
+[  79.300788] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:161:Nx2MicDumpStream: EDEN_MIC_DUMP stream 3 detach: size 0xd000, 4800 frames, 1 ch, 48000 Hz, type 2, engaged false, non-zero words in the first 0x3000 bytes: 0x0=0x1
+[  79.302333] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:282:DetachStream: detach stream 4
+[  79.303609] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:161:Nx2MicDumpStream: EDEN_MIC_DUMP stream 4 detach: size 0xd000, 4800 frames, 1 ch, 48000 Hz, type 2, engaged false, non-zero words in the first 0x3000 bytes: 0x0=0x1 0x44=0x935 0x1004=0x11a5 0x1040=0x2c0027 0x1044=0x270027 0x1048=0x380032 0x104c=0x1c002c 0x1050=0x320021 0x1054=0x320038 0x1058=0xb0021 0x105c=0xfff5fff5 0x1060=0x21000b 0x1064=0x5001c 0x1068=0x1c0000 0x106c=0x3d003d 0x1070=0x27002c 0x1074=0x3d0038 0x1078=0x320038 0x107c=0xb0027 0x1080=0xffd9ffea 0x1084=0xfffbffe4 0x1088=0xffe4fff5 0x108c=0xffe4ffd9 0x1090=0xffceffdf 0x1094=0xffc8ffbd 0x1098=0xffeaffd9 0x109c=0xffe4ffea 0x10a0=0xffeaffdf 0x10a4=0x100005 0x10a8=0xffd40000 0x10ac=0xffeaffce 0x10b0=0xfff00000 0x10b4=0xfff5ffdf 0x10b8=0x21001c 0x10bc=0xfff50000 0x10c0=0x3d0016 0x10c4=0xb0038 0x10c8=0xfffbffea 0x10cc=0x3d0021 0x10d0=0x21003d 0x10d4=0xb000b 0x10d8=0x1c0016 0x10dc=0x50010 0x10e0=0x100005 0x10e4=0x16001c 0x10e8=0x5 0x10ec=0x16000b 0x10f0=0x50010 0x10f4=0x16000b 0x10f8=0x1c0021 0x10fc=0x1c001c 0x1100=0x50016 0x1104=0xfff5fff5 0x1108=0xb0005 0x110c=0x50005 0x1110=0xb0010 0x1114=0xffcefff0 0x1118=0xfff0ffd4 0x111c=0xfffb0005 0x1120=0xfff5fff0 0x1124=0xfffb0000 0x1128=0xffdfffe4 0x112c=0xbfffb 0x1130=0xffd4fff5
+[  79.567901] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 5414 (-15.6 dBFS), peak 31587, vad 36% active, 48128 frames in 188 reads (5286 us/read, 0 failed), ring 4800/4800 (drops 3102976)
+[  80.090727] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 3 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  80.095723] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 4 indices: read(+0x44) 2357 write(+0x1004) 4517 of 4801, engaged false
+[  80.565239] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 7 (-73.3 dBFS), peak 73, vad 0% active, 47872 frames in 187 reads (5305 us/read, 0 failed), ring 4800/4800 (drops 3150848)
+[  81.090723] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 3 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  81.095722] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 4 indices: read(+0x44) 2357 write(+0x1004) 4517 of 4801, engaged false
+[  81.567897] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 6 (-74.6 dBFS), peak 28, vad 0% active, 48128 frames in 188 reads (5291 us/read, 0 failed), ring 4800/4800 (drops 3198976)
+[  82.090728] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 3 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged false
+[  82.095645] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 4 indices: read(+0x44) 2357 write(+0x1004) 4517 of 4801, engaged false
+[  82.565227] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 8 (-72.4 dBFS), peak 56, vad 0% active, 47872 frames in 187 reads (5310 us/read, 0 failed), ring 4800/4800 (drops 3246848)
+[  82.630499] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:640:CreateStream: stream 5 'InputStream-0<=1ch48kQ15<=AudioVirtualOutput0': kind 1, flags 0x2, buffer 0x228207c000 size 0xd000
+[  82.632711] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:161:Nx2MicDumpStream: EDEN_MIC_DUMP stream 5 open: size 0xd000, 4800 frames, 1 ch, 48000 Hz, type 2, engaged true, non-zero words in the first 0x3000 bytes: 0x0=0x1
+[  82.633835] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:640:CreateStream: stream 6 'InputStream-1<=1ch48kQ15<=TrueRawAudioIn': kind 1, flags 0x2, buffer 0x228208a000 size 0xd000
+[  82.636252] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:161:Nx2MicDumpStream: EDEN_MIC_DUMP stream 6 open: size 0xd000, 4800 frames, 1 ch, 48000 Hz, type 2, engaged false, non-zero words in the first 0x3000 bytes: 0x0=0x1
+[  82.637070] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:273:AttachStream: attach stream 5 to AudioVirtualOutput0 (functionality 2)
+[  82.638424] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:161:Nx2MicDumpStream: EDEN_MIC_DUMP stream 5 attach: size 0xd000, 4800 frames, 1 ch, 48000 Hz, type 2, engaged true, non-zero words in the first 0x3000 bytes: 0x0=0x1
+[  82.639950] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:273:AttachStream: attach stream 6 to TrueRawAudioIn (functionality 2)
+[  82.641279] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:161:Nx2MicDumpStream: EDEN_MIC_DUMP stream 6 attach: size 0xd000, 4800 frames, 1 ch, 48000 Hz, type 2, engaged true, non-zero words in the first 0x3000 bytes: 0x0=0x1
+[  83.445458] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 37, peak 1073, 0 clipped, first clear pitch 0.0 Hz
+[  83.567921] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 24 (-62.6 dBFS), peak 596, vad 1% active, 48128 frames in 188 reads (5323 us/read, 0 failed), ring 4688/4800 (drops 3250688)
+[  83.630454] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 5 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  83.635446] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 6 indices: read(+0x44) 2679 write(+0x1004) 4311 of 4801, engaged true
+[  83.640459] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 6: fed 48000 (48000 mic, 0 silence); sys_idx 4791 game_idx 2679 (waiting 2112) room 2688
+[  84.445472] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 7106, peak 32625, 0 clipped, first clear pitch 306.2 Hz
+[  84.565242] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 11641 (-9.0 dBFS), peak 32625, vad 60% active, 47872 frames in 187 reads (5320 us/read, 0 failed), ring 4800/4800 (drops 3250688)
+[  84.630455] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 5 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  84.635468] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 6 indices: read(+0x44) 2477 write(+0x1004) 4301 of 4801, engaged true
+[  84.640458] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 6: fed 96000 (96000 mic, 0 silence); sys_idx 4781 game_idx 2733 (waiting 2048) room 2752
+[  85.445458] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 10487, peak 32526, 0 clipped, first clear pitch 421.8 Hz
+[  85.567906] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 5024 (-16.3 dBFS), peak 32429, vad 19% active, 48128 frames in 188 reads (5296 us/read, 0 failed), ring 4688/4800 (drops 3250688)
+[  85.630461] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 5 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  85.635456] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 6 indices: read(+0x44) 2627 write(+0x1004) 4291 of 4801, engaged true
+[  85.640456] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 6: fed 144000 (144000 mic, 0 silence); sys_idx 4771 game_idx 2627 (waiting 2144) room 2656
+[  86.445453] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 12129, peak 30996, 0 clipped, first clear pitch 114.0 Hz
+[  86.565242] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 13388 (-7.8 dBFS), peak 30996, vad 99% active, 47872 frames in 187 reads (5312 us/read, 0 failed), ring 4800/4800 (drops 3250688)
+[  86.630458] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 5 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  86.635421] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 6 indices: read(+0x44) 2393 write(+0x1004) 4281 of 4801, engaged true
+[  86.640462] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 6: fed 192000 (192000 mic, 0 silence); sys_idx 4761 game_idx 2393 (waiting 2368) room 2432
+[  87.445458] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 12285, peak 30865, 0 clipped, first clear pitch 181.5 Hz
+[  87.567908] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 12267 (-8.5 dBFS), peak 30576, vad 100% active, 48128 frames in 188 reads (5291 us/read, 0 failed), ring 4688/4800 (drops 3250688)
+[  87.630453] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 5 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  87.635460] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 6 indices: read(+0x44) 2447 write(+0x1004) 4271 of 4801, engaged true
+[  87.640459] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 6: fed 240000 (240000 mic, 0 silence); sys_idx 4751 game_idx 2831 (waiting 1920) room 2880
+[  88.445464] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 11339, peak 31363, 0 clipped, first clear pitch 183.6 Hz
+[  88.565268] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 11559 (-9.1 dBFS), peak 31363, vad 100% active, 47872 frames in 187 reads (5328 us/read, 0 failed), ring 4800/4800 (drops 3250688)
+[  88.630457] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 5 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  88.635449] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 6 indices: read(+0x44) 2165 write(+0x1004) 4261 of 4801, engaged true
+[  88.640477] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 6: fed 288000 (288000 mic, 0 silence); sys_idx 4741 game_idx 2677 (waiting 2064) room 2736
+[  89.445467] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 12936, peak 31235, 0 clipped, first clear pitch 183.2 Hz
+[  89.567940] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 11432 (-9.1 dBFS), peak 31235, vad 78% active, 48128 frames in 188 reads (5316 us/read, 0 failed), ring 4688/4800 (drops 3250688)
+[  89.630462] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 5 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  89.635456] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 6 indices: read(+0x44) 2347 write(+0x1004) 4251 of 4801, engaged true
+[  89.640459] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 6: fed 336000 (336000 mic, 0 silence); sys_idx 4731 game_idx 2859 (waiting 1872) room 2928
+[  90.445466] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 15, peak 151, 0 clipped, first clear pitch 0.0 Hz
+[  90.565254] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 33 (-59.9 dBFS), peak 432, vad 3% active, 47872 frames in 187 reads (5315 us/read, 0 failed), ring 4800/4800 (drops 3250688)
+[  90.630447] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 5 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  90.635468] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 6 indices: read(+0x44) 2369 write(+0x1004) 4241 of 4801, engaged true
+[  90.640473] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 6: fed 384000 (384000 mic, 0 silence); sys_idx 4721 game_idx 2625 (waiting 2096) room 2704
+[  91.445376] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 63, peak 432, 0 clipped, first clear pitch 0.0 Hz
+[  91.567930] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 102 (-50.1 dBFS), peak 1546, vad 15% active, 48128 frames in 188 reads (5320 us/read, 0 failed), ring 4688/4800 (drops 3250688)
+[  91.630364] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 5 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  91.635453] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 6 indices: read(+0x44) 2583 write(+0x1004) 4231 of 4801, engaged true
+[  91.640452] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 6: fed 432000 (432000 mic, 0 silence); sys_idx 4711 game_idx 2583 (waiting 2128) room 2672
+[  92.445497] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 87, peak 1546, 0 clipped, first clear pitch 0.0 Hz
+[  92.565260] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 121 (-48.7 dBFS), peak 1619, vad 6% active, 47872 frames in 187 reads (5340 us/read, 0 failed), ring 4800/4800 (drops 3250688)
+[  92.630450] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 5 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  92.635445] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 6 indices: read(+0x44) 2413 write(+0x1004) 4221 of 4801, engaged true
+[  92.640477] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 6: fed 480000 (480000 mic, 0 silence); sys_idx 4701 game_idx 2541 (waiting 2160) room 2640
+[  93.445459] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 157, peak 1619, 0 clipped, first clear pitch 0.0 Hz
+[  93.567926] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 102 (-50.2 dBFS), peak 1490, vad 10% active, 48128 frames in 188 reads (5331 us/read, 0 failed), ring 4688/4800 (drops 3250688)
+[  93.630463] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 5 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  93.635467] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 6 indices: read(+0x44) 2355 write(+0x1004) 4211 of 4801, engaged true
+[  93.640468] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 6: fed 528000 (528000 mic, 0 silence); sys_idx 4691 game_idx 2611 (waiting 2080) room 2720
+[  94.445499] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 15, peak 84, 0 clipped, first clear pitch 0.0 Hz
+[  94.565266] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 15 (-66.6 dBFS), peak 84, vad 0% active, 47872 frames in 187 reads (5349 us/read, 0 failed), ring 4800/4800 (drops 3250688)
+[  94.630455] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 5 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  94.635450] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 6 indices: read(+0x44) 2537 write(+0x1004) 4201 of 4801, engaged true
+[  94.640452] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 6: fed 576000 (576000 mic, 0 silence); sys_idx 4681 game_idx 2793 (waiting 1888) room 2912
+[  95.445450] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 18, peak 146, 0 clipped, first clear pitch 0.0 Hz
+[  95.567927] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 18 (-65.2 dBFS), peak 146, vad 0% active, 48128 frames in 188 reads (5321 us/read, 0 failed), ring 4688/4800 (drops 3250688)
+[  95.630456] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 5 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  95.635453] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 6 indices: read(+0x44) 2303 write(+0x1004) 4191 of 4801, engaged true
+[  95.640463] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 6: fed 624000 (624000 mic, 0 silence); sys_idx 4671 game_idx 2559 (waiting 2112) room 2688
+[  96.445359] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 14, peak 56, 0 clipped, first clear pitch 0.0 Hz
+[  96.565253] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 14 (-67.6 dBFS), peak 44, vad 0% active, 47872 frames in 187 reads (5318 us/read, 0 failed), ring 4800/4800 (drops 3250688)
+[  96.630451] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 5 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  96.635397] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 6 indices: read(+0x44) 2773 write(+0x1004) 4181 of 4801, engaged true
+[  96.640455] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 6: fed 672000 (672000 mic, 0 silence); sys_idx 4661 game_idx 2773 (waiting 1888) room 2912
+[  97.445464] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 14, peak 39, 0 clipped, first clear pitch 0.0 Hz
+[  97.567935] Audio.Sink <Info> headless/mic_capture.cpp:285:Run: EDEN_MIC level: rms 14 (-67.7 dBFS), peak 39, vad 0% active, 48128 frames in 188 reads (5321 us/read, 0 failed), ring 4688/4800 (drops 3250688)
+[  97.630456] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 5 indices: read(+0x44) 0 write(+0x1004) 0 of 4801, engaged true
+[  97.635462] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:550:Drain: EDEN_MIC_DUMP stream 6 indices: read(+0x44) 2107 write(+0x1004) 4171 of 4801, engaged true
+[  97.640467] Service.Audio <Info> core/hle/service/audio/nx2_audio_device_manager.h:588:Drain: EDEN_MIC_FEED stream 6: fed 720000 (720000 mic, 0 silence); sys_idx 4651 game_idx 2491 (waiting 2160) room 2640
+[  98.445375] Audio.Sink <Info> headless/mic_capture.cpp:366:LogDeliveredSignal: EDEN_MIC_SIGNAL delivered: 48000 frames, rms 13, peak 39, 0 clipped, first clear pitch 0.0 Hz
