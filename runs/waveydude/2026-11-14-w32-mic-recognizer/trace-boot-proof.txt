@@ -1,0 +1,2 @@
+[   7.221458] Loader <Info> build/headless/patch_manager.cpp:869:PatchNSO:     - Applying IPS patch from mod "ZeldaMicTrace"
+[  14.676642] Debug.Emulated <Info> core/hle/kernel/svc/svc_debug_string.cpp:25:OutputDebugString: ZELDA_MIC_TRACE_BOOT v2 0f7d2d79
