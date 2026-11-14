@@ -14,3 +14,12 @@ Not a core patch either: `EDEN_GUEST_SWAP_PACK_IN_PLACE=2` (W-20, outer repo, `w
 Settings for the test: `envs/waveydude/w13-game.env.txt` (the whole per-game env, with the switches above on).
 
 Also used, from others: `EDEN_UP_AHEAD_LOAD_WAIT=1` (in the core already) stops the title-screen freeze with two frames ahead.
+
+## W-32 raw ocarina microphone
+
+Apply 1108 and 1109 in order to the W-32/T183 core after its existing mic stack (1100, 1101 and 1107). The PS5 headless build must already provide `eden_mic_read`.
+
+- 1108 corrects the auto layout used by `EDEN_UP_MIC_FEED=1` for raw mono PCM without timestamps. PCM starts at `+0x1040`, with producer cursor at `+0x1004` and guest consumer cursor at `+0x44`.
+- 1109 defers raw microphone PCM delivery until sysmix engages the stream. The feed is opt-in through `EDEN_UP_MIC_FEED=1`, with controller capture enabled by `EDEN_UP_MIC_PROBE=1`.
+
+See the [9.40 findings](../../docs/waveydude/ocarina-mic-2026-11-14.md) for the tested build and recognition limits.
