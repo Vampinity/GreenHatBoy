@@ -1,0 +1,111 @@
+{
+  "number": 3,
+  "name": "w20-W2-packinplace",
+  "folder": "run1471-w20-W2-packinplace",
+  "ending": "script_end",
+  "detail": "",
+  "seconds": 499,
+  "game_after": 7,
+  "frames": 110,
+  "notes": [
+    "config: games.0400486024DEC000.renderer is not in the app's file",
+    "config: games.0400486024DEC000.fps_overlay is not in the app's file",
+    "config: games.0400486024DEC000.resolution is not in the app's file",
+    "config: games.0400486024DEC000.upscaling_filter is not in the app's file",
+    "config: games.0400486024DEC000.refresh_rate is not in the app's file",
+    "config: games.0400486024DEC000.frame_gen is not in the app's file",
+    "config: games.0400486024DEC000.frame_gen_type is not in the app's file",
+    "config: games.0400486024DEC000.frame_gen_target is not in the app's file",
+    "config: games.0400486024DEC000.frame_gen_multiplier is not in the app's file",
+    "config: games.0400486024DEC000.performance.block_list is not in the app's file",
+    "config: games.0400486024DEC000.performance.async_shaders is not in the app's file",
+    "config: games.0400486024DEC000.performance.unsafe_cpu is not in the app's file",
+    "config: games.0400486024DEC000.performance.unsafe_dma is not in the app's file",
+    "config: games.0400486024DEC000.performance.skip_invalidation is not in the app's file"
+  ],
+  "config": {
+    "performance": {
+      "block_list": false,
+      "async_shaders": false,
+      "fast_gpu": false,
+      "unsafe_cpu": false,
+      "unsafe_dma": false,
+      "reactive_flushing": true,
+      "skip_invalidation": false
+    },
+    "video": {
+      "renderer": "vulkan",
+      "fps_overlay": true,
+      "resolution": "1x",
+      "upscaling_filter": "bilinear",
+      "refresh_rate": "60",
+      "output_resolution": "1080p",
+      "frame_gen": false,
+      "frame_gen_type": "fsr3",
+      "frame_gen_target": "auto",
+      "frame_gen_multiplier": "2"
+    },
+    "diagnostics": {
+      "immediate_logs": false,
+      "detailed_logging": false
+    },
+    "games": {
+      "0400486024DEC000": {
+        "console_mode": "handheld",
+        "renderer": "vulkan",
+        "fps_overlay": true,
+        "resolution": "1x",
+        "upscaling_filter": "bilinear",
+        "refresh_rate": "60",
+        "frame_gen": false,
+        "frame_gen_type": "fsr3",
+        "frame_gen_target": "auto",
+        "frame_gen_multiplier": "2",
+        "performance": {
+          "block_list": false,
+          "async_shaders": false,
+          "fast_gpu": true,
+          "unsafe_cpu": false,
+          "unsafe_dma": false,
+          "reactive_flushing": false,
+          "skip_invalidation": false
+        }
+      }
+    }
+  },
+  "fps": [
+    16.552500000000002,
+    14.047
+  ],
+  "test_marks": [
+    "on boot=0400486024DEC000 script=auto-run-w20-W2-packinplace.txt record=0",
+    "boot title=0400486024DEC000",
+    "script_start file=auto-run-w20-W2-packinplace.txt events=13 waits=10",
+    "wait_met line=32 at=46.065 score=89 looks=61",
+    "wait_met line=35 at=48.593 score=99 looks=4",
+    "wait_met line=42 at=53.623 score=0 looks=10",
+    "wait_met line=46 at=79.226 score=100 looks=52",
+    "steer_point line=57 at=87.246 point=1/11 looks=1 seen=1",
+    "steer_point line=57 at=89.322 point=2/11 looks=5 seen=3",
+    "steer_point line=57 at=92.825 point=3/11 looks=12 seen=10",
+    "steer_point line=57 at=98.260 point=4/11 looks=23 seen=19",
+    "steer_point line=57 at=102.315 point=5/11 looks=31 seen=23",
+    "steer_point line=57 at=106.317 point=6/11 looks=39 seen=28",
+    "steer_point line=57 at=110.332 point=7/11 looks=47 seen=36",
+    "steer_point line=57 at=114.298 point=8/11 looks=55 seen=43",
+    "steer_point line=57 at=118.820 point=9/11 looks=64 seen=51",
+    "steer_point line=57 at=121.826 point=10/11 looks=70 seen=57",
+    "steer_point line=57 at=125.354 point=11/11 looks=77 seen=64",
+    "steer_met line=57 at=125.354 point=11/11 looks=77 seen=64",
+    "steer_point line=70 at=129.391 point=1/3 looks=9 seen=9",
+    "steer_point line=70 at=133.413 point=2/3 looks=17 seen=17",
+    "steer_point line=70 at=135.412 point=3/3 looks=21 seen=21",
+    "steer_met line=70 at=135.412 point=3/3 looks=21 seen=21",
+    "steer_point line=75 at=138.951 point=1/1 looks=8 seen=8",
+    "steer_met line=75 at=138.951 point=1/1 looks=8 seen=8",
+    "wait_met line=92 at=148.013 score=-16 looks=16",
+    "wait_skipped line=97 at=288.013 best=-22 looks=1 seen=8x8:4a4b4b4a4a4a494847484a4a4b4a4a4a46454343444646464343424242434445434343434241403f4040403f3f3f3e3e3d3f404040403f3f3d3c3a3d3f40403f",
+    "script_end line=102 at=448.014",
+    "script_done at=448.014"
+  ]
+}

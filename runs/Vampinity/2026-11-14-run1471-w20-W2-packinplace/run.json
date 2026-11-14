@@ -1,0 +1,53 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1471-w20-W2-packinplace",
+ "date": "2026-11-14",
+ "time": "01:58:31",
+ "batch": "w20-pack-in-place-t181",
+ "test": "w20-W2-packinplace",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T184",
+  "commit": null,
+  "version": "01.219.028 (Nov 14 2026 00:47:04)",
+  "eboot_sha256_16": "8de0ba545e1105dd"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "route-field-to-past-field.works-run1397.txt",
+  "script_sha": "82afefd9b452"
+ },
+ "menu_settings": null,
+ "env_lines": 166,
+ "env_hash": "8c36bf8f02",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 499,
+  "crash_app_s": null
+ },
+ "valid": false,
+ "gameplay_s": 378.8,
+ "fps": {
+  "mean": 9.66,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 295.5,
+  "worst_ms": 28335.1
+ },
+ "worst_frame_ms": 28335.1,
+ "runtime_pipeline_builds": 1,
+ "flashes_per_min": 9.79,
+ "note": "Build T184 (T181 plus ports, their switches off; eboot sha16 8de0ba545e1105dd), play settings v3.9, handheld 1x, scripted: the field, the load into the next area, then about 300 s there. W = v3.9 + EDEN_GUEST_SWAP_PACK_IN_PLACE=2 (my port of waveydude's W-20), V = v3.9 alone, order W V W V. Load start = EDEN_TEST wait_met line=92. Batch note: runs/Vampinity/2026-11-14-w20-README.md. W2. Reached script_end, but spent about 4 minutes at under 1 fps in the load, so only about 40 s in the area after the field. 300 FAULT_WAITs, all got-block, longest 8.4 s, zero swap failures. The fps mean is pulled down by the load.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 3,
+  "home_path": 1,
+  "profile": 4,
+  "save": 1,
+  "other_dump": 5
+ }
+}

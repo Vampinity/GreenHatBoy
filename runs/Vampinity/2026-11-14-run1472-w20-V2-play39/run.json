@@ -1,0 +1,53 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1472-w20-V2-play39",
+ "date": "2026-11-14",
+ "time": "01:58:31",
+ "batch": "w20-pack-in-place-t181",
+ "test": "w20-V2-play39",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T184",
+  "commit": null,
+  "version": "01.219.028 (Nov 14 2026 00:47:04)",
+  "eboot_sha256_16": "8de0ba545e1105dd"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "route-field-to-past-field.works-run1397.txt",
+  "script_sha": "82afefd9b452"
+ },
+ "menu_settings": null,
+ "env_lines": 165,
+ "env_hash": "d567f931fd",
+ "control": false,
+ "ending": {
+  "kind": "crash",
+  "class": "oom",
+  "seconds": 244,
+  "crash_app_s": 243.2
+ },
+ "valid": false,
+ "gameplay_s": 127.0,
+ "fps": {
+  "mean": 23.76,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 88.9,
+  "worst_ms": 5896.6
+ },
+ "worst_frame_ms": 5896.6,
+ "runtime_pipeline_builds": 1,
+ "flashes_per_min": 36.06,
+ "note": "Build T184 (T181 plus ports, their switches off; eboot sha16 8de0ba545e1105dd), play settings v3.9, handheld 1x, scripted: the field, the load into the next area, then about 300 s there. W = v3.9 + EDEN_GUEST_SWAP_PACK_IN_PLACE=2 (my port of waveydude's W-20), V = v3.9 alone, order W V W V. Load start = EDEN_TEST wait_met line=92. Batch note: runs/Vampinity/2026-11-14-w20-README.md. V2. SIGSEGV in the load, 244 s after the app started, largest free block 0 MiB; an open GPUBack FAULT_WAIT about 9 s old, no lost line. The crash-* files are the crash handler's copies (its stderr copy has 8 more lines than stderr.log). The fps mean is from a cut-short run: do not use it.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 6,
+  "home_path": 1,
+  "profile": 6,
+  "save": 1,
+  "other_dump": 5
+ }
+}
