@@ -34,6 +34,10 @@ Other options: `--step N` (points at least N per mille apart, default 12), `--ra
 as reached within N per mille, default 6, as in the harness), `--back` (add the way back, a loop),
 `--fps` (frames read per second, default 5), `--picture WxH+X+Y` (say where the game picture is).
 
+PS5 captures (VP9 `.webm`) say 1920x1088 in the header but decode to 1920x1080. The tool takes the 1088,
+so the crop fails with "no frames in that stretch". Pass `--picture 1920x1080+0+0` for those files.
+(Found by GrowingBlackBeans, 14 Nov.)
+
 It prints how many frames it could read, the path length and speed, and a line like
 
     1 STEER 40 920,839 915,841 911,840 ... 884,876 r=4
