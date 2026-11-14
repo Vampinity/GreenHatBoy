@@ -160,23 +160,23 @@ He built the test bench that runs by itself on a real PS5: it starts the game, p
 
 ### [GrowingBlackBeans](https://github.com/GrowingBlackBeans) · collaborator
 
-The project's second developer. Since 7 November, in numbers:
+The project's second developer. Since 7 November, in numbers (counted early on 14 November):
 
 | | |
 |---:|---|
-| **148** | test runs on firmware 13.60, about 4 hours of play |
-| **18** | patches on top of T120, one of them a port of a Lichii fix, all meant to be off unless their switch is set |
-| **15** | dev builds of his own |
+| **204** | test runs on firmware 13.60, about 7 hours of play |
+| **19** | patches on top of T120, one of them a port of a Lichii fix, all meant to be off unless their switch is set |
+| **27** | dev builds of his own |
 
 Among other things he wrote the fix that makes the fast settings possible, made each session build on the last one (on for everyone), found two freezes and the cause of the long hitches while walking, and wrote the log toolkit that reads every run here. He tests everything on firmware 13.60, which we cannot. A good part of how far this has come is thanks to him.
 
 ### [waveydude](https://github.com/waveydude) · collaborator
 
-He started as a tester and now also writes fixes for the build. In numbers:
+He started as a tester and now also writes fixes for the build. In numbers (counted early on 14 November):
 
 | | |
 |---:|---|
-| **6** | runs shared as full logs on 11 November: four sessions on 13.60, about 88 minutes in all, and two starts on 9.40 |
+| **13** | runs shared as full logs on 11 and 13 November: eleven sessions on 13.60, about 5.5 hours in all, and two starts on 9.40 |
 | **6** | commits of memory fixes, in every build since T113 |
 | **3** | crash fixes from his own play, in T130 and later |
 
