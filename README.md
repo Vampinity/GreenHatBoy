@@ -179,7 +179,7 @@ He started as a tester and now also writes fixes for the build. In numbers (coun
 | **6** | commits of memory fixes, in every build since T113 |
 | **3** | crash fixes from his own play, in T130 and later |
 
-Most of his fixes are for memory and crashes: how the emulator's own memory store hands out large pieces, a graphics driver that asks for memory before it gives up, and the crashes that ended his own sessions. He tests on two base PS5s and plays much further into the game than our test routes go. His logs have pointed us to bugs of our own more than once.
+Most of his fixes are for memory and crashes: how the emulator's own memory store hands out large pieces, a graphics driver that asks for memory before it gives up, and the crashes that ended his own sessions. He tests on two base PS5s and plays much further into the game than our test routes go. His logs have pointed us to bugs of our own more than once. He also keeps his own Ocarina build of EglantinePS5 for firmware 13.60, with his memory fixes and settings: [waveydude/Eglantine-PS5-](https://github.com/waveydude/Eglantine-PS5-).
 
 ### Built on the work of
 
