@@ -49,7 +49,7 @@ The project's second developer. Since 7 November he has tested the builds on his
 
 ## [waveydude](https://github.com/waveydude) · collaborator
 
-He started as a tester and now also writes fixes for the build, most of them for memory and crashes. He tests on two base PS5s and plays much further into the game than our test routes go: on 13.60 one session ran 24 minutes through later areas without a crash. In numbers (counted early on 14 November):
+He started as a tester and now also writes fixes for the build, most of them for memory and crashes. He tests on two base PS5s and plays much further into the game than our test routes go: on 13.60 one session ran 24 minutes through later areas without a crash. He also keeps his own Ocarina build of EglantinePS5 for firmware 13.60, with his memory fixes and settings: [waveydude/Eglantine-PS5-](https://github.com/waveydude/Eglantine-PS5-). In numbers (counted early on 14 November):
 
 | | |
 |---:|---|
