@@ -1,0 +1,127 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_VK_OOM_RETRY=<tries>, a descriptor pool the driver refuses with VK_ERROR_OUT_OF_DEVICE_MEMORY is asked for again a bounded number of times (off unless set)
+
+Why: at the load past Ocarina's field the pool sits at its last MiB for seconds. A draw that needs a
+new descriptor pool then ends the app: vkCreateDescriptorPool answers VK_ERROR_OUT_OF_DEVICE_MEMORY on
+the Vulkan worker (Scheduler::WorkerThread, a recorded GraphicsPipeline::ConfigureDraw,
+DescriptorAllocator::Commit, ResourcePool::CommitResource, AllocateDescriptors, AllocatePool), and
+AllocateDescriptors handles only VK_ERROR_OUT_OF_POOL_MEMORY. run1430 (T177) and run1473 (T184),
+symbolized on their own builds. Pairs with the driver's RADV_PS5_INTERNAL_RESERVE_MIB (lead-mesh-46),
+which should keep the refusal from happening; this is the backstop when the reserve is empty.
+
+What (src/video_core/renderer_vulkan/vk_descriptor_pool.cpp, AllocatePool only): with
+EDEN_UP_VK_OOM_RETRY=<tries> (1 to 50, read once) a refused pool is asked for again up to <tries>
+times. Before each try: the front's out-of-memory answer eden_radv_out_of_memory(2 MiB) (headless/
+performance.cpp: the heap's empty pages and cold guest memory back to the pool; any thread, memory
+work only, nothing that calls back into Vulkan; weak here), then a sleep of 2 ms times the try (20
+tries: 420 ms of sleeps, plus each answer's own time: with EDEN_UP_PACK_ON_REFUSAL=1 it may pack up to
+64 MiB of guest memory on this thread, 2-5 ms a slot; the worker submits nothing meanwhile, so a wait
+reclaim pass waiting for the GPU on the back thread runs out), so the GPU can finish work whose freed memory the driver gives back
+and other threads can free theirs. The texture cache's collector and the wait reclaim pass are not
+called: they need the GPU thread or the scheduler, and this runs on the worker inside a recorded
+command. After the last try the exception goes up as before. Expect a low yield from the answer
+itself: at this load every logged eden_radv_out_of_memory call gave back 0 MiB.
+Lines (stderr): "EDEN_UP_VK_OOM_RETRY descriptor pool refused (try T of N, R refusals so far): M MiB
+given back, trying again", "... descriptor pool made on try T of N (S saved so far)", "... still
+refused after T tries: the error goes up" (first 32, then every 64th).
+
+Unset or 0: the switch is read once, at the first pool, and the pool is made outside any try, so a
+refusal ends the app from the same frames as T184 (__cxa_throw under CreateDescriptorPool): as T184.
+vk_descriptor_pool.cpp is not a translation id input (no file of src/shader_recompiler includes it,
+and it is not in tools/gen-translation-id.py's SINGLE list), no header is touched and no name is
+added to TranslationSwitches: KEEPS THE STORE.
+
+---
+diff --git a/src/video_core/renderer_vulkan/vk_descriptor_pool.cpp b/src/video_core/renderer_vulkan/vk_descriptor_pool.cpp
+index 02b7a32..52cbd64 100644
+--- a/src/video_core/renderer_vulkan/vk_descriptor_pool.cpp
++++ b/src/video_core/renderer_vulkan/vk_descriptor_pool.cpp
+@@ -5,7 +5,13 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include <algorithm>
++#include <atomic>
++#include <chrono>
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
+ #include <mutex>
++#include <thread>
+ #include <span>
+ #include <vector>
+ 
+@@ -18,6 +24,11 @@
+ #include "video_core/vulkan_common/vulkan_device.h"
+ #include "video_core/vulkan_common/vulkan_wrapper.h"
+ 
++// EDEN_UP_VK_OOM_RETRY (patch 1070): the front's answer to the driver's out-of-memory (headless/
++// performance.cpp: the heap's empty pages and cold guest memory back to the pool; any thread, memory
++// work only, nothing that calls back into Vulkan). Weak: without the front it is not there.
++extern "C" std::uint64_t eden_radv_out_of_memory(std::uint64_t bytes) __attribute__((weak));
++
+ namespace Vulkan {
+ 
+ // Prefer small grow rates to avoid saturating the descriptor pool with barely used pipelines
+@@ -82,14 +93,60 @@ static void AllocatePool(const Device& device, DescriptorBank& bank) {
+     add(VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, info.sampled_images);
+     add(VK_DESCRIPTOR_TYPE_SAMPLER, info.samplers);
+     VideoCommon::Churn::Add(VideoCommon::Churn::DescriptorPools);
+-    bank.pools.push_back(device.GetLogical().CreateDescriptorPool({
++    const VkDescriptorPoolCreateInfo create_info{
+         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+         .pNext = nullptr,
+         .flags = 0,
+         .maxSets = sets_per_pool,
+         .poolSizeCount = static_cast<u32>(pool_cursor),
+         .pPoolSizes = std::data(pool_sizes),
+-    }));
++    };
++    // EDEN_UP_VK_OOM_RETRY=<tries> (patch 1070, off unless set; 1 to 50): a pool the driver refuses
++    // with VK_ERROR_OUT_OF_DEVICE_MEMORY is asked for again up to <tries> times, each after the
++    // front's out-of-memory answer (2 MiB asked) and a sleep of 2 ms times the try (sleeps alone:
++    // 5 tries 30 ms, 20 tries 420 ms; with EDEN_UP_PACK_ON_REFUSAL=1 each answer may also pack up
++    // to 64 MiB of guest memory here, 2-5 ms a slot), before the error goes up as before. It runs where the pool is made,
++    // the Vulkan worker inside a recorded draw: the sleeps let the GPU finish work whose freed
++    // memory the driver gives back (radv_ps5_memory_retire) and the other threads free theirs.
++    // Unset or 0: read once at the first pool; the pool is made outside any try, as T184.
++    static const int retries = [] {
++        const char* const value = std::getenv("EDEN_UP_VK_OOM_RETRY");
++        const long tries = value != nullptr ? std::strtol(value, nullptr, 10) : 0;
++        return static_cast<int>(std::clamp<long>(tries, 0, 50));
++    }();
++    if (retries == 0) {
++        // Off: no handler on the way up, so a refusal ends the app from the same frames as T184.
++        bank.pools.push_back(device.GetLogical().CreateDescriptorPool(create_info));
++        return;
++    }
++    for (int attempt = 0;; ++attempt) {
++        try {
++            bank.pools.push_back(device.GetLogical().CreateDescriptorPool(create_info));
++            if (attempt != 0) {
++                static std::atomic<u32> saved{};
++                const u32 count = saved.fetch_add(1, std::memory_order_relaxed) + 1;
++                if (count <= 32 || count % 64 == 0)
++                    std::fprintf(stderr, "EDEN_UP_VK_OOM_RETRY descriptor pool made on try %d of %d (%u saved so far)\n",
++                                 attempt + 1, retries + 1, count);
++            }
++            return;
++        } catch (const vk::Exception& exception) {
++            if (exception.GetResult() != VK_ERROR_OUT_OF_DEVICE_MEMORY || attempt >= retries) {
++                if (retries != 0 && exception.GetResult() == VK_ERROR_OUT_OF_DEVICE_MEMORY)
++                    std::fprintf(stderr, "EDEN_UP_VK_OOM_RETRY descriptor pool still refused after %d tries: the "
++                                 "error goes up\n", attempt + 1);
++                throw;
++            }
++        }
++        const std::uint64_t freed = eden_radv_out_of_memory ? eden_radv_out_of_memory(std::uint64_t{2} << 20) : 0;
++        static std::atomic<u32> refused{};
++        const u32 count = refused.fetch_add(1, std::memory_order_relaxed) + 1;
++        if (count <= 32 || count % 64 == 0)
++            std::fprintf(stderr, "EDEN_UP_VK_OOM_RETRY descriptor pool refused (try %d of %d, %u refusals so far): "
++                         "%llu MiB given back, trying again\n", attempt + 1, retries + 1, count,
++                         static_cast<unsigned long long>(freed >> 20));
++        std::this_thread::sleep_for(std::chrono::milliseconds(2 * (attempt + 1)));
++    }
+ }
+ 
+ DescriptorAllocator::DescriptorAllocator(const Device& device_, MasterSemaphore& master_semaphore_,

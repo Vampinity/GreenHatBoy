@@ -1,0 +1,459 @@
+diff --git a/tools/patch-radv-series/lead-mesh-45-radv-mesh-points-as-compute.patch b/tools/patch-radv-series/lead-mesh-45-radv-mesh-points-as-compute.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..53d97ce193433c37091805df189c9c02868020ca
+--- /dev/null
++++ b/tools/patch-radv-series/lead-mesh-45-radv-mesh-points-as-compute.patch
+@@ -0,0 +1,389 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: EglantinePS5
++Date: Sat, 14 Nov 2026 01:00:00 +0100
++Subject: [PATCH] radv/ps5: EDEN_UP_RADV_MESH_POINTS=1 runs mesh shaders of points and lines as compute
++
++Driver patch, after lead-mesh-44 in tools/patch-radv-series. Off unless the switch is set.
++
++Port of zortos293/Lichii bc45e10 (PR #863, "draw points and lines through the mesh compute
++fallback", by nemiward). Upstream's change is in its core's own compute fallback; ours runs mesh
++shaders as compute in the driver (lead-mesh-05/09), which took triangles only and dropped the rest.
++Ocarina draws its plant shadow map (1600x1600) with a mesh program of points, two draws a frame in
++the field, so grass and bushes cast no shadow.
++
++- radv_mesh_compute_wanted takes points and lines with the switch on, and a point size output for
++  points. =2 also takes a triangle program that writes a point size (left out of the slots).
++- The slots keep one dword of indices per primitive as before; the copy vertex shader reads k = 1
++  (points) or 2 (lines) of them per primitive instead of 3, copies a point's size, and the copy
++  draw (compile-time state and the draw's topology) is a point or line list.
++- An unused slot of a point or a line goes behind the eye (w = -1, size 0), outside every clip
++  plane. Upstream found a repeated index draws such points, and moving them just outside the view
++  was not enough on RADV (the guard band); it used a clip distance, this uses w < 0.
++- The cache keeps the primitive in the top byte of the vertex count: 0 for triangles, so every
++  saved entry reads as before. With the switch on these pipelines' hash takes
++  RADV_MESH_COMPUTE_POINTS_REVISION and the switch's value (a point program compiled before was
++  refused); unset, no hash changes.
++- Lines: "radv/ps5: EDEN_UP_RADV_MESH_POINTS: mesh shader of points runs as compute (...)" per
++  pipeline compiled (32 at most), and "radv/ps5: EDEN_UP_RADV_MESH_POINTS draws=N (points P, lines L)"
++  at 1, 2, 4, 8 ... draws.
++
++The core refuses point and line programs unless EDEN_NX2_MESH_POINTS=1 (patch 0173), so both are
++needed. Triangle pipelines compile to the same code as before, switch on or off.
++
++Co-Authored-By: nemiward (zortos293/Lichii PR #863)
++Co-Authored-By: Claude Opus 5.5
++---
++diff --git a/src/amd/vulkan/radv_cmd_buffer.c b/src/amd/vulkan/radv_cmd_buffer.c
++index d8af00b..ce73f4a 100644
++--- a/src/amd/vulkan/radv_cmd_buffer.c
+++++ b/src/amd/vulkan/radv_cmd_buffer.c
++@@ -15908,7 +15908,13 @@ radv_mesh_compute_draw(struct radv_cmd_buffer *cmd_buffer, const struct radv_dra
++    const uint64_t block_va = radv_buffer_get_va(cmd_buffer->upload.upload_bo) + block_offset;
++ 
++    const uint32_t saved_topology = d->vk.ia.primitive_topology;
++-   d->vk.ia.primitive_topology = V_008958_DI_PT_TRILIST;
+++   /* EDEN_UP_RADV_MESH_POINTS: a pipeline of points or lines draws a point or line list. */
+++   const uint32_t prim_vertices = pipeline->mesh_compute_prim_vertices;
+++   d->vk.ia.primitive_topology = prim_vertices == 1   ? V_008958_DI_PT_POINTLIST
+++                                 : prim_vertices == 2 ? V_008958_DI_PT_LINELIST
+++                                                      : V_008958_DI_PT_TRILIST;
+++   if (prim_vertices == 1 || prim_vertices == 2)
+++      radv_mesh_compute_note_points_draw(prim_vertices);
++    state->dirty_dynamic |= RADV_DYNAMIC_PRIMITIVE_TOPOLOGY;
++    state->dirty |= RADV_CMD_DIRTY_VGT_PRIM_STATE;
++ 
++diff --git a/src/amd/vulkan/radv_gs_compute.h b/src/amd/vulkan/radv_gs_compute.h
++index ad167dd..42c3529 100644
++--- a/src/amd/vulkan/radv_gs_compute.h
+++++ b/src/amd/vulkan/radv_gs_compute.h
++@@ -115,6 +115,7 @@ struct radv_gs_compute_binaries {
++    struct radv_shader_debug_info mesh_debug;
++    uint32_t mesh_vertices_per_workgroup;
++    uint32_t mesh_capacity;
+++   uint32_t mesh_prim_vertices; /* 1 points, 2 lines, 3 triangles (EDEN_UP_RADV_MESH_POINTS) */
++ };
++ 
++ /* A vertex pass compiled at the draw, one variant per vertex input the draws
++diff --git a/src/amd/vulkan/radv_mesh_compute.c b/src/amd/vulkan/radv_mesh_compute.c
++index b52cea7..e93d9aa 100644
++--- a/src/amd/vulkan/radv_mesh_compute.c
+++++ b/src/amd/vulkan/radv_mesh_compute.c
++@@ -87,6 +87,38 @@ radv_mesh_compute_lone(void)
++    return lone;
++ }
++ 
+++unsigned
+++radv_mesh_compute_points(void)
+++{
+++   static int points = -1;
+++   if (points < 0) {
+++      const char *const asked = getenv("EDEN_UP_RADV_MESH_POINTS");
+++      int value = asked && (asked[0] == '1' || asked[0] == '2') && asked[1] == '\0' ? asked[0] - '0' : 0;
+++      if (value && !radv_mesh_compute_enabled())
+++         value = 0;
+++      if (value)
+++         fprintf(stderr,
+++                 "radv/ps5: EDEN_UP_RADV_MESH_POINTS=%d: mesh shaders of points and lines run as compute%s\n", value,
+++                 value == 2 ? ", and triangles that write a point size" : "");
+++      p_atomic_set(&points, value);
+++   }
+++   return points;
+++}
+++
+++void
+++radv_mesh_compute_note_points_draw(uint32_t prim_vertices)
+++{
+++   static uint32_t draws, point_draws, line_draws;
+++   if (prim_vertices == 1)
+++      p_atomic_inc(&point_draws);
+++   else
+++      p_atomic_inc(&line_draws);
+++   const uint32_t n = p_atomic_inc_return(&draws);
+++   if (util_is_power_of_two_nonzero(n))
+++      fprintf(stderr, "radv/ps5: EDEN_UP_RADV_MESH_POINTS draws=%u (points %u, lines %u)\n", n,
+++              p_atomic_read(&point_draws), p_atomic_read(&line_draws));
+++}
+++
++ VkResult
++ radv_mesh_compute_init(struct radv_device *device)
++ {
++@@ -124,6 +156,7 @@ struct mesh_compute_layout {
++    unsigned num_vtx_slots;
++    unsigned max_vertices;
++    unsigned max_primitives;
+++   unsigned prim_vertices; /* 1 points, 2 lines, 3 triangles (EDEN_UP_RADV_MESH_POINTS) */
++    unsigned prim_offset; /* the triangles, after the vertices */
++    unsigned stride;      /* a slot */
++    unsigned capacity;    /* slots in a pass */
++@@ -196,8 +229,12 @@ radv_mesh_compute_wanted(const struct radv_graphics_state_key *gfx_state, const
++    }
++ 
++    /* First slice: triangles, outputs that are positions and generic varyings, no
++-    * per-primitive outputs but the indices, no multiview. */
++-   if (mesh->info.mesh.primitive_type != MESA_PRIM_TRIANGLES || gfx_state->has_multiview_view_index) {
+++    * per-primitive outputs but the indices, no multiview. EDEN_UP_RADV_MESH_POINTS adds points and
+++    * lines, and a point size (copied for points; left out of triangles with =2). */
+++   const unsigned points = radv_mesh_compute_points();
+++   const unsigned prim = mesh->info.mesh.primitive_type;
+++   const bool point_or_line = points && (prim == MESA_PRIM_POINTS || prim == MESA_PRIM_LINES);
+++   if ((prim != MESA_PRIM_TRIANGLES && !point_or_line) || gfx_state->has_multiview_view_index) {
++       mesh_compute_refused(mesh, "not triangles, or multiview");
++       return false;
++    }
++@@ -209,7 +246,9 @@ radv_mesh_compute_wanted(const struct radv_graphics_state_key *gfx_state, const
++ 
++    const uint64_t written = mesh->info.outputs_written;
++    const uint64_t per_prim = mesh->info.per_primitive_outputs;
++-   if ((written & ~per_prim) & ~allowed_vertex_outputs) {
+++   const bool size_allowed = (prim == MESA_PRIM_POINTS && points) || points == 2;
+++   const uint64_t allowed = allowed_vertex_outputs | (size_allowed ? VARYING_BIT_PSIZ : 0);
+++   if ((written & ~per_prim) & ~allowed) {
++       mesh_compute_refused(mesh, "a vertex output other than position and generics");
++       return false;
++    }
++@@ -231,6 +270,18 @@ radv_mesh_compute_wanted(const struct radv_graphics_state_key *gfx_state, const
++          }
++       }
++    }
+++   /* The line that shows EDEN_UP_RADV_MESH_POINTS took a program the path refused before. */
+++   if (point_or_line || (written & VARYING_BIT_PSIZ)) {
+++      static uint32_t told;
+++      if (told < 32 && p_atomic_inc_return(&told) <= 32)
+++         fprintf(stderr,
+++                 "radv/ps5: EDEN_UP_RADV_MESH_POINTS: mesh shader of %s runs as compute (vertices %u, primitives %u, "
+++                 "outputs 0x%" PRIx64 "%s)\n",
+++                 prim == MESA_PRIM_POINTS ? "points" : prim == MESA_PRIM_LINES ? "lines" : "triangles",
+++                 mesh->info.mesh.max_vertices_out, mesh->info.mesh.max_primitives_out, written,
+++                 (written & VARYING_BIT_PSIZ) ? (prim == MESA_PRIM_POINTS ? ", its point size" : ", point size left out")
+++                                              : "");
+++   }
++    return true;
++ }
++ 
++@@ -253,13 +304,15 @@ build_copy_vs(const nir_shader_compiler_options *options, const struct mesh_comp
++    b.shader->info.min_subgroup_size = wave_size;
++    b.shader->info.max_subgroup_size = wave_size;
++    b.shader->info.api_subgroup_size = wave_size;
++-   const unsigned vpw = l->max_primitives * 3;
+++   /* EDEN_UP_RADV_MESH_POINTS: k = 1 (points) or 2 (lines) instead of 3; corner v % k. */
+++   const unsigned k = l->prim_vertices;
+++   const unsigned vpw = l->max_primitives * k;
++ 
++    nir_def *v = nir_load_vertex_id_zero_base(&b);
++    nir_def *wg = nir_udiv_imm(&b, v, vpw);
++    nir_def *rem = nir_umod_imm(&b, v, vpw);
++-   nir_def *prim = nir_udiv_imm(&b, rem, 3);
++-   nir_def *corner = nir_umod_imm(&b, rem, 3);
+++   nir_def *prim = nir_udiv_imm(&b, rem, k);
+++   nir_def *corner = nir_umod_imm(&b, rem, k);
++    nir_def *in_buffer = nir_ult_imm(&b, wg, l->capacity);
++    wg = nir_umin(&b, wg, nir_imm_int(&b, l->capacity - 1));
++ 
++@@ -284,10 +337,23 @@ build_copy_vs(const nir_shader_compiler_options *options, const struct mesh_comp
++       nir_def *addr = nir_iadd(
++          &b, slot,
++          nir_u2u64(&b, nir_iadd_imm(&b, nir_imul_imm(&b, nir_iadd_imm(&b, nir_imul_imm(&b, index, l->num_vtx_slots), s), 16), 16)));
+++      if (location == VARYING_SLOT_PSIZ) {
+++         /* A point's size (EDEN_UP_RADV_MESH_POINTS): one float, 0 for an unused slot. */
+++         nir_def *size = nir_build_load_global(&b, 1, 32, addr, .align_mul = 16);
+++         size = nir_bcsel(&b, valid, size, nir_imm_float(&b, 0.0));
+++         nir_variable *var = nir_variable_create(b.shader, nir_var_shader_out, glsl_float_type(), "mesh_point_size");
+++         var->data.location = VARYING_SLOT_PSIZ;
+++         nir_store_var(&b, var, size, 0x1);
+++         continue;
+++      }
++       nir_def *value = nir_build_load_global(&b, 4, 32, addr, .align_mul = 16);
++       if (location == VARYING_SLOT_POS) {
++-         /* All three corners of an unused slot at one point: no area. */
++-         value = nir_bcsel(&b, valid, value, nir_imm_vec4(&b, 0.0, 0.0, 0.0, 1.0));
+++         /* All three corners of an unused slot at one point: no area. A point or a line has no
+++          * area to lose, and a repeated index still draws it (upstream saw such points reach the
+++          * shadow map from outside the view, through the guard band): it goes behind the eye
+++          * instead (w = -1), outside every clip plane, where nothing of it is drawn. */
+++         value = nir_bcsel(&b, valid, value,
+++                           k == 3 ? nir_imm_vec4(&b, 0.0, 0.0, 0.0, 1.0) : nir_imm_vec4(&b, 0.0, 0.0, 0.0, -1.0));
++       }
++       nir_variable *var = nir_variable_create(b.shader, nir_var_shader_out, glsl_vec4_type(), "mesh_output");
++       var->data.location = location;
++@@ -385,6 +451,12 @@ lower_mesh_intrinsic(nir_builder *b, nir_intrinsic_instr *intr, void *data)
++       return true;
++    }
++    case nir_intrinsic_store_per_vertex_output: {
+++      /* An output the slots don't hold (a triangle's or a line's point size, EDEN_UP_RADV_MESH_POINTS=2):
+++       * left out, or it would land on the next output's slot. */
+++      if (!(l->vtx_mask & BITFIELD64_BIT(nir_intrinsic_io_semantics(intr).location))) {
+++         nir_instr_remove(&intr->instr);
+++         return true;
+++      }
++       nir_def *value = intr->src[0].ssa;
++       if (value->bit_size != 32)
++          value = nir_u2u32(b, value);
++@@ -394,6 +466,10 @@ lower_mesh_intrinsic(nir_builder *b, nir_intrinsic_instr *intr, void *data)
++       return true;
++    }
++    case nir_intrinsic_load_per_vertex_output: {
+++      if (!(l->vtx_mask & BITFIELD64_BIT(nir_intrinsic_io_semantics(intr).location))) {
+++         nir_def_replace(&intr->def, nir_imm_zero(b, intr->def.num_components, intr->def.bit_size));
+++         return true;
+++      }
++       nir_def *value = nir_build_load_global(b, intr->def.num_components, 32, vertex_output_addr(b, s, intr),
++                                              .align_mul = 4);
++       if (intr->def.bit_size != 32)
++@@ -515,7 +591,13 @@ radv_mesh_compute_split(const struct radv_compiler_info *compiler_info, struct r
++    nir_shader *mesh = ms->nir;
++ 
++    struct mesh_compute_layout l = {0};
++-   l.vtx_mask = mesh->info.outputs_written & ~mesh->info.per_primitive_outputs & allowed_vertex_outputs;
+++   /* EDEN_UP_RADV_MESH_POINTS (radv_mesh_compute_wanted let these through only with it on): a point
+++    * keeps its size in a slot of its own; a line or a triangle has no size to keep. */
+++   l.prim_vertices = mesh->info.mesh.primitive_type == MESA_PRIM_POINTS  ? 1
+++                     : mesh->info.mesh.primitive_type == MESA_PRIM_LINES ? 2
+++                                                                         : 3;
+++   l.vtx_mask = mesh->info.outputs_written & ~mesh->info.per_primitive_outputs &
+++                (allowed_vertex_outputs | (l.prim_vertices == 1 ? VARYING_BIT_PSIZ : 0));
++    l.num_vtx_slots = util_bitcount64(l.vtx_mask);
++    l.max_vertices = mesh->info.mesh.max_vertices_out;
++    l.max_primitives = mesh->info.mesh.max_primitives_out;
++@@ -534,7 +616,8 @@ radv_mesh_compute_split(const struct radv_compiler_info *compiler_info, struct r
++    memset(out, 0, sizeof(*out));
++    out->mesh_stage = *ms;
++    out->cs = mesh;
++-   out->vertices_per_workgroup = l.max_primitives * 3;
+++   out->vertices_per_workgroup = l.max_primitives * l.prim_vertices;
+++   out->prim_vertices = l.prim_vertices;
++    out->capacity = l.capacity;
++ 
++    struct radv_shader_stage *vs_stage = &stages[MESA_SHADER_VERTEX];
++diff --git a/src/amd/vulkan/radv_mesh_compute.h b/src/amd/vulkan/radv_mesh_compute.h
++index c657146..6d51304 100644
++--- a/src/amd/vulkan/radv_mesh_compute.h
+++++ b/src/amd/vulkan/radv_mesh_compute.h
++@@ -77,6 +77,27 @@ bool radv_mesh_compute_lone(void);
++  * or a cached copy stays in use. Task pipelines keep their hash, so only these rebuild. */
++ #define RADV_MESH_COMPUTE_LONE_REVISION 2u
++ 
+++/* Whether mesh shaders that output points or lines take this path too: EDEN_UP_RADV_MESH_POINTS in
+++ * env.txt (port of zortos293/Lichii bc45e10, PR #863 by nemiward). 1: points and lines, a point
+++ * keeping the size its program writes; 2: as 1, and a triangle program that writes a point size too
+++ * (the size is left out, triangles have none). 0 (unset or anything else): only triangles, as
+++ * before. Needs EDEN_NX2_RADV_MESH_COMPUTE=1, and the core needs EDEN_NX2_MESH_POINTS=1 to compile
+++ * point and line programs at all. */
+++unsigned radv_mesh_compute_points(void);
+++
+++/* Goes into the hash of the pipelines of this path while EDEN_UP_RADV_MESH_POINTS is on, with the
+++ * switch's value: a point program compiled before was refused and its draws dropped, and a cached
+++ * copy of that must not be used. Unset, no hash changes. */
+++#define RADV_MESH_COMPUTE_POINTS_REVISION 1u
+++
+++/* The copy draw's primitive: 1 vertex (points), 2 (lines) or 3 (triangles). A pipeline keeps it in
+++ * mesh_compute_prim_vertices, 0 meaning 3; the pipeline cache keeps it in the top byte of the
+++ * vertex count (radv_pipeline_cache.c), 0 for triangles, so cached triangle pipelines read as
+++ * before. */
+++
+++/* Counts the copy draws of points and lines, and says so at 1, 2, 4, 8 ... draws. */
+++void radv_mesh_compute_note_points_draw(uint32_t prim_vertices);
+++
++ struct radv_device;
++ /* The device's buffer, made once (the first pipeline that may use it). */
++ VkResult radv_mesh_compute_init(struct radv_device *device);
++@@ -86,8 +107,10 @@ struct radv_mesh_compute_split {
++    struct radv_shader_stage mesh_stage;
++    /* The mesh shader, lowered to the compute pass. */
++    nir_shader *cs;
++-   /* The copy draw's vertices a mesh workgroup: max primitives x 3. */
+++   /* The copy draw's vertices a mesh workgroup: max primitives x prim_vertices. */
++    uint32_t vertices_per_workgroup;
+++   /* Vertices a primitive of the copy draw: 1 points, 2 lines, 3 triangles. */
+++   uint32_t prim_vertices;
++    /* The mesh workgroups a pass holds. */
++    uint32_t capacity;
++ };
++diff --git a/src/amd/vulkan/radv_pipeline.h b/src/amd/vulkan/radv_pipeline.h
++index 08ab0fb..f2892fb 100644
++--- a/src/amd/vulkan/radv_pipeline.h
+++++ b/src/amd/vulkan/radv_pipeline.h
++@@ -60,6 +60,8 @@ struct radv_pipeline {
++    struct radv_shader *mesh_compute;
++    uint32_t mesh_compute_vertices_per_workgroup;
++    uint32_t mesh_compute_capacity;
+++   /* The copy draw's primitive (EDEN_UP_RADV_MESH_POINTS): 1 points, 2 lines, 3 or 0 triangles. */
+++   uint32_t mesh_compute_prim_vertices;
++ 
++    /* Unique pipeline hash identifier. */
++    uint64_t pipeline_hash;
++diff --git a/src/amd/vulkan/radv_pipeline_cache.c b/src/amd/vulkan/radv_pipeline_cache.c
++index a0abf08..2e4bcfd 100644
++--- a/src/amd/vulkan/radv_pipeline_cache.c
+++++ b/src/amd/vulkan/radv_pipeline_cache.c
++@@ -430,7 +430,10 @@ radv_graphics_pipeline_cache_search(struct radv_device *device, struct vk_pipeli
++          const uint32_t *counts = pipeline_obj->data;
++          assert(i == pipeline_obj->num_shaders - 1 && pipeline_obj->data_size == 2 * sizeof(uint32_t));
++          pipeline->base.mesh_compute = radv_shader_ref(pipeline_obj->shaders[i]);
++-         pipeline->base.mesh_compute_vertices_per_workgroup = counts[0];
+++         /* The top byte: the copy draw's primitive (EDEN_UP_RADV_MESH_POINTS), 1 points, 2 lines,
+++          * 0 triangles, as every entry written before it reads. */
+++         pipeline->base.mesh_compute_vertices_per_workgroup = counts[0] & 0xffffffu;
+++         pipeline->base.mesh_compute_prim_vertices = counts[0] >> 24;
++          pipeline->base.mesh_compute_capacity = counts[1];
++       } else if (s == MESA_SHADER_VERTEX && i > 0) {
++          /* The GS copy-shader is a VS placed after all other stages */
++@@ -497,7 +500,11 @@ radv_pipeline_cache_insert(struct radv_device *device, struct vk_pipeline_cache
++    if (pipeline->mesh_compute) {
++       uint32_t *counts = pipeline_obj->data;
++       pipeline_obj->shaders[idx++] = radv_shader_ref(pipeline->mesh_compute);
++-      counts[0] = pipeline->mesh_compute_vertices_per_workgroup;
+++      /* EDEN_UP_RADV_MESH_POINTS: points (1) or lines (2) in the top byte; triangles keep 0, as before. */
+++      counts[0] = pipeline->mesh_compute_vertices_per_workgroup |
+++                  ((pipeline->mesh_compute_prim_vertices == 1 || pipeline->mesh_compute_prim_vertices == 2)
+++                      ? pipeline->mesh_compute_prim_vertices << 24
+++                      : 0u);
++       counts[1] = pipeline->mesh_compute_capacity;
++    }
++ 
++diff --git a/src/amd/vulkan/radv_pipeline_graphics.c b/src/amd/vulkan/radv_pipeline_graphics.c
++index 9232f74..3964751 100644
++--- a/src/amd/vulkan/radv_pipeline_graphics.c
+++++ b/src/amd/vulkan/radv_pipeline_graphics.c
++@@ -2540,7 +2540,12 @@ radv_graphics_shaders_compile(const struct radv_compiler_info *compiler_info, st
++    if (mesh_compute_used) {
++       radv_mesh_compute_split(compiler_info, stages, &mesh_split);
++       mesh_compute_gfx_state = *gfx_state;
++-      mesh_compute_gfx_state.ia.topology = V_008958_DI_PT_TRILIST;
+++      /* EDEN_UP_RADV_MESH_POINTS: a point or line list for programs of points or lines. */
+++      mesh_compute_gfx_state.ia.topology = mesh_split.prim_vertices == 1   ? V_008958_DI_PT_POINTLIST
+++                                           : mesh_split.prim_vertices == 2 ? V_008958_DI_PT_LINELIST
+++                                                                           : V_008958_DI_PT_TRILIST;
+++      if (mesh_split.prim_vertices == 1)
+++         mesh_compute_gfx_state.enable_remove_point_size = false;
++       mesh_compute_gfx_state.vs.has_prolog = false;
++       gfx_state = &mesh_compute_gfx_state;
++    }
++@@ -2914,6 +2919,7 @@ radv_graphics_shaders_compile(const struct radv_compiler_info *compiler_info, st
++       gs_compute->mesh_binary = radv_mesh_compute_compile(compiler_info, &mesh_split, &gs_compute->mesh_debug);
++       gs_compute->mesh_vertices_per_workgroup = mesh_split.vertices_per_workgroup;
++       gs_compute->mesh_capacity = mesh_split.capacity;
+++      gs_compute->mesh_prim_vertices = mesh_split.prim_vertices;
++       gs_compute->mesh_used = true;
++    }
++ #endif
++@@ -3087,6 +3093,12 @@ radv_graphics_pipeline_hash(const struct radv_device *device, const struct radv_
++          const uint32_t lone_revision = RADV_MESH_COMPUTE_LONE_REVISION;
++          _mesa_blake3_update(&ctx, &lone_revision, sizeof(lone_revision));
++       }
+++      /* EDEN_UP_RADV_MESH_POINTS: a point or line program compiled before was refused (its draws
+++       * dropped), so with the switch on these pipelines get their own entries. Off: no change. */
+++      if (radv_mesh_compute_points()) {
+++         const uint32_t points[2] = {RADV_MESH_COMPUTE_POINTS_REVISION, radv_mesh_compute_points()};
+++         _mesa_blake3_update(&ctx, points, sizeof(points));
+++      }
++    }
++ #endif
++ 
++@@ -3259,6 +3271,7 @@ radv_graphics_pipeline_compile(struct radv_graphics_pipeline *pipeline, const Vk
++             radv_shader_create(device, cache, gs_compute.mesh_binary, skip_shaders_cache, &gs_compute.mesh_debug);
++       pipeline->base.mesh_compute_vertices_per_workgroup = gs_compute.mesh_vertices_per_workgroup;
++       pipeline->base.mesh_compute_capacity = gs_compute.mesh_capacity;
+++      pipeline->base.mesh_compute_prim_vertices = gs_compute.mesh_prim_vertices;
++       free(gs_compute.mesh_binary);
++       if (!pipeline->base.mesh_compute)
++          skip_shaders_cache = true;
+diff --git a/tools/prepare-vulkan-port.py b/tools/prepare-vulkan-port.py
+index f69d0270bfc3940fc9d710759229f4a3f10423e6..33688120db7d812349bffe957c7df27088d683d7 100644
+--- a/tools/prepare-vulkan-port.py
++++ b/tools/prepare-vulkan-port.py
+@@ -1359,10 +1359,57 @@ POOL_PRESSURE = r'''    const auto PoolPressure = [this]() -> int {
+             }
+             const auto free_memory = ::Eden::Performance::graphics_memory_free.load(std::memory_order_relaxed);
+             const u64 free_bytes = free_memory ? free_memory() : ~u64{0};
++            int level = 0;
+             if ((refusal_frame != 0 && frame_tick - refusal_frame < 120) || free_bytes < critical_bytes) {
+-                return 2;
++                level = 2;
++            } else if (free_bytes < short_bytes) {
++                level = 1;
+             }
+-            return free_bytes < short_bytes ? 1 : 0;
++            // EDEN_UP_TEX_SHARE=1 (zortos293/Lichii PR #823 by janvitos, 661cf0e, "let an integrated
++            // GPU's memory share bound the textures only"): on a chip whose GPU shares memory with
++            // the CPU, what is not images kept the collector past its marks, so it deleted and remade
++            // images in use (Deck: ~480 a second, camera pan 11 -> 14.5 fps with #948). Here the
++            // images are counted alone already; the pool's shortness (whoever took the pool) is
++            // what still pushes the collector, ~3500 images per 600 frames in the field. With the
++            // switch, the "short" level (largest free block under EDEN_NX2_TC_POOL_SHORT_MIB) leaves
++            // the images alone while they hold under EDEN_UP_TEX_SHARE_MIB; level 2 (a refusal in
++            // the last 120 frames, or under EDEN_NX2_TC_POOL_CRITICAL_MIB) collects as before.
++            // EDEN_UP_TEX_SHARE_MIB unset or 0: no share, the collector as T181 (no more memory).
++            static const bool tex_share = [] {
++                const char* value = std::getenv("EDEN_UP_TEX_SHARE");
++                return value != nullptr && value[0] != '\0' && value[0] != '0';
++            }();
++            if (tex_share) {
++                static const u64 share_bytes = [] {
++                    const char* value = std::getenv("EDEN_UP_TEX_SHARE_MIB");
++                    const u64 bytes = (value != nullptr ? std::strtoull(value, nullptr, 10) : 0ULL) << 20;
++                    LOG_INFO(HW_GPU, "EDEN_UP_TEX_SHARE: images keep {} MiB through a short pool (level 1); "
++                                     "a refusal or a critical pool collects as before", bytes >> 20);
++                    return bytes;
++                }();
++                static u64 counted_frame = ~u64{0};
++                static u64 logged_frame = 0;
++                static u64 short_frames = 0, waived_frames = 0, critical_frames = 0;
++                const bool waive = level == 1 && total_used_memory < share_bytes;
++                if (counted_frame != frame_tick) {
++                    counted_frame = frame_tick;
++                    short_frames += level == 1 ? 1 : 0;
++                    waived_frames += waive ? 1 : 0;
++                    critical_frames += level == 2 ? 1 : 0;
++                    if (frame_tick - logged_frame >= 600) {
++                        LOG_INFO(HW_GPU, "EDEN_UP_TEX_SHARE last {} frames: share {} MiB, images {} MiB, "
++                                         "collector frames short {} (waived {}), critical {}",
++                                 frame_tick - logged_frame, share_bytes >> 20, total_used_memory >> 20,
++                                 short_frames, waived_frames, critical_frames);
++                        logged_frame = frame_tick;
++                        short_frames = waived_frames = critical_frames = 0;
++                    }
++                }
++                if (waive) {
++                    level = 0;
++                }
++            }
++            return level;
+         }
+     };
+ '''

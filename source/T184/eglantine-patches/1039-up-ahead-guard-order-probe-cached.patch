@@ -1,0 +1,39 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_AHEAD_GUARD_ORDER_PROBE read once (checker fix to 1038)
+
+Checker fix to 1038 (waveydude's W-23 marker, author waveydude, GreenHatBoy discussion 2,
+comment 19600367). 1038 called getenv on the GPU thread for every present whenever two guard
+slots were set, probe or not, and captured three more values in every callback. Now the switch
+is read once into a static; unset, the exact T181 callback is queued (no getenv, same capture),
+so off is T181. Set, his callback runs as he wrote it minus the per-call getenv; the log text
+and counting are unchanged. Touches nx2_gsv.h only: KEEPS THE STORE.
+---
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -2220,10 +2220,15 @@
+                 // EDEN_UP_AHEAD_GUARD_ORDER_PROBE=1 (waveydude's W-23 marker, off unless set):
+                 // logs when this marker runs while a channel is suspended on a semaphore and
+                 // this present's fence is still pending; first 16 events, then every 64th.
++                // Read once (checker): unset, T181's own callback runs, no getenv per present.
++                static const bool order_probe = Common::PeSwitch("EDEN_UP_AHEAD_GUARD_ORDER_PROBE");
++                if (!order_probe) {
++                    system.GPU().RunInOrder(
++                        [n = m_presents] { VideoCommon::AheadGuard::BackPassed(n); });
++                } else {
+                 system.GPU().RunInOrder([sys = &system, n = m_presents, fence_id = ~w[22],
+                                          fence_value = w[24]] {
+-                    if (Common::PeSwitch("EDEN_UP_AHEAD_GUARD_ORDER_PROBE") &&
+-                        sys->GPU().HasSuspendedChannels() &&
++                    if (sys->GPU().HasSuspendedChannels() &&
+                         !sys->Host1x().GetSyncpointManager().IsReadyGuest(fence_id, fence_value)) {
+                         static std::atomic<u64> pending_markers{};
+                         const u64 count = pending_markers.fetch_add(1, std::memory_order_relaxed) + 1;
+@@ -2236,6 +2241,7 @@
+                     }
+                     VideoCommon::AheadGuard::BackPassed(n);
+                 });
++                }
+             }
+         }
+         m_previous2_fence_id = m_previous_fence_id;

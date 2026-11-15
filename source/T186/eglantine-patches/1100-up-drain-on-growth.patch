@@ -1,0 +1,631 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_DRAIN_ON_GROWTH=1 or =<MiB>, the pressure drain runs once the allocator has grown that much since the last drain, and deleted buffers go once the GPU is past them instead of after 8 frame ends (off unless set)
+
+Why: at the load past Ocarina's field about 2.5 GiB of graphics memory arrives within a second and the
+pool hits zero. In that first second another 966 MiB was made and freed again by one late drain
+(run1545, EDEN_UP_PRESSURE_DRAIN 12): 689 MiB of buffers already deleted, waiting for 8 frame ends
+inside a load frame that lasts seconds, and 276 MiB of staging. The drain came late because
+PressureDrainLook looks only every 256 draws and at least 50 ms apart; allocator use had reached 1972
+MiB from a 639 MiB low by then.
+
+What, with EDEN_UP_DRAIN_ON_GROWTH=1 (256 MiB) or =<MiB> (32 to 65535; anything else off; read once):
+- renderer_vulkan/pressure_drain.h (GrowthState, GrowthDue) and vk_rasterizer.cpp PressureDrainLook:
+  between the 256-draw looks, every 16th draw or dispatch reads MemoryAllocator::UsedBytes. Once use is
+  the switch's amount over its lowest since the last drain, the look comes at once (not 50 ms after the
+  last) and drains at once, whatever waits and however much room the pool has, at most every
+  EDEN_UP_DRAIN_AT_AREA_GAP_MS (100). The drain itself is the pressure drain's own (flush, wait at most
+  EDEN_UP_PRESSURE_DRAIN_MS, release; GPU-behind and conditional-rendering rules unchanged). Needs
+  EDEN_UP_PRESSURE_DRAIN=1 (with =2 only frame ends look; unset: no drains, only the part below).
+- buffer_cache/pending_destroy.h (DrainOnGrowthBytes, TickedDestroyList), buffer_cache_base.h,
+  buffer_cache.h DeleteBuffer: a deleted buffer goes into a TickedDestroyList instead of the
+  DelayedDestructionRing. At a safe point of the recording thread (RasterizerVulkan::TickFrame after
+  the caches' TickFrame, the 16-draw look before a draw is set up, and a drain whose wait ran out) every
+  unstamped deleted buffer gets the tick being recorded then, and the stamped ones the GPU is past are
+  destroyed (BufferCache::ReleaseDeletedPassed: one IsFreeNow for the oldest, IsFree for the rest; no
+  flush, no wait). Not while the guest's conditional rendering is on (its predicate buffer, as the
+  drain), and not in the 16-draw look with EDEN_UP_FAST_DRAW=1 (its delta draws keep texture buffer
+  views until a frame end or a drain). A drain that reaches its tick destroys all of them, as before.
+  At the latest a deleted buffer goes where and when the ring would have freed it: BufferCache::
+  TickFrame destroys, stamped or not, those deleted TICKS_TO_DESTROY (8) frame ends ago
+  (TickedDestroyList::ReleaseAged), so with conditional rendering on nothing waits longer than T185.
+  DeletedWaiting, ForEachDeleted, ReportMemory and ReleasePendingBuffers count the list too.
+Lines (stderr): at boot "EDEN_UP_DRAIN_ON_GROWTH on: a drain once the allocator has grown N MiB over
+its low since the last drain (...); deleted buffers go once the GPU is past the tick stamped on them at
+a frame end, a 16-draw look or a drain, at the latest 8 frame ends later as before"; per growth drain (first 64, then every 16th)
+"EDEN_UP_DRAIN_ON_GROWTH drain G (drain D, in a frame|at a frame end): allocator use U MiB, X over its
+low of L MiB since the last drain; waited W ms, the GPU finished|did not finish; F MiB freed (S MiB of
+it staging; B deleted buffers M MiB by the GPU's tick without the wait); deleted buffers before: n, m
+MiB; largest free piece before P MiB; T MiB freed by growth drains so far"; every 10 s while any went
+"EDEN_UP_DRAIN_ON_GROWTH_10S B deleted buffers M MiB destroyed once the GPU was past them (not 8 frame
+ends later), A at the 8 frame ends as before; T MiB by tick so far; waiting now: n buffers m MiB".
+
+Unset: the switch is read once (rasterizer constructor); PressureDrainLook returns at the same draws
+as T185, the 50 ms gate and every drain rule are T185's, DeleteBuffer pushes to the ring as T185, and
+the list stays empty (every count adds 0): as T185. No translation id input is touched (none of these
+files is reached from src/shader_recompiler or in tools/gen-translation-id.py's SINGLE list), no wait
+site line is added to a cost file, no anchor line changes, and the name is not in TranslationSwitches:
+KEEPS THE STORE.
+---
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index 022098d602..00aab82dfa 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -185,7 +185,7 @@ void BufferCache<P>::ReportMemory() {
+     if (count_deleted) {
+         size_t deleted{};
+         u64 deleted_bytes{}, deleted_largest{};
+-        delayed_destruction_ring.ForEach([&](const Buffer& buffer) {
++        ForEachDeleted([&](const Buffer& buffer) {
+             ++deleted;
+             deleted_bytes += buffer.SizeBytes();
+             deleted_largest = (std::max)(deleted_largest, u64{buffer.SizeBytes()});
+@@ -221,6 +221,33 @@ template <class P>
+ void BufferCache<P>::ReleaseFinished() {
+     delayed_destruction_ring.Clear();
+     pending_destroy.Clear();
++    ticked_destroy.Clear(); // EDEN_UP_DRAIN_ON_GROWTH only, else empty
++}
++
++template <class P>
++bool BufferCache<P>::TickedDestroyOn() {
++    if constexpr (requires { runtime.CurrentTick(); runtime.IsFreeNow(u64{}); }) {
++        static const bool on = VideoCommon::DrainOnGrowthBytes() != 0;
++        return on;
++    } else {
++        return false;
++    }
++}
++
++template <class P>
++void BufferCache<P>::ReleaseDeletedPassed(u64 tick) {
++    if constexpr (requires { runtime.IsFreeNow(u64{}); runtime.IsFree(u64{}); }) {
++        if (ticked_destroy.Size() == 0) {
++            return;
++        }
++        ticked_destroy.Stamp(tick);
++        // One query of the GPU's progress for the oldest, then the known tick for the rest.
++        if (const u64 oldest = ticked_destroy.OldestTick();
++            oldest == 0 || !runtime.IsFreeNow(oldest)) {
++            return;
++        }
++        ticked_destroy.ReleasePassed([this](u64 stamped) { return runtime.IsFree(stamped); });
++    }
+ }
+ 
+ // EDEN_NX2_BC_PENDING_MIB=<MiB> (unset or 0: off, as before; waveydude's 0912): a deleted buffer
+@@ -268,7 +295,9 @@ void BufferCache<P>::ReleasePendingBuffers() {
+         return;
+     }
+     constexpr u64 step = u64{64} << 20;
+-    const u64 waiting = pending_destroy.Bytes();
++    const u64 waiting = pending_destroy.Bytes() + ticked_destroy.Bytes();
++    // How many buffers that is: the ring's, and EDEN_UP_DRAIN_ON_GROWTH's list (else empty).
++    const u64 waiting_buffers = pending_destroy.Buffers() + ticked_destroy.Size();
+     // The texture cache's figure is only read where the release below may run: both caches are
+     // locked there. Elsewhere it counts as nothing.
+     u64 images = 0;
+@@ -287,7 +316,7 @@ void BufferCache<P>::ReleasePendingBuffers() {
+                      "cache holds %llu MiB, deleted images waiting %llu MiB\n",
+                      static_cast<unsigned long long>(frame_tick),
+                      static_cast<unsigned long long>(waiting >> 20),
+-                     static_cast<unsigned long long>(pending_destroy.Buffers()),
++                     static_cast<unsigned long long>(waiting_buffers),
+                      static_cast<unsigned long long>(buffer_bytes >> 20),
+                      static_cast<unsigned long long>(images >> 20));
+     }
+@@ -296,7 +325,7 @@ void BufferCache<P>::ReleasePendingBuffers() {
+         return;
+     }
+     if constexpr (requires { runtime.ReleaseForBuffer(); }) {
+-        const u64 buffers = pending_destroy.Buffers();
++        const u64 buffers = waiting_buffers;
+         // Ends in ReleaseFinished above, which empties the ring and the count, and in the texture
+         // cache's, which destroys the images the GPU is past: after the wait, all of them.
+         runtime.ReleaseForBuffer();
+@@ -318,7 +347,8 @@ void BufferCache<P>::ReleasePendingBuffers() {
+                          static_cast<unsigned long long>(buffers),
+                          static_cast<unsigned long long>(images_freed >> 20),
+                          static_cast<unsigned long long>(pending_released_bytes >> 20),
+-                         static_cast<unsigned long long>(pending_destroy.Bytes() >> 20),
++                         static_cast<unsigned long long>(
++                             (pending_destroy.Bytes() + ticked_destroy.Bytes()) >> 20),
+                          static_cast<unsigned long long>(images_left >> 20));
+         }
+     }
+@@ -332,6 +362,9 @@ std::pair<size_t, u64> BufferCache<P>::DeletedWaiting() const {
+         ++buffers;
+         bytes += buffer.SizeBytes();
+     });
++    // EDEN_UP_DRAIN_ON_GROWTH only, else empty.
++    buffers += ticked_destroy.Size();
++    bytes += ticked_destroy.Bytes();
+     return {buffers, bytes};
+ }
+ 
+@@ -453,6 +486,39 @@ void BufferCache<P>::TickFrame() {
+     ++frame_tick;
+     delayed_destruction_ring.Tick();
+     pending_destroy.Tick();
++    // EDEN_UP_DRAIN_ON_GROWTH (pending_destroy.h): the deleted buffers are stamped and destroyed
++    // by the rasterizer (RasterizerVulkan::TickFrame and PressureDrainLook, which know whether
++    // conditional rendering is on). Here only what reached the ring's own age (as the ring above,
++    // at this same point), and the line, every 10 s while any went.
++    if (TickedDestroyOn()) [[unlikely]] {
++        ticked_destroy.ReleaseAged(frame_tick, TICKS_TO_DESTROY);
++        const auto now = std::chrono::steady_clock::now();
++        if (ticked_line == std::chrono::steady_clock::time_point{}) {
++            ticked_line = now;
++        } else if (now - ticked_line >= std::chrono::seconds{10}) {
++            ticked_line = now;
++            const u64 buffers =
++                VideoCommon::g_ticked_destroyed.buffers.load(std::memory_order_relaxed);
++            const u64 bytes = VideoCommon::g_ticked_destroyed.bytes.load(std::memory_order_relaxed);
++            const u64 aged =
++                VideoCommon::g_ticked_destroyed.aged_buffers.load(std::memory_order_relaxed);
++            if (buffers != ticked_line_buffers || aged != ticked_line_aged) {
++                std::fprintf(stderr,
++                             "EDEN_UP_DRAIN_ON_GROWTH_10S %llu deleted buffers %llu MiB destroyed "
++                             "once the GPU was past them (not 8 frame ends later), %llu at the "
++                             "8 frame ends as before; %llu MiB by tick so far; waiting now: %zu "
++                             "buffers %llu MiB\n",
++                             static_cast<unsigned long long>(buffers - ticked_line_buffers),
++                             static_cast<unsigned long long>((bytes - ticked_line_bytes) >> 20),
++                             static_cast<unsigned long long>(aged - ticked_line_aged),
++                             static_cast<unsigned long long>(bytes >> 20), ticked_destroy.Size(),
++                             static_cast<unsigned long long>(ticked_destroy.Bytes() >> 20));
++                ticked_line_buffers = buffers;
++                ticked_line_bytes = bytes;
++                ticked_line_aged = aged;
++            }
++        }
++    }
+ 
+     // EDEN_UP_L1028_ASYNC_READBACK (zortos293/Lichii #1028): pages draws wrote get their early
+     // downloads now that the frame's work is recorded (EDEN_UP_L1028_EARLY), and read downloads
+@@ -6008,8 +6074,14 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
+     if (!do_not_mark || !immediately_free)
+ #endif
+     {
+-        pending_destroy.Push(slot_buffers[buffer_id].SizeBytes());
+-        delayed_destruction_ring.Push(std::move(slot_buffers[buffer_id]));
++        if (TickedDestroyOn()) [[unlikely]] {
++            // EDEN_UP_DRAIN_ON_GROWTH: by the GPU's tick (stamped at the next safe point).
++            ticked_destroy.Push(slot_buffers[buffer_id].SizeBytes(), frame_tick,
++                                std::move(slot_buffers[buffer_id]));
++        } else {
++            pending_destroy.Push(slot_buffers[buffer_id].SizeBytes());
++            delayed_destruction_ring.Push(std::move(slot_buffers[buffer_id]));
++        }
+     }
+ 
+     slot_buffers.erase(buffer_id);
+diff --git a/src/video_core/buffer_cache/buffer_cache_base.h b/src/video_core/buffer_cache/buffer_cache_base.h
+index 6e3632e851..0d570d07e5 100644
+--- a/src/video_core/buffer_cache/buffer_cache_base.h
++++ b/src/video_core/buffer_cache/buffer_cache_base.h
+@@ -285,8 +285,14 @@ public:
+     template <typename F>
+     void ForEachDeleted(F&& f) const {
+         delayed_destruction_ring.ForEach(f);
++        ticked_destroy.ForEach(f); // EDEN_UP_DRAIN_ON_GROWTH only, else empty
+     }
+ 
++    /// EDEN_UP_DRAIN_ON_GROWTH (pending_destroy.h): at a safe point of the recording thread (a
++    /// frame end, or a drain whose wait ran out), stamps the deleted buffers not yet stamped with
++    /// `tick` and destroys those the GPU is past. The caller holds mutex. Nothing without the switch.
++    void ReleaseDeletedPassed(u64 tick);
++
+     /// EDEN_UP_PRESSURE_DRAIN, after a drain: a buffer of any size memory refused is asked for
+     /// again at the next request. The caller holds mutex.
+     void RetryRefusedNow() noexcept {
+@@ -958,6 +964,10 @@ private:
+ 
+     void DeleteBuffer(BufferId buffer_id, bool do_not_mark = false);
+ 
++    /// EDEN_UP_DRAIN_ON_GROWTH: whether deleted buffers go to ticked_destroy (the switch, and a
++    /// runtime with the GPU's tick).
++    [[nodiscard]] bool TickedDestroyOn();
++
+     /// EDEN_NX2_TABLE_POOL_MIB: the largest read-only binding of a pointer read from a table, or 0
+     [[nodiscard]] static u32 TablePoolSize();
+ 
+@@ -1051,6 +1061,13 @@ private:
+     DelayedDestructionRing<Buffer, TICKS_TO_DESTROY> delayed_destruction_ring;
+     /// What the ring above holds, in bytes (EDEN_NX2_BC_PENDING_MIB, ReleasePendingBuffers).
+     PendingDestroyBytes<TICKS_TO_DESTROY> pending_destroy;
++    /// EDEN_UP_DRAIN_ON_GROWTH: deleted buffers that go by the GPU's tick instead of the ring.
++    /// Empty without the switch (TickedDestroyOn).
++    TickedDestroyList<Buffer> ticked_destroy;
++    std::chrono::steady_clock::time_point ticked_line{}; ///< Its 10 s line
++    u64 ticked_line_buffers = 0;
++    u64 ticked_line_bytes = 0;
++    u64 ticked_line_aged = 0;
+     u64 pending_logged_bytes = 0; ///< Most that waited, as last logged
+     u64 live_logged_bytes = 0;    ///< Most the buffers held, as last logged
+     u64 images_logged_bytes = 0;  ///< Most deleted images waited, as last logged
+diff --git a/src/video_core/buffer_cache/pending_destroy.h b/src/video_core/buffer_cache/pending_destroy.h
+index 6c37d98ab8..0ed76f326a 100644
+--- a/src/video_core/buffer_cache/pending_destroy.h
++++ b/src/video_core/buffer_cache/pending_destroy.h
+@@ -4,8 +4,14 @@
+ #pragma once
+ 
+ #include <array>
++#include <atomic>
+ #include <cstddef>
+ #include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <deque>
++#include <utility>
+ 
+ namespace VideoCommon {
+ 
+@@ -67,4 +73,156 @@ private:
+            (image_limit != 0 && image_bytes >= image_limit);
+ }
+ 
++/// EDEN_UP_DRAIN_ON_GROWTH=1 or =<MiB> (off unless set; "1" is 256 MiB, other digits 32 to 65535
++/// MiB; anything else off; read once). Two things, both for the load into a new area, where one
++/// frame takes seconds and everything deleted in it waits for that frame's end and 7 more:
++///   - renderer_vulkan/pressure_drain.h: the pressure drain runs as soon as the allocator's use has
++///     grown by this much over its lowest point since the last drain, looked at every 16th draw or
++///     dispatch, not only every 256 draws and 50 ms apart (needs EDEN_UP_PRESSURE_DRAIN=1).
++///   - here, BufferCache::DeleteBuffer: a deleted buffer goes into a TickedDestroyList instead of
++///     the DelayedDestructionRing, and is destroyed once the GPU is past the tick stamped on it,
++///     instead of TICKS_TO_DESTROY (8) frame ends after its deletion; at the latest, when it could
++///     not be stamped or released (conditional rendering on), at those 8 frame ends, as the ring.
++/// Returns the growth in bytes, 0 when off. The boot line is the rasterizer's first call.
++[[nodiscard]] inline std::uint64_t DrainOnGrowthBytes() {
++    static const std::uint64_t bytes = [] {
++        const char* const value = std::getenv("EDEN_UP_DRAIN_ON_GROWTH");
++        if (value == nullptr || value[0] < '0' || value[0] > '9') {
++            return std::uint64_t{0};
++        }
++        std::uint64_t mib = 256;
++        if (std::strcmp(value, "1") != 0) {
++            char* end = nullptr;
++            const unsigned long long number = std::strtoull(value, &end, 10);
++            if (end == value || *end != '\0' || number == 0) {
++                return std::uint64_t{0};
++            }
++            mib = number < 32 ? 32 : number > 65535 ? 65535 : number;
++        }
++        const char* const drain = std::getenv("EDEN_UP_PRESSURE_DRAIN");
++        const bool in_frame = drain != nullptr && std::strcmp(drain, "1") == 0;
++        const bool frame_end = drain != nullptr && std::strcmp(drain, "2") == 0;
++        std::fprintf(stderr,
++                     "EDEN_UP_DRAIN_ON_GROWTH on: a drain once the allocator has grown %llu MiB "
++                     "over its low since the last drain (%s); deleted buffers go once the GPU is "
++                     "past the tick stamped on them at a frame end, a 16-draw look or a drain, at "
++                     "the latest 8 frame ends later as before\n",
++                     static_cast<unsigned long long>(mib),
++                     in_frame    ? "looked at every 16th draw or dispatch"
++                     : frame_end ? "looked at frame ends only: EDEN_UP_PRESSURE_DRAIN=2"
++                                 : "no drains: EDEN_UP_PRESSURE_DRAIN is not 1 or 2");
++        return mib << 20;
++    }();
++    return bytes;
++}
++
++/// EDEN_UP_DRAIN_ON_GROWTH: what TickedDestroyList::ReleasePassed destroyed (by the GPU's tick),
++/// and what ReleaseAged destroyed at the ring's own age, for the lines.
++struct TickedDestroyCounts {
++    std::atomic<std::uint64_t> buffers{0};
++    std::atomic<std::uint64_t> bytes{0};
++    std::atomic<std::uint64_t> aged_buffers{0};
++    std::atomic<std::uint64_t> aged_bytes{0};
++};
++inline TickedDestroyCounts g_ticked_destroyed{};
++
++/// EDEN_UP_DRAIN_ON_GROWTH: deleted objects that wait for the GPU, not for frame ends. Push leaves
++/// an object unstamped (tick 0). Stamp, at a safe point of the recording thread (a frame end, or a
++/// drain before anything of a draw is set up), gives every unstamped object the tick being
++/// recorded then: every command that used one was recorded by then, in that tick or an earlier one
++/// (the reasoning of the pressure drain, which destroys every deleted buffer once the GPU is past
++/// that tick). ReleasePassed destroys, oldest first, the stamped objects the GPU is past.
++/// ReleaseAged destroys, stamped or not, those pushed `ticks` frame ends ago or more: the ring's
++/// own delay, so nothing waits longer than it did in the ring. The caller holds the owner's lock
++/// for all of it.
++template <typename T>
++class TickedDestroyList {
++public:
++    void Push(std::uint64_t bytes, std::uint64_t frame, T&& object) {
++        entries.push_back(Entry{0, bytes, frame, std::move(object)});
++        total_bytes += bytes;
++    }
++
++    void Stamp(std::uint64_t tick) noexcept {
++        for (; stamped < entries.size(); ++stamped) {
++            entries[stamped].tick = tick;
++        }
++    }
++
++    /// is_free(tick): whether the GPU is past it. Stops at the first stamped object it is not past
++    /// (ticks are stamped in order), and at the unstamped ones.
++    template <typename IsFree>
++    void ReleasePassed(IsFree&& is_free) {
++        std::uint64_t buffers = 0;
++        std::uint64_t bytes = 0;
++        while (stamped != 0 && is_free(entries.front().tick)) {
++            bytes += entries.front().bytes;
++            ++buffers;
++            total_bytes -= entries.front().bytes;
++            entries.pop_front();
++            --stamped;
++        }
++        if (buffers != 0) {
++            g_ticked_destroyed.buffers.fetch_add(buffers, std::memory_order_relaxed);
++            g_ticked_destroyed.bytes.fetch_add(bytes, std::memory_order_relaxed);
++        }
++    }
++
++    /// `frame`: the owner's frame count after its frame end (Push took it before).
++    void ReleaseAged(std::uint64_t frame, std::uint64_t ticks) {
++        std::uint64_t buffers = 0;
++        std::uint64_t bytes = 0;
++        while (!entries.empty() && frame - entries.front().frame >= ticks) {
++            bytes += entries.front().bytes;
++            ++buffers;
++            total_bytes -= entries.front().bytes;
++            entries.pop_front();
++            if (stamped != 0) {
++                --stamped;
++            }
++        }
++        if (buffers != 0) {
++            g_ticked_destroyed.aged_buffers.fetch_add(buffers, std::memory_order_relaxed);
++            g_ticked_destroyed.aged_bytes.fetch_add(bytes, std::memory_order_relaxed);
++        }
++    }
++
++    /// Destroys everything now. The caller has waited for the GPU.
++    void Clear() noexcept {
++        entries.clear();
++        stamped = 0;
++        total_bytes = 0;
++    }
++
++    /// The oldest stamped tick, 0 when none is stamped.
++    [[nodiscard]] std::uint64_t OldestTick() const noexcept {
++        return stamped != 0 ? entries.front().tick : 0;
++    }
++
++    template <typename F>
++    void ForEach(F&& f) const {
++        for (const Entry& entry : entries) {
++            f(entry.object);
++        }
++    }
++
++    [[nodiscard]] std::uint64_t Bytes() const noexcept {
++        return total_bytes;
++    }
++    [[nodiscard]] std::size_t Size() const noexcept {
++        return entries.size();
++    }
++
++private:
++    struct Entry {
++        std::uint64_t tick;
++        std::uint64_t bytes;
++        std::uint64_t frame; ///< The owner's frame count at Push
++        T object;
++    };
++    std::deque<Entry> entries;
++    std::size_t stamped = 0; ///< Entries [0, stamped) have their tick
++    std::uint64_t total_bytes = 0;
++};
++
+ } // namespace VideoCommon
+diff --git a/src/video_core/renderer_vulkan/pressure_drain.h b/src/video_core/renderer_vulkan/pressure_drain.h
+index 31899a373a..edb9a5137b 100644
+--- a/src/video_core/renderer_vulkan/pressure_drain.h
++++ b/src/video_core/renderer_vulkan/pressure_drain.h
+@@ -10,6 +10,7 @@
+ #include <cstring>
+ 
+ #include "common/common_types.h"
++#include "video_core/buffer_cache/pending_destroy.h"
+ #include "video_core/memory_census.h"
+ #include "video_core/vulkan_common/drain_to_pool.h"
+ 
+@@ -198,6 +199,38 @@ struct AreaState {
+     u64 drains{};
+ };
+ 
++/// EDEN_UP_DRAIN_ON_GROWTH=1 or =<MiB> (video_core/buffer_cache/pending_destroy.h,
++/// DrainOnGrowthBytes; off unless set). With EDEN_UP_PRESSURE_DRAIN=1, every 16th draw or
++/// dispatch between the 256-draw looks reads the allocator's use; once it is the switch's amount
++/// (256 MiB for "1") over its lowest since the last drain, the look comes at once (not 50 ms after
++/// the last one) and drains at once, whatever waits and however much room the pool has, at most
++/// every EDEN_UP_DRAIN_AT_AREA_GAP_MS (100). The drain is the pressure drain's own; its wait, its
++/// GPU-behind rule and its conditional-rendering rule are unchanged. A drain whose wait runs out
++/// still destroys the deleted buffers the GPU is past (BufferCache::ReleaseDeletedPassed).
++/// Line: EDEN_UP_DRAIN_ON_GROWTH drain N (each growth drain: the first 64, then every 16th).
++struct GrowthState {
++    u64 low{};       ///< The allocator's lowest use seen since the last drain (0: none yet)
++    u64 drains{};
++    u64 freed{};
++    std::chrono::steady_clock::time_point last_try{}; ///< The last look growth asked for
++};
++
++/// The recording thread's only.
++inline GrowthState g_growth{};
++
++[[nodiscard]] inline u64 GrowthBytes() {
++    return VideoCommon::DrainOnGrowthBytes();
++}
++
++/// Whether `used` is `grow` over the low since the last drain (which it lowers first).
++[[nodiscard]] inline bool GrowthDue(u64 used, u64 grow) {
++    GrowthState& g = g_growth;
++    if (g.low == 0 || used < g.low) {
++        g.low = used;
++    }
++    return used >= g.low + grow;
++}
++
+ /// The pool's largest free piece (the front's kernel query), 0 where it is not known.
+ [[nodiscard]] inline u64 LargestFree() {
+     return VideoCommon::MemoryCensus::FreeLargest();
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 4421022247..60fd4203ee 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -381,6 +381,7 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
+     buffer_cache_runtime.SetReleaseHook(
+         [](void* context) { static_cast<RasterizerVulkan*>(context)->ReleaseFinishedMemory(); },
+         this);
++    static_cast<void>(VideoCommon::DrainOnGrowthBytes()); // EDEN_UP_DRAIN_ON_GROWTH's boot line
+     // EDEN_NX2_TC_PENDING_MIB (BufferCache::ReleasePendingBuffers): read with both caches locked.
+     buffer_cache_runtime.SetPendingImagesHook([](void* context) -> u64 {
+         return static_cast<RasterizerVulkan*>(context)->texture_cache.SentencedBytes();
+@@ -3314,6 +3315,14 @@ void RasterizerVulkan::TickFrame() {
+         std::scoped_lock lock{buffer_cache.mutex};
+         buffer_cache.TickFrame();
+     }
++    // EDEN_UP_DRAIN_ON_GROWTH (pending_destroy.h): the frame's work is recorded, so what was
++    // deleted gets this tick, and what the GPU is past goes. Not while the guest's conditional
++    // rendering is on: its predicate buffer may be among them and is used again on resuming.
++    static const bool by_tick = VideoCommon::DrainOnGrowthBytes() != 0;
++    if (by_tick && !query_cache_runtime.IsHostConditionalRenderingSet()) [[unlikely]] {
++        std::scoped_lock lock{buffer_cache.mutex};
++        buffer_cache.ReleaseDeletedPassed(scheduler.CurrentTick());
++    }
+     // A refused buffer's relief: here, nothing is being set up and nothing is locked.
+     if (const u64 refused = buffer_cache.RefusedBytes(); refused != 0) [[unlikely]] {
+         std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+@@ -3389,13 +3398,46 @@ void RasterizerVulkan::ReleaseFinishedMemory() {
+ void RasterizerVulkan::PressureDrainLook(bool frame_end) {
+     namespace PD = PressureDrain;
+     PD::State& s = PD::g_state;
++    // EDEN_UP_DRAIN_ON_GROWTH (pressure_drain.h, GrowthState): between the 256-draw looks, every
++    // 16th draw or dispatch reads the allocator's use; growth over its low since the last drain
++    // looks and drains at once. Unset: as before.
++    static const u64 grow_bytes = PD::GrowthBytes();
++    bool growth = false;
++    const auto growth_try = [&](std::chrono::steady_clock::time_point at) {
++        PD::GrowthState& g = PD::g_growth;
++        if (!PD::GrowthDue(memory_allocator.UsedBytes(), grow_bytes) ||
++            (g.last_try != std::chrono::steady_clock::time_point{} &&
++             at - g.last_try < PD::GetAreaConfig().gap)) {
++            return false;
++        }
++        g.last_try = at;
++        return true;
++    };
+     if (!frame_end && (++s.draws & 255) != 0) {
+-        return;
++        if (grow_bytes == 0 || (s.draws & 15) != 0) [[likely]] {
++            return;
++        }
++        // Nothing of this draw is set up yet: what was deleted gets this tick, and the deleted
++        // buffers the GPU is past go (no flush, no wait). Not under conditional rendering (its
++        // predicate buffer), and not with EDEN_UP_FAST_DRAW, whose delta draws keep texture
++        // buffer views until a frame end or a drain breaks them.
++        if (!VideoCommon::Nx2FastDraw::Enabled() &&
++            !query_cache_runtime.IsHostConditionalRenderingSet()) {
++            std::scoped_lock lock{buffer_cache.mutex};
++            buffer_cache.ReleaseDeletedPassed(scheduler.CurrentTick());
++        }
++        growth = growth_try(std::chrono::steady_clock::now());
++        if (!growth) {
++            return;
++        }
+     }
+     const auto now = std::chrono::steady_clock::now();
+-    if (now - s.last_look < std::chrono::milliseconds{50}) {
++    if (!growth && now - s.last_look < std::chrono::milliseconds{50}) {
+         return;
+     }
++    if (grow_bytes != 0 && !growth) [[unlikely]] {
++        growth = growth_try(now);
++    }
+     s.last_look = now;
+     const PD::Config& config = PD::GetConfig();
+     PD::Counts& c = s.counts;
+@@ -3486,18 +3528,18 @@ void RasterizerVulkan::PressureDrainLook(bool frame_end) {
+     if (DrainToPool::OwnMemoryOn() && (short_pool || refused)) [[unlikely]] {
+         DrainToPool::Arm(3000);
+     }
+-    if (!refused && !short_pool && !burst) {
++    if (!refused && !short_pool && !burst && !growth) {
+         line();
+         return;
+     }
+     const u64 pending_mark = area_open ? area.pending : config.pending_mark;
+-    if (!refused && !burst && waiting.second < pending_mark) {
++    if (!refused && !burst && !growth && waiting.second < pending_mark) {
+         ++c.nothing;
+         line();
+         return;
+     }
+     auto gap = refused ? config.gap / 4 : config.gap;
+-    if (burst || area_open) {
++    if (burst || area_open || growth) {
+         gap = (std::min)(gap, std::chrono::duration_cast<decltype(gap)>(area.gap));
+     }
+     if (s.last_drain != std::chrono::steady_clock::time_point{} && now - s.last_drain < gap) {
+@@ -3527,6 +3569,7 @@ void RasterizerVulkan::PressureDrainLook(bool frame_end) {
+         s.buffer_refusal_used = true;
+     }
+     u64 before = 0, after = 0, waited_us = 0, staging = 0;
++    u64 by_tick_buffers = 0, by_tick_bytes = 0; // EDEN_UP_DRAIN_ON_GROWTH
+     bool reached = false;
+     // EDEN_UP_DRAIN_TO_POOL=1|2 (vulkan_common/drain_to_pool.h): where the freed bytes went.
+     static const bool to_pool = DrainToPool::On();
+@@ -3561,6 +3604,16 @@ void RasterizerVulkan::PressureDrainLook(bool frame_end) {
+             buffer_cache.RetryRefusedNow();
+         } else {
+             s.behind_tick = target;
++            if (grow_bytes != 0) [[unlikely]] {
++                // EDEN_UP_DRAIN_ON_GROWTH: what was deleted by now was last used in `target` or
++                // earlier; the deleted buffers the GPU is past go anyway.
++                const auto& counts = VideoCommon::g_ticked_destroyed;
++                const u64 buffers0 = counts.buffers.load(std::memory_order_relaxed);
++                const u64 bytes0 = counts.bytes.load(std::memory_order_relaxed);
++                buffer_cache.ReleaseDeletedPassed(target);
++                by_tick_buffers = counts.buffers.load(std::memory_order_relaxed) - buffers0;
++                by_tick_bytes = counts.bytes.load(std::memory_order_relaxed) - bytes0;
++            }
+         }
+         // The console's port: the staging pool's buffers the GPU is done with (its
+         // ReleaseCompleted; nothing here where the pool has none).
+@@ -3604,6 +3657,35 @@ void RasterizerVulkan::PressureDrainLook(bool frame_end) {
+         to_pool_seen.largest_after = PD::LargestFree();
+         PD::ToPoolLine(s.total_drains, freed, largest, to_pool_seen);
+     }
++    if (grow_bytes != 0) [[unlikely]] {
++        // EDEN_UP_DRAIN_ON_GROWTH: the next growth is counted from what this drain left.
++        PD::GrowthState& g = PD::g_growth;
++        const u64 low = g.low;
++        g.low = after;
++        if (growth) {
++            ++g.drains;
++            g.freed += freed;
++            if (g.drains <= 64 || g.drains % 16 == 0) {
++                std::fprintf(stderr,
++                             "EDEN_UP_DRAIN_ON_GROWTH drain %llu (drain %llu, %s): allocator use "
++                             "%llu MiB, %llu over its low of %llu MiB since the last drain; "
++                             "waited %llu ms, %s; %llu MiB freed (%llu MiB of it staging; %llu "
++                             "deleted buffers %llu MiB by the GPU's tick without the wait); "
++                             "deleted buffers before: %zu, %llu MiB; largest free piece before "
++                             "%llu MiB; %llu MiB freed by growth drains so far\n",
++                             static_cast<unsigned long long>(g.drains),
++                             static_cast<unsigned long long>(s.total_drains),
++                             frame_end ? "at a frame end" : "in a frame", PD::Mib(before),
++                             PD::Mib(before > low ? before - low : 0), PD::Mib(low),
++                             static_cast<unsigned long long>(waited_us / 1000),
++                             reached ? "the GPU finished" : "the GPU did not finish",
++                             PD::Mib(freed), PD::Mib(staging),
++                             static_cast<unsigned long long>(by_tick_buffers),
++                             PD::Mib(by_tick_bytes), waiting.first, PD::Mib(waiting.second),
++                             PD::Mib(largest), PD::Mib(g.freed));
++            }
++        }
++    }
+     if (burst || area_open) [[unlikely]] {
+         PD::AreaState& a = s.area;
+         // The next burst is growth past what this drain left.

@@ -1,0 +1,53 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_TEX_SHARE=1, the #948 half (uneven-mip ASTC kept as BC), off unless set
+
+Upstream: zortos293/Lichii PR #948 by danieljesus (5fe989125a, open), the partner of PR #823 by
+janvitos (661cf0eb66, merged). Steam Deck, RADV, Ocarina handheld: camera pan 11 -> 14.5 fps with both.
+
+Why: #948 keeps ASTC with uneven BC block mips as BC1/BC3 on integrated GPUs and cards under 6 GiB
+instead of the GPU decoder's RGBA8 (4-16x the size). In this core the RGBA8 rule is already off unless
+EDEN_NX2_UNEVEN_MIPS_RGBA8 is set (0289), so with that unset (the play settings) this changes nothing.
+
+What: with EDEN_UP_TEX_SHARE=1, IsUnevenMipRgba8Astc returns false on an integrated GPU or one with
+under 6 GiB device-local memory (GetDeviceLocalMemory(); #948's own heap-size accessor in vulkan_device
+is left out), even with EDEN_NX2_UNEVEN_MIPS_RGBA8 set. One line at the first evaluation:
+"EDEN_UP_TEX_SHARE: uneven-mip ASTC kept as BC (#948) (integrated ..., device-local ... MiB)".
+The #823 half (the share itself) is the front's tools/prepare-vulkan-port.py PoolPressure.
+
+Unset: as T181. vk_texture_cache.cpp is not a translation id input and no name is added to
+TranslationSwitches: KEEPS THE STORE.
+
+---
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index f97e337147..1c8f0fcd2c 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -297,6 +297,28 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
+         id != VK_DRIVER_ID_MESA_RADV) {
+         return false;
+     }
++    // EDEN_UP_TEX_SHARE=1 (zortos293/Lichii PR #948 by danieljesus, 5fe9891, the half of the
++    // texture share pair): RGBA8 is 4-16x the BC size (Ocarina's uneven ASTC 8x8 images took ~3.4 GB
++    // instead of ~0.6 GB at area loads on a Steam Deck, where VRAM and system RAM are one memory).
++    // Integrated GPUs and cards under 6 GiB keep BC even with EDEN_NX2_UNEVEN_MIPS_RGBA8 set.
++    // Device-local memory is GetDeviceLocalMemory() here (#948 adds a heap size to vulkan_device).
++    static const bool tex_share = [] {
++        const char* const value = std::getenv("EDEN_UP_TEX_SHARE");
++        return value != nullptr && value[0] != '\0' && value[0] != '0';
++    }();
++    if (tex_share) {
++        static const bool keep_bc = [&device] {
++            const bool keep = device.IsIntegrated() || device.GetDeviceLocalMemory() < (u64{6} << 30);
++            LOG_INFO(Render_Vulkan,
++                     "EDEN_UP_TEX_SHARE: uneven-mip ASTC {} (integrated {}, device-local {} MiB)",
++                     keep ? "kept as BC (#948)" : "stays RGBA8 (6 GiB or more, discrete)",
++                     device.IsIntegrated(), device.GetDeviceLocalMemory() >> 20);
++            return keep;
++        }();
++        if (keep_bc) {
++            return false;
++        }
++    }
+     return HasUnevenBlockMips(info) && !IsHugeAstcArray(device, info);
+ }
+ 

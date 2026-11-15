@@ -1,0 +1,157 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_COMPUTE_WAIT_LOG, log compute dispatch waits for a pipeline build (off unless set)
+
+Upstream: zortos293/Lichii af5b4e2 (PR #995) by Danny Ng, "vulkan: compile pointer-slot compute
+rebuilds on a worker instead of waiting in the dispatch". Only its log line is ported here
+("Compute dispatch waited X ms for pipeline <hash>"); its worker compile of pointer-slot rebuilds
+is NOT ported.
+
+Why: find out whether the about 1 s frame after a door is a compute dispatch waiting for its
+pipeline's driver compile (every GPU channel waits with the dispatch).
+
+What (src/video_core/renderer_vulkan/vk_compute_pipeline.cpp only):
+- EDEN_UP_COMPUTE_WAIT_LOG=1 (exact "1", read once): the scheduler worker's wait for an unbuilt
+  compute pipeline is timed. A wait of EDEN_UP_COMPUTE_WAIT_LOG_MS or more (default 5; upstream
+  logs over 50) logs "Compute dispatch waited X ms for pipeline <hash> (EDEN_UP_COMPUTE_WAIT_LOG:
+  wait N, T ms in all)". Every wait is counted.
+- The switch is read at the first compute pipeline made (the disk cache's load included), which
+  logs one line saying the switch is on and the threshold, even in a run where no dispatch ever
+  waits. At exit (std::atexit) one
+  "EDEN_UP_COMPUTE_WAIT_LOG totals:" line: waits, total ms, longest, number logged. A session that
+  is killed prints no totals, and the front's last Common::Log::Stop runs before atexit, so even a
+  clean exit may not write it out; the running count on each wait line stands in for them.
+- The wait's lock line keeps its indent (prepare-vulkan-port.py anchor for the VulkanTimer).
+
+Unset: no clock read, no line, behaves as T181. vk_compute_pipeline.cpp is not a translation id input
+(nor its generated _cost.cpp), no header is touched and no name is added to TranslationSwitches:
+KEEPS THE STORE.
+
+---
+diff --git a/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp b/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
+index 97517d9..a16bcf1 100644
+--- a/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
+@@ -6,6 +6,9 @@
+ 
+ #include <algorithm>
+ #include <vector>
++#include <atomic>
++#include <chrono>
++#include <cstdlib>
+ 
+ #include <boost/container/small_vector.hpp>
+ #include <fmt/format.h>
+@@ -34,6 +37,83 @@
+ 
+ namespace Vulkan {
+ 
++namespace {
++// EDEN_UP_COMPUTE_WAIT_LOG=1 (off by default; after zortos293/Lichii af5b4e2, PR #995, by Danny Ng:
++// only its log line, not its worker compile of pointer-slot rebuilds). A dispatch whose pipeline is
++// not built yet waits on the scheduler worker for the driver compile, and every GPU channel waits
++// with it. Each wait of EDEN_UP_COMPUTE_WAIT_LOG_MS (default 5) or more is logged; every wait is
++// counted, and the totals go to the log at exit. Unset: nothing is timed, nothing is logged.
++struct ComputeWaitLog {
++    bool on{};
++    double threshold_ms{5.0};
++    std::atomic<u64> waits{};
++    std::atomic<u64> logged{};
++    std::atomic<u64> total_us{};
++    std::atomic<u64> max_us{};
++};
++
++void ComputeWaitLogTotals() noexcept;
++
++ComputeWaitLog& GetComputeWaitLog() {
++    // Never destroyed: the scheduler worker may still record a wait while statics are torn down.
++    static ComputeWaitLog* const state = [] {
++        auto* const s = new ComputeWaitLog;
++        s->on = Common::PeSwitch("EDEN_UP_COMPUTE_WAIT_LOG");
++        if (s->on) {
++            if (const char* ms = std::getenv("EDEN_UP_COMPUTE_WAIT_LOG_MS"); ms && *ms) {
++                char* end{};
++                const double value = std::strtod(ms, &end);
++                if (end != ms && value >= 0.0) {
++                    s->threshold_ms = value;
++                }
++            }
++            std::atexit(ComputeWaitLogTotals);
++            LOG_INFO(Render_Vulkan,
++                     "EDEN_UP_COMPUTE_WAIT_LOG=1: compute dispatch waits for a pipeline build of "
++                     "{:.1f} ms or more are logged (EDEN_UP_COMPUTE_WAIT_LOG_MS), totals at exit",
++                     s->threshold_ms);
++        }
++        return s;
++    }();
++    return *state;
++}
++
++void ComputeWaitLogTotals() noexcept {
++    try {
++        auto& s = GetComputeWaitLog();
++        LOG_INFO(Render_Vulkan,
++                 "EDEN_UP_COMPUTE_WAIT_LOG totals: {} compute dispatch waits for a pipeline, {:.1f} ms "
++                 "in all, longest {:.1f} ms, {} logged (>= {:.1f} ms)",
++                 s.waits.load(), static_cast<double>(s.total_us.load()) / 1000.0,
++                 static_cast<double>(s.max_us.load()) / 1000.0, s.logged.load(), s.threshold_ms);
++    } catch (...) {
++    }
++}
++
++void ComputeWaitLogRecord(std::chrono::steady_clock::duration waited, u64 shader_hash) noexcept {
++    try {
++        auto& s = GetComputeWaitLog();
++        const u64 us = static_cast<u64>(
++            std::chrono::duration_cast<std::chrono::microseconds>(waited).count());
++        const u64 n = s.waits.fetch_add(1, std::memory_order_relaxed) + 1;
++        const u64 total = s.total_us.fetch_add(us, std::memory_order_relaxed) + us;
++        u64 max = s.max_us.load(std::memory_order_relaxed);
++        while (us > max && !s.max_us.compare_exchange_weak(max, us, std::memory_order_relaxed)) {
++        }
++        const double ms = static_cast<double>(us) / 1000.0;
++        if (ms >= s.threshold_ms) {
++            s.logged.fetch_add(1, std::memory_order_relaxed);
++            LOG_INFO(Render_Vulkan,
++                     "Compute dispatch waited {:.1f} ms for pipeline {:016x} (EDEN_UP_COMPUTE_WAIT_LOG: "
++                     "wait {}, {:.1f} ms in all)",
++                     ms, shader_hash, n, static_cast<double>(total) / 1000.0);
++        }
++    } catch (...) {
++        // A log line must never end the app.
++    }
++}
++} // namespace
++
+ using Shader::ImageBufferDescriptor;
+ using Shader::Backend::SPIRV::RESCALING_LAYOUT_WORDS_OFFSET;
+ using Tegra::Texture::TexturePair;
+@@ -50,6 +130,9 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
+       pipeline_cache(pipeline_cache_), guest_descriptor_queue{guest_descriptor_queue_},
+       descriptor_buffer_ring{descriptor_buffer_ring_}, info{info_},
+       shader_hash{shader_hash_}, spv_module(std::move(spv_module_)) {
++    // EDEN_UP_COMPUTE_WAIT_LOG: the switch is read at the first compute pipeline (the disk cache's
++    // load included), so a run with the switch on shows its "on" line even if no dispatch waits.
++    [[maybe_unused]] static const bool compute_wait_log_read = GetComputeWaitLog().on;
+     if (shader_notify) {
+         shader_notify->MarkShaderBuilding();
+     }
+@@ -358,11 +441,19 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
+ 
+     if (!is_built.load(std::memory_order::relaxed)) {
+         BuildFirst(); // EDEN_UP_FAST_CFG: before the worker waits, so the builder has it first.
++        static const bool wait_log = GetComputeWaitLog().on; // EDEN_UP_COMPUTE_WAIT_LOG
+         // Wait for the pipeline to be built
+         scheduler.Record([this](vk::CommandBuffer) {
+             Common::HangSite site{"worker: waiting for a pipeline build"};
++            const auto wait_begin =
++                wait_log ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
++            { // (this line's indent is prepare-vulkan-port.py's anchor)
+             std::unique_lock lock{build_mutex};
+             build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });
++            }
++            if (wait_log) {
++                ComputeWaitLogRecord(std::chrono::steady_clock::now() - wait_begin, shader_hash);
++            }
+         });
+     }
+ 

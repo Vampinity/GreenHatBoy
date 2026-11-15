@@ -1,0 +1,50 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_AHEAD_GUARD_ORDER_PROBE=1, waveydude's W-23 marker (off unless set)
+
+Port of waveydude's opt-in W-23 guard marker ("Trace two-slot guard markers during
+semaphore suspension"), posted in Vampinity/GreenHatBoy discussion 2, comment 19600367.
+Author of the change: waveydude. Ported unchanged, log text kept so his tools read our logs.
+
+With EDEN_UP_AHEAD_GUARD_SLOTS=2, the RunInOrder callback that calls AheadGuard::BackPassed
+now checks, when EDEN_UP_AHEAD_GUARD_ORDER_PROBE=1, whether any channel is suspended on a
+semaphore (GPU::HasSuspendedChannels) while that present's fence is still pending
+(SyncpointManager::IsReadyGuest). Each hit counts; the first 16 and every 64th log
+"EDEN_AHEAD_GUARD_ORDER present #N marker ran with a suspended channel and pending fence
+(id, value), count C". BackPassed runs as before in every case.
+
+Unset: as T181 (one getenv per present on the GPU thread, and only with two guard slots).
+Both accessors already exist in our tree (no new accessor). Touches nx2_gsv.h only, not a
+translation id input: KEEPS THE STORE.
+---
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index 33d99f9e88a002061e9c4b8e50b01c6c89502951..9901256a957a83f5d2d3de7aaef2e449c69af0ec 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -2217,8 +2217,25 @@ private:
+             // EDEN_UP_AHEAD_GUARD_SLOTS=2: runs on the back after this frame's command lists, so
+             // the guard knows which frame the back records (whose copies its reads take).
+             if (VideoCommon::AheadGuard::SlotCount() == 2) {
+-                system.GPU().RunInOrder(
+-                    [n = m_presents] { VideoCommon::AheadGuard::BackPassed(n); });
++                // EDEN_UP_AHEAD_GUARD_ORDER_PROBE=1 (waveydude's W-23 marker, off unless set):
++                // logs when this marker runs while a channel is suspended on a semaphore and
++                // this present's fence is still pending; first 16 events, then every 64th.
++                system.GPU().RunInOrder([sys = &system, n = m_presents, fence_id = ~w[22],
++                                         fence_value = w[24]] {
++                    if (Common::PeSwitch("EDEN_UP_AHEAD_GUARD_ORDER_PROBE") &&
++                        sys->GPU().HasSuspendedChannels() &&
++                        !sys->Host1x().GetSyncpointManager().IsReadyGuest(fence_id, fence_value)) {
++                        static std::atomic<u64> pending_markers{};
++                        const u64 count = pending_markers.fetch_add(1, std::memory_order_relaxed) + 1;
++                        if (count <= 16 || count % 64 == 0) {
++                            LOG_INFO(Service,
++                                     "EDEN_AHEAD_GUARD_ORDER present #{} marker ran with a suspended "
++                                     "channel and pending fence ({}, {}), count {}",
++                                     n, fence_id, fence_value, count);
++                        }
++                    }
++                    VideoCommon::AheadGuard::BackPassed(n);
++                });
+             }
+         }
+         m_previous2_fence_id = m_previous_fence_id;

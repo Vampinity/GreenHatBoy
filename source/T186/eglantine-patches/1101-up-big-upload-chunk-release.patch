@@ -1,0 +1,240 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_BIG_UPLOAD_CHUNK_RELEASE=1, a chunked image upload of over 64 MiB gives each chunk's staging buffer back once its copy is done (off by default)
+
+Why: the 12288x12288 D16 shadow map (288 MiB) of the load past the field is uploaded in nine 32 MiB
+chunks (TextureCache::UploadInChunks), each from a staging buffer of its own handed out in the same
+tick, so all nine are held until the GPU is past that tick: in the load frame that is the next drain
+(276 MiB of staging in run1545's drain 12, 240-276 MiB in other starts), at the moment the pool is at
+zero.
+
+What, with EDEN_UP_BIG_UPLOAD_CHUNK_RELEASE=1 (exact "1", read once at the texture cache's start):
+- texture_cache/texture_cache.h (BigUploadChunkRelease, UploadStagingForChunk, ChunkGiveBack,
+  UploadInChunks): for an image of over 64 MiB, every chunk but the last takes its staging buffer as a
+  deferred one. Once the chunk's copy is recorded, TextureCacheRuntime::FinishChunkUpload submits and
+  waits for the GPU (TextureCacheRuntime::Finish), carries what this tick handed out to the next tick
+  (StagingBufferPool::CarryTick, as the ASTC transcode wait does: the draw being set up reads its
+  uniforms in the new tick) and gives the buffer back as finished (FreeDeferred(ref, true)), so the next
+  chunk takes the same buffer. The last chunk, and any chunk the pool has no deferred buffer for, goes
+  the old way (UploadStagingNow). The copies, their order and barriers are unchanged; only the
+  submissions between chunks are new, as the stream ring's WaitForStream already makes inside a draw's
+  setup.
+- renderer_vulkan/vk_texture_cache.h/.cpp: TextureCacheRuntime::FinishChunkUpload (a call to the
+  existing Finish(), not a new scheduler.Wait/Finish line: the cost copy's wait-site count is T185's).
+Lines (stderr): at boot "EDEN_UP_BIG_UPLOAD_CHUNK_RELEASE on: an image upload of over 64 MiB in chunks
+submits and waits after each chunk but the last, and the next chunk takes the same staging buffer"; per
+such upload (first 32, then every 32nd) "EDEN_UP_BIG_UPLOAD_CHUNK_RELEASE upload N: gpu=0x... WxH M MiB
+in C chunks, G given back after their copy (W ms in those submits and waits), O the old way; staging
+held at most H MiB instead of A MiB (S MiB less); T MiB less so far; frame=F". H and A are the chunks'
+staging requests added up, not the pool's rounded buffer sizes.
+
+Unset: one compare per chunked upload and one switch read at the texture cache's start; every chunk
+calls UploadStagingNow as T185: as T185. No translation id input is touched (texture_cache.h and
+vk_texture_cache.* are not reached from src/shader_recompiler or in the SINGLE list), no wait site line
+is added, no anchor line changes, and the name is not in TranslationSwitches: KEEPS THE STORE.
+---
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index 1c8f0fcd2c..bfb23a4995 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -1848,6 +1848,15 @@ void TextureCacheRuntime::FreeDeferredStagingBuffer(StagingBufferRef& ref) {
+     staging_buffer_pool.FreeDeferred(ref);
+ }
+ 
++void TextureCacheRuntime::FinishChunkUpload(StagingBufferRef& ref) {
++    // As the transcode wait: the draw being set up reads in the next tick what this one handed
++    // out. The chunk's buffer is deferred, so CarryTick leaves it, and its copy is done.
++    const u64 old_tick = scheduler.CurrentTick();
++    Finish();
++    staging_buffer_pool.CarryTick(old_tick, scheduler.CurrentTick());
++    staging_buffer_pool.FreeDeferred(ref, true);
++}
++
+ bool TextureCacheRuntime::ShouldReinterpret(Image& dst, Image& src) {
+     if (VideoCore::Surface::GetFormatType(dst.info.format) ==
+             VideoCore::Surface::SurfaceType::DepthStencil &&
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.h b/src/video_core/renderer_vulkan/vk_texture_cache.h
+index 95234602e2..36bb8897f5 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.h
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.h
+@@ -131,6 +131,11 @@ public:
+ 
+     void FreeDeferredStagingBuffer(StagingBufferRef& ref);
+ 
++    /// EDEN_UP_BIG_UPLOAD_CHUNK_RELEASE (texture_cache.h, UploadInChunks): submits what is
++    /// recorded, waits for the GPU, keeps what this tick handed out busy one tick more, and gives
++    /// `ref` (a deferred upload buffer whose copy is recorded) back as finished.
++    void FinishChunkUpload(StagingBufferRef& ref);
++
+     void TickFrame();
+ 
+     /// EDEN_UP_SCALED_ONLY=1: a rescaled image's native copy, freed once the GPU is past `tick`
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 774c136aaf..497a2cb9a7 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -499,6 +499,71 @@ template <typename Runtime>
+     return std::optional{runtime.UploadStagingBuffer(size)};
+ }
+ 
++/// EDEN_UP_BIG_UPLOAD_CHUNK_RELEASE=1 (exact "1", read once; unset or anything else: off, as
++/// before). TextureCache::UploadInChunks uploads an image of over 64 MiB (Ocarina's 12288x12288
++/// D16 shadow map, 288 MiB, at the load past the field) in 32 MiB chunks, each from a staging
++/// buffer of its own handed out in the same tick: all nine are held until the GPU is past that
++/// tick, which in the load frame is the next drain (276 MiB of staging in one drain, run1545).
++/// With the switch, every chunk but the last takes its staging buffer as a deferred one, and once
++/// its copy is recorded the runtime submits, waits for the GPU (TextureCacheRuntime::Finish), keeps
++/// what this tick handed out busy one tick more (StagingBufferPool::CarryTick, as the transcode
++/// wait does) and gives the buffer back as finished, so the next chunk takes the same buffer. The
++/// copies, their order and their barriers are the same; only the submissions between them are new.
++/// Where the pool has no deferred buffer for a chunk, that chunk goes the old way. Lines: one at
++/// boot, and one EDEN_UP_BIG_UPLOAD_CHUNK_RELEASE line per such upload (the first 32, then every
++/// 32nd) with the staging it held at most against what the old way held.
++constexpr u64 BigUploadChunkReleaseMinBytes = u64{64} << 20;
++[[nodiscard]] inline bool BigUploadChunkRelease() {
++    static const bool enabled = [] {
++        const bool on = Common::PeSwitch("EDEN_UP_BIG_UPLOAD_CHUNK_RELEASE");
++        if (on) {
++            std::fprintf(stderr,
++                         "EDEN_UP_BIG_UPLOAD_CHUNK_RELEASE on: an image upload of over %llu MiB "
++                         "in chunks submits and waits after each chunk but the last, and the next "
++                         "chunk takes the same staging buffer\n",
++                         static_cast<unsigned long long>(BigUploadChunkReleaseMinBytes >> 20));
++        }
++        return on;
++    }();
++    return enabled;
++}
++
++/// EDEN_UP_BIG_UPLOAD_CHUNK_RELEASE: the uploads and the staging they did not hold, for the lines.
++struct BigUploadChunkCounts {
++    u64 uploads = 0;
++    u64 saved_bytes = 0;
++};
++inline BigUploadChunkCounts g_big_upload_chunks{};
++
++/// EDEN_UP_BIG_UPLOAD_CHUNK_RELEASE: a chunk's staging buffer, deferred when `release` and the
++/// runtime can give it back after the chunk (second: true then), else UploadStagingNow's.
++template <typename Runtime>
++[[nodiscard]] auto UploadStagingForChunk(Runtime& runtime, size_t size, bool release) {
++    if constexpr (requires { runtime.FinishChunkUpload(*runtime.TryUploadStagingBuffer(size, true)); }) {
++        if (release) {
++            if (auto staging = runtime.TryUploadStagingBuffer(size, true)) {
++                return std::pair{std::move(staging), true};
++            }
++        }
++    }
++    return std::pair{UploadStagingNow(runtime, size), false};
++}
++
++/// EDEN_UP_BIG_UPLOAD_CHUNK_RELEASE: gives a deferred chunk buffer back if the chunk did not get
++/// to FinishChunkUpload (an exception on the way); ref is cleared once it did.
++template <typename Runtime, typename Ref>
++struct ChunkGiveBack {
++    Runtime& runtime;
++    Ref* ref;
++    ~ChunkGiveBack() {
++        if constexpr (requires { runtime.FreeDeferredStagingBuffer(*ref); }) {
++            if (ref != nullptr) {
++                runtime.FreeDeferredStagingBuffer(*ref);
++            }
++        }
++    }
++};
++
+ // EDEN_UP_RESERVE_TABLES=1 or =<slots> (0891; 1024 to 65536, digits only; 1 means 4096; unset, 0
+ // or anything else: off, the tables grow by doubling as before). The texture cache's slot tables
+ // start at that size instead of growing 1, 2, 4, ... slots: each doubling is one allocation of the
+@@ -560,6 +625,7 @@ inline size_t ReserveScratchBytes() {
+ 
+ template <class P>
+ void TextureCache<P>::ReserveTables() {
++    static_cast<void>(BigUploadChunkRelease()); // its boot line (EDEN_UP_BIG_UPLOAD_CHUNK_RELEASE)
+     const u32 slots = ReserveTableSlots();
+     if (slots == 0) {
+         return;
+@@ -5978,6 +6044,12 @@ bool TextureCache<P>::UploadInChunks(Image& image, u64 min_size) {
+         MapSizeBytes(image) < min_size) {
+         return false;
+     }
++    // EDEN_UP_BIG_UPLOAD_CHUNK_RELEASE (BigUploadChunkRelease): each chunk but the last gives its
++    // staging buffer back once its copy is done. Unset: one compare.
++    const bool chunk_release = BigUploadChunkRelease() &&
++                               MapSizeBytes(image) > BigUploadChunkReleaseMinBytes;
++    u64 chunk_held = 0, chunk_peak = 0, chunk_total = 0, chunk_wait_us = 0;
++    u32 chunks = 0, chunks_given_back = 0;
+     for (u64 offset = 0; offset < image.guest_size_bytes;) {
+         const u64 end = std::min<u64>(offset + chunk_size, image.guest_size_bytes);
+         const std::array range{std::pair<u64, u64>{offset, end}};
+@@ -5993,7 +6065,8 @@ bool TextureCache<P>::UploadInChunks(Image& image, u64 min_size) {
+             offset = end;
+             continue; // padding between levels or layers
+         }
+-        auto staging = UploadStagingNow(runtime, plan.total_host_bytes);
++        auto [staging, give_back] = UploadStagingForChunk(
++            runtime, plan.total_host_bytes, chunk_release && end < image.guest_size_bytes);
+         if (!staging) {
+             // A chunk of a few MiB fits a stream region, which is never refused.
+             if (chunk_size > min_chunk_size) {
+@@ -6003,14 +6076,62 @@ bool TextureCache<P>::UploadInChunks(Image& image, u64 min_size) {
+             UploadLater(image);
+             break;
+         }
++        ChunkGiveBack<Runtime, std::remove_reference_t<decltype(*staging)>> unwind{
++            runtime, give_back ? &*staging : nullptr};
+         // UploadMemory marks the image initialized at its first call, and each call's barrier
+         // covers its chunk: later chunks would claim GENERAL on levels still UNDEFINED.
+         runtime.TransitionImageLayout(image);
+         ExecuteUnswizzlePlan(*gpu_memory, plan, staging->mapped_span);
+         image.UploadMemory(*staging, plan.copies);
++        if (chunk_release) [[unlikely]] {
++            const u64 bytes = plan.total_host_bytes;
++            ++chunks;
++            chunk_total += bytes;
++            chunk_peak = (std::max)(chunk_peak, chunk_held + bytes);
++            bool given_back = false;
++            if constexpr (requires { runtime.FinishChunkUpload(*staging); }) {
++                if (give_back) {
++                    const auto wait_start = std::chrono::steady_clock::now();
++                    runtime.FinishChunkUpload(*staging);
++                    unwind.ref = nullptr;
++                    given_back = true;
++                    chunk_wait_us += static_cast<u64>(
++                        std::chrono::duration_cast<std::chrono::microseconds>(
++                            std::chrono::steady_clock::now() - wait_start)
++                            .count());
++                    ++chunks_given_back;
++                }
++            }
++            if (!given_back) {
++                chunk_held += bytes; // held until the GPU is past this tick, as before
++            }
++        }
+         offset = end;
+     }
+     runtime.InsertUploadMemoryBarrier();
++    if (chunk_release && chunks != 0) [[unlikely]] {
++        BigUploadChunkCounts& counts = g_big_upload_chunks;
++        const u64 saved = chunk_total - (std::min)(chunk_total, chunk_peak);
++        counts.saved_bytes += saved;
++        if (++counts.uploads <= 32 || counts.uploads % 32 == 0) {
++            std::fprintf(stderr,
++                         "EDEN_UP_BIG_UPLOAD_CHUNK_RELEASE upload %llu: gpu=%#llx %ux%u %llu MiB "
++                         "in %u chunks, %u given back after their copy (%llu ms in those "
++                         "submits and waits), %u the old way; staging held at most %llu MiB "
++                         "instead of %llu MiB (%llu MiB less); %llu MiB less so far; frame=%llu\n",
++                         static_cast<unsigned long long>(counts.uploads),
++                         static_cast<unsigned long long>(image.gpu_addr), image.info.size.width,
++                         image.info.size.height,
++                         static_cast<unsigned long long>(MapSizeBytes(image) >> 20), chunks,
++                         chunks_given_back, static_cast<unsigned long long>(chunk_wait_us / 1000),
++                         chunks - chunks_given_back,
++                         static_cast<unsigned long long>(chunk_peak >> 20),
++                         static_cast<unsigned long long>(chunk_total >> 20),
++                         static_cast<unsigned long long>(saved >> 20),
++                         static_cast<unsigned long long>(counts.saved_bytes >> 20),
++                         static_cast<unsigned long long>(frame_tick));
++        }
++    }
+     return true;
+ }
+ 

@@ -1,0 +1,149 @@
+From: EglantinePS5
+Subject: [PATCH] Lichii #1475: a log line that runs out of memory while formatting is lost and counted, not std::terminate (always on; EDEN_UP_LOG_LOST line)
+
+Port of zortos293/Lichii PR #1475 by RomainROCH (open, unmerged on 13 Nov; commits f3016f67f2 and
+ede29d400f, "logging: prevent std::terminate when formatting fails under host OOM").
+
+Why: FormatLogMessage is noexcept and returns an allocating fmt::format result. A std::bad_alloc there
+calls std::terminate inside the function; no caller can catch it. On the PS5 the file backend is
+compiled in (headless/CMakeLists.txt turns logging.cpp's "#ifndef __OPENORBIS__" into "#if 1"), so
+every LOG_* line goes through it: a warning logged while the heap is short ended the app.
+
+What (src/common/logging.cpp only):
+- FormatLogMessage catches std::bad_alloc and returns an empty string (the PR's change); the file
+  backend writes nothing for it.
+- Ours, same kind: FileBackend::Write (noexcept) also catches the username replace's std::bad_alloc;
+  a line longer than BUFSIZ (FmtLogMessageImpl's std::string path) is lost instead of throwing out of
+  the LOG_* call.
+- Each lost line is counted. stderr gets "EDEN_UP_LOG_LOST lines=N at exit" from an atexit handler,
+  and "EDEN_UP_LOG_LOST lines=N" from Common::Log::Stop() (exit scope, EDEN_UP_LOG_FLUSH_MS's
+  flush thread, crash flush) whenever the total changed since the last report.
+
+Nothing else changes: only a std::bad_alloc takes the new paths; a formatted line is written exactly
+as before. Not a switch (a pure crash fix on a path that ended the app). logging.cpp is not a
+translation id input and no name is added to TranslationSwitches: KEEPS THE STORE.
+
+---
+diff --git a/src/common/logging.cpp b/src/common/logging.cpp
+index 8af4fe997b..35bdf99051 100644
+--- a/src/common/logging.cpp
++++ b/src/common/logging.cpp
+@@ -5,6 +5,8 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include <atomic>
++#include <cstdio>
++#include <new>
+ #include <chrono>
+ #include <climits>
+ #include <cstdlib>
+@@ -54,6 +56,14 @@ struct Entry {
+ 
+ namespace {
+ 
++/// Log lines dropped because formatting them ran out of memory (Lichii PR #1475). Printed at exit.
++std::atomic<u64> lost_lines{0};
++std::atomic<u64> lost_lines_shown{0};
++
++void CountLostLine() noexcept {
++    lost_lines.fetch_add(1, std::memory_order_relaxed);
++}
++
+ /// @brief Returns the name of the passed log class as a C-string. Subclasses are separated by periods
+ /// instead of underscores as in the enumeration.
+ /// @note GetClassName is a macro defined by Windows.h, grrr...
+@@ -90,7 +100,14 @@ std::string FormatLogMessage(const Entry& entry) noexcept {
+     auto const time_fractional = uint32_t(entry.timestamp.count() % 1000000);
+     auto const class_name = GetLogClassName(entry.log_class);
+     auto const level_name = GetLevelName(entry.log_level);
+-    return fmt::format("[{:4d}.{:06d}] {} <{}> {}:{}:{}: {}\n", time_seconds, time_fractional, class_name, level_name, entry.filename, entry.line_num, entry.function, entry.message);
++    // This function is noexcept: a std::bad_alloc from fmt::format here called std::terminate.
++    // Under memory pressure the line is lost (and counted) instead.
++    try {
++        return fmt::format("[{:4d}.{:06d}] {} <{}> {}:{}:{}: {}\n", time_seconds, time_fractional, class_name, level_name, entry.filename, entry.line_num, entry.function, entry.message);
++    } catch (const std::bad_alloc&) {
++        CountLostLine();
++        return {};
++    }
+ }
+ 
+ template <typename It>
+@@ -255,6 +272,8 @@ struct FileBackend final : public Backend {
+             return;
+ 
+         auto message = FormatLogMessage(entry);
++        if (message.empty() && entry.filename != nullptr)
++            return; // lost to out-of-memory, counted in FormatLogMessage
+ #ifndef __ANDROID__
+         if (Settings::values.censor_username.GetValue()) {
+             // This must be a static otherwise it would get checked on EVERY
+@@ -268,8 +287,15 @@ struct FileBackend final : public Backend {
+                         return std::string{s};
+                 return std::string{};
+             }();
+-            if (!username.empty())
+-                boost::replace_all(message, username, "user");
++            if (!username.empty()) {
++                // Write is noexcept too: the replace may allocate.
++                try {
++                    boost::replace_all(message, username, "user");
++                } catch (const std::bad_alloc&) {
++                    CountLostLine();
++                    return;
++                }
++            }
+         }
+ #endif
+         bytes_written += file->WriteSpan(std::span<const char>{message.begin(), message.end()});
+@@ -386,6 +412,18 @@ void Filter::ParseFilterString(std::string_view filter_view) {
+     }
+ }
+ 
++namespace {
++void ReportLostLines(bool at_exit) noexcept {
++    const u64 lost = lost_lines.load(std::memory_order_relaxed);
++    // Stop() runs on the log flush thread and the crash path too: report a new total once.
++    if (lost_lines_shown.exchange(lost, std::memory_order_relaxed) == lost && !at_exit)
++        return;
++    std::fprintf(stderr, "EDEN_UP_LOG_LOST lines=%llu%s (log lines dropped: out of memory while formatting)\n",
++                 static_cast<unsigned long long>(lost), at_exit ? " at exit" : "");
++    std::fflush(stderr);
++}
++} // Anonymous namespace
++
+ // Constructor shall NOT depend upon Settings() or whatever
+ // it's ran at global static ctor() time... so BE CAREFUL MFER!
+ static std::optional<Common::Log::Impl> logging_instance{};
+@@ -395,6 +433,7 @@ void Initialize() {
+         LOG_WARNING(Log, "Reinitializing logging backend");
+     } else {
+         logging_instance.emplace();
++        std::atexit([] { ReportLostLines(true); });
+         logging_instance->filter.ParseFilterString(Settings::values.log_filter.GetValue());
+ #ifndef __OPENORBIS__
+         using namespace Common::FS;
+@@ -411,6 +450,7 @@ void Start() {
+ void Stop() {
+     if (logging_instance)
+         logging_instance->ForEachBackend([](Backend& backend) { backend.Flush(); });
++    ReportLostLines(false);
+ }
+ 
+ void SetGlobalFilter(const Filter& filter) {
+@@ -451,7 +491,15 @@ void FmtLogMessageImpl(Class log_class, Level log_level, const char* filename, u
+                 if (flush) backend.Flush();
+             });
+         } else {
+-            std::string s = fmt::vformat(format, args);
++            // A line longer than the buffer allocates: under memory pressure it is lost (and
++            // counted) rather than a std::bad_alloc thrown out of a LOG_* call.
++            std::string s;
++            try {
++                s = fmt::vformat(format, args);
++            } catch (const std::bad_alloc&) {
++                CountLostLine();
++                return;
++            }
+             e.message = s.c_str();
+             e.message_len = s.size();
+             logging_instance->ForEachBackend([=](Backend& backend) {

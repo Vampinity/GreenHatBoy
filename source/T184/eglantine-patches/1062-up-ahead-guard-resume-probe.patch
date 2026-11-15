@@ -1,0 +1,206 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_AHEAD_GUARD_RESUME_PROBE=1, waveydude's W-24 resume probe (off unless set)
+
+Port of waveydude's opt-in W-24 follow-up probe ("Trace guarded copies excluded after a
+semaphore resume"), his tools/eglantine-patches/0940-ocarina-ahead-guard-resume-probe.patch
+in waveydude/ocarina-private at c8ae870f62a359fd3706f28ac17eaff5c69e3a9a. Author of the
+change: waveydude. Ported unchanged (our number 1062; his 0940 is taken in our series), log
+text kept so his tools read our logs. Builds on his W-23 marker (core 1038/1039).
+
+Uses the interrupted-list boundary described by Lichii #1520. With EDEN_UP_AHEAD_GUARD_SLOTS=2
+in copy mode and EDEN_UP_AHEAD_GUARD_RESUME_PROBE=1, DmaPusher::DispatchCalls tags a command
+list that stopped on a semaphore acquire with an id and the frame the back was recording; when
+that same list resumes, its guarded reads (ReadBlock and Read<T>) check every armed slot from
+the parked frame up to the frame now recording, and log each copy the read did not take:
+"EDEN_AHEAD_GUARD_RESUME list L parked at recording P, now N; page X, excluded frame F,
+read live memory|another copy, copied pages differ B, count C" (first 32, then every 1024th).
+While a tagged list runs, ReadBlock walks page by page (no run-ahead over copyless pages).
+The tag is set on the split's back when the GPU split is active (FastDrawNeutral).
+
+Unset (or without two slots in copy mode): as T181; one cached flag check per DispatchCalls
+step and a thread-local zero check per guarded read. Touches dma_pusher.h, dma_pusher.cpp and
+ahead_guard.h only, no translation id input and no TranslationSwitches name: KEEPS THE STORE.
+
+T184 merge: rebased onto T183's 1000/1001 (EDEN_UP_AHEAD_GUARD_ALL_READS) in ahead_guard.h.
+Context lines only: the added and removed lines are the same as the T184j original (a479b7d).
+---
+diff --git a/src/video_core/ahead_guard.h b/src/video_core/ahead_guard.h
+index 8380a4e6e4..f27dfa00b9 100644
+--- a/src/video_core/ahead_guard.h
++++ b/src/video_core/ahead_guard.h
+@@ -19,6 +19,7 @@
+ #include "common/ahead_guard_plain.h" // 1001
+ #include "common/common_types.h"
+ #include "common/logging.h"
++#include "common/pe_switch.h"
+ 
+ /// EDEN_UP_AHEAD_GUARD=1 or 2: keeps a frame still in flight from being drawn with buffer bytes
+ /// the game has already rewritten, when a present returns before that frame's fence
+@@ -386,6 +387,27 @@ inline State& Get() {
+     return *state;
+ }
+ 
++// This state belongs to the thread that executes the reads and BackPassed.
++inline thread_local u64 resume_probe_id{};
++inline thread_local u64 resume_probe_frame{};
++inline thread_local std::array<std::pair<u64, u64>, 256> parked_probes{};
++
++inline bool ResumeProbeEnabled() {
++    static const bool enabled = Common::PeSwitch("EDEN_UP_AHEAD_GUARD_RESUME_PROBE");
++    return enabled && SlotCount() == 2 && CopyMode();
++}
++
++inline void SetResumeProbe(u64 id, bool parked) {
++    if (parked) {
++        parked_probes[id % parked_probes.size()] = {
++            id, Get().back_recording.load(std::memory_order_acquire)};
++        return;
++    }
++    const auto [stored_id, frame] = parked_probes[id % parked_probes.size()];
++    resume_probe_id = id != 0 && id == stored_id ? id : 0;
++    resume_probe_frame = frame;
++}
++
+ namespace Detail {
+ 
+ /// EDEN_UP_AHEAD_GUARD_ALL_READS: set while this thread reads device memory for the guard itself
+@@ -659,6 +681,36 @@ inline std::pair<u32, u32> CopyForRead(const State& s, u64 page,
+     return {NoSlot, 0};
+ }
+ 
++inline void TraceExcludedCopy(const State& s, u64 page, u32 chosen) {
++    if (resume_probe_id == 0 || page >= PageLimit) {
++        return;
++    }
++    const auto recording = s.back_recording.load(std::memory_order_relaxed);
++    for (u32 slot = 0; slot < SlotCount(); ++slot) {
++        const auto& candidate = s.slots[slot];
++        if (!candidate.armed || candidate.frame < resume_probe_frame ||
++            candidate.frame >= recording) {
++            continue;
++        }
++        const u32 excluded = FindCopy(s, page, slot);
++        if (excluded == NoSlot || excluded == chosen) {
++            continue;
++        }
++        const bool different = chosen != NoSlot &&
++            std::memcmp(s.copy_bytes.get() + u64{excluded} * PageSize,
++                        s.copy_bytes.get() + u64{chosen} * PageSize, PageSize) != 0;
++        static std::atomic<u64> matches{};
++        const u64 count = matches.fetch_add(1, std::memory_order_relaxed) + 1;
++        if (count <= 32 || count % 1024 == 0) {
++            LOG_INFO(HW_GPU,
++                     "EDEN_AHEAD_GUARD_RESUME list {} parked at recording {}, now {}; page {:#x}, "
++                     "excluded frame {}, read {}, copied pages differ {}, count {}",
++                     resume_probe_id, resume_probe_frame, recording, page, candidate.frame,
++                     chosen == NoSlot ? "live memory" : "another copy", different, count);
++        }
++    }
++}
++
+ inline void LogWindowLocked(State& s, u64 present_number) {
+     State::Stats& st = s.stats;
+     if (++st.presents < 300) {
+@@ -1163,7 +1215,7 @@ void Read(u64 device_addr, u8* out, u64 size, bool upload, Live&& live) {
+     std::scoped_lock lk{s.mutex};
+     std::array<u32, MaxSlots> order{};
+     const u32 count = s.copies_used == 0 ? 0 : Detail::ReadOrderLocked(s, order);
+-    if (count == 0) {
++    if (count == 0 && (resume_probe_id == 0 || s.copies_used == 0)) {
+         live(device_addr, out, size);
+         return;
+     }
+@@ -1173,6 +1225,7 @@ void Read(u64 device_addr, u8* out, u64 size, bool upload, Live&& live) {
+         u64 piece_end = (std::min)(end, (page + 1) << PageBits);
+         const auto [copy, rank] = page < PageLimit ? Detail::CopyForRead(s, page, order, count)
+                                                    : std::pair<u32, u32>{NoSlot, 0};
++        Detail::TraceExcludedCopy(s, page, copy);
+         if (copy != NoSlot) {
+             std::memcpy(out + (at - device_addr),
+                         s.copy_bytes.get() + u64{copy} * PageSize + (at & (PageSize - 1)),
+@@ -1185,7 +1238,8 @@ void Read(u64 device_addr, u8* out, u64 size, bool upload, Live&& live) {
+             }
+         } else {
+             // On over the pages after it that have no copy either.
+-            while (piece_end < end && (piece_end >> PageBits) < PageLimit &&
++            while (resume_probe_id == 0 && piece_end < end &&
++                   (piece_end >> PageBits) < PageLimit &&
+                    Detail::CopyForRead(s, piece_end >> PageBits, order, count).first == NoSlot) {
+                 piece_end = (std::min)(end, ((piece_end >> PageBits) + 1) << PageBits);
+             }
+@@ -1274,6 +1328,7 @@ template <class T, class GpuMemory>
+     std::array<u32, MaxSlots> order{};
+     const u32 count = Detail::ReadOrderLocked(s, order);
+     const auto [copy, rank] = Detail::CopyForRead(s, page, order, count);
++    Detail::TraceExcludedCopy(s, page, copy);
+     if (copy == NoSlot) {
+         return gpu_memory.template Read<T>(gpu_addr);
+     }
+diff --git a/src/video_core/dma_pusher.cpp b/src/video_core/dma_pusher.cpp
+index 764b81e1a4..0384f70caa 100644
+--- a/src/video_core/dma_pusher.cpp
++++ b/src/video_core/dma_pusher.cpp
+@@ -33,6 +33,7 @@
+ #include "core/memory.h"
+ #include "video_core/nx2_profile.h"
+ #include "video_core/dma_pusher.h"
++#include "video_core/ahead_guard.h"
+ #include "video_core/control/channel_state.h"
+ #include "video_core/engines/kepler_compute.h"
+ #include "video_core/engines/maxwell_3d.h"
+@@ -1118,7 +1119,42 @@ void DmaPusher::DispatchCalls() {
+     // constant buffer copies, whose bytes the CPU may have rewritten for them (ubo_ahead.h).
+     VideoCommon::UboAhead::FrontNewEpoch();
+     while (system.IsPoweredOn()) {
+-        if (!Step()) {
++        namespace Trace = VideoCommon::AheadGuard;
++        if (!Trace::ResumeProbeEnabled() || dma_pushbuffer.empty()) {
++            if (!Step()) {
++                break;
++            }
++            continue;
++        }
++
++        // Lichii #1520 distinguishes the interrupted list from those queued behind it.
++        // Tag only the interrupted list, and bracket its work on the split's back too.
++        const auto trace = [](u64 id, bool parked) {
++            const auto update = [id, parked] { Trace::SetResumeProbe(id, parked); };
++            auto& split = VideoCommon::GpuSplit::Get();
++            if (split.Active()) {
++                split.Defer(update, VideoCommon::GpuSplit::FastDrawNeutral);
++            } else {
++                update();
++            }
++        };
++        const auto* list = &dma_pushbuffer.front();
++        if (guard_suspension_id != 0) {
++            trace(guard_suspension_id, false);
++        }
++        const bool progressed = Step();
++        if (guard_suspension_id != 0) {
++            trace(0, false);
++        }
++        if (dma_pushbuffer.empty() || &dma_pushbuffer.front() != list) {
++            guard_suspension_id = 0;
++        }
++        if (!progressed) {
++            if (HasPendingSemaphore() && guard_suspension_id == 0) {
++                static std::atomic<u64> next_id{};
++                guard_suspension_id = next_id.fetch_add(1, std::memory_order_relaxed) + 1;
++                trace(guard_suspension_id, true);
++            }
+             break;
+         }
+     }
+diff --git a/src/video_core/dma_pusher.h b/src/video_core/dma_pusher.h
+index 130ac020dd..20ef704926 100644
+--- a/src/video_core/dma_pusher.h
++++ b/src/video_core/dma_pusher.h
+@@ -377,6 +377,7 @@ private:
+ public:
+     Common::ScratchBuffer<CommandHeader> command_headers; ///< Buffer for list of commands fetched at once
+ 
++    u64 guard_suspension_id{};
+     std::deque<CommandList> dma_pushbuffer; ///< Queue of command lists to be processed
+     std::size_t dma_pushbuffer_subindex{};  ///< Index within a command list within the pushbuffer
+ 
