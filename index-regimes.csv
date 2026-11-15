@@ -203,6 +203,9 @@ runs/GrowingBlackBeans/2026-11-13-RO1,GrowingBlackBeans,2026-11-13-RO1,01.219.92
 runs/GrowingBlackBeans/2026-11-13-RO2,GrowingBlackBeans,2026-11-13-RO2,01.219.920 (Nov 12 2026 22:10:46),ahead-1,96.288685,19.84,18.98,0.0,19.35,23,,0,,0,19.4,1,31.8,18.55,275.9,0,1827,1042,80,,True,True
 runs/GrowingBlackBeans/2026-11-13-RX1,GrowingBlackBeans,2026-11-13-RX1,01.219.920 (Nov 12 2026 22:10:46),ahead-1,72.075276,27.79,25.51,0.0,27.15,6,26.57,17,,0,24.9,1,33.0,19.07,358.0,0,1850,909,110,,True,True
 runs/GrowingBlackBeans/2026-11-13-RX2,GrowingBlackBeans,2026-11-13-RX2,01.219.920 (Nov 12 2026 22:10:46),ahead-1,72.277353,27.9,26.4,0.0,26.47,7,26.88,13,,0,24.8,1,32.79,21.71,395.5,0,1806,984,0,,True,True
+runs/GrowingBlackBeans/2026-11-14-KS1,GrowingBlackBeans,2026-11-14-KS1,01.219.925 (Nov 13 2026 20:08:50),ahead-1,98.649273,24.57,24.86,0.01,30.7,25,22.44,57,23.2,4,20.0,1,43.5,26.59,192.5,26,1203,615,371,,True,True
+runs/GrowingBlackBeans/2026-11-14-KS2,GrowingBlackBeans,2026-11-14-KS2,01.219.925 (Nov 13 2026 20:08:50),ahead-1,106.267622,24.58,25.19,0.0,31.82,23,22.06,50,21.25,4,,0,,,322.0,45,866,497,331,,True,True
+runs/GrowingBlackBeans/2026-11-14-KS3,GrowingBlackBeans,2026-11-14-KS3,01.219.925 (Nov 13 2026 20:08:50),ahead-1,96.787491,24.02,25.06,0.0,32.08,22,22.32,55,20.93,3,20.43,3,41.43,24.41,463.8,43,774,499,315,,True,True
 runs/GrowingBlackBeans/2026-11-14-KW2,GrowingBlackBeans,2026-11-14-KW2,01.219.925 (Nov 13 2026 20:08:50),ahead-1,87.12819,23.98,25.1,0.0,32.53,20,21.82,48,19.9,2,,0,,,225.6,0,1584,780,307,,True,True
 runs/Vampinity/2026-11-05-run10-newgame-0321,Vampinity,2026-11-05-run10-newgame-0321,,unknown,,,,,,0,,0,,0,,0,,,,0,,,0,,False,False
 runs/Vampinity/2026-11-05-run11-0324,Vampinity,2026-11-05-run11-0324,,unknown,,,,,,0,,0,,0,,0,,,,0,,,,,False,False
@@ -1308,3 +1311,9 @@ runs/waveydude/2026-11-13-w17-crash-19m,waveydude,2026-11-13-w17-crash-19m,01.21
 runs/waveydude/2026-11-13-w18-crash-38m,waveydude,2026-11-13-w18-crash-38m,01.219.028,ahead-1,438.602575,28.2,34.23,0.52,32.83,56,29.73,11,31.54,20,36.12,93,14.42,11.06,474.6,111,5104,2473,7394,,True,True
 runs/waveydude/2026-11-13-w19-run1-24m,waveydude,2026-11-13-w19-run1-24m,01.219.028,ahead-1,102.643126,,16.72,0.21,17.14,78,,0,15.99,10,15.59,23,45.73,41.81,429.2,85,16597,7927,2517,,True,True
 runs/waveydude/2026-11-13-w19-run2-16m,waveydude,2026-11-13-w19-run2-16m,01.219.028,ahead-1,130.451343,,18.25,0.22,19.09,78,22.07,3,17.55,21,16.11,29,45.07,41.04,407.6,149,11569,5742,424,,True,True
+runs/waveydude/2026-11-14-w32-humming-940,waveydude,2026-11-14-w32-humming-940,,unknown,,,,,,0,,0,,0,,0,,,,0,,,,,False,False
+runs/waveydude/2026-11-14-w32-instruments-136,waveydude,2026-11-14-w32-instruments-136,,unknown,,,,,,0,,0,,0,,0,,,,0,,,,,False,False
+runs/waveydude/2026-11-14-w32-mic-instruments,waveydude,2026-11-14-w32-mic-instruments,,unknown,,,,,,0,,0,,0,,0,,,,0,,,,,False,False
+runs/waveydude/2026-11-14-w32-mic-recognizer,waveydude,2026-11-14-w32-mic-recognizer,,unknown,,,,,,0,,0,,0,,0,,,,0,,,,,False,False
+runs/waveydude/2026-11-14-w32-mic-signal,waveydude,2026-11-14-w32-mic-signal,,unknown,,,,,,0,,0,,0,,0,,,,0,,,,,False,False
+runs/waveydude/2026-11-14-w32-volume-940,waveydude,2026-11-14-w32-volume-940,,unknown,,,,,,0,,0,,0,,0,,,,0,,,,,False,False
