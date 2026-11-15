@@ -47,6 +47,12 @@ CUT = 2.0            # per mille of width: how far the line P->S may leave the w
 TURN_MIN = 8         # degrees: a smaller difference is left alone
 TAP_MS = 150         # the turning tap; tune on the console if the fingerprints say the facing is off
 HOLD = 62            # seconds between the two fingerprints
+SEARCH_STEP = 15     # degrees a search turn
+SEARCH_MS = 120      # its tap (KS1: a 150 ms tap turned C the full +59 deg)
+SEARCH_EVERY = 1.4   # seconds a search turn takes: tap, L2 0.6 s later, two looks at the settled view
+SEARCH_TAPS = 24     # a full circle
+SEARCH_MIN = 60      # KS1 scored the right view 77-87 against KW2's capture; D's view scores <=27 off by 45
+                     # deg and at most 80 anywhere else in KW2
 REGION = (0, 80, 780, 840)   # the fingerprint's region: no hearts, no minimap, no overlay text
 COLS, ROWS = 16, 9
 
@@ -103,9 +109,9 @@ def grid(raw):
     return out
 
 
-def look(g):
+def look(g, least=100):
     x, y, w, h = REGION
-    return f"LOOK {x} {y} {w} {h} {COLS}x{ROWS}:" + "".join(f"{v:02x}" for v in g) + " 100"
+    return f"LOOK {x} {y} {w} {h} {COLS}x{ROWS}:" + "".join(f"{v:02x}" for v in g) + f" {least}"
 
 
 def plan():
@@ -175,11 +181,24 @@ def script(video):
             x, y = stick(turn)
             lines.append(f"1.1 LSTICK {x} {y} {TAP_MS}")
             lines.append("1.8 L2 150")
-            first = 3.8
+            settled = 2.8
         else:
-            first = 2.3
+            settled = 1.3
+        # Closed loop (added after runKS1, where D faced ~45 deg off: its approach is shorter than the
+        # reach radius, so Link's heading on arrival is not set). Small turns the same way as the first,
+        # each followed by L2, until the view looks like KW2's (SEARCH_MIN); then the rest are dropped.
+        # A, B and C matched at 77-87 in KS1, so they pass on the first look.
+        step = SEARCH_STEP if turn >= 0 else -SEARCH_STEP
+        x, y = stick(step)
+        lines.append(f"# then turn {step:+d} deg at a time until the view is KW2's (score {SEARCH_MIN}), at most "
+                     f"{SEARCH_TAPS} turns")
+        for k in range(SEARCH_TAPS):
+            t = settled + 0.7 + k * SEARCH_EVERY
+            lines.append(f"{t:.1f} LSTICK {x} {y} {SEARCH_MS}")
+            lines.append(f"{t + 0.6:.1f} L2 150")
+        lines.append(f"{settled} MAYBE {settled + 1 + SEARCH_TAPS * SEARCH_EVERY:.0f} {look(g0, SEARCH_MIN)}")
         lines.append(f"# fingerprints of KW2's view at video {st['fp'][0]:.0f} s and {st['fp'][1]:.0f} s; between them the stand")
-        lines.append(f"{first} MAYBE 1 {look(g0)}")
+        lines.append(f"1.0 MAYBE 1 {look(g0)}")
         lines.append(f"{HOLD} MAYBE 1 {look(g1)}")
     lines += ["", "5 END", ""]
     return "\n".join(lines)
