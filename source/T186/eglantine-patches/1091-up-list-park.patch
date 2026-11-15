@@ -1,0 +1,189 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_LIST_PARK=1, a channel whose chip-written command list copy is not done parks on it (the EDEN_NX2_LIST_ASYNC path under a name outside the store switches) instead of waiting (off by default)
+
+Why: PLAN stage 1. With EDEN_NX2_LIST_ASYNC unset (it is a shader store switch name), the reader
+blocks on a chip-written list copy and the GPU thread does nothing else meanwhile. The same
+suspension under a name outside TranslationSwitches tells whether other channels' work or queued
+commands fill that time (PLAN: expected 0 to 3 ms; run only if 1090 shows 2 ms a frame or more of
+other-channel work during the wait).
+
+What, with EDEN_UP_LIST_PARK=1 (exact "1", read once, ListWait::ParkEnabled in
+src/video_core/listwait_stats.h): dma_pusher.cpp Step passes the pending pointer to
+ReadGpuWrittenCommands as EDEN_NX2_LIST_ASYNC does (the same, unchanged path: the channel
+suspends on the copy's tick, CanResumeAcquire polls IsGpuTickDone, the entry is parsed again with
+the writer wait skipped; only with the split's back running). Before it parks, the front publishes
+what it sent and asks the back for its idle hook (the deferred copy submission), noted as a
+waiter's request for EDEN_UP_SUBMIT_STATS. With EDEN_UP_LISTWAIT_STATS=1 also: parks, resumed
+entries that parked again, and the parked time (DmaPusher::list_park_start, new in dma_pusher.h).
+EDEN_NX2_LIST_ASYNC itself is untouched (read and used as before).
+Lines (HW_GPU info): the boot line becomes "EDEN_UP_LISTWAIT_STATS=S (...), EDEN_UP_LIST_PARK=P
+(...)" (printed when either is set); with the stats every 10 s "EDEN_UP_LIST_PARK in T s: N parks
+on a list copy (M ms parked), R resumed entries parked again".
+
+Unset: ListPark() is a cached false, the call site passes the pending pointer exactly when
+EDEN_NX2_LIST_ASYNC is set, as T185, and no other line runs: as T185 (and as 1090). Same files as
+1090 plus dma_pusher.h, none a translation id input; EDEN_UP_LIST_PARK is not in
+TranslationSwitches: KEEPS THE STORE.
+---
+diff --git a/src/video_core/dma_pusher.cpp b/src/video_core/dma_pusher.cpp
+index 62e84e9867..767d3c8bce 100644
+--- a/src/video_core/dma_pusher.cpp
++++ b/src/video_core/dma_pusher.cpp
+@@ -45,6 +45,7 @@
+ #include "video_core/memory_manager.h"
+ #include "video_core/nx2.h"
+ #include "video_core/rasterizer_interface.h"
++#include "video_core/submit_stats.h"
+ #include "video_core/ubo_ahead.h"
+ 
+ // PS5 port (EDEN_NX2_JUNK_TRACE): the guest memory service's state of the slot behind a host
+@@ -1103,6 +1104,13 @@ static bool ListAsync() {
+     return enabled;
+ }
+ 
++// EDEN_UP_LIST_PARK=1 (T186a, thread-decouple PLAN stage 1): the same suspension as
++// EDEN_NX2_LIST_ASYNC under a name outside the shader store's switch list (listwait_stats.h).
++// Off unless exactly "1"; read once.
++static bool ListPark() {
++    return VideoCommon::ListWait::ParkEnabled();
++}
++
+ // EDEN_UP_LISTWAIT_STATS (listwait_stats.h, item 5): the code of a macro that reads words of a
+ // chip-written command list, logged once per engine and macro entry at its first such read: 85
+ // instructions (255 words) from its start, or to the RAM's end, in the RAM's order (three words an
+@@ -1471,6 +1479,10 @@ bool DmaPusher::Step() {
+         }
+         pending_list_tick.reset();
+         resumed_list_read = true;
++        if (list_park_start != 0) [[unlikely]] { // EDEN_UP_LIST_PARK with the stats
++            VideoCommon::ListWait::g_reader.park_ns +=
++                VideoCommon::ListWait::NowNs() - std::exchange(list_park_start, 0);
++        }
+     }
+     // The entry that suspended already ran its start-of-entry work (split-method parking, submit
+     // hash check, macro dirty check) before it suspended: not twice.
+@@ -1866,10 +1878,24 @@ bool DmaPusher::Step() {
+         } else if (bool list_pending = false;
+                    !ListDrainFull() &&
+                    (ReadGpuWrittenCommands(dma_state.dma_get, static_cast<u32>(header.size),
+-                                           ListAsync() ? &list_pending : nullptr) ||
++                                           ListAsync() || ListPark() ? &list_pending
++                                                                     : nullptr) ||
+                     list_pending)) {
+             if (list_pending) {
+                 // Parsed again once the GPU copied the list; other channels run meanwhile.
++                if (ListPark()) [[unlikely]] {
++                    // EDEN_UP_LIST_PARK: the back gets what was sent and submits the deferred copy
++                    // now (its idle hook), not when it next runs dry.
++                    auto& split = VideoCommon::GpuSplit::Get();
++                    split.Publish();
++                    VideoCommon::SubmitStats::NoteHookRequest(VideoCommon::SubmitStats::Hook::Waiter);
++                    split.RequestIdleHook();
++                    if (listwait) [[unlikely]] {
++                        ++VideoCommon::ListWait::g_reader.parks;
++                        VideoCommon::ListWait::g_reader.reparks += resumed_entry ? 1 : 0;
++                        list_park_start = VideoCommon::ListWait::NowNs();
++                    }
++                }
+                 return false;
+             }
+             const std::span<const CommandHeader> commands{command_headers.data(), header.size};
+diff --git a/src/video_core/dma_pusher.h b/src/video_core/dma_pusher.h
+index 20ef704926..d51d2b3111 100644
+--- a/src/video_core/dma_pusher.h
++++ b/src/video_core/dma_pusher.h
+@@ -499,6 +499,9 @@ public:
+     std::optional<u64> pending_list_tick;
+     /// The entry parsed next was suspended on pending_list_tick, which is done now.
+     bool resumed_list_read{};
++    /// EDEN_UP_LIST_PARK with EDEN_UP_LISTWAIT_STATS: when this channel parked on a list copy
++    /// (ListWait::NowNs; 0 while it does not), for the parked time.
++    u64 list_park_start{};
+ 
+     // Not bitfields (zortos293/Lichii 12fc47e8aa): the fence callback sets synced on the split's
+     // back, and a bitfield write rewrites the byte it shares with dma_increment_once and
+diff --git a/src/video_core/gpu_split.cpp b/src/video_core/gpu_split.cpp
+index 6453ff2668..3070bd05a5 100644
+--- a/src/video_core/gpu_split.cpp
++++ b/src/video_core/gpu_split.cpp
+@@ -157,7 +157,7 @@ void GpuSplit::MaybeStart(Core::System& system_) {
+         ReportL1094();
+     }
+     if (active && ListWait::Enabled()) [[unlikely]] {
+-        ReportListWait(); // EDEN_UP_LISTWAIT_STATS
++        ReportListWait(); // EDEN_UP_LISTWAIT_STATS (and EDEN_UP_LIST_PARK's counts with it)
+     }
+     if (active) {
+         SubmitStats::MaybeReport(); // EDEN_UP_SUBMIT_STATS; returns at once without it
+@@ -202,13 +202,15 @@ void GpuSplit::MaybeStart(Core::System& system_) {
+                  "without a drain when met, polls drain once per 1 ms), EDEN_UP_L949_DRAIN_VALVE={}",
+                  feed ? 1 : 0, PublishAfterWait, L949Acquire() ? 1 : 0, L949DrainValve() ? 1 : 0);
+     }
+-    if (ListWait::Enabled()) {
++    if (ListWait::Enabled() || ListWait::ParkEnabled()) {
+         ListWait::g_reader_keep.window_start = 0;
+         LOG_INFO(HW_GPU,
+-                 "EDEN_UP_LISTWAIT_STATS=1 (log only: list copy waits by length and by what "
++                 "EDEN_UP_LISTWAIT_STATS={} (log only: list copy waits by length and by what "
+                  "reads the words, the reader's clock, the recorder's gaps, chip waits by thread, "
+                  "the code of macros that read chip-written lists, mesh draws in those lists; a "
+-                 "line group every 10 s)");
++                 "line group every 10 s), EDEN_UP_LIST_PARK={} (a channel whose chip-written list "
++                 "copy is not done parks on it instead of waiting)",
++                 ListWait::Enabled() ? 1 : 0, ListWait::ParkEnabled() ? 1 : 0);
+     }
+     ring = std::make_unique<u64[]>(RingWords);
+     back_thread = std::jthread([this](std::stop_token stop_token) { BackLoop(stop_token); });
+@@ -1079,6 +1081,12 @@ void GpuSplit::ReportListWait() {
+              seconds, take(shared.mesh_draws), take(shared.list_mesh[1][0]),
+              take(shared.list_mesh[1][1]), take(shared.list_mesh[0][0]),
+              take(shared.list_mesh[0][1]));
++    if (ListWait::ParkEnabled()) {
++        LOG_INFO(HW_GPU,
++                 "EDEN_UP_LIST_PARK in {:.1f} s: {} parks on a list copy ({:.1f} ms parked), {} "
++                 "resumed entries parked again",
++                 seconds, stats.parks, ms(stats.park_ns), stats.reparks);
++    }
+     stats = ListWait::ReaderStats{}; // a new window (g_reader_keep stays)
+ }
+ 
+diff --git a/src/video_core/listwait_stats.h b/src/video_core/listwait_stats.h
+index 3a210f9a7d..6aa84bfe48 100644
+--- a/src/video_core/listwait_stats.h
++++ b/src/video_core/listwait_stats.h
+@@ -21,6 +21,12 @@
+ // mesh count) and one fence refresh before each blocking copy wait (the chip's backlog). Off,
+ // every site tests the cached flag and does nothing. Counters are fixed-size; nothing allocates.
+ // GpuSplit::ReportListWait prints them (the GPU thread's loop, GpuSplit::MaybeStart).
++//
++// EDEN_UP_LIST_PARK=1 (exact "1", read once; PLAN stage 1): a channel whose chip-written list copy
++// is not done yet parks on it through the EDEN_NX2_LIST_ASYNC path (the channel suspends, the GPU
++// thread runs other channels and queued commands, the entry is parsed again once the copy's tick
++// is done) under a name outside the shader store's switch list; before it parks, what the front
++// sent is published and the back is asked for its idle hook (the deferred copy submission).
+ namespace VideoCommon::ListWait {
+ 
+ [[nodiscard]] inline bool Enabled() {
+@@ -28,6 +34,11 @@ namespace VideoCommon::ListWait {
+     return enabled;
+ }
+ 
++[[nodiscard]] inline bool ParkEnabled() {
++    static const bool enabled = Common::PeSwitch("EDEN_UP_LIST_PARK");
++    return enabled;
++}
++
+ /// The kind of thread a chip wait runs on.
+ enum class Thread : u8 { Other, Reader, Recorder, Fencing, Count };
+ inline constexpr std::size_t ThreadCount = static_cast<std::size_t>(Thread::Count);
+@@ -126,6 +137,10 @@ struct ReaderStats {
+     u64 recorder_out_ns{};  ///< ...outside it (maps, flushes and other commands)
+     u64 recorder_waits{};
+     u64 chip_ns{};          ///< Blocking list copy waits (inside it)
++    // EDEN_UP_LIST_PARK.
++    u64 parks{};
++    u64 reparks{}; ///< Resumed entries that parked again (a newer copy, not done)
++    u64 park_ns{};
+ };
+ inline ReaderStats g_reader{};
+ 

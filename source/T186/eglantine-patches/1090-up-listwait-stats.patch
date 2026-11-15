@@ -1,0 +1,1124 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_LISTWAIT_STATS=1, counts where the command reader waits for chip-written command list copies, what reads those words, the reader and recorder clocks, chip waits by thread, list macros' code and mesh draws in those lists (log only, off by default)
+
+Why: with frame ahead off the command reader (the GPU thread, the split's front) blocks about
+18.5 ms a frame in the area after the field and about 12 on the field in BufferCache::
+Nx2ReadListCopy -> WaitSubmittedTick, about 3.5 times a frame ('#1094' copy waits, run1548/1549).
+Nobody knows which list carries the long wait (macro 0xe74's grid words, 0xe62's mesh counts or
+another), what the macros do with the words, or how the reader's time splits. This is build A /
+stage 0b of our plan of 14 Nov for the command reader and the recording thread: counters
+only.
+
+What, with EDEN_UP_LISTWAIT_STATS=1 (exact "1", read once; new header
+src/video_core/listwait_stats.h holds the flag, the fixed-size counters and the small helpers):
+- buffer_cache.h Nx2ReadListCopy, blocking path only: the wait's length, and at its start the
+  chip's backlog (submitted ticks not finished, after one fence refresh:
+  BufferCacheRuntime::Nx2RefreshedGpuTick, new in vk_buffer_cache.h/.cpp, no Wait/Finish line) and
+  how many of those come before and with the copy's tick; handed to DmaPusher::Step through a
+  reader-only thread_local (ListWait::t_entry_wait).
+- dma_pusher.cpp Step: per entry read through the list copy path, what reads its words (the
+  method it continues, macros by their even method, with the engine and whether the entry is all
+  that method's data, its data then commands, or commands; else the first header's method), its
+  number since the last present, its size; waits binned (<0.1, 0.1-1, 1-5, 5-20, >=20 ms), per
+  kind (0xe74 / 0xe62 / other) and per consumer (16-slot table); the window's longest wait with
+  all of that. Once per engine and macro entry that reads chip-written words: 85 instructions /
+  255 words of its code from its start (or to the RAM's end; not cut at the first end bit, which
+  a branch can cancel: the line names that instruction), from the RAM it runs from (3D: the 3D
+  engine's; compute: KeplerCompute::ListWaitMacroRam, new in engines/kepler_compute.h/.cpp, the
+  RAM the compute engine picks now, null-safe), only where the reader owns that RAM (macros on the
+  front or no split); 0xe62 and 0xe74 always, at most 8 other macros a session, then one line.
+  Around ProcessCommands of such an entry, a deferred marker (FastDrawNeutral) on the recorder so
+  mesh draws inside it are counted.
+- DmaPusher::DispatchCalls, GpuSplit::WaitFor and DrainAt: the reader's clock (working, stopped
+  for the recorder inside list parsing or for other commands, blocked on the chip, idle), on the
+  marked GPU thread only.
+- GpuSplit::BackLoop: each out-of-work gap of the recorder (from running dry to its next entry,
+  across early wake-ups, its idle hook's time left out) in bins <0.1, 0.1-1, 1-5, >=5 ms, by what
+  the reader was doing when the gap began.
+- submit_stats.h WaitTimer (every MasterSemaphore::Wait past its quick checks): also counted by
+  the waiting thread (reader: GpuSplit::MarkGpuThread; recorder: BackLoop; fencing thread:
+  fence_manager.h ReleaseThreadFunc; other), by the waited tick's origin when
+  EDEN_UP_SUBMIT_STATS=1 (else "other"). NoteFrame (only with EDEN_UP_SUBMIT_STATS=1) also counts
+  presents and their time for the list positions.
+- vk_rasterizer.cpp, after mesh_draw is known: mesh draws, and those inside a list-copy entry,
+  task or lone (unique_hashes[3] == 0, as the mesh census).
+- GpuSplit::ReportListWait (from MaybeStart, the GPU thread): the lines below every 10 s.
+Lines (HW_GPU info): boot "EDEN_UP_LISTWAIT_STATS=1 (log only: ...)"; every 10 s
+"EDEN_UP_LISTWAIT_STATS in T s, P presents: N list entries through the copy path, W waited; waits
+by length: ...; by what reads the words: ...; longest wait: ...; consumers: ...",
+"EDEN_UP_LISTWAIT_STATS reader in T s: working ... ms ...", "EDEN_UP_LISTWAIT_STATS recorder out of
+work in T s: ...", "EDEN_UP_LISTWAIT_STATS chip waits by waiting thread in T s ...: ...",
+"EDEN_UP_LISTWAIT_STATS mesh draws in T s: ..."; once per macro "EDEN_UP_LISTWAIT_STATS macro
+<3D|compute> macro 0x... (entry 0x.., start 0x..) reads chip-written list words: ..." then "...
+<3D|compute> macro 0x... words A-B: <hex words>".
+
+Unset: every new site tests a cached flag (function-local statics, read after env.txt) and does
+nothing else; no allocation, no wait, no message, no ring entry: as T185. Counting cost with it on:
+a clock pair per DispatchCalls, per reader wait for the recorder, per recorder gap and per chip
+wait, one fence refresh per blocking list copy wait, two deferred markers per list-copy entry, and
+the 10 s lines. None of the touched files is a translation id input (not under
+src/shader_recompiler, not in tools/gen-translation-id.py's SINGLE list, not reached from the
+translator's includes), no compile definition or include dir is added, no scheduler.Wait/Finish
+line is added to a cost file, and EDEN_UP_LISTWAIT_STATS is not in TranslationSwitches: KEEPS THE
+STORE.
+---
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index 022098d602..7e93dd8896 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -4900,7 +4900,38 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out, u64*
+         const bool timed = VideoCommon::g_l1094_counting;
+         const auto wait_start = timed ? std::chrono::steady_clock::now()
+                                       : std::chrono::steady_clock::time_point{};
++        // EDEN_UP_LISTWAIT_STATS: the wait's length and the chip's backlog as it began, for
++        // DmaPusher::Step (ListWait::t_entry_wait); the fence is read fresh for the backlog.
++        static const bool listwait = VideoCommon::ListWait::Enabled();
++        u64 listwait_start = 0;
++        u64 listwait_backlog = 0;
++        u64 listwait_ahead = 0;
++        if (listwait) [[unlikely]] {
++            const u64 known = runtime.Nx2RefreshedGpuTick();
++            const u64 submitted = runtime.CurrentTick() - 1;
++            listwait_backlog = submitted > known ? submitted - known : 0;
++            listwait_ahead = tick > known ? tick - known : 0;
++            VideoCommon::ListWait::SetReaderState(VideoCommon::ListWait::ReaderState::Chip);
++            listwait_start = VideoCommon::ListWait::NowNs();
++        }
+         runtime.WaitSubmittedTick(tick);
++        if (listwait) [[unlikely]] {
++            const u64 ns = VideoCommon::ListWait::NowNs() - listwait_start;
++            VideoCommon::ListWait::SetReaderState(VideoCommon::ListWait::ReaderState::Working);
++            auto& entry_wait = VideoCommon::ListWait::t_entry_wait;
++            ++entry_wait.waits;
++            entry_wait.ns += ns;
++            if (ns >= entry_wait.longest) {
++                const u64 present = VideoCommon::ListWait::g_shared.last_present_ns.load(
++                    std::memory_order_relaxed);
++                entry_wait.longest = ns;
++                entry_wait.backlog = listwait_backlog;
++                entry_wait.ahead = listwait_ahead;
++                entry_wait.since_present = present != 0 && present <= listwait_start
++                                               ? listwait_start - present
++                                               : ~u64{0};
++            }
++        }
+         if (timed) [[unlikely]] {
+             const u64 ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                 std::chrono::steady_clock::now() - wait_start)
+diff --git a/src/video_core/dma_pusher.cpp b/src/video_core/dma_pusher.cpp
+index 0384f70caa..62e84e9867 100644
+--- a/src/video_core/dma_pusher.cpp
++++ b/src/video_core/dma_pusher.cpp
+@@ -1103,6 +1103,114 @@ static bool ListAsync() {
+     return enabled;
+ }
+ 
++// EDEN_UP_LISTWAIT_STATS (listwait_stats.h, item 5): the code of a macro that reads words of a
++// chip-written command list, logged once per engine and macro entry at its first such read: 85
++// instructions (255 words) from its start, or to the RAM's end, in the RAM's order (three words an
++// instruction; the end bit is bit 0 of the third, macro_turing.h). Not cut at the first end bit: a
++// branch can cancel it and branch targets can lie past it, so the line names that instruction and
++// the reader of the log decides where the macro ends. At most MacroLogCap macros besides 0xe62 and
++// 0xe74, then one line. A 3D macro runs from the 3D engine's RAM; a compute macro from the RAM the
++// compute engine picks now (the 3D one, shared on Switch 2 channels, until the compute class loads
++// its own: KeplerCompute::ListWaitMacroRam). Read only where the reader owns it: with the split's
++// macros on the front (the front loads them), or without the split.
++static void ListWaitLogMacro(Engines::Maxwell3D* maxwell3d, Engines::KeplerCompute* compute,
++                             u32 key) {
++    const u32 method = key & 0xffff;
++    const bool on_compute =
++        (key >> 20) == static_cast<u32>(Engines::EngineTypes::KeplerCompute);
++    const bool on_3d = (key >> 20) == static_cast<u32>(Engines::EngineTypes::Maxwell3D);
++    if (key == VideoCommon::ListWait::UnreadKey || (!on_3d && !on_compute) ||
++        method < MacroRegistersStart || method >= 0x1000) {
++        return;
++    }
++    // As the engines look a macro up: entries wrap at the table's size.
++    const u32 entry = (method - MacroRegistersStart) >> 1;
++    auto& keep = VideoCommon::ListWait::g_reader_keep;
++    auto& dumped = keep.dumped[on_compute ? 1 : 0];
++    if (std::exchange(dumped[entry % dumped.size()], true)) {
++        return;
++    }
++    if (method != 0xe62 && method != 0xe74) {
++        if (keep.macros_logged >= VideoCommon::ListWait::MacroLogCap) {
++            if (!std::exchange(keep.macro_cap_said, true)) {
++                LOG_INFO(HW_GPU,
++                         "EDEN_UP_LISTWAIT_STATS more macros read chip-written list words; only "
++                         "0xe62, 0xe74 and the first {} others are logged",
++                         VideoCommon::ListWait::MacroLogCap);
++            }
++            return;
++        }
++        ++keep.macros_logged;
++    }
++    const char* const engine_name = on_compute ? "compute" : "3D";
++    // With the macros on the recorder neither engine's macro state is the reader's to read.
++    const auto& split = VideoCommon::GpuSplit::Get();
++    const bool recorder_macros = split.Active() && !split.FrontMacros();
++    std::span<const u32> positions;
++    const MacroEngine* engine = nullptr;
++    if (recorder_macros) {
++        // Not logged (below).
++    } else if (on_compute && compute != nullptr) {
++        engine = compute->ListWaitMacroRam(positions);
++    } else if (on_3d && maxwell3d != nullptr) {
++        engine = &maxwell3d->GetNativeMacroEngine();
++        positions = maxwell3d->GetNativeMacroPositions();
++    }
++    if (engine == nullptr || !engine->native_turing || positions.empty()) {
++        LOG_INFO(HW_GPU,
++                 "EDEN_UP_LISTWAIT_STATS {} macro {:#x} (entry {:#x}) reads chip-written list "
++                 "words; its code is not logged: {}",
++                 engine_name, method, entry,
++                 recorder_macros                          ? "the macros run on the recorder"
++                 : engine == nullptr || positions.empty() ? "no macro RAM known"
++                                                          : "not a native macro");
++        return;
++    }
++    const u32 start = positions[entry % positions.size()];
++    const auto& code = engine->native_code;
++    std::array<u32, 255> words{};
++    size_t count = 0;
++    size_t first_end = words.size(); // the first instruction with the end bit, from the start
++    for (size_t pc = start; count + 3 <= words.size() && pc * 3 + 2 < code.size(); ++pc) {
++        std::copy_n(code.begin() + static_cast<std::ptrdiff_t>(pc * 3), 3, words.begin() + count);
++        if (first_end == words.size() && (code[pc * 3 + 2] & 1) != 0) {
++            first_end = count / 3;
++        }
++        count += 3;
++    }
++    LOG_INFO(HW_GPU,
++             "EDEN_UP_LISTWAIT_STATS {} macro {:#x} (entry {:#x}, start {:#x}) reads "
++             "chip-written list words: {} instructions, {} words{}",
++             engine_name, method, entry, start, count / 3, count,
++             first_end == words.size()
++                 ? std::string{" (no end bit in them)"}
++                 : fmt::format(" (first end bit at instruction {}, words {}-{}; its delay slot "
++                               "follows; what comes after may be another macro's)",
++                               first_end, first_end * 3, first_end * 3 + 2));
++    for (size_t first = 0; first < count; first += 24) {
++        const size_t last = (std::min)(count, first + 24);
++        LOG_INFO(HW_GPU, "EDEN_UP_LISTWAIT_STATS {} macro {:#x} words {}-{}: {:08x}", engine_name,
++                 method, first, last - 1, fmt::join(words.begin() + static_cast<std::ptrdiff_t>(first),
++                                     words.begin() + static_cast<std::ptrdiff_t>(last), " "));
++    }
++}
++
++// EDEN_UP_LISTWAIT_STATS (item 6): marks on the recorder the parse of one list entry read from a
++// chip-written copy (2: all macro data, 1: with commands, 0: done), in order with what the entry
++// sends; nothing unless the switch is on.
++static void ListWaitMarkRecorder(u8 value) {
++    auto& split = VideoCommon::GpuSplit::Get();
++    if (split.Active()) {
++        split.Defer(
++            [value] {
++                VideoCommon::ListWait::g_recorder_in_list.store(value, std::memory_order_relaxed);
++            },
++            VideoCommon::GpuSplit::FastDrawNeutral);
++    } else {
++        VideoCommon::ListWait::g_recorder_in_list.store(value, std::memory_order_relaxed);
++    }
++}
++
+ bool DmaPusher::CanResumeAcquire() {
+     if (pending_list_tick) {
+         VideoCommon::L949Count(VideoCommon::g_l949_stats.list_polls); // EDEN_UP_L949_STATS
+@@ -1113,6 +1221,8 @@ bool DmaPusher::CanResumeAcquire() {
+ }
+ 
+ void DmaPusher::DispatchCalls() {
++    // EDEN_UP_LISTWAIT_STATS: the reader's clock (time spent parsing lists); else nothing.
++    const VideoCommon::ListWait::DispatchScope listwait_dispatch{};
+     // The sub-index is kept: a channel suspended on a semaphore resumes inside its command list.
+     dma_state.is_last_call = true;
+     // EDEN_UP_UBO_AHEAD / _VERIFY: the lists from here on were submitted after the front's last
+@@ -1717,6 +1827,28 @@ bool DmaPusher::Step() {
+             fetch_gpu_written = gpu_written;
+             fetch_gpu_read = 0;
+         }
++        // EDEN_UP_LISTWAIT_STATS: what reads this entry's words (the method it continues, else
++        // its first header's below) and the list copy waits its read makes (Nx2ReadListCopy).
++        static const bool listwait = VideoCommon::ListWait::Enabled();
++        u32 listwait_key = 0;
++        bool listwait_copied = false;
++        if (listwait) [[unlikely]] {
++            VideoCommon::ListWait::t_entry_wait = {};
++            if (dma_state.method_count != 0) {
++                using Shape = VideoCommon::ListWait::Shape;
++                const u32 method = dma_state.method >= MacroRegistersStart
++                                       ? dma_state.method & ~1U
++                                       : dma_state.method;
++                const Shape shape = dma_state.method_count >= header.size - command_resume_offset
++                                        ? Shape::WholeData
++                                        : Shape::DataThenCommands;
++                listwait_key =
++                    (static_cast<u32>(subchannel_type[dma_state.subchannel]) << 20) |
++                    (static_cast<u32>(shape) << 16) | (method & 0xffff);
++            } else {
++                listwait_key = ~0U; // from the first header, once the words are read
++            }
++        }
+         if (submitted) {
+             const std::span<const CommandHeader> commands{
+                 command_list.submitted_words.data() +
+@@ -1746,8 +1878,42 @@ bool DmaPusher::Step() {
+             if (recheck_hit != 0) {
+                 NoteFetchRecheckWords(recheck_hit, commands, "through the list copies");
+             }
++            if (listwait) [[unlikely]] {
++                listwait_copied = true;
++                if (listwait_key == ~0U && command_resume_offset < commands.size()) {
++                    const CommandHeader first = commands[command_resume_offset];
++                    const u32 method = first.method;
++                    listwait_key =
++                        (static_cast<u32>(subchannel_type[first.subchannel]) << 20) |
++                        (static_cast<u32>(VideoCommon::ListWait::Shape::Commands) << 16) |
++                        ((method >= MacroRegistersStart ? method & ~1U : method) & 0xffff);
++                }
++                Engines::Maxwell3D* maxwell3d = nullptr;
++                Engines::KeplerCompute* compute = nullptr;
++                for (size_t i = 0; i < subchannels.size(); ++i) {
++                    if (subchannels[i] == nullptr) {
++                        continue;
++                    }
++                    if (maxwell3d == nullptr &&
++                        subchannel_type[i] == Engines::EngineTypes::Maxwell3D) {
++                        maxwell3d = static_cast<Engines::Maxwell3D*>(subchannels[i]);
++                    } else if (compute == nullptr &&
++                               subchannel_type[i] == Engines::EngineTypes::KeplerCompute) {
++                        compute = static_cast<Engines::KeplerCompute*>(subchannels[i]);
++                    }
++                }
++                ListWaitLogMacro(maxwell3d, compute, listwait_key);
++                ListWaitMarkRecorder(
++                    ((listwait_key >> 16) & 0xf) ==
++                            static_cast<u32>(VideoCommon::ListWait::Shape::WholeData)
++                        ? 2
++                        : 1);
++            }
+             command_resume_offset +=
+                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
++            if (listwait) [[unlikely]] {
++                ListWaitMarkRecorder(0);
++            }
+         } else {
+             FlushGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
+             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::UnsafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
+@@ -1759,6 +1925,12 @@ bool DmaPusher::Step() {
+             command_resume_offset +=
+                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
+         }
++        if (listwait) [[unlikely]] {
++            // Also an entry whose copy changed while it waited (flushed instead).
++            VideoCommon::ListWait::NoteEntry(listwait_key == ~0U ? VideoCommon::ListWait::UnreadKey
++                                                                 : listwait_key,
++                                             static_cast<u32>(header.size), listwait_copied);
++        }
+         if (puller.HasPendingAcquire()) {
+             return false;
+         }
+diff --git a/src/video_core/engines/kepler_compute.cpp b/src/video_core/engines/kepler_compute.cpp
+index c9a161f7b7..0f68a5576f 100644
+--- a/src/video_core/engines/kepler_compute.cpp
++++ b/src/video_core/engines/kepler_compute.cpp
+@@ -2320,6 +2320,17 @@ MacroEngine& KeplerCompute::FrontMacroEngine(FrontState& fs) {
+     return *fs.macro;
+ }
+ 
++const MacroEngine* KeplerCompute::ListWaitMacroRam(std::span<const u32>& positions) {
++    if (front) {
++        positions = FrontMacroPositions(*front);
++        // Without a context FrontMacroEngine is *front->macro, which may be null here: no
++        // reference through it.
++        return native_context ? &FrontMacroEngine(*front) : front->macro;
++    }
++    positions = native_macro_positions;
++    return native_macro;
++}
++
+ std::span<u32> KeplerCompute::FrontMacroPositions(FrontState& fs) {
+     if (native_context) {
+         return fs.compute_uploaded ? std::span<u32>{native_context->compute_positions}
+diff --git a/src/video_core/engines/kepler_compute.h b/src/video_core/engines/kepler_compute.h
+index 0be24019a1..dc5710c85d 100644
+--- a/src/video_core/engines/kepler_compute.h
++++ b/src/video_core/engines/kepler_compute.h
+@@ -78,6 +78,11 @@ public:
+         return native_mode ? !native_plain_methods[method] : execution_mask[method];
+     }
+ 
++    /// EDEN_UP_LISTWAIT_STATS: the macro RAM a compute macro call runs from now and its entry
++    /// positions (the front's choice with the split's macros on the front, else the engine's).
++    /// Null before either is known. For logging on the thread that runs the compute macros.
++    const MacroEngine* ListWaitMacroRam(std::span<const u32>& positions);
++
+     /// The channel's MME data RAM, shared with its 3D engine.
+     void SetNativeDataRam(std::array<u32, 0xc00>* data_ram) { native_data_ram = data_ram; }
+     void SetNativeMacroMode(MacroEngine* shared_macro, std::span<u32> positions, NativeMacroContext* context = nullptr) {
+diff --git a/src/video_core/fence_manager.h b/src/video_core/fence_manager.h
+index 7e0c273691..f82cf93cda 100644
+--- a/src/video_core/fence_manager.h
++++ b/src/video_core/fence_manager.h
+@@ -673,6 +673,7 @@ private:
+ 
+     void ReleaseThreadFunc(std::stop_token stop_token) {
+         Common::SetCurrentThreadName("GPUFencingThread");
++        VideoCommon::ListWait::MarkThread(VideoCommon::ListWait::Thread::Fencing); // else nothing
+         Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
+         Common::SetCurrentThreadToPerformanceCores();
+         Common::HangThreadStarts(Common::HangThread::Fence);
+diff --git a/src/video_core/gpu_split.cpp b/src/video_core/gpu_split.cpp
+index 0e987143ff..6453ff2668 100644
+--- a/src/video_core/gpu_split.cpp
++++ b/src/video_core/gpu_split.cpp
+@@ -156,6 +156,9 @@ void GpuSplit::MaybeStart(Core::System& system_) {
+     if (active && g_l1094_counting) [[unlikely]] {
+         ReportL1094();
+     }
++    if (active && ListWait::Enabled()) [[unlikely]] {
++        ReportListWait(); // EDEN_UP_LISTWAIT_STATS
++    }
+     if (active) {
+         SubmitStats::MaybeReport(); // EDEN_UP_SUBMIT_STATS; returns at once without it
+     }
+@@ -199,6 +202,14 @@ void GpuSplit::MaybeStart(Core::System& system_) {
+                  "without a drain when met, polls drain once per 1 ms), EDEN_UP_L949_DRAIN_VALVE={}",
+                  feed ? 1 : 0, PublishAfterWait, L949Acquire() ? 1 : 0, L949DrainValve() ? 1 : 0);
+     }
++    if (ListWait::Enabled()) {
++        ListWait::g_reader_keep.window_start = 0;
++        LOG_INFO(HW_GPU,
++                 "EDEN_UP_LISTWAIT_STATS=1 (log only: list copy waits by length and by what "
++                 "reads the words, the reader's clock, the recorder's gaps, chip waits by thread, "
++                 "the code of macros that read chip-written lists, mesh draws in those lists; a "
++                 "line group every 10 s)");
++    }
+     ring = std::make_unique<u64[]>(RingWords);
+     back_thread = std::jthread([this](std::stop_token stop_token) { BackLoop(stop_token); });
+     ++session_generation;
+@@ -501,6 +512,7 @@ void GpuSplit::DrainAt(DrainSite site) {
+     if (consumed_cache == write_position && BackQuiet()) {
+         return;
+     }
++    const ListWait::RecorderWaitScope listwait_scope{}; // EDEN_UP_LISTWAIT_STATS; else nothing
+     Publish();
+     Nx2Profile::Scope scope{Nx2Profile::Zone::SplitDrain, site};
+     auto next_report = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+@@ -598,6 +610,7 @@ bool GpuSplit::WaitFor(u64 target, DrainSite site) {
+     if (consumed_cache >= target) {
+         return false;
+     }
++    const ListWait::RecorderWaitScope listwait_scope{}; // EDEN_UP_LISTWAIT_STATS; else nothing
+     // Without EDEN_NX2_SPLIT_WAITS a full ring waits as WaitForSpace did: no early hand-back.
+     const bool plain_ring_wait = site == DrainSite::RingFull && !SplitWaitsEnabled();
+     if (!plain_ring_wait) {
+@@ -906,6 +919,169 @@ void GpuSplit::ReportL1094() {
+              merged, clears, clears_missed);
+ }
+ 
++void GpuSplit::ReportListWait() {
++    auto& stats = ListWait::g_reader;
++    auto& keep = ListWait::g_reader_keep;
++    // MaybeStart runs once per GPU thread loop: read the clock every 256th call only.
++    if (++keep.report_calls % 256 != 0) {
++        return;
++    }
++    const u64 now = ListWait::NowNs();
++    auto& shared = ListWait::g_shared;
++    if (keep.window_start == 0) {
++        keep.window_start = now;
++        keep.frames_reported = shared.frames.load(std::memory_order_relaxed);
++        stats = ListWait::ReaderStats{};
++        return;
++    }
++    const u64 window = now - keep.window_start;
++    if (window < 10'000'000'000ULL) {
++        return;
++    }
++    keep.window_start = now;
++    const u64 frames_now = shared.frames.load(std::memory_order_relaxed);
++    const u64 presents = frames_now - keep.frames_reported;
++    keep.frames_reported = frames_now;
++    const auto take = [](std::atomic<u64>& counter) {
++        return counter.exchange(0, std::memory_order_relaxed);
++    };
++    const auto ms = [](u64 ns) { return static_cast<double>(ns) / 1e6; };
++    const double seconds = static_cast<double>(window) / 1e9;
++    // As Tegra::Engines::EngineTypes (ReportBack).
++    static constexpr std::array<const char*, 6> engines{"timer", "compute", "3D",
++                                                        "2D",    "DMA",     "memory"};
++    const auto consumer_name = [](u32 key) {
++        if (key == ListWait::UnreadKey) {
++            return std::string{"words not read (the copy changed while it waited)"};
++        }
++        const u32 engine = key >> 20;
++        const auto shape = static_cast<size_t>((key >> 16) & 0xf);
++        return fmt::format("{} {:#x} ({})", engine < engines.size() ? engines[engine] : "no",
++                           key & 0xffff,
++                           shape < ListWait::ShapeNames.size() ? ListWait::ShapeNames[shape] : "?");
++    };
++    // (1) The list copy reads and their waits.
++    static constexpr std::array<const char*, ListWait::WaitBins> wait_bins{
++        "under 0.1 ms", "0.1-1 ms", "1-5 ms", "5-20 ms", "20 ms and more"};
++    std::string bins;
++    for (size_t i = 0; i < wait_bins.size(); ++i) {
++        bins += fmt::format("{}{} {} ({:.1f} ms)", i == 0 ? "" : ", ", wait_bins[i],
++                            stats.bin_waits[i], ms(stats.bin_ns[i]));
++    }
++    static constexpr std::array<const char*, ListWait::KindCount> kinds{"0xe74 (grids)",
++                                                                       "0xe62 (mesh counts)",
++                                                                       "other"};
++    std::string by_kind;
++    for (size_t i = 0; i < kinds.size(); ++i) {
++        by_kind += fmt::format("{}{} {} reads, {} waits ({:.1f} ms)", i == 0 ? "" : ", ",
++                               kinds[i], stats.kind_reads[i], stats.kind_waits[i],
++                               ms(stats.kind_ns[i]));
++    }
++    std::string consumers;
++    for (const auto& consumer : stats.consumers) {
++        if (consumer.key == ~0U || consumer.reads == 0) {
++            continue;
++        }
++        consumers += fmt::format("{}{}: {} reads, {} waits ({:.1f} ms)",
++                                 consumers.empty() ? "" : "; ", consumer_name(consumer.key),
++                                 consumer.reads, consumer.waits, ms(consumer.wait_ns));
++    }
++    const std::string longest =
++        stats.longest_ns == 0
++            ? std::string{"none"}
++            : fmt::format("{:.2f} ms, read by {}, list copy entry #{} since the last present "
++                          "({} ms after it), {} words, chip backlog at its start {} submissions "
++                          "(the copy's was the {}th){}",
++                          ms(stats.longest_ns), consumer_name(stats.longest_key),
++                          stats.longest_position,
++                          stats.longest_since_present_ns == ~u64{0}
++                              ? std::string{"-"}
++                              : fmt::format("{:.1f}", ms(stats.longest_since_present_ns)),
++                          stats.longest_words, stats.longest_backlog, stats.longest_ahead,
++                          stats.longest_fell_back ? ", the copy changed: flushed instead" : "");
++    LOG_INFO(HW_GPU,
++             "EDEN_UP_LISTWAIT_STATS in {:.1f} s, {} presents: {} list entries through the copy "
++             "path, {} waited ({} blocking copy reads); entry waits by length: {}; by what reads "
++             "the words: {}; longest wait: {}; consumers: {}{}",
++             seconds, presents, stats.entries, stats.entry_waits, stats.copy_waits, bins, by_kind,
++             longest, consumers.empty() ? "none" : consumers,
++             stats.consumer_overflow != 0
++                 ? fmt::format(" (+{} reads past the table)", stats.consumer_overflow)
++                 : std::string{});
++    // (2) The reader's clock.
++    const u64 recorder_ns = stats.recorder_in_ns + stats.recorder_out_ns;
++    const u64 in_dispatch_waits = stats.recorder_in_ns + stats.chip_ns;
++    const u64 working = stats.dispatch_ns > in_dispatch_waits ? stats.dispatch_ns - in_dispatch_waits
++                                                             : 0;
++    const u64 busy = stats.dispatch_ns + stats.recorder_out_ns;
++    const u64 idle = window > busy ? window - busy : 0;
++    LOG_INFO(HW_GPU,
++             "EDEN_UP_LISTWAIT_STATS reader in {:.1f} s: working {:.1f} ms (parsing lists, "
++             "waits taken out), stopped for the recorder {:.1f} ms ({} waits; {:.1f} ms while "
++             "parsing lists, {:.1f} ms for other commands), blocked on the chip in list copy "
++             "reads {:.1f} ms, idle {:.1f} ms (waiting for command lists from the game, polls of "
++             "parked channels, other commands' own work)",
++             seconds, ms(working), ms(recorder_ns), stats.recorder_waits, ms(stats.recorder_in_ns),
++             ms(stats.recorder_out_ns), ms(stats.chip_ns), ms(idle));
++    // (3) The recorder's out-of-work gaps.
++    static constexpr std::array<const char*, ListWait::GapBins> gap_bins{
++        "under 0.1 ms", "0.1-1 ms", "1-5 ms", "5 ms and more"};
++    static constexpr std::array<const char*, ListWait::ReaderStateCount> reader_states{
++        "idle", "working", "stopped for the recorder", "blocked on the chip"};
++    std::string gaps;
++    for (size_t bin = 0; bin < gap_bins.size(); ++bin) {
++        u64 count = 0;
++        u64 ns = 0;
++        std::string by_state;
++        for (size_t state = 0; state < reader_states.size(); ++state) {
++            const u64 state_count = take(shared.gaps[bin][state]);
++            const u64 state_ns = take(shared.gap_ns[bin][state]);
++            count += state_count;
++            ns += state_ns;
++            by_state += fmt::format("{}{} {} ({:.1f} ms)", state == 0 ? "" : ", ",
++                                    reader_states[state], state_count, ms(state_ns));
++        }
++        gaps += fmt::format("{}{} {} ({:.1f} ms; reader then: {})", bin == 0 ? "" : "; ",
++                            gap_bins[bin], count, ms(ns), by_state);
++    }
++    LOG_INFO(HW_GPU, "EDEN_UP_LISTWAIT_STATS recorder out of work in {:.1f} s: {}", seconds,
++             gaps);
++    // (4) Chip waits by the waiting thread.
++    std::string threads;
++    for (size_t thread = 0; thread < ListWait::ThreadCount; ++thread) {
++        u64 count = 0;
++        u64 ns = 0;
++        std::string by_origin;
++        for (size_t origin = 0; origin < ListWait::SharedStats::Origins; ++origin) {
++            const u64 origin_count = take(shared.chip_waits[thread][origin]);
++            const u64 origin_ns = take(shared.chip_wait_ns[thread][origin]);
++            if (origin_count == 0) {
++                continue;
++            }
++            count += origin_count;
++            ns += origin_ns;
++            by_origin += fmt::format("{}{} {} ({:.1f} ms)", by_origin.empty() ? "" : ", ",
++                                     SubmitStats::OriginNames[origin], origin_count, ms(origin_ns));
++        }
++        threads += fmt::format("{}{} {} ({:.1f} ms{}{})", thread == 0 ? "" : "; ",
++                               ListWait::ThreadNames[thread], count, ms(ns),
++                               by_origin.empty() ? "" : ": ", by_origin);
++    }
++    LOG_INFO(HW_GPU,
++             "EDEN_UP_LISTWAIT_STATS chip waits by waiting thread in {:.1f} s (by the waited "
++             "tick's origin with EDEN_UP_SUBMIT_STATS=1, else all \"other\"): {}",
++             seconds, threads);
++    // (6) Mesh draws inside list entries read from a copy.
++    LOG_INFO(HW_GPU,
++             "EDEN_UP_LISTWAIT_STATS mesh draws in {:.1f} s: {} in all; inside list entries "
++             "read from a chip-written copy that are all macro data: {} task, {} lone; inside "
++             "such entries with commands: {} task, {} lone",
++             seconds, take(shared.mesh_draws), take(shared.list_mesh[1][0]),
++             take(shared.list_mesh[1][1]), take(shared.list_mesh[0][0]),
++             take(shared.list_mesh[0][1]));
++    stats = ListWait::ReaderStats{}; // a new window (g_reader_keep stays)
++}
++
+ void GpuSplit::SwitchEngine(Tegra::Engines::EngineInterface* engine) {
+     front_engine = engine;
+     u64* const entry = Reserve(2);
+@@ -1255,11 +1431,23 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
+     const bool counting = g_l949_counting;
+     // 0921 EDEN_UP_GPU_BADALLOC_BACKSTOP=1; off, each entry runs through Execute as before.
+     const bool backstop = GpuBadAllocBackstop::Enabled();
++    // EDEN_UP_LISTWAIT_STATS: one out-of-work gap runs from here running dry to the next entry,
++    // across sleeps the idle hook's requests end early; the hook's own time is left out.
++    const bool listwait = ListWait::Enabled();
++    ListWait::MarkThread(ListWait::Thread::Recorder);
++    u64 gap_start = 0;
++    u64 gap_hook_ns = 0;
++    ListWait::ReaderState gap_reader{};
+     u64 read_position = 0;
+     while (!stop_token.stop_requested()) {
+         Nx2Profile::Report("GPU back thread");
+         u64 available = published.load(std::memory_order_acquire);
+         if (available == read_position) {
++            if (listwait && gap_start == 0) [[unlikely]] {
++                gap_start = ListWait::NowNs();
++                gap_hook_ns = 0;
++                gap_reader = ListWait::GetReaderState();
++            }
+             Nx2Profile::Scope scope{Nx2Profile::Zone::SplitWait};
+             const BackIdleClock idle_clock{back_idle_ns};
+             if (feed_on) {
+@@ -1285,12 +1473,16 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
+                 if (!back_quiet.load(std::memory_order_relaxed)) {
+                     if (idle_hook != nullptr) {
+                         const u64 hook_start = counting ? WaitClockNs() : 0;
++                        const u64 listwait_hook = listwait ? ListWait::NowNs() : 0;
+                         back_going_quiet = true;
+                         {
+                             const SubmitStats::HookScope stats_hook{SubmitStats::Hook::OwnIdle};
+                             idle_hook(idle_argument);
+                         }
+                         back_going_quiet = false;
++                        if (listwait) [[unlikely]] {
++                            gap_hook_ns += ListWait::NowNs() - listwait_hook;
++                        }
+                         if (counting) [[unlikely]] {
+                             L949Count(g_l949_stats.back_hooks);
+                             L949Count(g_l949_stats.back_hook_ns, WaitClockNs() - hook_start);
+@@ -1320,6 +1512,15 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
+                 continue;
+             }
+         }
++        if (gap_start != 0) [[unlikely]] {
++            const u64 gap = ListWait::NowNs() - gap_start;
++            const u64 idle = gap > gap_hook_ns ? gap - gap_hook_ns : 0;
++            const size_t bin = ListWait::GapBin(idle);
++            const auto state = static_cast<size_t>(gap_reader);
++            ListWait::Add(ListWait::g_shared.gaps[bin][state]);
++            ListWait::Add(ListWait::g_shared.gap_ns[bin][state], idle);
++            gap_start = 0;
++        }
+         u64 last_store = read_position;
+         // Before any entry runs, so a front that sees these entries consumed also sees this.
+         back_quiet.store(false, std::memory_order_seq_cst);
+diff --git a/src/video_core/gpu_split.h b/src/video_core/gpu_split.h
+index c8a1710120..634be84da2 100644
+--- a/src/video_core/gpu_split.h
++++ b/src/video_core/gpu_split.h
+@@ -26,6 +26,7 @@
+ #include "common/common_types.h"
+ #include "common/hang_site.h"
+ #include "video_core/gpu_split_sites.h"
++#include "video_core/listwait_stats.h"
+ 
+ namespace Core {
+ class System;
+@@ -181,6 +182,7 @@ public:
+     /// Marks the calling thread as the GPU thread (the front, or the only one without the split).
+     static void MarkGpuThread() {
+         on_gpu_thread = true;
++        ListWait::MarkThread(ListWait::Thread::Reader); // EDEN_UP_LISTWAIT_STATS; else nothing
+     }
+     /// Whether the calling thread owns the Vulkan scheduler: the back while it runs, else the
+     /// GPU thread. Other threads (CPU cores, services) must not record or submit work.
+@@ -1077,6 +1079,8 @@ private:
+     void ReportL1056();
+     /// Front thread, while g_l1094_counting: logs g_l1094_stats every 10 s.
+     void ReportL1094();
++    /// Front thread, EDEN_UP_LISTWAIT_STATS=1: logs ListWait's counters every 10 s.
++    void ReportListWait();
+     /// EDEN_UP_L949_ACQUIRE: NoteSemaphoreWrite with the switch on.
+     void RecordSemaphoreWrite(u64 device_address, u32 payload, bool known);
+     void SelectEngine(Tegra::Engines::EngineInterface* engine) {
+diff --git a/src/video_core/listwait_stats.h b/src/video_core/listwait_stats.h
+new file mode 100644
+index 0000000000..3a210f9a7d
+--- /dev/null
++++ b/src/video_core/listwait_stats.h
+@@ -0,0 +1,314 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <array>
++#include <atomic>
++#include <chrono>
++#include <cstddef>
++
++#include "common/common_types.h"
++#include "common/pe_switch.h"
++
++// EDEN_UP_LISTWAIT_STATS=1 (exact "1", read once; T186a, thread-decouple PLAN stage 0b): counts
++// and logs, every 10 s, where the command reader (the GPU thread, the split's front) waits for
++// the command lists the chip's own culling jobs write (BufferCache::Nx2ReadListCopy), what reads
++// those words, how the reader's time splits, how the recorder (the split's back) runs out of
++// work, which thread every chip wait (MasterSemaphore::Wait, SubmitStats::WaitTimer) runs on, and
++// how many mesh draws run inside such lists. Log only: nothing is sent, waited for or drawn
++// differently, except one deferred marker before and after each list entry read from a copy (the
++// mesh count) and one fence refresh before each blocking copy wait (the chip's backlog). Off,
++// every site tests the cached flag and does nothing. Counters are fixed-size; nothing allocates.
++// GpuSplit::ReportListWait prints them (the GPU thread's loop, GpuSplit::MaybeStart).
++namespace VideoCommon::ListWait {
++
++[[nodiscard]] inline bool Enabled() {
++    static const bool enabled = Common::PeSwitch("EDEN_UP_LISTWAIT_STATS");
++    return enabled;
++}
++
++/// The kind of thread a chip wait runs on.
++enum class Thread : u8 { Other, Reader, Recorder, Fencing, Count };
++inline constexpr std::size_t ThreadCount = static_cast<std::size_t>(Thread::Count);
++inline constexpr std::array<const char*, ThreadCount> ThreadNames{"other", "reader", "recorder",
++                                                                  "fencing thread"};
++/// Set where those threads start (only with the switch on); every other thread stays Other.
++inline thread_local Thread this_thread = Thread::Other;
++inline void MarkThread(Thread kind) {
++    if (Enabled()) {
++        this_thread = kind;
++    }
++}
++
++/// What the reader does now (stored by the reader, read by the recorder at its gaps).
++enum class ReaderState : u8 { Idle, Working, Recorder, Chip, Count };
++inline constexpr std::size_t ReaderStateCount = static_cast<std::size_t>(ReaderState::Count);
++inline std::atomic<u8> g_reader_state{0};
++inline void SetReaderState(ReaderState state) {
++    g_reader_state.store(static_cast<u8>(state), std::memory_order_relaxed);
++}
++[[nodiscard]] inline ReaderState GetReaderState() {
++    return static_cast<ReaderState>(g_reader_state.load(std::memory_order_relaxed));
++}
++
++/// Bins of a blocking list copy read's wait: under 0.1 ms, 0.1-1, 1-5, 5-20, 20 ms and more.
++inline constexpr std::size_t WaitBins = 5;
++[[nodiscard]] inline std::size_t WaitBin(u64 ns) {
++    return ns < 100'000 ? 0 : ns < 1'000'000 ? 1 : ns < 5'000'000 ? 2 : ns < 20'000'000 ? 3 : 4;
++}
++/// Bins of the recorder's out-of-work gaps: under 0.1 ms, 0.1-1, 1-5, 5 ms and more.
++inline constexpr std::size_t GapBins = 4;
++[[nodiscard]] inline std::size_t GapBin(u64 ns) {
++    return ns < 100'000 ? 0 : ns < 1'000'000 ? 1 : ns < 5'000'000 ? 2 : 3;
++}
++
++/// The list copy waits of one entry, left by Nx2ReadListCopy for DmaPusher::Step (reader only;
++/// an entry can span two pages, so they add up).
++struct EntryWait {
++    u64 waits{};
++    u64 ns{};
++    u64 backlog{}; ///< At the longest wait's start: submitted ticks the chip had not finished
++    u64 ahead{};   ///< ...and of those, the ones up to and with the copy's own
++    u64 longest{};
++    u64 since_present{~u64{0}}; ///< ns from the last present to its start (~0: none seen)
++};
++inline thread_local EntryWait t_entry_wait{};
++
++/// The consumer key of an entry that starts with commands and whose words were never read (its
++/// copy changed while it waited: flushed instead).
++inline constexpr u32 UnreadKey = 0xfff00000;
++
++/// The kind of what reads a list's words: the method the entry continues (its data), or the first
++/// header's method when it starts with commands. Grid lists are macro 0xe74's data, mesh count
++/// lists macro 0xe62's (by the PLAN; the table below gives every id as seen).
++enum class Kind : u8 { Grid, Mesh, Other, Count };
++inline constexpr std::size_t KindCount = static_cast<std::size_t>(Kind::Count);
++/// How the entry relates to that method.
++enum class Shape : u8 { WholeData, DataThenCommands, Commands, Count };
++inline constexpr std::array<const char*, 3> ShapeNames{"all its data", "its data, then commands",
++                                                       "commands, first"};
++
++/// One consumer: engine type, method (macros by their entry's even method) and shape.
++struct Consumer {
++    u32 key{~0U}; ///< (engine << 20) | (shape << 16) | method; ~0: free slot
++    u64 reads{};
++    u64 waits{};
++    u64 wait_ns{};
++};
++inline constexpr std::size_t ConsumerSlots = 16;
++
++/// Reader-only counters (the reader also prints them): plain words.
++struct ReaderStats {
++    // (1) list copy reads and their waits.
++    u64 entries{};      ///< Entries read from a list copy (or that waited for one)
++    u64 entry_waits{};  ///< ...of those, entries that waited
++    u64 copy_waits{};   ///< ...their blocking copy reads (one or two an entry: '#1094' copy waits)
++    std::array<u64, WaitBins> bin_waits{};
++    std::array<u64, WaitBins> bin_ns{};
++    std::array<u64, KindCount> kind_reads{};
++    std::array<u64, KindCount> kind_waits{};
++    std::array<u64, KindCount> kind_ns{};
++    std::array<Consumer, ConsumerSlots> consumers{};
++    u64 consumer_overflow{}; ///< Reads whose consumer found no free slot
++    // The window's longest entry wait.
++    u64 longest_ns{};
++    u32 longest_key{};
++    u32 longest_words{};
++    u64 longest_position{}; ///< Its list copy entry's number since the last present
++    u64 longest_since_present_ns{~u64{0}};
++    u64 longest_backlog{};
++    u64 longest_ahead{};
++    bool longest_fell_back{}; ///< The copy changed during the wait: the entry was flushed instead
++    // (2) the reader clock.
++    u64 dispatch_ns{};      ///< Inside DmaPusher::DispatchCalls (list parsing and its waits)
++    u64 recorder_in_ns{};   ///< Waits for the recorder inside it (GpuSplit::WaitFor, DrainAt)
++    u64 recorder_out_ns{};  ///< ...outside it (maps, flushes and other commands)
++    u64 recorder_waits{};
++    u64 chip_ns{};          ///< Blocking list copy waits (inside it)
++};
++inline ReaderStats g_reader{};
++
++/// Reader-only state that outlives a report window.
++struct ReaderKeep {
++    u64 window_start{};
++    u32 report_calls{};
++    u64 frames_reported{}; ///< g_shared.frames at the last report
++    // Position counting.
++    u64 frame_seen{};
++    u64 reads_in_frame{};
++    // The reader clock's open DispatchCalls.
++    u32 dispatch_depth{};
++    u64 dispatch_start{};
++    // (5) the macros whose code was logged, by engine (0: 3D, 1: compute) and entry.
++    std::array<std::array<bool, 0x80>, 2> dumped{};
++    u32 macros_logged{};   ///< ...of those, the ones besides 0xe62 and 0xe74 (MacroLogCap)
++    bool macro_cap_said{}; ///< The one line saying the cap was reached is out
++};
++/// (5) macros logged in a session besides 0xe62 and 0xe74 (12 lines each, once): no more after.
++inline constexpr u32 MacroLogCap = 8;
++inline ReaderKeep g_reader_keep{};
++
++/// Atomics: written by the recorder, the fencing thread and others.
++struct SharedStats {
++    // (3) the recorder's out-of-work gaps, by length and the reader's state when they began.
++    std::array<std::array<std::atomic<u64>, ReaderStateCount>, GapBins> gaps{};
++    std::array<std::array<std::atomic<u64>, ReaderStateCount>, GapBins> gap_ns{};
++    // (4) chip waits by waiting thread and by the origin SubmitStats gives the waited tick.
++    static constexpr std::size_t Origins = 11; ///< SubmitStats::OriginCount
++    std::array<std::array<std::atomic<u64>, Origins>, ThreadCount> chip_waits{};
++    std::array<std::array<std::atomic<u64>, Origins>, ThreadCount> chip_wait_ns{};
++    // (6) mesh draws inside list entries read from a copy: [whole data?][lone?], and all of them.
++    std::array<std::array<std::atomic<u64>, 2>, 2> list_mesh{};
++    std::atomic<u64> mesh_draws{};
++    // Presents (SubmitStats::NoteFrame, with EDEN_UP_SUBMIT_STATS=1) and the last one's time.
++    std::atomic<u64> frames{};
++    std::atomic<u64> last_present_ns{};
++};
++inline SharedStats g_shared{};
++
++/// On the recorder (or the only GPU thread), set by deferred markers around each list entry the
++/// reader took from a copy: 0 outside one, 1 inside an entry with commands, 2 inside an entry that
++/// is all macro data.
++inline std::atomic<u8> g_recorder_in_list{0};
++
++[[nodiscard]] inline u64 NowNs() {
++    return static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                std::chrono::steady_clock::now().time_since_epoch())
++                                .count());
++}
++
++inline void Add(std::atomic<u64>& counter, u64 amount = 1) {
++    counter.fetch_add(amount, std::memory_order_relaxed);
++}
++
++/// The reader: entered or left a wait for the recorder (GpuSplit::WaitFor, DrainAt).
++inline void NoteRecorderWait(u64 ns) {
++    auto& stats = g_reader;
++    ++stats.recorder_waits;
++    (g_reader_keep.dispatch_depth != 0 ? stats.recorder_in_ns : stats.recorder_out_ns) += ns;
++}
++
++/// Times one wait of the reader for the recorder; nothing unless the switch is on and this is
++/// the reader.
++class RecorderWaitScope {
++public:
++    RecorderWaitScope() : on{Enabled() && this_thread == Thread::Reader} {
++        if (on) {
++            previous = GetReaderState();
++            SetReaderState(ReaderState::Recorder);
++            start = NowNs();
++        }
++    }
++    ~RecorderWaitScope() {
++        if (on) {
++            NoteRecorderWait(NowNs() - start);
++            SetReaderState(previous);
++        }
++    }
++    RecorderWaitScope(const RecorderWaitScope&) = delete;
++    RecorderWaitScope& operator=(const RecorderWaitScope&) = delete;
++
++private:
++    bool on;
++    ReaderState previous{};
++    u64 start{};
++};
++
++/// DmaPusher::DispatchCalls: the reader parses lists. Nothing unless the switch is on and this
++/// is the reader (the depth and the clock are the reader's plain words).
++class DispatchScope {
++public:
++    DispatchScope() : on{Enabled() && this_thread == Thread::Reader} {
++        if (on && g_reader_keep.dispatch_depth++ == 0) {
++            g_reader_keep.dispatch_start = NowNs();
++            SetReaderState(ReaderState::Working);
++        }
++    }
++    ~DispatchScope() {
++        if (on && --g_reader_keep.dispatch_depth == 0) {
++            g_reader.dispatch_ns += NowNs() - g_reader_keep.dispatch_start;
++            SetReaderState(ReaderState::Idle);
++        }
++    }
++    DispatchScope(const DispatchScope&) = delete;
++    DispatchScope& operator=(const DispatchScope&) = delete;
++
++private:
++    bool on;
++};
++
++[[nodiscard]] inline Kind KindOf(u32 key) {
++    const u32 method = key & 0xffff;
++    return method == 0xe74 ? Kind::Grid : method == 0xe62 ? Kind::Mesh : Kind::Other;
++}
++
++/// The reader, after an entry on a GPU-written list page went through the copy path: what read
++/// its words (`key`), its size, and the copy waits Nx2ReadListCopy left in t_entry_wait.
++/// `copied`: the words came from a copy (false: the read fell back to a flush).
++inline void NoteEntry(u32 key, u32 words, bool copied) {
++    auto& stats = g_reader;
++    EntryWait& wait = t_entry_wait;
++    if (!copied && wait.waits == 0) {
++        return; // a flush without a copy wait: not this path
++    }
++    ++stats.entries;
++    auto& keep = g_reader_keep;
++    const u64 frames = g_shared.frames.load(std::memory_order_relaxed);
++    if (frames != keep.frame_seen) {
++        keep.frame_seen = frames;
++        keep.reads_in_frame = 0;
++    }
++    const u64 position = ++keep.reads_in_frame;
++    const auto kind = static_cast<std::size_t>(KindOf(key));
++    ++stats.kind_reads[kind];
++    Consumer* slot = nullptr;
++    for (Consumer& consumer : stats.consumers) {
++        if (consumer.key == key || consumer.key == ~0U) {
++            consumer.key = key;
++            slot = &consumer;
++            break;
++        }
++    }
++    if (slot != nullptr) {
++        ++slot->reads;
++    } else {
++        ++stats.consumer_overflow;
++    }
++    if (wait.waits == 0) {
++        return;
++    }
++    ++stats.entry_waits;
++    stats.copy_waits += wait.waits;
++    stats.chip_ns += wait.ns;
++    const std::size_t bin = WaitBin(wait.ns);
++    ++stats.bin_waits[bin];
++    stats.bin_ns[bin] += wait.ns;
++    ++stats.kind_waits[kind];
++    stats.kind_ns[kind] += wait.ns;
++    if (slot != nullptr) {
++        ++slot->waits;
++        slot->wait_ns += wait.ns;
++    }
++    if (wait.ns > stats.longest_ns) {
++        stats.longest_ns = wait.ns;
++        stats.longest_key = key;
++        stats.longest_words = words;
++        stats.longest_position = position;
++        stats.longest_since_present_ns = wait.since_present;
++        stats.longest_backlog = wait.backlog;
++        stats.longest_ahead = wait.ahead;
++        stats.longest_fell_back = !copied;
++    }
++}
++
++/// The recorder (or the only GPU thread): a mesh draw (RasterizerVulkan, after its pipeline).
++inline void NoteMeshDraw(bool lone) {
++    Add(g_shared.mesh_draws);
++    const u8 in_list = g_recorder_in_list.load(std::memory_order_relaxed);
++    if (in_list != 0) {
++        Add(g_shared.list_mesh[in_list == 2 ? 1 : 0][lone ? 1 : 0]);
++    }
++}
++
++} // namespace VideoCommon::ListWait
+diff --git a/src/video_core/renderer_vulkan/vk_buffer_cache.cpp b/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
+index 33a718b935..5939281093 100644
+--- a/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
+@@ -581,6 +581,12 @@ void BufferCacheRuntime::WaitSubmittedTick(u64 tick) {
+     master.Wait(tick);
+ }
+ 
++u64 BufferCacheRuntime::Nx2RefreshedGpuTick() {
++    auto& master = scheduler.GetMasterSemaphore();
++    master.Refresh();
++    return master.KnownGpuTick();
++}
++
+ void BufferCacheRuntime::Finish() {
+     scheduler.Finish();
+ }
+diff --git a/src/video_core/renderer_vulkan/vk_buffer_cache.h b/src/video_core/renderer_vulkan/vk_buffer_cache.h
+index 908eb70e50..d916aae572 100644
+--- a/src/video_core/renderer_vulkan/vk_buffer_cache.h
++++ b/src/video_core/renderer_vulkan/vk_buffer_cache.h
+@@ -168,6 +168,9 @@ public:
+     /// Waits for a submitted tick without flushing: safe on threads other than the GPU thread.
+     void WaitSubmittedTick(u64 tick);
+ 
++    /// EDEN_UP_LISTWAIT_STATS: the GPU tick the chip has finished, read from its fence now.
++    u64 Nx2RefreshedGpuTick();
++
+     void Finish();
+ 
+     /// EDEN_UP_L1028_ASYNC_READBACK (zortos293/Lichii #1028): Finish without the wait, for
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 4421022247..694dd67af5 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -1277,6 +1277,12 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
+     }
+     // Task/mesh pipelines: the draw's vertex count is the number of task workgroups.
+     mesh_draw = pipeline->IsMeshPipeline();
++    // EDEN_UP_LISTWAIT_STATS: mesh draws, and those inside a list entry read from a chip-written
++    // copy (a lone mesh draw has no task program, as the mesh census tells them apart).
++    if (static const bool listwait = VideoCommon::ListWait::Enabled(); listwait && mesh_draw)
++        [[unlikely]] {
++        VideoCommon::ListWait::NoteMeshDraw(pipeline->Key().unique_hashes[3] == 0);
++    }
+     // EDEN_NX2_NO_MESH=1: skip task/mesh draws as before they were supported (A/B comparisons).
+     // EDEN_NX2_NO_MESH_FILE=<path>: skip them while that file exists (checked every 1024 draws),
+     // to compare the same scene with and without them in one run.
+diff --git a/src/video_core/submit_stats.h b/src/video_core/submit_stats.h
+index 51ec8b4506..c9e3e05dc5 100644
+--- a/src/video_core/submit_stats.h
++++ b/src/video_core/submit_stats.h
+@@ -14,6 +14,7 @@
+ #include "common/common_types.h"
+ #include "common/logging.h"
+ #include "common/pe_switch.h"
++#include "video_core/listwait_stats.h"
+ #include "video_core/zpass_cut.h"
+ 
+ namespace VideoCommon::SubmitStats {
+@@ -52,6 +53,7 @@ inline constexpr std::size_t OriginCount = static_cast<std::size_t>(Origin::Coun
+ inline constexpr std::array<const char*, OriginCount> OriginNames{
+     "draws", "astc",   "fence",   "fence flush", "list copy", "idle",
+     "finish", "wait",  "present", "host read",   "other"};
++static_assert(ListWait::SharedStats::Origins == OriginCount);
+ 
+ /// Who made the back's idle hook run. The hook sends a deferred submission.
+ enum class Hook : u8 { None, OwnIdle, Waiter, Drain, Other };
+@@ -198,6 +200,10 @@ inline void NoteGaveUp() {
+ 
+ inline void NoteFrame() {
+     Add(Get().frames);
++    if (ListWait::Enabled()) { // EDEN_UP_LISTWAIT_STATS: presents, for list reads' positions
++        ListWait::g_shared.last_present_ns.store(ListWait::NowNs(), std::memory_order_relaxed);
++        ListWait::Add(ListWait::g_shared.frames);
++    }
+ }
+ 
+ inline void NoteDma(Dma what) {
+@@ -269,24 +275,35 @@ inline void NoteSubmitWait(u64 tick, u64 ns) {
+ 
+ /// Times a wait for the GPU to finish `tick`'s work (MasterSemaphore::Wait, past its quick
+ /// checks). A tick that is not submitted yet shows under the origin that had its slot before.
++/// EDEN_UP_LISTWAIT_STATS=1 also counts it by the waiting thread (ListWait::this_thread).
+ class WaitTimer {
+ public:
+-    explicit WaitTimer(u64 tick_) : tick{tick_}, enabled{Enabled()} {
+-        if (enabled) {
++    explicit WaitTimer(u64 tick_)
++        : tick{tick_}, enabled{Enabled()}, listwait{ListWait::Enabled()} {
++        if (enabled || listwait) {
+             start = std::chrono::steady_clock::now();
+         }
+     }
+     ~WaitTimer() {
+-        if (!enabled) {
++        if (!enabled && !listwait) {
+             return;
+         }
+-        auto& stats = Get();
+-        const auto index = static_cast<std::size_t>(OriginOfTick(tick));
+-        Add(stats.waits[index]);
+-        Add(stats.wait_ns[index],
+-            static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+-                                 std::chrono::steady_clock::now() - start)
+-                                 .count()));
++        const u64 ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                            std::chrono::steady_clock::now() - start)
++                                            .count());
++        // Ticks carry their origin only while these statistics run.
++        const auto index =
++            static_cast<std::size_t>(enabled ? OriginOfTick(tick) : Origin::Other);
++        if (enabled) {
++            auto& stats = Get();
++            Add(stats.waits[index]);
++            Add(stats.wait_ns[index], ns);
++        }
++        if (listwait) {
++            const auto thread = static_cast<std::size_t>(ListWait::this_thread);
++            ListWait::Add(ListWait::g_shared.chip_waits[thread][index]);
++            ListWait::Add(ListWait::g_shared.chip_wait_ns[thread][index], ns);
++        }
+     }
+     WaitTimer(const WaitTimer&) = delete;
+     WaitTimer& operator=(const WaitTimer&) = delete;
+@@ -294,6 +311,7 @@ public:
+ private:
+     u64 tick;
+     bool enabled;
++    bool listwait;
+     std::chrono::steady_clock::time_point start{};
+ };
+ 

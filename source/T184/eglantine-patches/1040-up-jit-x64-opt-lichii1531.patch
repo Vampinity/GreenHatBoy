@@ -1,0 +1,516 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_JIT_X64_OPT=1, four of Lichii PR #1531's dynarmic x64 code generation options (off by default)
+
+Ported from zortos293/Lichii aab5393019 (PR #1531, "dynarmic: x86-64 code generation from #831"),
+author Zortos, co-authors Julius Bairaktaris and the PR's own sources: #717 by
+stephenjayakar and #641. Lichii sets these options for every CPU accuracy but Paranoid; here they
+are behind one switch read once at JIT creation (ArmDynarmic64::MakeJit).
+
+EDEN_UP_JIT_X64_OPT=1 sets in A64 UserConfig (all default false, so unset the emitted code is T181's):
+- scratch_copy_to_free_reg: when an instruction overwrites an operand that is still needed, the
+  register allocator writes into a copy in a free register (SelectARegister picked an empty one)
+  instead of evicting the original (RegAlloc::UseScratchImpl).
+- elide_redundant_zext: SetW and ZeroExtendWordToLong skip `mov r32, r32` for a value in a GPR
+  that a 32-bit instruction produced (A64GetW, A64ReadMemory32, LeastSignificantWord, Add32, Sub32,
+  ConditionalSelect32). With upstream's later fix: only for a value in a register (a spill slot holds
+  just 32 bits); here SetW asks for a register too. The front's XMM case of ZeroExtendWordToLong
+  (scalar-memory.cmake) still comes first.
+- omit_block_frame: A64 blocks no longer save %rbp, point it at the StackLayout and restore it.
+- reuse_host_flags (no cycle counting only): Add/Sub with a GetNZCVFromOp record where their host
+  flags end; an A64SetNZCV of that value right after keeps them marked live (also across the
+  movs of SetW/SetX and the %rbp restore), and EmitCond (If terminals: B.cond) and CSEL then use
+  the host flags (cmc for HI/LS, as sahf+cmc) instead of reloading NZCV from the JIT state. NZCV is
+  still stored. Upstream's CheckBit-in-ZF part is left out: the front's EDEN_JIT_CHECKBIT_FLAGS
+  (fast_paths.cmake) owns those two functions by exact text.
+
+Lines: "EDEN_UP_JIT_X64_OPT core=<n> scratch_copy=1 zext=1 no_frame=1 flags=<0|1>" per JIT, and
+"EDEN_UP_JIT_X64_OPT blocks=<n> frame_omitted=1 scratch_copies=<n> zext_elided=<n> flags_reused=<n>"
+at the 16th compiled block and every power of two (process-wide counts).
+
+Left out of #1531 (not in this patch): host_call_return, halt_check_on_back_edges, compact_block_exits
+and rsb_size (the front replaces the A64 link terminals, PushRSB, the JIT state's RSB and Jit::Impl
+with its shared-JIT versions: shared-jit.cmake, jit_links.inc, jit_push_rsb.inc, jit_impl.inc);
+fast_dispatch_table_bits/set_associative (the table is the front's per-core table, sized by
+EDEN_JIT_DISPATCH_BITS); far_code (EDEN_UP_JIT_COLD_CHUNKS does this here, and the code space is a
+W^X alias); fold_address_offsets (needs a 64-bit fastmem arena, the console has none); spill_to_free_gpr
+(EDEN_JIT_FREE_MOVES, ProsperoEden PR 189, does it); the PushRSB dispatch fix (the front already
+makes it); the tests.
+
+Interaction: with EDEN_JIT_CHECKBIT_FLAGS=1 the CheckBit fusion needs the %rbp restore's bytes, so
+under EDEN_UP_JIT_X64_OPT=1 it no longer fuses (it falls back to the compare: correct, as before
+the fusion).
+
+Not in the kept-store stamp: dynarmic and src/core/arm only. KEEPS THE STORE.
+
+T184 merge: rebased onto 1030 (EDEN_UP_JIT_REGALLOC_BITS). Context lines only: the added and
+removed lines are the same as the T184f original (c1da635). The fix both switches need together
+is in 1041.
+---
+diff --git a/src/core/arm/dynarmic/arm_dynarmic_64.cpp b/src/core/arm/dynarmic/arm_dynarmic_64.cpp
+index 3711b53450..be64ea6c78 100644
+--- a/src/core/arm/dynarmic/arm_dynarmic_64.cpp
++++ b/src/core/arm/dynarmic/arm_dynarmic_64.cpp
+@@ -5,6 +5,7 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include <atomic>
++#include <cstdio>
+ #include <cstdlib>
+ #if defined(_M_X64) || defined(__x86_64__)
+ #include <immintrin.h>
+@@ -407,6 +408,30 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
+         config.fastmem_pointer = std::nullopt;
+         config.fastmem_exclusive_access = false;
+     }
++    // EDEN_UP_JIT_X64_OPT=1 (off by default, read once): x64 code generation options ported from
++    // Lichii PR #1531 (zortos293/Lichii aab5393019, from #831 / #717 by stephenjayakar). Paranoid
++    // keeps dynarmic's defaults. Line "EDEN_UP_JIT_X64_OPT core=..." per JIT, and the
++    // emitter's "EDEN_UP_JIT_X64_OPT blocks=..." count line.
++    static const bool x64_opt = [] {
++        const char* const value = std::getenv("EDEN_UP_JIT_X64_OPT");
++        return value != nullptr && value[0] == '1';
++    }();
++    if (x64_opt && Settings::values.cpu_accuracy.GetValue() != Settings::CpuAccuracy::Paranoid) {
++        // An operand that is overwritten but still needed is copied to a free register instead of
++        // being evicted (often to the stack).
++        config.scratch_copy_to_free_reg = true;
++        // W-register writes and zero-extends of values a 32-bit instruction produced skip the
++        // second `mov r32, r32`.
++        config.elide_redundant_zext = true;
++        // The per-block %rbp frame is three instructions per block that nothing reads.
++        config.omit_block_frame = true;
++        // B.cond and CSEL read the host flags left by the Add/Sub before them instead of reloading
++        // NZCV from the guest state (no cycle counter only).
++        config.reuse_host_flags = !config.enable_cycle_counting;
++        std::printf("EDEN_UP_JIT_X64_OPT core=%zu scratch_copy=1 zext=1 no_frame=1 flags=%d\n",
++                    static_cast<std::size_t>(m_core_index), config.reuse_host_flags ? 1 : 0);
++        std::fflush(stdout);
++    }
+     m_jit.emplace(config);
+ }
+ 
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/a64_emit_x64.cpp b/src/dynarmic/src/dynarmic/backend/x64/a64_emit_x64.cpp
+index fed5708455..0eb50bf248 100644
+--- a/src/dynarmic/src/dynarmic/backend/x64/a64_emit_x64.cpp
++++ b/src/dynarmic/src/dynarmic/backend/x64/a64_emit_x64.cpp
+@@ -9,6 +9,9 @@
+ #include "dynarmic/backend/x64/a64_emit_x64.h"
+ 
+ #include <algorithm>
++#include <atomic>
++#include <bit>
++#include <cstdio>
+ #include <cstdlib>
+ 
+ #include <fmt/format.h>
+@@ -80,6 +83,9 @@ A64EmitX64::A64EmitX64(BlockOfCode& code, A64::UserConfig conf, A64::Jit* jit_in
+     GenTerminalHandlers();
+     code.PreludeComplete();
+     ClearFastDispatchTable();
++    // EDEN_UP_JIT_X64_OPT (arm_dynarmic_64.cpp): read by the shared emitters in
++    // emit_x64_data_processing.cpp.
++    code.elide_redundant_zext = conf.elide_redundant_zext;
+ 
+     if (conf.fastmem_pointer.has_value()) {
+         exception_handler.SetFastmemCallback([this](u64 rip_) {
+@@ -109,14 +115,21 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
+         this->reg_alloc.Reset(gprs_for_block, any_xmm);
+     else
+         new (&this->reg_alloc) RegAlloc(gprs_for_block, any_xmm);
++    reg_alloc.SetScratchCopy(conf.scratch_copy_to_free_reg);
+ 
+     A64EmitContext ctx{conf, reg_alloc, block, shared_labels};
+ 
+     // Start emitting.
+     code.align();
+     const auto* const entrypoint = code.getCurr();
+-    code.mov(code.qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)], rbp);
+-    code.lea(rbp, code.ptr[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer) - 8]);
++    // EDEN_UP_JIT_X64_OPT (Lichii PR #1531): no flag state carries into a block; omit_block_frame
++    // leaves out the %rbp frame, which nothing in the JIT reads.
++    code.nzcv_flags_pos = nullptr;
++    code.nzcv_live_pos = nullptr;
++    if (!conf.omit_block_frame) {
++        code.mov(code.qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)], rbp);
++        code.lea(rbp, code.ptr[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer) - 8]);
++    }
+ 
+     DEBUG_ASSERT(block.GetCondition() == IR::Cond::AL);
+     typedef void (EmitX64::*EmitHandlerFn)(EmitContext& context, IR::Inst* inst);
+@@ -168,11 +181,33 @@ finish_this_inst:
+     }
+ 
+     reg_alloc.AssertNoMoreUses();
+-    if (conf.enable_cycle_counting)
++    if (conf.enable_cycle_counting) {
+         EmitAddCycles(block.CycleCount());
+-    code.mov(rbp, code.qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)]);
++        code.nzcv_live_pos = nullptr;
++    }
++    if (!conf.omit_block_frame) {
++        // mov leaves the flags alone.
++        const bool flags_live = code.nzcv_live_pos != nullptr && code.nzcv_live_pos == code.getCurr();
++        code.mov(rbp, code.qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)]);
++        if (flags_live)
++            code.nzcv_live_pos = code.getCurr();
++    }
+     EmitTerminal(block.terminal, ctx.Location().SetSingleStepping(false), ctx.IsSingleStep());
++    code.nzcv_flags_pos = nullptr;
++    code.nzcv_live_pos = nullptr;
+     code.int3();
++    if (conf.omit_block_frame || conf.elide_redundant_zext || conf.scratch_copy_to_free_reg || conf.reuse_host_flags) {
++        // EDEN_UP_JIT_X64_OPT count line: the 16th block, then every power of two.
++        const u64 blocks = eden_x64_opt_blocks.fetch_add(1, std::memory_order_relaxed) + 1;
++        if (blocks >= 16 && std::has_single_bit(blocks)) {
++            std::printf("EDEN_UP_JIT_X64_OPT blocks=%llu frame_omitted=%d scratch_copies=%llu zext_elided=%llu flags_reused=%llu\n",
++                        static_cast<unsigned long long>(blocks), conf.omit_block_frame ? 1 : 0,
++                        static_cast<unsigned long long>(eden_x64_opt_scratch_copies.load(std::memory_order_relaxed)),
++                        static_cast<unsigned long long>(eden_x64_opt_zext_elided.load(std::memory_order_relaxed)),
++                        static_cast<unsigned long long>(eden_x64_opt_flags_reused.load(std::memory_order_relaxed)));
++            std::fflush(stdout);
++        }
++    }
+     // EDEN_UP_JIT_COLD_CHUNKS=1: the slow paths go into a cold chunk (BlockOfCode::BeginColdCode).
+     const bool has_slow_paths = !ctx.deferred_emits.empty();
+     const CodePtr hot_end = has_slow_paths ? code.BeginColdCode() : CodePtr(code.getCurr());
+@@ -344,9 +379,16 @@ void A64EmitX64::EmitA64SetNZCVRaw(A64EmitContext& ctx, IR::Inst* inst) {
+ }
+ 
+ void A64EmitX64::EmitA64SetNZCV(A64EmitContext& ctx, IR::Inst* inst) {
++    // EDEN_UP_JIT_X64_OPT (reuse_host_flags, Lichii PR #1531): stored right after the Add/Sub that
++    // set it (nothing emitted in between), the host flags stay equal to the stored NZCV until the
++    // next flag-changing instruction.
++    const bool flags_live = conf.reuse_host_flags && !conf.enable_cycle_counting && code.nzcv_flags_pos != nullptr &&
++                            code.nzcv_flags_pos == code.getCurr() && !inst->GetArg(0).IsImmediate() &&
++                            code.nzcv_flags_inst == static_cast<const void*>(inst->GetArg(0).GetInst());
+     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+     const Xbyak::Reg32 to_store = ctx.reg_alloc.UseScratchGpr(code, args[0]).cvt32();
+     code.mov(dword[code.ABI_JIT_PTR + offsetof(A64JitState, cpsr_nzcv)], to_store);
++    code.nzcv_live_pos = flags_live ? code.getCurr() : nullptr;
+ }
+ 
+ void A64EmitX64::EmitA64GetW(A64EmitContext& ctx, IR::Inst* inst) {
+@@ -416,20 +458,32 @@ void A64EmitX64::EmitA64GetFPSR(A64EmitContext& ctx, IR::Inst* inst) {
+ }
+ 
+ void A64EmitX64::EmitA64SetW(A64EmitContext& ctx, IR::Inst* inst) {
++    // EDEN_UP_JIT_X64_OPT (reuse_host_flags): only movs below, live host flags stay live.
++    const bool flags_live = code.nzcv_live_pos != nullptr && code.nzcv_live_pos == code.getCurr();
+     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+     const A64::Reg reg = inst->GetArg(0).GetA64RegRef();
+     const auto addr = qword[code.ABI_JIT_PTR + offsetof(A64JitState, reg) + sizeof(u64) * static_cast<size_t>(reg)];
+     if (args[1].FitsInImmediateS32()) {
+         code.mov(addr, args[1].GetImmediateS32());
++    } else if (conf.elide_redundant_zext && !args[1].IsImmediate() && IsZeroExtendedU32Producer(args[1].GetInst()) &&
++               args[1].IsInGpr(ctx.reg_alloc)) {
++        // EDEN_UP_JIT_X64_OPT (elide_redundant_zext, Lichii PR #1531): a 32-bit instruction wrote
++        // this register, its upper half is already zero. Here only for a value in a register.
++        const Xbyak::Reg64 to_store = ctx.reg_alloc.UseGpr(code, args[1]);
++        code.mov(addr, to_store);
++        eden_x64_opt_zext_elided.fetch_add(1, std::memory_order_relaxed);
+     } else {
+         // TODO: zext tracking, xmm variant
+         const Xbyak::Reg64 to_store = ctx.reg_alloc.UseScratchGpr(code, args[1]);
+         code.mov(to_store.cvt32(), to_store.cvt32());
+         code.mov(addr, to_store);
+     }
++    if (flags_live)
++        code.nzcv_live_pos = code.getCurr();
+ }
+ 
+ void A64EmitX64::EmitA64SetX(A64EmitContext& ctx, IR::Inst* inst) {
++    const bool flags_live = code.nzcv_live_pos != nullptr && code.nzcv_live_pos == code.getCurr();
+     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+     const A64::Reg reg = inst->GetArg(0).GetA64RegRef();
+     const auto addr = qword[code.ABI_JIT_PTR + offsetof(A64JitState, reg) + sizeof(u64) * static_cast<size_t>(reg)];
+@@ -442,6 +496,8 @@ void A64EmitX64::EmitA64SetX(A64EmitContext& ctx, IR::Inst* inst) {
+         const Xbyak::Reg64 to_store = ctx.reg_alloc.UseGpr(code, args[1]);
+         code.mov(addr, to_store);
+     }
++    if (flags_live)
++        code.nzcv_live_pos = code.getCurr();
+ }
+ 
+ void A64EmitX64::EmitA64SetS(A64EmitContext& ctx, IR::Inst* inst) {
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/block_of_code.h b/src/dynarmic/src/dynarmic/backend/x64/block_of_code.h
+index 5ceb2116e0..72b8b5626f 100644
+--- a/src/dynarmic/src/dynarmic/backend/x64/block_of_code.h
++++ b/src/dynarmic/src/dynarmic/backend/x64/block_of_code.h
+@@ -9,6 +9,7 @@
+ #pragma once
+ 
+ #include <array>
++#include <atomic>
+ #include <functional>
+ #include <memory>
+ #include <type_traits>
+@@ -30,6 +31,13 @@ namespace Dynarmic::Backend::X64 {
+ 
+ using CodePtr = const void*;
+ 
++// EglantinePS5 (EDEN_UP_JIT_X64_OPT): how often each ported x64 code generation option acted, in
++// every JIT of the process (A64EmitX64::Emit prints them). Defined in emit_x64.cpp.
++extern std::atomic<u64> eden_x64_opt_blocks;
++extern std::atomic<u64> eden_x64_opt_scratch_copies;
++extern std::atomic<u64> eden_x64_opt_zext_elided;
++extern std::atomic<u64> eden_x64_opt_flags_reused;
++
+ struct RunCodeCallbacks {
+     ArgCallback LookupBlock;
+     ArgCallback AddTicks;
+@@ -179,6 +187,16 @@ public:
+ 
+     bool HasHostFeature(HostFeature feature) const noexcept;
+ 
++    // EglantinePS5 (EDEN_UP_JIT_X64_OPT), from Lichii PR #1531. Flag reuse (A64 reuse_host_flags):
++    // the host flags equal the guest NZCV (x64 layout, CF in ARM polarity) while
++    // getCurr() == nzcv_live_pos. nzcv_flags_pos/inst: the flags of the Add/Sub that defined
++    // nzcv_flags_inst (a GetNZCVFromOp) are live while getCurr() == nzcv_flags_pos.
++    const void* nzcv_live_pos = nullptr;
++    const void* nzcv_flags_pos = nullptr;
++    const void* nzcv_flags_inst = nullptr;
++    /// A64 elide_redundant_zext.
++    bool elide_redundant_zext = false;
++
+ private:
+     using RunCodeFuncType = HaltReason (*)(void*, CodePtr);
+     static constexpr size_t MXCSR_ALREADY_EXITED = 1 << 0;
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/emit_x64.cpp b/src/dynarmic/src/dynarmic/backend/x64/emit_x64.cpp
+index aea2c66593..d2014d3f5e 100644
+--- a/src/dynarmic/src/dynarmic/backend/x64/emit_x64.cpp
++++ b/src/dynarmic/src/dynarmic/backend/x64/emit_x64.cpp
+@@ -63,6 +63,27 @@ void EmitX64::EmitInvalid(EmitContext&, IR::Inst* inst) {
+ void EmitX64::EmitVoid(EmitContext&, IR::Inst*) {
+ }
+ 
++// EglantinePS5 (EDEN_UP_JIT_X64_OPT): block_of_code.h.
++std::atomic<u64> eden_x64_opt_blocks{0};
++std::atomic<u64> eden_x64_opt_scratch_copies{0};
++std::atomic<u64> eden_x64_opt_zext_elided{0};
++std::atomic<u64> eden_x64_opt_flags_reused{0};
++
++// From Lichii PR #1531 (elide_redundant_zext).
++bool IsZeroExtendedU32Producer(const IR::Inst* inst) noexcept {
++    switch (inst->GetOpcode()) {
++    case IR::Opcode::A64GetW:              // mov r32, [mem]
++    case IR::Opcode::A64ReadMemory32:      // mov r32, [mem]; the fallbacks zero-extend
++    case IR::Opcode::LeastSignificantWord: // mov r32, r32
++    case IR::Opcode::Add32:                // add/adc/lea r32
++    case IR::Opcode::Sub32:                // sub/sbb/add/lea r32
++    case IR::Opcode::ConditionalSelect32:  // cmovcc r32 always clears the upper half
++        return true;
++    default:
++        return false;
++    }
++}
++
+ void EmitX64::EmitIdentity(EmitContext& ctx, IR::Inst* inst) {
+     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+     if (!args[0].IsImmediate()) {
+@@ -295,9 +316,18 @@ void EmitX64::EmitAddCycles(size_t cycles) {
+ Xbyak::Label EmitX64::EmitCond(IR::Cond cond) {
+     Xbyak::Label pass;
+ 
+-    code.mov(eax, dword[code.ABI_JIT_PTR + code.GetJitStateInfo().offsetof_cpsr_nzcv]);
+-
+-    code.LoadRequiredFlagsForCondFromRax(cond);
++    if (code.nzcv_live_pos != nullptr && code.nzcv_live_pos == code.getCurr()) {
++        // EDEN_UP_JIT_X64_OPT (reuse_host_flags, Lichii PR #1531): the host flags still hold the
++        // guest NZCV with CF in ARM polarity, as after sahf.
++        if (cond == IR::Cond::HI || cond == IR::Cond::LS) {
++            code.cmc();
++        }
++        code.nzcv_live_pos = nullptr;
++        eden_x64_opt_flags_reused.fetch_add(1, std::memory_order_relaxed);
++    } else {
++        code.mov(eax, dword[code.ABI_JIT_PTR + code.GetJitStateInfo().offsetof_cpsr_nzcv]);
++        code.LoadRequiredFlagsForCondFromRax(cond);
++    }
+ 
+     switch (cond) {
+     case IR::Cond::EQ:
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/emit_x64.h b/src/dynarmic/src/dynarmic/backend/x64/emit_x64.h
+index 327cac7668..5a37306811 100644
+--- a/src/dynarmic/src/dynarmic/backend/x64/emit_x64.h
++++ b/src/dynarmic/src/dynarmic/backend/x64/emit_x64.h
+@@ -71,6 +71,10 @@ struct EmitContext {
+     boost::container::stable_vector<Xbyak::Label>& shared_labels;
+ };
+ 
++/// True when the producer of a U32 value always writes it with a 32-bit instruction, so its
++/// host register is already zero-extended to 64 bits (EDEN_UP_JIT_X64_OPT, Lichii PR #1531).
++bool IsZeroExtendedU32Producer(const IR::Inst* inst) noexcept;
++
+ class EmitX64 {
+ public:
+     struct BlockDescriptor {
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/emit_x64_data_processing.cpp b/src/dynarmic/src/dynarmic/backend/x64/emit_x64_data_processing.cpp
+index d05d4aa036..615ffeec81 100644
+--- a/src/dynarmic/src/dynarmic/backend/x64/emit_x64_data_processing.cpp
++++ b/src/dynarmic/src/dynarmic/backend/x64/emit_x64_data_processing.cpp
+@@ -138,15 +138,25 @@ void EmitX64::EmitTestBit(EmitContext& ctx, IR::Inst* inst) {
+ 
+ static void EmitConditionalSelect(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, int bitsize) {
+     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
++    // EDEN_UP_JIT_X64_OPT (reuse_host_flags, Lichii PR #1531): register moves leave the flags
++    // alone; loading an immediate may not (xor).
++    const bool flags_live = code.nzcv_live_pos != nullptr && code.nzcv_live_pos == code.getCurr() && !args[1].IsImmediate() && !args[2].IsImmediate();
++    const IR::Cond cond = args[0].GetImmediateCond();
+     const Xbyak::Reg32 nzcv = ctx.reg_alloc.ScratchGpr(code, HostLoc::RAX).cvt32();
+     const Xbyak::Reg then_ = ctx.reg_alloc.UseGpr(code, args[1]).changeBit(bitsize);
+     const Xbyak::Reg else_ = ctx.reg_alloc.UseScratchGpr(code, args[2]).changeBit(bitsize);
+ 
+-    code.mov(nzcv, dword[code.ABI_JIT_PTR + code.GetJitStateInfo().offsetof_cpsr_nzcv]);
+-
+-    code.LoadRequiredFlagsForCondFromRax(args[0].GetImmediateCond());
++    if (flags_live) {
++        if (cond == IR::Cond::HI || cond == IR::Cond::LS) {
++            code.cmc();
++        }
++        eden_x64_opt_flags_reused.fetch_add(1, std::memory_order_relaxed);
++    } else {
++        code.mov(nzcv, dword[code.ABI_JIT_PTR + code.GetJitStateInfo().offsetof_cpsr_nzcv]);
++        code.LoadRequiredFlagsForCondFromRax(cond);
++    }
+ 
+-    switch (args[0].GetImmediateCond()) {
++    switch (cond) {
+     case IR::Cond::EQ:
+         code.cmovz(else_, then_);
+         break;
+@@ -198,6 +208,9 @@ static void EmitConditionalSelect(BlockOfCode& code, EmitContext& ctx, IR::Inst*
+     }
+ 
+     ctx.reg_alloc.DefineValue(code, inst, else_);
++    if (flags_live && cond != IR::Cond::HI && cond != IR::Cond::LS) {
++        code.nzcv_live_pos = code.getCurr();
++    }
+ }
+ 
+ void EmitX64::EmitConditionalSelect32(EmitContext& ctx, IR::Inst* inst) {
+@@ -995,6 +1008,12 @@ static void EmitAdd(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, size_t
+         ctx.reg_alloc.DefineValue(code, overflow_inst, overflow);
+     }
+     ctx.reg_alloc.DefineValue(code, inst, result);
++    if (nzcv_inst) {
++        // EDEN_UP_JIT_X64_OPT (reuse_host_flags): setc/seto leave the flags alone, they still
++        // hold what lahf/seto captured.
++        code.nzcv_flags_pos = code.getCurr();
++        code.nzcv_flags_inst = nzcv_inst;
++    }
+ }
+ 
+ void EmitX64::EmitAdd32(EmitContext& ctx, IR::Inst* inst) {
+@@ -1097,6 +1116,10 @@ static void EmitSub(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, int bit
+     if (!is_cmp) {
+         ctx.reg_alloc.DefineValue(code, inst, result);
+     }
++    if (nzcv_inst) {
++        code.nzcv_flags_pos = code.getCurr();
++        code.nzcv_flags_inst = nzcv_inst;
++    }
+ }
+ 
+ void EmitX64::EmitSub32(EmitContext& ctx, IR::Inst* inst) {
+@@ -1509,6 +1532,14 @@ void EmitX64::EmitZeroExtendHalfToLong(EmitContext& ctx, IR::Inst* inst) {
+ 
+ void EmitX64::EmitZeroExtendWordToLong(EmitContext& ctx, IR::Inst* inst) {
+     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
++    // EDEN_UP_JIT_X64_OPT (elide_redundant_zext, Lichii PR #1531). Only a register is known to be
++    // zero-extended: a spill slot holds just the 32 bits written to it, and the 64-bit value
++    // aliasing it may be read straight from the slot as a memory operand.
++    if (code.elide_redundant_zext && !args[0].IsImmediate() && IsZeroExtendedU32Producer(args[0].GetInst()) && args[0].IsInGpr(ctx.reg_alloc)) {
++        ctx.reg_alloc.DefineValue(code, inst, args[0]);
++        eden_x64_opt_zext_elided.fetch_add(1, std::memory_order_relaxed);
++        return;
++    }
+     const Xbyak::Reg64 result = ctx.reg_alloc.UseScratchGpr(code, args[0]);
+     code.mov(result.cvt32(), result.cvt32());  // x64 zeros upper 32 bits on a 32-bit move
+     ctx.reg_alloc.DefineValue(code, inst, result);
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/reg_alloc.cpp b/src/dynarmic/src/dynarmic/backend/x64/reg_alloc.cpp
+index c0a432d174..99cf8d0bda 100644
+--- a/src/dynarmic/src/dynarmic/backend/x64/reg_alloc.cpp
++++ b/src/dynarmic/src/dynarmic/backend/x64/reg_alloc.cpp
+@@ -355,6 +355,18 @@ HostLoc RegAlloc::UseScratchImpl(BlockOfCode& code, IR::Value use_value, std::bi
+         if (LocInfo(current_location).IsLastUse()) {
+             LocInfo(current_location).is_set_last_use = true;
+         } else {
++            if (scratch_copy) {
++                // EDEN_UP_JIT_X64_OPT (Lichii PR #1531): the value is still needed, so write into a
++                // copy in a free register and leave the original where it is, instead of evicting
++                // the original (often to the stack).
++                const HostLoc copy_location = SelectARegister(desired_locations);
++                if (LocInfo(copy_location).IsEmpty()) {
++                    CopyToScratch(code, bit_width, copy_location, current_location);
++                    LocInfo(copy_location).WriteLock();
++                    eden_x64_opt_scratch_copies.fetch_add(1, std::memory_order_relaxed);
++                    return copy_location;
++                }
++            }
+             MoveOutOfTheWay(code, current_location);
+         }
+         LocInfo(current_location).WriteLock();
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/reg_alloc.h b/src/dynarmic/src/dynarmic/backend/x64/reg_alloc.h
+index 1896ddc8d4..f70c062c24 100644
+--- a/src/dynarmic/src/dynarmic/backend/x64/reg_alloc.h
++++ b/src/dynarmic/src/dynarmic/backend/x64/reg_alloc.h
+@@ -117,6 +117,10 @@ public:
+     inline bool IsVoid() const noexcept {
+         return GetType() == IR::Type::Void;
+     }
++    /// The producing instruction of a non-immediate argument.
++    inline IR::Inst* GetInst() const noexcept {
++        return value.GetInst();
++    }
+ 
+     bool FitsInImmediateU32() const noexcept;
+     bool FitsInImmediateS32() const noexcept;
+@@ -153,6 +157,10 @@ public:
+     /// spill-slot search visit only the locations the bitmasks below name (Lichii PR #1517).
+     static bool BitsSwitch() noexcept;
+     void Reset(std::bitset<32> new_gpr_order, std::bitset<32> new_xmm_order) noexcept;
++    /// UserConfig::scratch_copy_to_free_reg (EDEN_UP_JIT_X64_OPT).
++    inline void SetScratchCopy(bool on) noexcept {
++        scratch_copy = on;
++    }
+ 
+     ArgumentInfo GetArgumentInfo(const IR::Inst* inst) noexcept;
+     void RegisterPseudoOperation(const IR::Inst* inst) noexcept;
+@@ -323,6 +331,7 @@ private:
+     alignas(64) std::array<HostLocInfo, NonSpillHostLocCount + SpillCount> hostloc_info;
+     std::bitset<32> gpr_order;
+     std::bitset<32> xmm_order;
++    bool scratch_copy = false;
+     size_t reserved_stack_space = 0;
+     u64 dirty_lo = 0;
+     u64 dirty_hi = 0;
+diff --git a/src/dynarmic/src/dynarmic/interface/A64/config.h b/src/dynarmic/src/dynarmic/interface/A64/config.h
+index 41c140de87..b6df24252b 100644
+--- a/src/dynarmic/src/dynarmic/interface/A64/config.h
++++ b/src/dynarmic/src/dynarmic/interface/A64/config.h
+@@ -283,6 +283,25 @@ struct UserConfig {
+     /// callbacks.
+     bool recompile_on_exclusive_fastmem_failure = true;
+ 
++    /// EglantinePS5 (EDEN_UP_JIT_X64_OPT, from Lichii PR #1531 / #717): x64 code generation
++    /// options, all off by default (the code is then emitted as before).
++    /// x64 only. When an instruction overwrites an operand that is still needed later, the
++    /// register allocator writes into a copy in a free register instead of evicting the original.
++    bool scratch_copy_to_free_reg = false;
++
++    /// x64 only. A 32-bit value known to be zero-extended in its host register (written by a
++    /// 32-bit instruction) is not zero-extended again by SetW / ZeroExtendWordToLong.
++    bool elide_redundant_zext = false;
++
++    /// x64 only. Blocks do not save and set up %rbp as a frame pointer (nothing in the JIT
++    /// reads it).
++    bool omit_block_frame = false;
++
++    /// x64 only, without cycle counting. Conditional branches (If terminals) and CSEL use the
++    /// host flags directly when the flag-setting Add/Sub was emitted right before the NZCV store,
++    /// instead of reloading NZCV from the guest state (the state is still written).
++    bool reuse_host_flags = false;
++
+     /// This option relates to translation. Generally when we run into an unpredictable
+     /// instruction the ExceptionRaised callback is called. If this is true, we define
+     /// definite behaviour for some unpredictable instructions.

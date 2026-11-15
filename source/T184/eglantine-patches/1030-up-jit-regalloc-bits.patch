@@ -1,0 +1,455 @@
+From: EglantinePS5
+Subject: [PATCH] EDEN_UP_JIT_REGALLOC_BITS=1: dynarmic x64 RegAlloc tracks changed and occupied locations in bitmasks instead of scanning all 102 (Lichii PR #1517); off by default
+
+Port of zortos293/Lichii commit 8ddb4b9a386729f62496de630925b4acca168181 (PR #1517, "dynarmic:
+RegAlloc tracks slots in bitmasks instead of scanning all 102"), by Zortos, co-authored by Liomar
+Oliveira, GPL-3.0-or-later. Upstream measured JIT compile time -27%.
+
+What upstream found: after every IR instruction EndOfAllocScope looks at all 102 host locations
+(16 GPR, 16 XMM, 6 flags, 64 spill slots), every value lookup (ValueLocation, used by
+GetArgumentInfo, IsValueLive, DefineValue) scans them in order, the spill-slot search walks the 64
+spill slots, and each block constructs the allocator again (5.7 KB zeroed). With bitmasks of the
+locations changed since the last scope end (dirty) and of those holding values (occupied), each of
+these visits only the few locations that matter, and a block start zeroes only what changed.
+
+Here (core only): the masks are kept in both modes (a few ORs per allocation, never read with the
+switch off); the switch picks which code reads them.
+- EDEN_UP_JIT_REGALLOC_BITS, exact "1" (Common::PeSwitch), read once at the first block, after
+  env.txt, as EDEN_UP_JIT_COLD_CHUNKS. Unset: the emitters construct the allocator as before and
+  EndOfAllocScope, ValueLocation, FindFreeSpill and AssertNoMoreUses run T181's scans; every
+  allocation decision and the emitted code are T181's.
+- On: RegAlloc::Reset instead of the placement new; the scope end releases only dirty locations;
+  ValueLocation visits occupied ones in the same ascending order; FindFreeSpill takes the lowest
+  spill slot without values.
+- Why the output is the same with it on (same IR -> same code): a location is changed only by a
+  lock (Read/WriteLock: the six lock sites mark it), an argument reference (both sites mark it), a
+  new value (DefineValueImpl marks it), Move (marks the target; the source becomes a new empty
+  one) or Exchange (marks both); ReleaseOne through Release only follows a lock in the same
+  instruction. So at each scope end every location outside the dirty set is still in the released
+  state the previous scope end left it in, and upstream's `if (!IsReleased()) ReleaseAll()` would
+  not change it. Values appear only through AddValue, Move and Exchange and disappear only through
+  ReleaseAll (scope end or Release) and Move's source; each of those updates the occupied bit, so
+  it equals "values not empty" exactly, ValueLocation finds the same first match, and FindFreeSpill
+  finds the same first empty spill slot (spill slots are never locked, so IsEmpty there is "no
+  values"). A released, empty location equals a new one except lru_counter (when values clear,
+  ReleaseAll zeroes the use counts and width), so Reset zeroes lru_counter only on locations that
+  can hold a non-zero one.
+- Differences from upstream: upstream's touched mask covers registers only; here every target of a
+  Move or Exchange is marked too (a spill slot that took a register's lru_counter and was later
+  emptied by ReleaseAll would otherwise keep it into the next block and pass it back to a
+  register); Reset rebuilds all locations when a block did not end clean (any occupied or dirty
+  bit left), where upstream relies on a debug assert; upstream removed the constructor, here it
+  stays for the switch-off path. Upstream is always on.
+- The front's reg_alloc.cmake still finds "if (!iter.IsReleased())" in reg_alloc.h and takes its
+  codegen-only rewrite (MoveOutOfTheWay's free moves, R13 in SelectARegister); both of its anchors
+  are unchanged. Its free-move path moves through Move, so it keeps the masks right.
+- Log: "EDEN_UP_JIT_REGALLOC_BITS on=1" once at the first block; "EDEN_UP_JIT_REGALLOC_BITS
+  blocks=N full_resets=M" every 65536 blocks over all emitters (full_resets should stay 0).
+
+Store: dynarmic is not a translation id input and no name is added to TranslationSwitches:
+KEEPS THE STORE.
+
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/a32_emit_x64.cpp b/src/dynarmic/src/dynarmic/backend/x64/a32_emit_x64.cpp
+index f65d21f..fbcdb2f 100644
+--- a/src/dynarmic/src/dynarmic/backend/x64/a32_emit_x64.cpp
++++ b/src/dynarmic/src/dynarmic/backend/x64/a32_emit_x64.cpp
+@@ -103,14 +103,19 @@ A32EmitX64::BlockDescriptor A32EmitX64::Emit(IR::Block& block) {
+     }
+ 
+     code.EnableWriting();
+-    new (&this->reg_alloc) RegAlloc([this] {
++    const std::bitset<32> gprs_for_block = [this] {
+         std::bitset<32> gprs{any_gpr};
+         if (conf.fastmem_pointer)
+             gprs.reset(size_t(HostLoc::R13));
+         if (conf.page_table)
+             gprs.reset(size_t(HostLoc::R14));
+         return gprs;
+-    }(), any_xmm);
++    }();
++    // EDEN_UP_JIT_REGALLOC_BITS=1: reuse the allocator (RegAlloc::Reset); off: a new one as before.
++    if (RegAlloc::BitsSwitch())
++        this->reg_alloc.Reset(gprs_for_block, any_xmm);
++    else
++        new (&this->reg_alloc) RegAlloc(gprs_for_block, any_xmm);
+ 
+     A32EmitContext ctx{conf, reg_alloc, block, shared_labels};
+ 
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/a64_emit_x64.cpp b/src/dynarmic/src/dynarmic/backend/x64/a64_emit_x64.cpp
+index f7340ce..fed5708 100644
+--- a/src/dynarmic/src/dynarmic/backend/x64/a64_emit_x64.cpp
++++ b/src/dynarmic/src/dynarmic/backend/x64/a64_emit_x64.cpp
+@@ -96,14 +96,19 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
+     }
+ 
+     code.EnableWriting();
+-    new (&this->reg_alloc) RegAlloc{[this] {
++    const std::bitset<32> gprs_for_block = [this] {
+         std::bitset<32> gprs = any_gpr;
+         if (conf.fastmem_pointer)
+             gprs.reset(size_t(HostLoc::R13));
+         if (conf.page_table)
+             gprs.reset(size_t(HostLoc::R14));
+         return gprs;
+-    }(), any_xmm};
++    }();
++    // EDEN_UP_JIT_REGALLOC_BITS=1: reuse the allocator (RegAlloc::Reset); off: a new one as before.
++    if (RegAlloc::BitsSwitch())
++        this->reg_alloc.Reset(gprs_for_block, any_xmm);
++    else
++        new (&this->reg_alloc) RegAlloc(gprs_for_block, any_xmm);
+ 
+     A64EmitContext ctx{conf, reg_alloc, block, shared_labels};
+ 
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/reg_alloc.cpp b/src/dynarmic/src/dynarmic/backend/x64/reg_alloc.cpp
+index 4f3d253..c0a432d 100644
+--- a/src/dynarmic/src/dynarmic/backend/x64/reg_alloc.cpp
++++ b/src/dynarmic/src/dynarmic/backend/x64/reg_alloc.cpp
+@@ -7,6 +7,8 @@
+  */
+ 
+ #include <algorithm>
++#include <atomic>
++#include <cstdio>
+ #include <limits>
+ #include <numeric>
+ #include <utility>
+@@ -14,6 +16,7 @@
+ #include <fmt/ostream.h>
+ #include "dynarmic/backend/x64/hostloc.h"
+ #include "common/assert.h"
++#include "common/pe_switch.h"
+ #include <bit>
+ #include "dynarmic/backend/x64/xbyak.h"
+ 
+@@ -189,6 +192,53 @@ RegAlloc::RegAlloc(std::bitset<32> gpr_order, std::bitset<32> xmm_order) noexcep
+     : gpr_order(gpr_order), xmm_order(xmm_order)
+ {}
+ 
++// EDEN_UP_JIT_REGALLOC_BITS=1 (exact "1"), read once at the first block (after env.txt), as
++// EDEN_UP_JIT_COLD_CHUNKS. Ported from zortos293/Lichii commit 8ddb4b9a38 (PR #1517, Zortos, with
++// Liomar Oliveira), GPL-3.0-or-later.
++bool RegAlloc::BitsSwitch() noexcept {
++    static const bool on = [] {
++        const bool value = ::Common::PeSwitch("EDEN_UP_JIT_REGALLOC_BITS");
++        if (value)
++            std::printf("EDEN_UP_JIT_REGALLOC_BITS on=1\n");
++        return value;
++    }();
++    return on;
++}
++
++// Instead of constructing the allocator again for each block (zeroing all 102 locations), put it
++// back the way a new one starts. At a block's end every location is released and empty
++// (AssertNoMoreUses), and a released empty location equals a new one except for lru_counter, so
++// only the touched ones are zeroed. A block that did not end cleanly (a location still holds a
++// value or was changed after the last scope end) gets every location rebuilt: full_resets.
++void RegAlloc::Reset(std::bitset<32> new_gpr_order, std::bitset<32> new_xmm_order) noexcept {
++    static std::atomic<u64> blocks{0};
++    static std::atomic<u64> full_resets{0};
++    if ((occupied_lo | occupied_hi | dirty_lo | dirty_hi) != 0) {
++        for (auto& info : hostloc_info)
++            info = HostLocInfo{};
++        full_resets.fetch_add(1, std::memory_order_relaxed);
++    } else {
++        for (u64 bits = touched_lo; bits != 0; bits &= bits - 1)
++            hostloc_info[size_t(std::countr_zero(bits))].lru_counter = 0;
++        for (u64 bits = touched_hi; bits != 0; bits &= bits - 1)
++            hostloc_info[64 + size_t(std::countr_zero(bits))].lru_counter = 0;
++    }
++    DEBUG_ASSERT(std::all_of(hostloc_info.begin(), hostloc_info.end(), [](const auto& h) noexcept {
++        return h.IsEmpty() && h.IsReleased() && h.lru_counter == 0;
++    }));
++    gpr_order = new_gpr_order;
++    xmm_order = new_xmm_order;
++    reserved_stack_space = 0;
++    dirty_lo = dirty_hi = 0;
++    occupied_lo = occupied_hi = 0;
++    touched_lo = touched_hi = 0;
++    bits_on = true;
++    const u64 n = blocks.fetch_add(1, std::memory_order_relaxed) + 1;
++    if ((n & 0xFFFF) == 0)
++        std::printf("EDEN_UP_JIT_REGALLOC_BITS blocks=%llu full_resets=%llu (all emitters, since start)\n",
++                    (unsigned long long)n, (unsigned long long)full_resets.load(std::memory_order_relaxed));
++}
++
+ RegAlloc::ArgumentInfo RegAlloc::GetArgumentInfo(const IR::Inst* inst) noexcept {
+     ArgumentInfo ret{
+         Argument{},
+@@ -203,6 +253,7 @@ RegAlloc::ArgumentInfo RegAlloc::GetArgumentInfo(const IR::Inst* inst) noexcept
+             auto const loc = ValueLocation(arg.GetInst());
+             ASSERT(loc && "argument must already been defined");
+             LocInfo(*loc).AddArgReference();
++            MarkDirty(*loc);
+         }
+     }
+     return ret;
+@@ -216,6 +267,7 @@ void RegAlloc::RegisterPseudoOperation(const IR::Inst* inst) noexcept {
+             if (auto const loc = ValueLocation(arg.GetInst())) {
+                 // May not necessarily have a value (e.g. CMP variant of Sub32).
+                 LocInfo(*loc).AddArgReference();
++                MarkDirty(*loc);
+             }
+         }
+     }
+@@ -255,6 +307,7 @@ void RegAlloc::Release(const Xbyak::Reg& reg) noexcept {
+     ASSERT(reg.getKind() == Xbyak::Operand::XMM || reg.getKind() == Xbyak::Operand::REG);
+     const auto hostloc = static_cast<HostLoc>(reg.getIdx() + static_cast<size_t>(reg.getKind() == Xbyak::Operand::XMM ? HostLoc::XMM0 : HostLoc::RAX));
+     LocInfo(hostloc).ReleaseOne();
++    SetOccupied(hostloc, !LocInfo(hostloc).values.empty());
+ }
+ 
+ HostLoc RegAlloc::UseImpl(BlockOfCode& code, IR::Value use_value, std::bitset<32> desired_locations) noexcept {
+@@ -267,6 +320,7 @@ HostLoc RegAlloc::UseImpl(BlockOfCode& code, IR::Value use_value, std::bitset<32
+ 
+     if (HostLocIsRegister(current_location) && desired_locations.test(size_t(current_location))) {
+         LocInfo(current_location).ReadLock();
++        MarkDirty(current_location);
+         return current_location;
+     }
+ 
+@@ -285,6 +339,7 @@ HostLoc RegAlloc::UseImpl(BlockOfCode& code, IR::Value use_value, std::bitset<32
+         Move(code, destination_location, current_location);
+     }
+     LocInfo(destination_location).ReadLock();
++    MarkDirty(destination_location);
+     return destination_location;
+ }
+ 
+@@ -303,6 +358,7 @@ HostLoc RegAlloc::UseScratchImpl(BlockOfCode& code, IR::Value use_value, std::bi
+             MoveOutOfTheWay(code, current_location);
+         }
+         LocInfo(current_location).WriteLock();
++        MarkDirty(current_location);
+         return current_location;
+     }
+ 
+@@ -310,6 +366,7 @@ HostLoc RegAlloc::UseScratchImpl(BlockOfCode& code, IR::Value use_value, std::bi
+     MoveOutOfTheWay(code, destination_location);
+     CopyToScratch(code, bit_width, destination_location, current_location);
+     LocInfo(destination_location).WriteLock();
++    MarkDirty(destination_location);
+     return destination_location;
+ }
+ 
+@@ -317,6 +374,7 @@ HostLoc RegAlloc::ScratchImpl(BlockOfCode& code, std::bitset<32> desired_locatio
+     const HostLoc location = SelectARegister(desired_locations);
+     MoveOutOfTheWay(code, location);
+     LocInfo(location).WriteLock();
++    MarkDirty(location);
+     return location;
+ }
+ 
+@@ -356,6 +414,7 @@ void RegAlloc::HostCall(
+         if (other_caller_save[i]) {
+             MoveOutOfTheWay(code, HostLoc(i));
+             LocInfo(HostLoc(i)).WriteLock();
++            MarkDirty(i);
+         }
+     }
+     for (size_t i = 0; i < args.size(); i++) {
+@@ -452,10 +511,25 @@ HostLoc RegAlloc::SelectARegister(std::bitset<32> desired_locations) const noexc
+     ASSERT(it_final != HostLoc::FirstSpill && "All candidate registers have already been allocated");
+     // Evil magic - increment LRU counter (will wrap at 256)
+     const_cast<RegAlloc*>(this)->LocInfo(HostLoc(it_final)).lru_counter++;
++    MarkTouched(HostLoc(it_final));
+     return HostLoc(it_final);
+ }
+ 
+ std::optional<HostLoc> RegAlloc::ValueLocation(const IR::Inst* value) const noexcept {
++    if (bits_on) {
++        // EDEN_UP_JIT_REGALLOC_BITS: only locations that hold values, in the same ascending order.
++        for (u64 bits = occupied_lo; bits != 0; bits &= bits - 1) {
++            const size_t i = size_t(std::countr_zero(bits));
++            if (hostloc_info[i].ContainsValue(value))
++                return HostLoc(i);
++        }
++        for (u64 bits = occupied_hi; bits != 0; bits &= bits - 1) {
++            const size_t i = 64 + size_t(std::countr_zero(bits));
++            if (hostloc_info[i].ContainsValue(value))
++                return HostLoc(i);
++        }
++        return std::nullopt;
++    }
+     for (size_t i = 0; i < hostloc_info.size(); i++)
+         if (hostloc_info[i].ContainsValue(value)) {
+             //for (size_t j = 0; j < hostloc_info.size(); ++j)
+@@ -470,6 +544,8 @@ std::optional<HostLoc> RegAlloc::ValueLocation(const IR::Inst* value) const noex
+ void RegAlloc::DefineValueImpl(BlockOfCode& code, IR::Inst* def_inst, HostLoc host_loc) noexcept {
+     DEBUG_ASSERT(!ValueLocation(def_inst) && "def_inst has already been defined");
+     LocInfo(host_loc).AddValue(host_loc, def_inst);
++    MarkDirty(host_loc);
++    SetOccupied(host_loc, true);
+     DEBUG_ASSERT(*ValueLocation(def_inst) == host_loc);
+ }
+ 
+@@ -493,6 +569,10 @@ void RegAlloc::Move(BlockOfCode& code, HostLoc to, HostLoc from) noexcept {
+     ASSERT(!LocInfo(from).IsEmpty() && "Mov eliminated");
+     EmitMove(code, bit_width, to, from);
+     LocInfo(to) = std::exchange(LocInfo(from), {});
++    MarkDirty(to);
++    MarkTouched(to);
++    SetOccupied(to, !LocInfo(to).values.empty());
++    SetOccupied(from, false);
+ }
+ 
+ void RegAlloc::CopyToScratch(BlockOfCode& code, size_t bit_width, HostLoc to, HostLoc from) noexcept {
+@@ -512,6 +592,12 @@ void RegAlloc::Exchange(BlockOfCode& code, HostLoc a, HostLoc b) noexcept {
+     } else {
+         EmitExchange(code, a, b);
+         std::swap(LocInfo(a), LocInfo(b));
++        MarkDirty(a);
++        MarkDirty(b);
++        MarkTouched(a);
++        MarkTouched(b);
++        SetOccupied(a, !LocInfo(a).values.empty());
++        SetOccupied(b, !LocInfo(b).values.empty());
+     }
+ }
+ 
+@@ -548,6 +634,25 @@ HostLoc RegAlloc::FindFreeSpill(bool is_xmm) const noexcept {
+     // TODO: Doing this would mean saving XMM on each call... need to benchmark the benefits
+     // of spilling on XMM versus the potential cost of using XMM registers.....
+     // Otherwise go to stack spilling
++    if (bits_on) {
++        // EDEN_UP_JIT_REGALLOC_BITS: the first spill slot without values. Spill slots are never
++        // locked (only registers are), so empty values is IsEmpty here.
++        constexpr size_t first = size_t(HostLoc::FirstSpill);
++        static_assert(first < 64);
++        constexpr u64 spill_lo_mask = ~((u64(1) << first) - 1);
++        constexpr size_t hi_count = NonSpillHostLocCount + SpillCount - 64;
++        static_assert(hi_count > 0 && hi_count < 64);
++        constexpr u64 spill_hi_mask = (u64(1) << hi_count) - 1;
++        if (const u64 free_lo = ~occupied_lo & spill_lo_mask; free_lo != 0) {
++            DEBUG_ASSERT(LocInfo(HostLoc(std::countr_zero(free_lo))).IsEmpty());
++            return HostLoc(std::countr_zero(free_lo));
++        }
++        if (const u64 free_hi = ~occupied_hi & spill_hi_mask; free_hi != 0) {
++            DEBUG_ASSERT(LocInfo(HostLoc(64 + std::countr_zero(free_hi))).IsEmpty());
++            return HostLoc(64 + std::countr_zero(free_hi));
++        }
++        UNREACHABLE();
++    }
+     for (size_t i = size_t(HostLoc::FirstSpill); i < hostloc_info.size(); ++i)
+         if (const auto loc = HostLoc(i); LocInfo(loc).IsEmpty())
+             return loc;
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/reg_alloc.h b/src/dynarmic/src/dynarmic/backend/x64/reg_alloc.h
+index 0cad077..1896ddc 100644
+--- a/src/dynarmic/src/dynarmic/backend/x64/reg_alloc.h
++++ b/src/dynarmic/src/dynarmic/backend/x64/reg_alloc.h
+@@ -8,9 +8,12 @@
+ 
+ #pragma once
+ 
++#include <algorithm>
+ #include <array>
++#include <bit>
+ #include <functional>
+ #include <optional>
++#include <utility>
+ 
+ #include "boost/container/small_vector.hpp"
+ #include "common/common_types.h"
+@@ -145,6 +148,11 @@ public:
+     using ArgumentInfo = std::array<Argument, IR::max_arg_count>;
+     RegAlloc() noexcept = default;
+     RegAlloc(std::bitset<32> gpr_order, std::bitset<32> xmm_order) noexcept;
++    /// EDEN_UP_JIT_REGALLOC_BITS=1 (exact "1", read once at the first block): the emitters call
++    /// Reset instead of constructing the allocator again, and the scope end, value lookups and
++    /// spill-slot search visit only the locations the bitmasks below name (Lichii PR #1517).
++    static bool BitsSwitch() noexcept;
++    void Reset(std::bitset<32> new_gpr_order, std::bitset<32> new_xmm_order) noexcept;
+ 
+     ArgumentInfo GetArgumentInfo(const IR::Inst* inst) noexcept;
+     void RegisterPseudoOperation(const IR::Inst* inst) noexcept;
+@@ -206,12 +214,26 @@ public:
+     void ReleaseStackSpace(BlockOfCode& code, const size_t stack_space) noexcept;
+ 
+     inline void EndOfAllocScope() noexcept {
++        if (bits_on) {
++            // EDEN_UP_JIT_REGALLOC_BITS: only the locations changed since the last scope end.
++            // Every other one was released at that scope end and not changed since, so
++            // ReleaseAll would leave it as it is.
++            EndOfAllocScopeWord(0, std::exchange(dirty_lo, 0));
++            EndOfAllocScopeWord(64, std::exchange(dirty_hi, 0));
++            DEBUG_ASSERT(std::all_of(hostloc_info.begin(), hostloc_info.end(), [](const auto& h) noexcept { return h.IsReleased(); }));
++            return;
++        }
+         // After every IR instruction: skip the locations it left alone.
+         for (auto& iter : hostloc_info)
+             if (!iter.IsReleased())
+                 iter.ReleaseAll();
+     }
+     inline void AssertNoMoreUses() noexcept {
++        if (bits_on) {
++            ASSERT((occupied_lo | occupied_hi) == 0);
++            DEBUG_ASSERT(std::all_of(hostloc_info.begin(), hostloc_info.end(), [](const auto& i) noexcept { return i.IsEmpty(); }));
++            return;
++        }
+         ASSERT(std::all_of(hostloc_info.begin(), hostloc_info.end(), [](const auto& i) noexcept { return i.IsEmpty(); }));
+     }
+ #ifndef NDEBUG
+@@ -252,11 +274,63 @@ private:
+     void EmitMove(BlockOfCode& code, const size_t bit_width, const HostLoc to, const HostLoc from) noexcept;
+     void EmitExchange(BlockOfCode& code, const HostLoc a, const HostLoc b) noexcept;
+ 
++    // EDEN_UP_JIT_REGALLOC_BITS bookkeeping (Lichii PR #1517). The masks are kept up to date in
++    // both modes (a few ORs per allocation); only bits_on reads them, so with the switch off the
++    // allocator decides exactly as before.
++    //  dirty:    locations changed since the last EndOfAllocScope (a lock, an argument reference,
++    //            a new value, a move or exchange);
++    //  occupied: locations whose value list is not empty, exactly;
++    //  touched:  locations whose lru_counter may be non-zero (picked by SelectARegister, or the
++    //            target of a move or exchange): Reset zeroes only these.
++    inline void EndOfAllocScopeWord(size_t base, u64 bits) noexcept {
++        for (; bits != 0; bits &= bits - 1) {
++            const size_t idx = base + size_t(std::countr_zero(bits));
++            if (!hostloc_info[idx].IsReleased())
++                hostloc_info[idx].ReleaseAll();
++            SetOccupied(idx, !hostloc_info[idx].values.empty());
++        }
++    }
++    static inline void SetBit(u64& lo, u64& hi, size_t idx) noexcept {
++        if (idx < 64)
++            lo |= u64(1) << idx;
++        else
++            hi |= u64(1) << (idx - 64);
++    }
++    inline void MarkDirty(size_t idx) noexcept {
++        SetBit(dirty_lo, dirty_hi, idx);
++    }
++    inline void MarkDirty(HostLoc loc) noexcept {
++        MarkDirty(size_t(loc));
++    }
++    inline void MarkTouched(HostLoc loc) const noexcept {
++        SetBit(touched_lo, touched_hi, size_t(loc));
++    }
++    inline void SetOccupied(size_t idx, bool occ) noexcept {
++        if (idx < 64) {
++            const u64 bit = u64(1) << idx;
++            occupied_lo = occ ? (occupied_lo | bit) : (occupied_lo & ~bit);
++        } else {
++            const u64 bit = u64(1) << (idx - 64);
++            occupied_hi = occ ? (occupied_hi | bit) : (occupied_hi & ~bit);
++        }
++    }
++    inline void SetOccupied(HostLoc loc, bool occ) noexcept {
++        SetOccupied(size_t(loc), occ);
++    }
++
+ //data
++    static_assert(NonSpillHostLocCount + SpillCount <= 128);
+     alignas(64) std::array<HostLocInfo, NonSpillHostLocCount + SpillCount> hostloc_info;
+     std::bitset<32> gpr_order;
+     std::bitset<32> xmm_order;
+     size_t reserved_stack_space = 0;
++    u64 dirty_lo = 0;
++    u64 dirty_hi = 0;
++    u64 occupied_lo = 0;
++    u64 occupied_hi = 0;
++    mutable u64 touched_lo = 0;
++    mutable u64 touched_hi = 0;
++    bool bits_on = false;
+ };
+ 
+ }  // namespace Dynarmic::Backend::X64

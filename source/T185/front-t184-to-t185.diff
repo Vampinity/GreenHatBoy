@@ -1,0 +1,580 @@
+diff --git a/src/guest_memory_service.inc b/src/guest_memory_service.inc
+index 7390b04278540c7b9d7d27897a4e4ee122c878e6..765bd4772c06be9639e7abb9728fe80a314521d6 100644
+--- a/src/guest_memory_service.inc
++++ b/src/guest_memory_service.inc
+@@ -198,6 +198,23 @@ std::uintptr_t ThreadKey(Id id) noexcept {
+ std::atomic<std::uintptr_t> gpu_thread_ids[3]{};
+ // EDEN_UP_GPU_READ_THROUGH is on (set as the service starts; the fault handler asks it too, 0901).
+ std::atomic<bool> read_through_on{false};
++// 1081: read admission, independent of the session's 0901 fault-lock protection above.
++// One relaxed load per callback: 0 plain reads, 1 unrestricted, 2 admitted in a load window.
++std::atomic<unsigned> read_through_access{0};
++std::atomic<bool> read_through_loads{false}; // publishes the settings below to the already-running keeper
++// Review fix: two pool thresholds. The stay after the big load sits at 12-32 MiB largest free block for
++// minutes (memroom R/RT/RH, 14 Nov), so one 64 MiB open-and-hold threshold never closed. The window opens
++// on the FALL through `open` (armed again only by a reading at or above it), or below `hold`, or a long
++// wait; it stays open only while below `hold` or a long wait goes on.
++std::size_t read_through_load_bytes = std::size_t{256} << 20, read_through_load_hold_bytes = std::size_t{2} << 20;
++unsigned read_through_load_wait_ms = 250, read_through_load_close_ms = 30000;
++std::atomic<unsigned> read_through_load_waiters{0}; // WaitForBlock waits past WAIT_MS
++std::atomic<std::uint64_t> read_through_load_events{0}; // also catches waits that end between keeper ticks
++std::atomic<std::uint64_t> read_through_load_windows{0}, read_through_load_pieces{0};
++std::atomic<std::uint64_t> read_through_load_gpu_in{0}, read_through_load_gpu_out{0}; // GPU waits by window state
++// Keeper-owned while running; initialized before loads is published, closed after the keeper joins.
++std::uint64_t read_through_load_open_ms = 0, read_through_load_quiet_ms = 0, read_through_load_seen = 0;
++bool read_through_load_armed = true;
+ int GpuThreadKind() noexcept {
+     const std::uintptr_t self = ThreadKey(pthread_self());
+     for (int kind = 1; kind <= 2; ++kind)
+@@ -242,7 +259,8 @@ bool FaultReserveBlock(std::int64_t* physical) noexcept {
+     // EDEN_UP_FAULT_GPU keeps nothing back from the game's CPU threads any more. run1418 (T177 F1): a CPU
+     // thread's write fault waited 5,975 ms and died with kept_for_gpu=3203 while taken_gpu stayed 0.
+     const bool keep_for_gpu = !gpu && fault_gpu_first.load(std::memory_order_relaxed);
+-    const bool waive = keep_for_gpu && read_through_on.load(std::memory_order_relaxed);
++    const bool waive = keep_for_gpu && read_through_on.load(std::memory_order_relaxed) &&
++                       read_through_access.load(std::memory_order_relaxed) != 0;
+     const std::size_t keep = keep_for_gpu && !waive ? FaultReserveGpuKeep : 0;
+     Spin(fault_reserve_lock);
+     std::size_t count = fault_reserve_count.load(std::memory_order_relaxed);
+@@ -1841,6 +1859,11 @@ bool WaitForBlock(Promote&& promote, std::size_t slot = 0, std::uint8_t state =
+     // T181a EDEN_UP_WAIT_RECLAIM (at wait_reclaim_on): the mark after AFTER_MS, and past `limit` the wait goes
+     // on while a recent round freed memory (bounded by EDEN_UP_WAIT_RECLAIM_MAX_MS). Off: as before.
+     const bool reclaim = wait_reclaim_on.load(std::memory_order_relaxed);
++    const bool loads = read_through_loads.load(std::memory_order_acquire);
++    if (loads && gpu_kind != 0) // 1081: was the window open as this GPU wait began (out: late or not needed)
++        (read_through_access.load(std::memory_order_relaxed) == 2 ? read_through_load_gpu_in : read_through_load_gpu_out)
++            .fetch_add(1, std::memory_order_relaxed);
++    bool load_waiter = false;
+     ReclaimMark mark;
+     bool extended = false;
+     for (unsigned tries = 0; !ok; ++tries) {
+@@ -1860,8 +1883,14 @@ bool WaitForBlock(Promote&& promote, std::size_t slot = 0, std::uint8_t state =
+         const timespec pause{0, 20'000'000};
+         nanosleep(&pause, nullptr);
+         ok = promote();
++        if (loads && !ok && !load_waiter && MonotonicMs() - wait_start_ms >= read_through_load_wait_ms) {
++            load_waiter = true;
++            read_through_load_waiters.fetch_add(1, std::memory_order_relaxed);
++            read_through_load_events.fetch_add(1, std::memory_order_relaxed);
++        }
+         if (reclaim && !ok) (void)mark.Tick(gpu_kind != 0, FaultThreadName(gpu_kind), slot, wait_start_ms);
+     }
++    if (load_waiter) read_through_load_waiters.fetch_sub(1, std::memory_order_relaxed);
+     mark.Drop();
+     if (extended && ok) reclaim_extended_won.fetch_add(1, std::memory_order_relaxed);
+     memory_waiters.fetch_sub(1, std::memory_order_acq_rel);
+@@ -2686,6 +2715,7 @@ bool BringBackRead(SparseRange& range, std::size_t slot, const void* source, std
+ // The keeper, every 100 ms, after EDEN_UP_FAULT_RESERVE is refilled and before the reserve is (=2 only; otherwise one relaxed load).
+ void ServeWantedBack() noexcept {
+     if (wanted_pending.load(std::memory_order_relaxed) == 0 || read_through_mode.load(std::memory_order_relaxed) < 2) return; // =2 and =3
++    if (read_through_access.load(std::memory_order_relaxed) == 0) return; // 1081: mode 0 outside loads
+     SparseRange* const range = service_range.load(std::memory_order_acquire);
+     if (range == nullptr || range->state == nullptr) return;
+     auto& b = bring_back_counters;
+@@ -2809,7 +2839,8 @@ bool ReadOutLocked(ReadScratch& sc, SparseRange& range, std::size_t slot, std::s
+ }
+ 
+ // One slot's part of a read.
+-void ReadPiece(SparseRange& range, std::size_t slot, std::size_t offset, std::uint8_t* dest, std::size_t size) noexcept {
++void ReadPiece(SparseRange& range, std::size_t slot, std::size_t offset, std::uint8_t* dest, std::size_t size,
++               bool in_load_window) noexcept {
+     const auto* source = reinterpret_cast<const void*>(SlotAddress(range, slot) + offset);
+     const std::uint8_t state = range.state[slot].load(std::memory_order_acquire) & SlotMask;
+     if (state != SlotOut && state != SlotProbe) { // mapped and readable (a locked one too: as before)
+@@ -2832,6 +2863,7 @@ void ReadPiece(SparseRange& range, std::size_t slot, std::size_t offset, std::ui
+             if (copied) {
+                 c.out_pieces.fetch_add(1, std::memory_order_relaxed);
+                 c.out_bytes.fetch_add(size, std::memory_order_relaxed);
++                if (in_load_window) read_through_load_pieces.fetch_add(1, std::memory_order_relaxed);
+             } else {
+                 c.failures.fetch_add(1, std::memory_order_relaxed);
+             }
+@@ -2856,12 +2888,15 @@ bool GuestReadThrough(void* dest, const void* source, std::size_t size) {
+     const auto from = reinterpret_cast<std::uintptr_t>(source), to = reinterpret_cast<std::uintptr_t>(dest);
+     if (begin == 0 || from < begin || from >= end || size > end - from) return false;
+     if (to < end && to + size > begin) return false; // into the guest's memory: the copy as before
++    // 1081: one admission check. 0 only in the moment a window closes (the hooks are taken away then): the copy as before.
++    const unsigned access = read_through_access.load(std::memory_order_relaxed);
++    if (access == 0) return false;
+     auto* out = static_cast<std::uint8_t*>(dest);
+     std::uintptr_t at = from;
+     for (std::size_t left = size; left != 0;) {
+         const std::size_t slot = (at - begin) / SparseSlot, offset = (at - begin) % SparseSlot;
+         const std::size_t piece = std::min(left, SparseSlot - offset);
+-        ReadPiece(*range, slot, offset, out, piece);
++        ReadPiece(*range, slot, offset, out, piece, access == 2);
+         out += piece;
+         at += piece;
+         left -= piece;
+@@ -2877,6 +2912,8 @@ bool GuestSpanReadable(const void* source, std::size_t size) {
+     const std::uintptr_t begin = range->begin.load(std::memory_order_relaxed), end = range->end;
+     const auto from = reinterpret_cast<std::uintptr_t>(source);
+     if (begin == 0 || from < begin || from >= end || size > end - from) return true;
++    // 1081: as in GuestReadThrough; 0: the direct span, which faults as before if still cold when used.
++    if (read_through_access.load(std::memory_order_relaxed) == 0) return true;
+     for (std::size_t slot = (from - begin) / SparseSlot, last = (from + size - 1 - begin) / SparseSlot; slot <= last; ++slot) {
+         const std::uint8_t state = range->state[slot].load(std::memory_order_acquire) & SlotMask;
+         if (state == SlotOut || state == SlotProbe) {
+@@ -2893,6 +2930,63 @@ extern "C" void eden_core_set_guest_read_through(bool (*copy)(void*, const void*
+                                                   bool (*readable)(const void*, std::size_t)) __attribute__((weak));
+ 
+ namespace {
++// 1081: keeper transitions only (stop closes after it joins). Never called by a fault handler.
++// Review fix: the core's two hooks are set only while a window is open, so outside one the core makes
++// no call at all (one acquire load of a null pointer, as mode 0). A call already inside a hook when the
++// window closes finishes as read-through (the scratches, locks and slots stay as they are).
++void ReadThroughLoadWindow(bool open, const char* reason, std::uint64_t now_ms, std::size_t largest) noexcept {
++    const std::uint64_t age = open ? 0 : now_ms - read_through_load_open_ms;
++    if (open) {
++        read_through_load_open_ms = now_ms;
++        read_through_load_windows.fetch_add(1, std::memory_order_relaxed);
++        read_through_access.store(2u, std::memory_order_relaxed);
++        eden_core_set_guest_read_through(&GuestReadThrough, &GuestSpanReadable); // non-null: `through` asked for it
++    } else {
++        eden_core_set_guest_read_through(nullptr, nullptr);
++        read_through_access.store(0u, std::memory_order_relaxed);
++    }
++    char line[200];
++    const int length = std::snprintf(line, sizeof(line),
++        "EDEN_UP_GPU_READ_LOADS %s reason=%s t_ms=%llu open_ms=%llu largest_mib=%zu\n", open ? "open" : "close", reason,
++        (unsigned long long)(now_ms - fault_log_start_ms), (unsigned long long)age, largest >> 20);
++    if (length > 0) Report(line);
++}
++#ifdef PS5_NATIVE
++void GpuReadLoadsTick() noexcept {
++    if (!read_through_loads.load(std::memory_order_acquire)) return;
++    // Same query as SwapTick/PoolLargest/BringBackHeadroom, every keeper pass (100 ms) while LOADS is on.
++    std::int64_t start = 0;
++    std::size_t largest = 0;
++    const std::int64_t total = sceKernelGetDirectMemorySize();
++    const bool known = total > 0 && sceKernelAvailableDirectMemorySize(0, total, FinePage, &start, &largest) == 0;
++    if (!known) largest = 0; // not known: as empty (opens and holds, reason pool_unknown)
++    if (largest >= read_through_load_bytes) read_through_load_armed = true;
++    const bool fell = read_through_load_armed && largest < read_through_load_bytes; // the fall at a load
++    const bool empty = largest < read_through_load_hold_bytes;                     // no block to bring a slot in
++    const std::uint64_t events = read_through_load_events.load(std::memory_order_relaxed);
++    const bool waited = read_through_load_waiters.load(std::memory_order_relaxed) != 0 || events != read_through_load_seen;
++    read_through_load_seen = events;
++    const std::uint64_t now = MonotonicMs();
++    const bool open = read_through_access.load(std::memory_order_relaxed) == 2;
++    if (!open) {
++        if (fell || empty || waited) {
++            read_through_load_armed = false; // a new fall needs a reading at or above the open threshold first
++            read_through_load_quiet_ms = 0;
++            const char* reason = !known ? "pool_unknown" : empty ? (waited ? "pool_empty+wait" : "pool_empty")
++                                 : fell ? (waited ? "pool_fall+wait" : "pool_fall") : "wait";
++            ReadThroughLoadWindow(true, reason, now, largest);
++        }
++    } else if (empty || waited) {
++        read_through_load_quiet_ms = 0;
++    } else {
++        if (read_through_load_quiet_ms == 0) read_through_load_quiet_ms = now;
++        if (now - read_through_load_quiet_ms >= read_through_load_close_ms) {
++            read_through_load_armed = largest >= read_through_load_bytes;
++            ReadThroughLoadWindow(false, "quiet", now, largest);
++        }
++    }
++}
++#endif
+ // As the service starts: EDEN_UP_GPU_READ_THROUGH, EDEN_UP_FAULT_RESERVE, EDEN_UP_FAULT_GPU,
+ // EDEN_UP_FAULT_LOG (0900). Unset: nothing set, nothing filled, no line.
+ bool GpuReadSwitchesOn() noexcept {
+@@ -2900,7 +2994,8 @@ bool GpuReadSwitchesOn() noexcept {
+     if (fault_reserve_target.load(std::memory_order_relaxed) != 0 || fault_gpu_first.load(std::memory_order_relaxed))
+         return true;
+ #endif
+-    return read_through_on.load(std::memory_order_relaxed) || fault_log_fd.load(std::memory_order_relaxed) >= 0 ||
++    return read_through_on.load(std::memory_order_relaxed) || read_through_loads.load(std::memory_order_relaxed) ||
++           fault_log_fd.load(std::memory_order_relaxed) >= 0 ||
+            fault_last_try.load(std::memory_order_relaxed); // T178b EDEN_UP_FAULT_LAST_TRY=1 alone
+ }
+ void ReadGpuReadSwitches() noexcept {
+@@ -2973,10 +3068,47 @@ void ReadGpuReadSwitches() noexcept {
+     }
+     wanted_pending.store(0, std::memory_order_relaxed);
+ #endif
++    // 1081: only exact =1 enables LOADS, and only with a working read-through mode. Digits only;
++    // invalid/out-of-range tuning values use defaults. No pool queries or new lines when unset.
++    const char* const loads_value = std::getenv("EDEN_UP_GPU_READ_THROUGH_LOADS");
++    const bool loads = through && loads_value != nullptr && loads_value[0] == '1' && loads_value[1] == '\0';
++    const auto setting = [](const char* name, unsigned fallback, unsigned most) noexcept {
++        const char* value = std::getenv(name);
++        if (value == nullptr || *value == '\0') return fallback;
++        unsigned asked = 0;
++        while (*value >= '0' && *value <= '9' && asked <= most) asked = asked * 10 + static_cast<unsigned>(*value++ - '0');
++        return *value == '\0' && asked >= 1 && asked <= most ? asked : fallback;
++    };
++    if (loads) {
++        read_through_load_bytes = std::size_t{setting("EDEN_UP_GPU_READ_THROUGH_LOADS_MIB", 256, 16384)} << 20;
++        read_through_load_hold_bytes = std::size_t{setting("EDEN_UP_GPU_READ_THROUGH_LOADS_HOLD_MIB", 2, 16384)} << 20;
++        if (read_through_load_hold_bytes > read_through_load_bytes) read_through_load_hold_bytes = read_through_load_bytes;
++        read_through_load_wait_ms = setting("EDEN_UP_GPU_READ_THROUGH_LOADS_WAIT_MS", 250, 60000);
++        read_through_load_close_ms = setting("EDEN_UP_GPU_READ_THROUGH_LOADS_CLOSE_S", 30, 600) * 1000;
++    }
++    read_through_load_open_ms = read_through_load_quiet_ms = read_through_load_seen = 0;
++    read_through_load_armed = true;
++    for (auto* counter : {&read_through_load_events, &read_through_load_windows, &read_through_load_pieces,
++                          &read_through_load_gpu_in, &read_through_load_gpu_out})
++        counter->store(0, std::memory_order_relaxed);
++    read_through_load_waiters.store(0, std::memory_order_relaxed);
++    read_through_access.store(through && !loads ? 1u : 0u, std::memory_order_relaxed); // before read_through_on
+     read_through_mode.store(through ? asked_mode : 0, std::memory_order_relaxed);
+     read_through_on.store(through, std::memory_order_relaxed);
++    // 1081: with LOADS the hooks wait for the first window (the keeper sets them, ReadThroughLoadWindow);
++    // set before LOADS is published, so a window the keeper opens at once is not undone here.
+     if (eden_core_set_guest_read_through != nullptr)
+-        eden_core_set_guest_read_through(through ? &GuestReadThrough : nullptr, through ? &GuestSpanReadable : nullptr);
++        eden_core_set_guest_read_through(through && !loads ? &GuestReadThrough : nullptr,
++                                         through && !loads ? &GuestSpanReadable : nullptr);
++    read_through_loads.store(loads, std::memory_order_release); // keeper was started before ReadGpuReadSwitches
++    if (loads) {
++        char more[200];
++        const int written = std::snprintf(more, sizeof(more),
++            "EDEN_UP_GPU_READ_LOADS on: open_mib=%zu hold_mib=%zu wait_ms=%u close_s=%u poll_ms=100\n",
++            read_through_load_bytes >> 20, read_through_load_hold_bytes >> 20, read_through_load_wait_ms,
++            read_through_load_close_ms / 1000);
++        if (written > 0) Report(more);
++    }
+     // T178b EDEN_UP_FAULT_LAST_TRY (at fault_last_try): =1 on, =0 off, unset: on while read-through is on.
+     {
+         const char* const last = std::getenv("EDEN_UP_FAULT_LAST_TRY");
+@@ -3016,6 +3148,9 @@ void ReadGpuReadSwitches() noexcept {
+ }
+ // The service stops: the core's reads are plain copies again.
+ void StopGpuRead() noexcept {
++    if (read_through_loads.load(std::memory_order_relaxed) && read_through_access.load(std::memory_order_relaxed) == 2)
++        ReadThroughLoadWindow(false, "stop", MonotonicMs(), 0);
++    read_through_access.store(0, std::memory_order_relaxed);
+     read_through_on.store(false, std::memory_order_relaxed);
+     read_through_mode.store(0, std::memory_order_relaxed); // T177a
+     if (eden_core_set_guest_read_through != nullptr) eden_core_set_guest_read_through(nullptr, nullptr);
+@@ -3095,6 +3230,17 @@ void GpuReadReport(const char* when) noexcept {
+                                                                                                              : length + 1;
+     }
+     if (length > 0) Report(line);
++    if (read_through_loads.load(std::memory_order_relaxed)) {
++        char loads[240];
++        const int written = std::snprintf(loads, sizeof(loads),
++            "EDEN_UP_GPU_READ_LOADS %s active=%d windows=%llu inside_pieces=%llu gpu_waits_in=%llu gpu_waits_out=%llu\n",
++            when, read_through_access.load(std::memory_order_relaxed) == 2 ? 1 : 0,
++            (unsigned long long)read_through_load_windows.load(std::memory_order_relaxed),
++            (unsigned long long)read_through_load_pieces.load(std::memory_order_relaxed),
++            (unsigned long long)read_through_load_gpu_in.load(std::memory_order_relaxed),
++            (unsigned long long)read_through_load_gpu_out.load(std::memory_order_relaxed));
++        if (written > 0) Report(loads);
++    }
+     // T178b: the CPU side's two changes (with read-through on, or EDEN_UP_FAULT_LAST_TRY=1): one more line.
+     const auto& t = fault_last_try_counters;
+     const bool cpu_side = fault_last_try.load(std::memory_order_relaxed) || read_through_on.load(std::memory_order_relaxed);
+@@ -3132,6 +3278,9 @@ void GpuReadTick(std::uint64_t now_ns) noexcept {
+              bring_back_counters.fault.load(std::memory_order_relaxed) + bring_back_counters.after_fail.load(std::memory_order_relaxed); // T177a (0 unless =2)
+     moved += fault_last_try_counters.tries.load(std::memory_order_relaxed) +
+              bring_back_counters.headroom_refused.load(std::memory_order_relaxed); // T178b (0 unless on)
++    moved += read_through_load_windows.load(std::memory_order_relaxed) +
++             read_through_load_pieces.load(std::memory_order_relaxed) + read_through_load_gpu_in.load(std::memory_order_relaxed) +
++             read_through_load_gpu_out.load(std::memory_order_relaxed);
+ #ifdef PS5_NATIVE
+     moved += fault_reserve_counters.taken.load(std::memory_order_relaxed) +
+              fault_reserve_counters.taken_gpu.load(std::memory_order_relaxed) +
+@@ -3210,6 +3359,7 @@ void ReserveKeeper() {
+         scanner_wake.wait_for(lock, std::chrono::milliseconds(100), [] { return scanner_stop; });
+         if (scanner_stop) break;
+         lock.unlock();
++        GpuReadLoadsTick(); // 1081: before reserve fills or wanted bring-backs; off: one acquire load
+         std::size_t blocks = pool_is_short.load(std::memory_order_relaxed) ? reserve_floor.load(std::memory_order_relaxed)
+                                                                            : reserve_target.load(std::memory_order_relaxed);
+         // EDEN_UP_RADV_OOM_LEND: for 2 s after a lend to the driver, no further than that lend's floor;
+@@ -5284,6 +5434,7 @@ void ServiceStop(SparseRange& range) noexcept {
+     StopStallProbe();
+     StopGpuRead(); // 0900: plain copies again before the slots change
+     ServiceReport(range, "end");
++    read_through_loads.store(false, std::memory_order_release); // 1081: next keeper must wait for fresh settings
+     MeasureFinePages(range);
+     DisarmSlots(range);
+     service_range.store(nullptr, std::memory_order_release);
+diff --git a/tools/patch-radv-series/lead-mesh-46-radv-ps5-internal-reserve.patch b/tools/patch-radv-series/lead-mesh-46-radv-ps5-internal-reserve.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..569651fa1f82eb7d2b39e9142b101c4e79e15705
+--- /dev/null
++++ b/tools/patch-radv-series/lead-mesh-46-radv-ps5-internal-reserve.patch
+@@ -0,0 +1,280 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: EglantinePS5
++Date: Sat, 14 Nov 2026 12:00:00 +0100
++Subject: [PATCH] radv/ps5: RADV_PS5_INTERNAL_RESERVE_MIB=N holds N MiB of the pool for the driver's own small buffers
++
++T185a. At the load past Ocarina's field the pool is at its last MiB for
++seconds in every start (the cold-start test at the field on T184; RADV_PS5_MEMORY
++available_mib 0-2). The app survives a refused image or buffer, but not a
++refused descriptor pool (vkCreateDescriptorPool from a draw on the Vulkan
++worker: run1430 T177, run1473 T184) or a refused upload buffer
++(radv_cmd_buffer_resize_upload_buf records VK_ERROR_OUT_OF_DEVICE_MEMORY as
++the command buffer's error and vkEndCommandBuffer returns it: run1455, run1475).
++Both carry RADEON_FLAG_32BIT, so radv_ps5_memory_alloc returns before
++lead-mesh-22's eden_radv_out_of_memory for them (and for the app's buffers,
++which do ask, Eden gave back 0 MiB in every logged call at this load).
++
++A limit on the app's allocations alone (refuse VkDeviceMemory while the pool
++has N MiB or less) would not keep the last MiB for the driver: the guest's
++memory, the JIT and the heap draw on the same pool (the heap grew 64-146 MiB in
++those 2 s). So the driver holds the memory: N MiB as separate 2 MiB blocks of
++direct memory, allocated and not mapped. When the pool refuses a buffer of
++priority above RADV_BO_PRIORITY_APPLICATION_MAX (not VkDeviceMemory), not
++replayable and of 2 MiB or less, after the retired-memory wait, one block goes
++back to the kernel and the buffer is placed again by the same
++radv_ps5_memory_alloc_once (at most two blocks per buffer; a block whose retry
++fails went to another thread and counts as lost). The served buffer is an
++ordinary allocation: freeing and retiring are unchanged. The reserve is filled
++at the first buffer and again, at most every 250 ms, once the largest free
++piece is N + RADV_PS5_INTERNAL_RESERVE_REFILL_MIB (default 256) MiB or more.
++The app's device memory sees a pool N MiB smaller the whole time.
++
++Not served: the 8 MiB shader arenas, the 64 MiB gs heap, scratch and rings
++(over 2 MiB), the submission ring's dedicated buffers for very long streams
++(radv_ps5_queue_claim, not a buffer), and the host's own memory (command
++stream chunks are malloc'd: their failure is VK_ERROR_OUT_OF_HOST_MEMORY).
++
++Lines (stderr), at the fill, at each of the first 48 events and every 64th:
++  RADV_PS5_INTERNAL_RESERVE on: filled|refilled|served <purpose>|not served
++  (over 2 MiB|reserve empty|lost) <purpose> <KiB>: held H of N MiB (lowest L),
++  served S (KiB), lost, too big, empty, refills, app refused while held A
++Purposes: descriptor, upload, query, fence/gs, shader/rings (by priority, domain
++and flags as tools/patch-radv-memory-report.py names them).
++
++Unset or 0 (the default): one test of a cached value per buffer, nothing held,
++nothing served: as T184. Driver only: no translation id input, no
++TranslationSwitches name, no cache key or build id change. KEEPS THE STORE.
++
++---
++diff --git a/src/amd/vulkan/winsys/ps5/radv_ps5_bo.c b/src/amd/vulkan/winsys/ps5/radv_ps5_bo.c
++index 9b2ad1d..c55b9d8 100644
++--- a/src/amd/vulkan/winsys/ps5/radv_ps5_bo.c
+++++ b/src/amd/vulkan/winsys/ps5/radv_ps5_bo.c
++@@ -143,11 +143,27 @@ radv_ps5_buffer_create(struct radeon_winsys *rws, uint64_t size, unsigned alignm
++    struct radv_ps5_bo *const bo = calloc(1, sizeof(*bo));
++    if (!bo)
++       return VK_ERROR_OUT_OF_HOST_MEMORY;
+++   /* RADV_PS5_INTERNAL_RESERVE_MIB (lead-mesh-46): fills the driver's reserve; one test when unset. */
+++   radv_ps5_reserve_tend();
++    bool allocated;
++    do {
++       allocated = replayable ? radv_ps5_memory_alloc_replayable(size, alignment, window32, replay_address, &bo->memory)
++                              : radv_ps5_memory_alloc(size, alignment, window32, &bo->memory);
++    } while (!allocated && radv_ps5_retired_wait(ws->queue));
+++   /* The driver's own buffer the pool refused (not VkDeviceMemory, not captured or replayed) takes a
+++    * block of the reserve; the app's device memory does not (lead-mesh-46). */
+++   if (!allocated && !replayable) {
+++      if (priority > RADV_BO_PRIORITY_APPLICATION_MAX) {
+++         const char *const purpose = priority == RADV_BO_PRIORITY_QUERY_POOL ? "query"
+++                                     : priority != RADV_BO_PRIORITY_DESCRIPTOR ? "shader/rings"
+++                                     : (domain & RADEON_DOMAIN_VRAM) && (flags & RADEON_FLAG_READ_ONLY) ? "descriptor"
+++                                     : (flags & RADEON_FLAG_GTT_WC) ? "upload"
+++                                                                     : "fence/gs";
+++         allocated = radv_ps5_reserve_serve(size, alignment, window32, purpose, &bo->memory);
+++      } else {
+++         radv_ps5_reserve_note_app_refused(size);
+++      }
+++   }
++    if (!allocated) {
++       free(bo);
++       return replay_address ? VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS : VK_ERROR_OUT_OF_DEVICE_MEMORY;
++diff --git a/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c b/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c
++index be2de64..395f48b 100644
++--- a/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c
+++++ b/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c
++@@ -317,6 +317,141 @@ radv_ps5_memory_alloc(uint64_t bytes, uint64_t alignment, bool window32, struct
++    return placed;
++ }
++ 
+++/* EglantinePS5 RADV_PS5_INTERNAL_RESERVE_MIB=N (lead-mesh-46, off unless set). At the load past
+++ * Ocarina's field the pool fills to its last MiB within about 2 s in every start (T184,
+++ * the cold-start test at the field), and the app survives a refused image or buffer but not a refused
+++ * descriptor pool (vkCreateDescriptorPool, from a draw on the Vulkan worker) or a refused upload
+++ * buffer (recorded as the command buffer's error, returned by vkEndCommandBuffer). Both are the
+++ * driver's own small buffers, and both are window buffers, which never reach lead-mesh-22's ask.
+++ * A limit on the app's allocations alone would not keep the last MiB for them: the guest's memory,
+++ * the JIT and the heap take the same pool. So the driver holds the memory itself, as separate
+++ * 2 MiB blocks of direct memory (not mapped), and gives one back to the pool and places the
+++ * buffer again when the pool refuses an internal buffer of 2 MiB or less. Nothing changes in how
+++ * a buffer is placed or freed: a served buffer is an ordinary allocation the kernel made from the
+++ * block just released. The reserve is filled at the first buffer and again (at most every 250 ms)
+++ * once the largest free piece is at least N + RADV_PS5_INTERNAL_RESERVE_REFILL_MIB (256). */
+++#define RADV_PS5_RESERVE_MAX_BLOCKS 256
+++static simple_mtx_t radv_ps5_reserve_lock = SIMPLE_MTX_INITIALIZER;
+++static int64_t radv_ps5_reserve_block[RADV_PS5_RESERVE_MAX_BLOCKS];
+++static uint32_t radv_ps5_reserve_held;     /* blocks, under the lock (read without it as a hint) */
+++static int32_t radv_ps5_reserve_target = -1; /* blocks; -1: not read yet */
+++static uint64_t radv_ps5_reserve_refill_bytes;
+++static int64_t radv_ps5_reserve_tended_ns;
+++static uint32_t radv_ps5_reserve_lowest = UINT32_MAX;
+++static uint32_t radv_ps5_reserve_served, radv_ps5_reserve_lost, radv_ps5_reserve_big, radv_ps5_reserve_empty;
+++static uint32_t radv_ps5_reserve_refills, radv_ps5_reserve_app_refused;
+++static uint64_t radv_ps5_reserve_served_bytes;
+++
+++static uint32_t
+++radv_ps5_reserve_target_blocks(void)
+++{
+++   int32_t target = p_atomic_read(&radv_ps5_reserve_target);
+++   if (target >= 0)
+++      return (uint32_t)target;
+++   const char *const value = getenv("RADV_PS5_INTERNAL_RESERVE_MIB");
+++   const unsigned long mib = value ? strtoul(value, NULL, 10) : 0;
+++   const char *const refill = getenv("RADV_PS5_INTERNAL_RESERVE_REFILL_MIB");
+++   radv_ps5_reserve_refill_bytes = (uint64_t)(refill ? strtoul(refill, NULL, 10) : 256) << 20;
+++   target = (int32_t)MIN2((mib + 1) / 2, RADV_PS5_RESERVE_MAX_BLOCKS);
+++   p_atomic_set(&radv_ps5_reserve_target, target);
+++   return (uint32_t)target;
+++}
+++
+++static void
+++radv_ps5_reserve_line(const char *what, const char *purpose, uint64_t bytes)
+++{
+++   fprintf(stderr,
+++           "RADV_PS5_INTERNAL_RESERVE %s%s%s %llu KiB: held %u of %u MiB (lowest %u), served %u (%llu KiB), "
+++           "lost %u, too big %u, empty %u, refills %u, app refused while held %u\n",
+++           what, purpose ? " " : "", purpose ? purpose : "", (unsigned long long)(bytes >> 10),
+++           radv_ps5_reserve_held * 2, (unsigned)radv_ps5_reserve_target * 2,
+++           radv_ps5_reserve_lowest == UINT32_MAX ? radv_ps5_reserve_held * 2 : radv_ps5_reserve_lowest * 2,
+++           radv_ps5_reserve_served, (unsigned long long)(radv_ps5_reserve_served_bytes >> 10), radv_ps5_reserve_lost,
+++           radv_ps5_reserve_big, radv_ps5_reserve_empty, radv_ps5_reserve_refills,
+++           p_atomic_read(&radv_ps5_reserve_app_refused));
+++}
+++
+++void
+++radv_ps5_reserve_tend(void)
+++{
+++   const uint32_t target = radv_ps5_reserve_target_blocks();
+++   if (target == 0 || p_atomic_read(&radv_ps5_reserve_held) >= target)
+++      return;
+++   const int64_t now = os_time_get_nano();
+++   const int64_t last = p_atomic_read(&radv_ps5_reserve_tended_ns);
+++   if (last != 0 && now - last < INT64_C(250000000))
+++      return;
+++   if (p_atomic_cmpxchg(&radv_ps5_reserve_tended_ns, last, now) != last)
+++      return;
+++   const bool first = last == 0;
+++   if (!first && radv_ps5_memory_available_bytes() < (uint64_t)target * RADV_PS5_LARGE_BYTES + radv_ps5_reserve_refill_bytes)
+++      return;
+++   simple_mtx_lock(&radv_ps5_reserve_lock);
+++   const uint32_t before = radv_ps5_reserve_held;
+++   while (radv_ps5_reserve_held < target) {
+++      int64_t physical = -1;
+++      if (sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(), RADV_PS5_LARGE_BYTES, RADV_PS5_LARGE_BYTES,
+++                                        RADV_PS5_DIRECT_TYPE, &physical) != 0)
+++         break;
+++      radv_ps5_reserve_block[radv_ps5_reserve_held++] = physical;
+++   }
+++   if (radv_ps5_reserve_held > before) {
+++      if (!first)
+++         radv_ps5_reserve_refills++;
+++      if (first || radv_ps5_reserve_refills <= 32)
+++         radv_ps5_reserve_line(first ? "on: filled" : "refilled", NULL,
+++                               (uint64_t)(radv_ps5_reserve_held - before) * RADV_PS5_LARGE_BYTES);
+++   }
+++   simple_mtx_unlock(&radv_ps5_reserve_lock);
+++}
+++
+++bool
+++radv_ps5_reserve_serve(uint64_t bytes, uint64_t alignment, bool window32, const char *purpose,
+++                       struct radv_ps5_memory *out)
+++{
+++   if (radv_ps5_reserve_target_blocks() == 0)
+++      return false;
+++   simple_mtx_lock(&radv_ps5_reserve_lock);
+++   bool placed = false;
+++   const char *what = "served";
+++   if (align64(MAX2(bytes, 1), RADV_PS5_PAGE_BYTES) > RADV_PS5_LARGE_BYTES || alignment > RADV_PS5_LARGE_BYTES) {
+++      radv_ps5_reserve_big++;
+++      what = "not served (over 2 MiB)";
+++   } else if (radv_ps5_reserve_held == 0) {
+++      radv_ps5_reserve_empty++;
+++      what = "not served (reserve empty)";
+++   } else {
+++      /* At most two blocks per buffer: a block the retry lost went to another thread. */
+++      for (unsigned tries = 0; tries < 2 && radv_ps5_reserve_held > 0 && !placed; ++tries) {
+++         const int64_t block = radv_ps5_reserve_block[--radv_ps5_reserve_held];
+++         sceKernelReleaseDirectMemory(block, RADV_PS5_LARGE_BYTES);
+++         placed = radv_ps5_memory_alloc_once(bytes, alignment, window32, out);
+++         if (!placed)
+++            radv_ps5_reserve_lost++;
+++      }
+++      radv_ps5_reserve_lowest = MIN2(radv_ps5_reserve_lowest, radv_ps5_reserve_held);
+++      if (placed) {
+++         radv_ps5_reserve_served++;
+++         radv_ps5_reserve_served_bytes += bytes;
+++      } else {
+++         what = "not served (lost)";
+++      }
+++   }
+++   const uint32_t events = radv_ps5_reserve_served + radv_ps5_reserve_lost + radv_ps5_reserve_big + radv_ps5_reserve_empty;
+++   if (events <= 48 || events % 64 == 0)
+++      radv_ps5_reserve_line(what, purpose, bytes);
+++   simple_mtx_unlock(&radv_ps5_reserve_lock);
+++   return placed;
+++}
+++
+++void
+++radv_ps5_reserve_note_app_refused(uint64_t bytes)
+++{
+++   (void)bytes;
+++   if (radv_ps5_reserve_target_blocks() != 0 && p_atomic_read(&radv_ps5_reserve_held) > 0)
+++      p_atomic_inc(&radv_ps5_reserve_app_refused);
+++}
+++
++ static bool
++ radv_ps5_memory_alloc_once(uint64_t bytes, uint64_t alignment, bool window32, struct radv_ps5_memory *out)
++ {
++@@ -1004,6 +1139,30 @@ radv_ps5_memory_available_bytes(void)
++    return radv_ps5_memory_pool_bytes();
++ }
++ 
+++/* RADV_PS5_INTERNAL_RESERVE_MIB (lead-mesh-46): the host model never runs out, so nothing is held. */
+++void
+++radv_ps5_reserve_tend(void)
+++{
+++}
+++
+++bool
+++radv_ps5_reserve_serve(uint64_t bytes, uint64_t alignment, bool window32, const char *purpose,
+++                       struct radv_ps5_memory *out)
+++{
+++   (void)bytes;
+++   (void)alignment;
+++   (void)window32;
+++   (void)purpose;
+++   (void)out;
+++   return false;
+++}
+++
+++void
+++radv_ps5_reserve_note_app_refused(uint64_t bytes)
+++{
+++   (void)bytes;
+++}
+++
++ bool
++ radv_ps5_memory_alloc(uint64_t bytes, uint64_t alignment, bool window32, struct radv_ps5_memory *out)
++ {
++diff --git a/src/amd/vulkan/winsys/ps5/radv_ps5_platform.h b/src/amd/vulkan/winsys/ps5/radv_ps5_platform.h
++index 70b718e..960696d 100644
++--- a/src/amd/vulkan/winsys/ps5/radv_ps5_platform.h
+++++ b/src/amd/vulkan/winsys/ps5/radv_ps5_platform.h
++@@ -106,6 +106,18 @@ uint64_t radv_ps5_vrange_space_bytes(void);
++ uint64_t radv_ps5_memory_pool_bytes(void);
++ uint64_t radv_ps5_memory_available_bytes(void);
++ 
+++/* EglantinePS5 RADV_PS5_INTERNAL_RESERVE_MIB=N (lead-mesh-46, off unless set): N MiB of the pool
+++ * held by the driver in 2 MiB blocks for its own buffers (descriptor pools, upload buffers, query
+++ * pools, fences) of 2 MiB or less, which the app cannot survive being refused. _tend fills the
+++ * reserve (at the first buffer, then again once the pool has room); _serve gives up a block to
+++ * an internal buffer the pool refused and places it again; _note_app_refused counts the app's
+++ * refused device memory while the reserve held. Unset or 0: _tend and _note return after one
+++ * test, _serve returns false, nothing is held. */
+++void radv_ps5_reserve_tend(void);
+++bool radv_ps5_reserve_serve(uint64_t bytes, uint64_t alignment, bool window32, const char *purpose,
+++                            struct radv_ps5_memory *out);
+++void radv_ps5_reserve_note_app_refused(uint64_t bytes);
+++
++ /* Writes back and invalidates the CPU cache lines of a range, and orders the
++  * evictions before what follows. */
++ void radv_ps5_cpu_flush(const void *address, size_t bytes);

@@ -1,0 +1,487 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_MESH_BEFORE_PASS (off unless set): a task/mesh draw run as compute records its compute passes before the open render pass instead of ending the pass and beginning it again
+
+Idea and upstream patch: ronaldpena007-ops, zortos293/Lichii issue #1431 ("Mesh emulation cuts the
+render pass ~70 times a frame on AMD", EDEN_NX2_MESH_BEFORE_PASS). Ported by hand to our own mesh-as-
+compute path (lone mesh draws, the T47 line; GraphicsPipeline::RecordMeshComputePasses), which differs
+from upstream's: one shared scratch region (MeshComputeScratch) every draw used from offset 0, push
+constants that carry the region's address to the readback vertex shader, no per-draw descriptor cell.
+
+Why: RecordMeshComputePasses called RequestOutsideRenderPassOperationContext for every mesh draw:
+the open pass ended, the compute passes ran, the pass began again (LOAD) for the readback draw.
+Upstream counted ~70 such cuts a frame in the field; their patch moved 96 % of them before the pass
+(GPU busy went down on an RDNA 3.5 iGPU, fps unchanged there because the CPU split was the limit).
+
+What (EDEN_UP_MESH_BEFORE_PASS=1, or =2):
+- Scheduler::BeginRenderPassImpl records a prelude runner just before the pass's begin. While the
+  begin's chunk has not gone to the worker (DispatchWork resets it; so does the pass's end), a mesh
+  draw of that pass appends its compute passes to the prelude (Scheduler::ReserveBeforePass +
+  RecordBeforePass) instead of cutting the pass.
+- Each such draw gets its own place in the scratch region (256-byte aligned, after the prelude's
+  earlier draws and after a draw whose readback is still to come: NoteMeshScratchWritten /
+  NoteMeshScratchRead). Its FillBuffer, indirect dispatch, push constants and readback DrawIndirect
+  use that offset. A draw that does not fit cuts the pass as before.
+- The readback draw pushes the draw's MeshComputeLayout again (the region's address): another draw's
+  passes may have run since its own. Only with the switch.
+- Refused (the pass is cut as before) when: the draw writes storage, samples a render target of its
+  pass, or feeds transform feedback; a draw of the pass wrote storage; a batched upload waits; the
+  pass's begin went to the worker; the rescaling state at the begin differs (the passes push the down
+  factor that the pass's earlier draws read); the region is full. The passes bind the draw's
+  descriptor buffer chunk: they bind the chunk the pass began with again after them.
+- =1 also holds the rasterizer's periodic DispatchWork (every 32 draws) while a prelude is open, so
+  the window lasts until the chunk is full (as upstream; we hold no extra chunks). =2: no hold.
+Not ported from upstream: the held-chunk queue (up to 32 full chunks kept from the worker) and the
+deferred-clear case (a pending clear begun as the draw's pass to take the prelude).
+
+Count line (powers of two of events): "EDEN_UP_MESH_BEFORE_PASS: N mesh draws ran before their pass,
+M did not (begin sent, no pass, draw writes storage or samples a target, pass wrote storage, other
+target, uploads, rescaling, no room)", and one boot line when on.
+
+Unset (the default): the passes are recorded exactly as before (offset 0, pass cut), no prelude, no
+extra push, the periodic dispatch as before: as T181. Files: vk_scheduler.{h,cpp},
+vk_graphics_pipeline.{h,cpp}, vk_rasterizer.cpp: none is a translation id input; the new name is not
+in TranslationSwitches: KEEPS THE STORE.
+
+---
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+index 7643e5f3bc..ea8612ab87 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -1094,6 +1094,13 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
+             scheduler.RequestOutsideRenderPassOperationContext();
+         }
+     }
++    // EDEN_UP_MESH_BEFORE_PASS: a draw that samples a target of its pass, or feeds transform
++    // feedback, keeps its compute passes in place (RecordMeshComputePasses).
++    mesh_stays_in_place =
++        RunsMeshAsCompute() && Scheduler::MeshBeforePassMode() != 0 &&
++        (regs.transform_feedback_enabled != 0 ||
++         texture_cache.SamplesRenderTarget(
++             std::span<const VideoCommon::ImageViewInOut>{views.data(), views.size()}));
+     // EDEN_UP_RT_OOM_SKIP (CheezyEmu a08015f): a target got no memory; skip the draw.
+     if (texture_cache.RenderTargetsOutOfMemory()) {
+         return false;
+@@ -1311,6 +1318,12 @@ bool GraphicsPipeline::ConfigureDelta(bool is_indexed) {
+             scheduler.RequestOutsideRenderPassOperationContext();
+         }
+     }
++    // As ConfigureImpl (EDEN_UP_MESH_BEFORE_PASS).
++    mesh_stays_in_place =
++        RunsMeshAsCompute() && Scheduler::MeshBeforePassMode() != 0 &&
++        (maxwell3d->regs.transform_feedback_enabled != 0 ||
++         textures.SamplesRenderTarget(std::span<const VideoCommon::ImageViewInOut>{
++             delta_views.data(), delta_views.size()}));
+     // As ConfigureImpl (EDEN_UP_RT_OOM_SKIP).
+     if (textures.RenderTargetsOutOfMemory()) {
+         return false;
+@@ -1423,7 +1436,10 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
+                       descriptor_buffer_offset, descriptor_buffer_chunk, bind_descriptor_buffer,
+                       rescaling_data = rescaling.Data(), is_rescaling, update_rescaling,
+                       uses_render_area = render_area.uses_render_area,
+-                      render_area_data = render_area.words](vk::CommandBuffer cmdbuf) {
++                      render_area_data = render_area.words,
++                      repush_mesh = RunsMeshAsCompute() && mesh_compute_draw.recorded &&
++                                    Scheduler::MeshBeforePassMode() != 0,
++                      mesh_push = mesh_compute_push](vk::CommandBuffer cmdbuf) {
+         if (bind_descriptor_buffer) {
+             const VkDescriptorBufferBindingInfoEXT binding_info{
+                 descriptor_buffer_ring.BindingInfo(descriptor_buffer_chunk)};
+@@ -1451,6 +1467,13 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
+                                  RENDERAREA_LAYOUT_OFFSET, sizeof(render_area_data),
+                                  &render_area_data);
+         }
++        if (repush_mesh) {
++            // EDEN_UP_MESH_BEFORE_PASS: the readback vertex shader finds the draw's region from
++            // these; another draw's compute passes may have pushed theirs since this one's.
++            cmdbuf.PushConstants(*pipeline_layout, push_constant_stages,
++                                 Shader::Backend::SPIRV::MESH_COMPUTE_PUSH_OFFSET,
++                                 sizeof(mesh_push), mesh_push.data());
++        }
+         if (!descriptor_set_layout) {
+             return;
+         }
+@@ -2112,7 +2135,27 @@ bool GraphicsPipeline::RecordMeshComputePasses(const void* descriptor_data,
+         return refuse("the draw does not fit the scratch region", plan.total * 4,
+                       mesh_scratch->SizeBytes());
+     }
+-    const VkDeviceAddress address{mesh_scratch->Address()};
++    // EDEN_UP_MESH_BEFORE_PASS (idea: zortos293/Lichii issue #1431, ronaldpena007-ops): inside
++    // the open render pass, the passes go into the pass's prelude (Scheduler::RecordBeforePass),
++    // each draw at its own place in the region, instead of ending the pass here and beginning it
++    // again for the readback draw. Refused (the pass ends as before) when this draw writes
++    // storage or samples a target of the pass, a draw of the pass wrote storage, an upload waits,
++    // the pass's begin went to the worker, or the region has no room left.
++    const u64 region_bytes{plan.total * sizeof(u32)};
++    const bool before_pass_on{Scheduler::MeshBeforePassMode() != 0};
++    Scheduler::BeforePassSlot slot{};
++    if (before_pass_on) {
++        slot = scheduler.ReserveBeforePass(texture_cache.GetFramebuffer(), region_bytes,
++                                           mesh_scratch->SizeBytes(), texture_cache.IsRescaling(),
++                                           writes_storage || mesh_stays_in_place);
++    }
++    const VkDeviceSize region_offset{slot.ok ? slot.offset : 0};
++    // The passes bind the draw's descriptor buffer chunk; a draw of the pass that did not bind
++    // one reads the chunk bound when the pass began: bind that again after them.
++    const bool restore_chunk{slot.ok && slot.chunk_bound && descriptor_set_layout &&
++                             uses_descriptor_buffer && slot.chunk != descriptor_buffer_chunk};
++    const u32 pass_chunk{slot.chunk};
++    const VkDeviceAddress address{mesh_scratch->Address() + region_offset};
+     const MeshComputeLayout push{
+         .scratch_low = static_cast<u32>(address),
+         .scratch_high = static_cast<u32>(address >> 32),
+@@ -2123,11 +2166,13 @@ bool GraphicsPipeline::RecordMeshComputePasses(const void* descriptor_data,
+     };
+     const f32 down_factor{texture_cache.IsRescaling()
+                               ? Settings::values.resolution_info.down_factor : 1.0f};
+-    scheduler.RequestOutsideRenderPassOperationContext();
+-    scheduler.Record([this, descriptor_data, descriptor_buffer_offset, descriptor_buffer_chunk, push,
+-                      has_task, down_factor, rescaling_data = rescaling.Data(),
+-                      uses_render_area = render_area.uses_render_area,
+-                      render_area_data = render_area.words](vk::CommandBuffer cmdbuf) {
++    static_assert(sizeof(MeshComputeLayout) == sizeof(mesh_compute_push));
++    std::memcpy(mesh_compute_push.data(), &push, sizeof(push));
++    auto work = [this, descriptor_data, descriptor_buffer_offset, descriptor_buffer_chunk, push,
++                 has_task, down_factor, rescaling_data = rescaling.Data(),
++                 uses_render_area = render_area.uses_render_area,
++                 render_area_data = render_area.words, region_offset, restore_chunk,
++                 pass_chunk](vk::CommandBuffer cmdbuf) {
+         const VkBuffer scratch{mesh_scratch->Handle()};
+         // Cover guest resources as well as scratch, including earlier fragment/attachment and
+         // transfer writes. All prior readers finish before this draw overwrites shared storage.
+@@ -2142,7 +2187,7 @@ bool GraphicsPipeline::RecordMeshComputePasses(const void* descriptor_data,
+         cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                0, reuse_barrier);
+-        cmdbuf.FillBuffer(scratch, 0, MESH_SCRATCH_HEADER_WORDS * sizeof(u32), 0);
++        cmdbuf.FillBuffer(scratch, region_offset, MESH_SCRATCH_HEADER_WORDS * sizeof(u32), 0);
+         static constexpr VkMemoryBarrier filled_barrier{
+             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+             .pNext = nullptr,
+@@ -2201,7 +2246,7 @@ bool GraphicsPipeline::RecordMeshComputePasses(const void* descriptor_data,
+                                        VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                                    0, pass_barrier);
+             cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *mesh_pipeline);
+-            cmdbuf.DispatchIndirect(scratch, 4 * sizeof(u32)); // the scan's dispatch words
++            cmdbuf.DispatchIndirect(scratch, region_offset + 4 * sizeof(u32)); // the scan's words
+         } else {
+             cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *mesh_pipeline);
+             cmdbuf.Dispatch(push.groups, 1, 1);
+@@ -2216,8 +2261,22 @@ bool GraphicsPipeline::RecordMeshComputePasses(const void* descriptor_data,
+         cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                0, read_barrier);
+-    });
+-    mesh_compute_draw = {.recorded = true, .buffer = mesh_scratch->Handle(), .offset = 0};
++        if (restore_chunk) {
++            cmdbuf.BindDescriptorBuffersEXT(descriptor_buffer_ring.BindingInfo(pass_chunk));
++        }
++    };
++    if (slot.ok) {
++        scheduler.RecordBeforePass(slot, region_bytes,
++                                   std::function<void(vk::CommandBuffer)>{std::move(work)});
++    } else {
++        scheduler.RequestOutsideRenderPassOperationContext();
++        scheduler.Record(std::move(work));
++    }
++    if (before_pass_on) {
++        // A pass begun before this draw's readback keeps its prelude's slots past this region.
++        scheduler.NoteMeshScratchWritten(region_offset + region_bytes);
++    }
++    mesh_compute_draw = {.recorded = true, .buffer = mesh_scratch->Handle(), .offset = region_offset};
+     return true;
+ }
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
+index 22914769bd..0fbe6452ff 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
+@@ -420,6 +420,13 @@ private:
+     VkShaderStageFlags push_constant_stages{};
+     u32 mesh_draw_groups{};
+     MeshComputeDraw mesh_compute_draw{};
++    /// EDEN_UP_MESH_BEFORE_PASS: the push constants (MeshComputeLayout) of the last draw's
++    /// compute passes; its readback draw pushes them again, as another draw's passes may have
++    /// run between them.
++    std::array<u32, 8> mesh_compute_push{};
++    /// EDEN_UP_MESH_BEFORE_PASS: the draw samples a target of its pass or uses transform
++    /// feedback: its compute passes stay in place.
++    bool mesh_stays_in_place{};
+ 
+     DescriptorBufferLayout descriptor_buffer_layout;
+     std::vector<DescriptorUpdateEntry> last_descriptor_payload;
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 31bcdc309a..ffe6c4080e 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -1672,6 +1672,8 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
+                                 num_instances);
+                 }
+             }
++            // EDEN_UP_MESH_BEFORE_PASS: the region is read here; later passes may take it.
++            scheduler.NoteMeshScratchRead();
+             scheduler.Record([this, draw = mesh_compute_draw, empty_sample](vk::CommandBuffer cmdbuf) {
+                 const bool empty_missing = scheduler.GraphicsPipelineMissing();
+                 if (empty_sample) Empty::Recorded(true, empty_missing);
+@@ -3838,7 +3840,8 @@ void RasterizerVulkan::FlushWork() {
+                                      ? native_flush_draws
+                                      : DRAWS_TO_DISPATCH;
+     if (draw_counter < draws_to_dispatch) {
+-        scheduler.DispatchWork();
++        // EDEN_UP_MESH_BEFORE_PASS=1: waits while the open pass can take compute passes.
++        scheduler.DispatchWorkUnlessHeld();
+         return;
+     }
+     // EDEN_NX2_ZPASS_KEEP_WINDOW=1: this flush only keeps the GPU fed, so it can wait for the
+diff --git a/src/video_core/renderer_vulkan/vk_scheduler.cpp b/src/video_core/renderer_vulkan/vk_scheduler.cpp
+index 4e67828d43..df8a4fd7d4 100644
+--- a/src/video_core/renderer_vulkan/vk_scheduler.cpp
++++ b/src/video_core/renderer_vulkan/vk_scheduler.cpp
+@@ -443,6 +443,10 @@ void Scheduler::DispatchWork() {
+     if (VideoCommon::GpuSplit::check_owner) [[unlikely]] {
+         VideoCommon::GpuSplit::CheckOwner("Scheduler::DispatchWork");
+     }
++    // EDEN_UP_MESH_BEFORE_PASS: the open pass's begin goes to the worker now (in this chunk or
++    // an earlier one): nothing more can be put before it.
++    pass_prelude.reset();
++    ++work_dispatches;
+     if (chunk && !chunk->Empty()) {
+         // Waking the worker is a system call (~2% of the GPU thread at one dispatch per 8
+         // draws): skip it while the worker is still busy, it pops the queue before waiting.
+@@ -459,6 +463,106 @@ void Scheduler::DispatchWork() {
+     }
+ }
+ 
++int Scheduler::MeshBeforePassMode() {
++    static const int mode = [] {
++        const char* const value = std::getenv("EDEN_UP_MESH_BEFORE_PASS");
++        const int on = value == nullptr ? 0 : value[0] == '1' ? 1 : value[0] == '2' ? 2 : 0;
++        if (on != 0) {
++            LOG_INFO(Render_Vulkan,
++                     "EDEN_UP_MESH_BEFORE_PASS={}: mesh draws run as compute record their compute "
++                     "passes before the render pass they draw in{}",
++                     on, on == 1 ? " (periodic dispatch waits while a pass can take them)" : "");
++        }
++        return on;
++    }();
++    return mode;
++}
++
++namespace {
++// EDEN_UP_MESH_BEFORE_PASS count line (recording thread only).
++struct MeshBeforePassCounts {
++    enum Reason : size_t { Begun, NoPass, Draw, Stores, Target, Uploads, Rescaling, Room, Count };
++    u64 before{};
++    std::array<u64, Count> refused{};
++    u64 events{};
++
++    void Log() {
++        if (++events; (events & (events - 1)) != 0) {
++            return;
++        }
++        LOG_INFO(Render_Vulkan,
++                 "EDEN_UP_MESH_BEFORE_PASS: {} mesh draws ran before their pass, {} did not (begin "
++                 "sent {}, no pass {}, draw writes storage or samples a target {}, pass wrote "
++                 "storage {}, other target {}, uploads {}, rescaling {}, no room {})",
++                 before,
++                 refused[Begun] + refused[NoPass] + refused[Draw] + refused[Stores] +
++                     refused[Target] + refused[Uploads] + refused[Rescaling] + refused[Room],
++                 refused[Begun], refused[NoPass], refused[Draw], refused[Stores], refused[Target],
++                 refused[Uploads], refused[Rescaling], refused[Room]);
++    }
++};
++MeshBeforePassCounts mesh_before_pass_counts;
++} // Anonymous namespace
++
++Scheduler::BeforePassSlot Scheduler::ReserveBeforePass(const Framebuffer* framebuffer, u64 bytes,
++                                                       u64 capacity, bool is_rescaling,
++                                                       bool draw_blocks) {
++    using Counts = MeshBeforePassCounts;
++    const auto refuse = [](Counts::Reason reason) {
++        ++mesh_before_pass_counts.refused[reason];
++        mesh_before_pass_counts.Log();
++        return BeforePassSlot{};
++    };
++    if (!state.renderpass) {
++        return refuse(Counts::NoPass);
++    }
++    if (!pass_prelude) {
++        return refuse(Counts::Begun);
++    }
++    if (draw_blocks) {
++        return refuse(Counts::Draw);
++    }
++    if (render_pass_has_stores) {
++        return refuse(Counts::Stores);
++    }
++    if (framebuffer == nullptr || state.framebuffer != framebuffer->Handle() ||
++        state.render_area.width != framebuffer->RenderArea().width ||
++        state.render_area.height != framebuffer->RenderArea().height) {
++        return refuse(Counts::Target);
++    }
++    if (uploads_pending) {
++        // A batched upload is recorded after this point; the passes would run before it.
++        return refuse(Counts::Uploads);
++    }
++    if (pass_prelude->rescaling_defined && pass_prelude->is_rescaling != is_rescaling) {
++        // The passes push the down factor; the pass's draws that did not push it read it.
++        return refuse(Counts::Rescaling);
++    }
++    // Device addresses of storage reached through the region: keep each slot 256-byte aligned.
++    const u64 offset = Common::AlignUp(pass_prelude->scratch_next, u64{256});
++    if (offset + bytes > capacity) {
++        return refuse(Counts::Room);
++    }
++    return BeforePassSlot{
++        .ok = true,
++        .offset = offset,
++        .chunk_bound = pass_prelude->chunk_bound,
++        .chunk = pass_prelude->chunk,
++    };
++}
++
++void Scheduler::RecordBeforePass(const BeforePassSlot& slot, u64 bytes,
++                                 std::function<void(vk::CommandBuffer)>&& command) {
++    if (VideoCommon::GpuSplit::check_owner) [[unlikely]] {
++        VideoCommon::GpuSplit::CheckOwner("Scheduler::RecordBeforePass");
++    }
++    pass_prelude->commands.push_back(std::move(command));
++    pass_prelude->scratch_next = slot.offset + bytes;
++    ++record_serial; // patch 0750: RecordedSinceSubmit
++    ++mesh_before_pass_counts.before;
++    mesh_before_pass_counts.Log();
++}
++
+ void Scheduler::BeginRenderPassImpl(const Framebuffer* framebuffer, VkRenderPass renderpass,
+                                     const VkClearValue* clear_values, u32 clear_value_count) {
+     const VkFramebuffer framebuffer_handle = framebuffer->Handle();
+@@ -478,6 +582,31 @@ void Scheduler::BeginRenderPassImpl(const Framebuffer* framebuffer, VkRenderPass
+     for (u32 i = 0; i < clear_value_count && i < values.size(); ++i) {
+         values[i] = clear_values[i];
+     }
++    // EDEN_UP_MESH_BEFORE_PASS: the prelude the pass's mesh draws record their compute passes
++    // into (RecordBeforePass), run just before the begin. Its slots start past a mesh draw whose
++    // readback is still to come (in this pass): its compute passes were recorded before this.
++    std::shared_ptr<PassPrelude> prelude;
++    u64 dispatches_after_prelude{};
++    if (MeshBeforePassMode() != 0) {
++        // A batched upload goes first: the prelude's commands may read what it copies.
++        if (uploads_pending) {
++            FlushUploads();
++        }
++        prelude = std::make_shared<PassPrelude>();
++        prelude->scratch_next = mesh_scratch_unread_end;
++        prelude->rescaling_defined = state.rescaling_defined;
++        prelude->is_rescaling = state.is_rescaling;
++        prelude->chunk_bound = state.descriptor_buffer_bound;
++        prelude->chunk = state.descriptor_buffer_chunk;
++        // The recording thread stops adding to it when this chunk goes to the worker. Each
++        // command ends with its own barrier for the draws that read what it wrote.
++        Record([prelude](vk::CommandBuffer cmdbuf) {
++            for (const auto& command : prelude->commands) {
++                command(cmdbuf);
++            }
++        });
++        dispatches_after_prelude = work_dispatches;
++    }
+     const bool after_compute = std::exchange(compute_writes_pending, false);
+     Record([renderpass, framebuffer_handle, render_area, values, clear_value_count,
+             after_compute](vk::CommandBuffer cmdbuf) {
+@@ -508,6 +637,10 @@ void Scheduler::BeginRenderPassImpl(const Framebuffer* framebuffer, VkRenderPass
+         }
+         cmdbuf.BeginRenderPass(renderpass_bi, VK_SUBPASS_CONTENTS_INLINE);
+     });
++    // Open for the pass's draws unless the begin's Record sent the prelude's chunk to the worker.
++    if (prelude && work_dispatches == dispatches_after_prelude) {
++        pass_prelude = std::move(prelude);
++    }
+     num_renderpass_images = framebuffer->NumImages();
+     renderpass_images = framebuffer->Images();
+     renderpass_image_ranges = framebuffer->ImageRanges();
+@@ -836,6 +969,8 @@ void Scheduler::EndPendingOperations() {
+ void Scheduler::EndRenderPass()
+     {
+         RealizeDeferredClear();
++        // EDEN_UP_MESH_BEFORE_PASS: the pass is over, what comes next runs after it.
++        pass_prelude.reset();
+         if (!state.renderpass) {
+             return;
+         }
+diff --git a/src/video_core/renderer_vulkan/vk_scheduler.h b/src/video_core/renderer_vulkan/vk_scheduler.h
+index 9393c87241..55404788cd 100644
+--- a/src/video_core/renderer_vulkan/vk_scheduler.h
++++ b/src/video_core/renderer_vulkan/vk_scheduler.h
+@@ -134,6 +134,54 @@ public:
+         return render_pass_has_stores;
+     }
+ 
++    /// EDEN_UP_MESH_BEFORE_PASS (idea: zortos293/Lichii issue #1431, ronaldpena007-ops): a task/
++    /// mesh draw run as compute inside the open render pass records its compute passes into a
++    /// prelude the pass's begin runs before it begins, instead of ending the pass and beginning
++    /// it again. 0 off (default), 1 on (the rasterizer's periodic dispatch waits while the pass
++    /// can still take commands), 2 on without that wait.
++    [[nodiscard]] static int MeshBeforePassMode();
++
++    /// Where a draw's compute passes go before the open pass. offset: bytes into the mesh scratch
++    /// region, past what the prelude and a draw not yet read hold. restore_chunk: the descriptor
++    /// buffer chunk bound when the pass began, to bind again after the commands.
++    struct BeforePassSlot {
++        bool ok{};
++        VkDeviceSize offset{};
++        bool chunk_bound{};
++        u32 chunk{};
++    };
++
++    /// Recording thread: a slot when the open pass draws into `framebuffer`, its begin has not
++    /// gone to the worker, no draw in it wrote storage, no upload waits, its rescaling matches
++    /// and `bytes` fit in `capacity` after the slots taken; `draw_blocks` (the draw writes
++    /// storage or samples a target of the pass) refuses. !ok: the caller ends the pass as before.
++    BeforePassSlot ReserveBeforePass(const Framebuffer* framebuffer, u64 bytes, u64 capacity,
++                                     bool is_rescaling, bool draw_blocks);
++
++    /// Records `command` into the open pass's prelude at `slot` (from ReserveBeforePass).
++    void RecordBeforePass(const BeforePassSlot& slot, u64 bytes,
++                          std::function<void(vk::CommandBuffer)>&& command);
++
++    /// EDEN_UP_MESH_BEFORE_PASS: a mesh draw's compute passes wrote the scratch region up to
++    /// `end` bytes and its readback draw is not recorded yet: a pass begun before it is keeps its
++    /// prelude's slots past `end`.
++    void NoteMeshScratchWritten(u64 end) noexcept {
++        mesh_scratch_unread_end = end;
++    }
++    /// The readback draw of the last mesh draw was recorded.
++    void NoteMeshScratchRead() noexcept {
++        mesh_scratch_unread_end = 0;
++    }
++
++    /// The rasterizer's periodic DispatchWork; with EDEN_UP_MESH_BEFORE_PASS=1 it waits while
++    /// the open pass's begin can still take commands (a full chunk still goes, as always).
++    void DispatchWorkUnlessHeld() {
++        if (pass_prelude && MeshBeforePassMode() == 1) {
++            return;
++        }
++        DispatchWork();
++    }
++
+     /// EDEN_NX2_COMPUTE_TO_DRAW=1: a dispatch was recorded, the next render pass must see what it
+     /// wrote.
+     void NoteComputeWrites() {
+@@ -460,6 +508,19 @@ private:
+     bool compute_writes_pending{};
+     bool fragment_barrier_pending{}; ///< EDEN_UP_DJ_FRAG_BARRIER: reset when the render pass ends
+     bool render_pass_has_stores{};   ///< Any draw of the open render pass writes storage
++    /// EDEN_UP_MESH_BEFORE_PASS: what the open pass's begin runs before it begins. Set from the
++    /// begin until the begin's chunk goes to the worker (DispatchWork) or the pass ends.
++    struct PassPrelude {
++        std::vector<std::function<void(vk::CommandBuffer)>> commands;
++        u64 scratch_next{};          ///< first free byte of the mesh scratch region
++        bool rescaling_defined{};    ///< the rescaling state when the pass began
++        bool is_rescaling{};
++        bool chunk_bound{};          ///< the descriptor buffer chunk bound when the pass began
++        u32 chunk{};
++    };
++    std::shared_ptr<PassPrelude> pass_prelude;
++    u64 mesh_scratch_unread_end{}; ///< EDEN_UP_MESH_BEFORE_PASS: see NoteMeshScratchWritten
++    u64 work_dispatches{};         ///< DispatchWork calls (EDEN_UP_MESH_BEFORE_PASS)
+     bool graphics_pipeline_missing{};
+     std::unique_ptr<CommandPool> command_pool;
+     std::unique_ptr<UploadBatch> upload_batch;

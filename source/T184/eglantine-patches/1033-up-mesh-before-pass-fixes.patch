@@ -1,0 +1,174 @@
+From: EglantinePS5
+Subject: [PATCH] up: EDEN_UP_MESH_BEFORE_PASS checker fixes on 1032 (off unless set)
+
+Idea and upstream patch: ronaldpena007-ops, zortos293/Lichii issue #1431. Checker fixes on 1032:
+- Off path: the draw's command in ConfigureDraw is T181's again (1032 grew it by 33 bytes for
+  every draw of every pipeline, so chunks filled sooner with the switch off). The readback's
+  push of the MeshComputeLayout is now a command of its own, recorded only with the switch.
+- Transform feedback: a draw of the open pass that writes transform feedback refuses later
+  hoists in that pass (counted with "pass wrote storage or feedback"): its buffers could feed a
+  mesh draw's compute passes, which would run before it.
+- Push constants: the prelude's passes push the down factor with the mesh layout before every
+  draw of the pass. The pass's first draw now pushes the down factor itself (the rescaling state
+  is reset when a prelude opens), so no draw reads a value from before the prelude. The
+  "rescaling" refusal is no longer needed and is gone (its count stays 0, not printed).
+- Target check as RequestRenderpass: with EDEN_UP_DEFERRED_CLEAR_PASS off, a draw whose render
+  pass differs from the open one (a deferred clear's variant) is refused ("other target")
+  instead of being hoisted and then cutting the pass anyway (it was ordered right, but counted
+  as a hit).
+Unset: as T181. Files: vk_scheduler.{h,cpp}, vk_graphics_pipeline.cpp: no translation id input,
+no name added to TranslationSwitches: KEEPS THE STORE.
+
+---
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+index ea8612ab87..e93a265270 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -1393,6 +1393,11 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
+     if (writes_storage) {
+         scheduler.NoteRenderPassStores(); // Read only with EDEN_UP_DJ_FRAG_BARRIER
+     }
++    // EDEN_UP_MESH_BEFORE_PASS: transform feedback writes buffers a later mesh draw's compute
++    // passes could read; they must not move before this draw.
++    if (Scheduler::MeshBeforePassMode() != 0 && maxwell3d->regs.transform_feedback_enabled != 0) {
++        scheduler.NoteRenderPassFeedback();
++    }
+     if (!is_built.load(std::memory_order::relaxed)) {
+         BuildFirst(); // EDEN_UP_FAST_CFG: before the worker waits, so the builder has it first.
+         // Wait for the pipeline to be built
+@@ -1436,10 +1441,7 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
+                       descriptor_buffer_offset, descriptor_buffer_chunk, bind_descriptor_buffer,
+                       rescaling_data = rescaling.Data(), is_rescaling, update_rescaling,
+                       uses_render_area = render_area.uses_render_area,
+-                      render_area_data = render_area.words,
+-                      repush_mesh = RunsMeshAsCompute() && mesh_compute_draw.recorded &&
+-                                    Scheduler::MeshBeforePassMode() != 0,
+-                      mesh_push = mesh_compute_push](vk::CommandBuffer cmdbuf) {
++                      render_area_data = render_area.words](vk::CommandBuffer cmdbuf) {
+         if (bind_descriptor_buffer) {
+             const VkDescriptorBufferBindingInfoEXT binding_info{
+                 descriptor_buffer_ring.BindingInfo(descriptor_buffer_chunk)};
+@@ -1467,13 +1469,6 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
+                                  RENDERAREA_LAYOUT_OFFSET, sizeof(render_area_data),
+                                  &render_area_data);
+         }
+-        if (repush_mesh) {
+-            // EDEN_UP_MESH_BEFORE_PASS: the readback vertex shader finds the draw's region from
+-            // these; another draw's compute passes may have pushed theirs since this one's.
+-            cmdbuf.PushConstants(*pipeline_layout, push_constant_stages,
+-                                 Shader::Backend::SPIRV::MESH_COMPUTE_PUSH_OFFSET,
+-                                 sizeof(mesh_push), mesh_push.data());
+-        }
+         if (!descriptor_set_layout) {
+             return;
+         }
+@@ -1492,6 +1487,17 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
+                                       descriptor_set, nullptr);
+         }
+     });
++    if (RunsMeshAsCompute() && mesh_compute_draw.recorded &&
++        Scheduler::MeshBeforePassMode() != 0) {
++        // EDEN_UP_MESH_BEFORE_PASS: the readback vertex shader finds the draw's region from these;
++        // another draw's compute passes may have pushed theirs since this one's. A command of its
++        // own, so the draw's command above stays as T181's when the switch is off.
++        scheduler.Record([this, mesh_push = mesh_compute_push](vk::CommandBuffer cmdbuf) {
++            cmdbuf.PushConstants(*pipeline_layout, push_constant_stages,
++                                 Shader::Backend::SPIRV::MESH_COMPUTE_PUSH_OFFSET,
++                                 sizeof(mesh_push), mesh_push.data());
++        });
++    }
+     return true;
+ }
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_scheduler.cpp b/src/video_core/renderer_vulkan/vk_scheduler.cpp
+index df8a4fd7d4..193a7e71e8 100644
+--- a/src/video_core/renderer_vulkan/vk_scheduler.cpp
++++ b/src/video_core/renderer_vulkan/vk_scheduler.cpp
+@@ -493,12 +493,12 @@ struct MeshBeforePassCounts {
+         LOG_INFO(Render_Vulkan,
+                  "EDEN_UP_MESH_BEFORE_PASS: {} mesh draws ran before their pass, {} did not (begin "
+                  "sent {}, no pass {}, draw writes storage or samples a target {}, pass wrote "
+-                 "storage {}, other target {}, uploads {}, rescaling {}, no room {})",
++                 "storage or feedback {}, other target {}, uploads {}, no room {})",
+                  before,
+                  refused[Begun] + refused[NoPass] + refused[Draw] + refused[Stores] +
+                      refused[Target] + refused[Uploads] + refused[Rescaling] + refused[Room],
+                  refused[Begun], refused[NoPass], refused[Draw], refused[Stores], refused[Target],
+-                 refused[Uploads], refused[Rescaling], refused[Room]);
++                 refused[Uploads], refused[Room]);
+     }
+ };
+ MeshBeforePassCounts mesh_before_pass_counts;
+@@ -522,10 +522,15 @@ Scheduler::BeforePassSlot Scheduler::ReserveBeforePass(const Framebuffer* frameb
+     if (draw_blocks) {
+         return refuse(Counts::Draw);
+     }
+-    if (render_pass_has_stores) {
++    if (render_pass_has_stores || render_pass_has_feedback) {
+         return refuse(Counts::Stores);
+     }
+-    if (framebuffer == nullptr || state.framebuffer != framebuffer->Handle() ||
++    // As RequestRenderpass: a draw that will begin another pass (a deferred clear's variant with
++    // EDEN_UP_DEFERRED_CLEAR_PASS off) cuts the pass anyway.
++    static const bool deferred_clear_pass = Common::PeSwitch("EDEN_UP_DEFERRED_CLEAR_PASS");
++    if (framebuffer == nullptr ||
++        (!deferred_clear_pass && framebuffer->RenderPass() != state.renderpass) ||
++        state.framebuffer != framebuffer->Handle() ||
+         state.render_area.width != framebuffer->RenderArea().width ||
+         state.render_area.height != framebuffer->RenderArea().height) {
+         return refuse(Counts::Target);
+@@ -534,10 +539,9 @@ Scheduler::BeforePassSlot Scheduler::ReserveBeforePass(const Framebuffer* frameb
+         // A batched upload is recorded after this point; the passes would run before it.
+         return refuse(Counts::Uploads);
+     }
+-    if (pass_prelude->rescaling_defined && pass_prelude->is_rescaling != is_rescaling) {
+-        // The passes push the down factor; the pass's draws that did not push it read it.
+-        return refuse(Counts::Rescaling);
+-    }
++    // The rescaling state needs no check: the pass's first draw pushes the down factor again
++    // (BeginRenderPassImpl), so the passes' own push reaches no draw of the pass.
++    (void)is_rescaling;
+     // Device addresses of storage reached through the region: keep each slot 256-byte aligned.
+     const u64 offset = Common::AlignUp(pass_prelude->scratch_next, u64{256});
+     if (offset + bytes > capacity) {
+@@ -640,6 +644,9 @@ void Scheduler::BeginRenderPassImpl(const Framebuffer* framebuffer, VkRenderPass
+     // Open for the pass's draws unless the begin's Record sent the prelude's chunk to the worker.
+     if (prelude && work_dispatches == dispatches_after_prelude) {
+         pass_prelude = std::move(prelude);
++        // The prelude's passes push the down factor with the mesh layout; the pass's first draw
++        // pushes its own again, so no draw of the pass reads a value from before the prelude.
++        state.rescaling_defined = false;
+     }
+     num_renderpass_images = framebuffer->NumImages();
+     renderpass_images = framebuffer->Images();
+@@ -977,6 +984,7 @@ void Scheduler::EndRenderPass()
+         // The end below carries what a deferred fragment barrier asked for.
+         fragment_barrier_pending = false;
+         render_pass_has_stores = false;
++        render_pass_has_feedback = false;
+ 
+         query_cache->CounterClose(VideoCommon::QueryType::StreamingByteCount);
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_scheduler.h b/src/video_core/renderer_vulkan/vk_scheduler.h
+index 55404788cd..0b1af2ba2c 100644
+--- a/src/video_core/renderer_vulkan/vk_scheduler.h
++++ b/src/video_core/renderer_vulkan/vk_scheduler.h
+@@ -172,6 +172,10 @@ public:
+     void NoteMeshScratchRead() noexcept {
+         mesh_scratch_unread_end = 0;
+     }
++    /// EDEN_UP_MESH_BEFORE_PASS: a draw of the open pass writes transform feedback.
++    void NoteRenderPassFeedback() noexcept {
++        render_pass_has_feedback = true;
++    }
+ 
+     /// The rasterizer's periodic DispatchWork; with EDEN_UP_MESH_BEFORE_PASS=1 it waits while
+     /// the open pass's begin can still take commands (a full chunk still goes, as always).
+@@ -520,6 +524,7 @@ private:
+     };
+     std::shared_ptr<PassPrelude> pass_prelude;
+     u64 mesh_scratch_unread_end{}; ///< EDEN_UP_MESH_BEFORE_PASS: see NoteMeshScratchWritten
++    bool render_pass_has_feedback{}; ///< EDEN_UP_MESH_BEFORE_PASS: see NoteRenderPassFeedback
+     u64 work_dispatches{};         ///< DispatchWork calls (EDEN_UP_MESH_BEFORE_PASS)
+     bool graphics_pipeline_missing{};
+     std::unique_ptr<CommandPool> command_pool;

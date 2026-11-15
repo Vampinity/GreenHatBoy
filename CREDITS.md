@@ -4,16 +4,16 @@ The full list behind the short version on the [front page](README.md). It is lon
 
 ## [Vampinity](https://github.com/Vampinity) · started and runs the project
 
-Builds every version, tests it on a real base PS5 (the standard model, not the Pro) and writes the fixes that come out of that. From 5 to 14 November 2026, in numbers (counted early on 14 November):
+Builds every version, tests it on a real base PS5 (the standard model, not the Pro) and writes the fixes that come out of that. From 5 to 15 November 2026, in numbers (counted early on 15 November):
 
 | | |
 |---:|---|
-| **112 hours** | of PS5 time in automated test batches |
-| **1,379** | test runs, in 394 batches |
-| **92 hours** | of recorded picture checked frame by frame, about 20 million frames |
-| **167** | test builds |
-| **626** | patches in the newest build: own work and ports of other people's work |
-| **675** | switches, own and ported, each tracked in a ledger with the runs that used it |
+| **135 hours** | of PS5 time in automated test batches |
+| **1,535** | test runs, in 434 batches |
+| **113 hours** | of recorded picture checked frame by frame, about 24 million frames |
+| **171** | test builds |
+| **643** | patches in T186, the newest build that has run: own work and ports of other people's work |
+| **697** | switches, own and ported, each tracked in a ledger with the runs that used it |
 
 What came out of it:
 
@@ -84,7 +84,7 @@ Code from these projects is ported into the build, most of it behind switches th
 - **BlackBearReloaded**: ProsperoEden and the PS5 app base the app is packaged with. 22 ports from ProsperoEden: memory cleanup, the pipeline cache, image pages, texture decoding and command reading ahead. **drakmor**: ShadowMountPlus.
 - **EdGlantine-PS5**: skipping out-of-date texture uploads (the speed gain in the default settings) and a faster shader lookup.
 - **[Frizti](https://github.com/Frizti) / [Fritchii](https://github.com/Frizti/Fritchii)**: the shader preparation idea, the whole-game shader recipe, the usage tracker, the water flicker fix, and several speed ideas.
-- **[zortos293](https://github.com/zortos293) and the Lichii contributors**: the movie fixes, the shader preparation idea (zmckenney), a faster path for repeated draws, and many more ported ideas. jpkto, for the upload batching. Lucas Borges (lucastaonline), DahBard, skolvolt and DuskDarf1, for the draw and wait changes ported in T182 and T183.
+- **[zortos293](https://github.com/zortos293) and the Lichii contributors**: the movie fixes, the shader preparation idea (zmckenney), a faster path for repeated draws, and many more ported ideas. jpkto, for the upload batching. Lucas Borges (lucastaonline), DahBard, skolvolt and DuskDarf1, for the draw and wait changes ported in T182 and T183. Liomar Oliveira, Julius Bairaktaris, stephenjayakar, RomainROCH, nemiward, janvitos, danieljesus, Danny Ng and ronaldpena007-ops, for the JIT, log, plant shadow, texture and render pass changes ported in T184.
 - **[mihawk-99](https://github.com/mihawk-99)**: PS5_Lichii and the PS5 graphics driver work; ported from it: memory held by idle parts given back, and the JIT's rarely used code moved aside.
 - **PlayTendoh**: PS5 graphics driver changes for submitting and waiting.
 - **exploitizm**: the PS5 driver path that draws the leaves and plants.

@@ -1,0 +1,36 @@
+From: EglantinePS5
+Subject: [PATCH] up: T184 merge of 1030 (EDEN_UP_JIT_REGALLOC_BITS) and 1040 (EDEN_UP_JIT_X64_OPT)
+
+1030 keeps bitmasks of the allocator locations changed since the last scope end (dirty), of those
+holding values (occupied) and of those whose lru_counter moved (touched); with
+EDEN_UP_JIT_REGALLOC_BITS=1 the scope end releases only the dirty ones and Reset clears only the
+touched counters. 1040's scratch_copy_to_free_reg path (EDEN_UP_JIT_X64_OPT=1) write-locks a new
+location, copy_location, without marking it dirty. With both switches on that lock would never be
+released: the next instruction would see a locked register and the next block's Reset would not
+notice it (its full-reset fallback only checks the masks).
+
+Fix (as upstream Lichii has it): MarkDirty(copy_location) after the WriteLock. The other masks are
+already right on that path: SelectARegister marks copy_location touched, and copy_location holds no
+value (it must be empty), so occupied stays clear. Every other mutation of HostLocInfo that 1040
+adds goes through existing allocator calls (DefineValue with an argument, UseGpr), which 1030
+already marks. Nothing outside reg_alloc.cpp reaches hostloc_info.
+
+Each switch alone: unchanged. With EDEN_UP_JIT_REGALLOC_BITS unset nothing reads the masks; with
+EDEN_UP_JIT_X64_OPT unset the scratch-copy branch is never taken.
+
+Not in the kept-store stamp: dynarmic only. KEEPS THE STORE.
+---
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/reg_alloc.cpp b/src/dynarmic/src/dynarmic/backend/x64/reg_alloc.cpp
+index 99cf8d0bda..a56f90b0e4 100644
+--- a/src/dynarmic/src/dynarmic/backend/x64/reg_alloc.cpp
++++ b/src/dynarmic/src/dynarmic/backend/x64/reg_alloc.cpp
+@@ -363,6 +363,9 @@ HostLoc RegAlloc::UseScratchImpl(BlockOfCode& code, IR::Value use_value, std::bi
+                 if (LocInfo(copy_location).IsEmpty()) {
+                     CopyToScratch(code, bit_width, copy_location, current_location);
+                     LocInfo(copy_location).WriteLock();
++                    // T184 (1030 + 1040): a lock is a change, so the scope end must release it.
++                    // SelectARegister already marked copy_location touched, and it holds no value.
++                    MarkDirty(copy_location);
+                     eden_x64_opt_scratch_copies.fetch_add(1, std::memory_order_relaxed);
+                     return copy_location;
+                 }
