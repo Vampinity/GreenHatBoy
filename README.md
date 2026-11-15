@@ -28,11 +28,7 @@ This repository is emulator work and test logs. It is not the game and does not 
 ## Progress so far
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/img/progress-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="docs/img/progress.svg">
-    <img src="docs/img/progress.svg" width="860" alt="What has been fixed, by date, on a base PS5: it starts (5 November); fog gone and leaves back (6 and 7 November); no dark flashes and movies closer to sync (8 November); shorter freezes on a first visit (9 November); 10% faster, and memory waits in tests (10 and 11 November); no black screen on first start, title movie smooth, no jumping icons (12 November); a first start past the house door, in tests (13 November); the ground flicker gone and the big load got through 6 of 6 times, in tests (14 November). Now: the big load played by hand, memory in long play, open-area speed. Goal: the whole game. Steps of work, not a share of the game.">
-  </picture>
+  <img src="docs/img/progress.png" width="760" alt="Progress on a base PS5, 5 to 15 November. 5 November: black screen after the intro. Later that day: first steps in Link's house. 6 November: the white fog is gone. 7 November: plants back, first public test version. 8 November: no more dark flashes, for now. 13 November: a new game no longer crashes at the door, in 2 of 2 test runs. 14 November: dark flashes back, then gone again; a speed boost had brought them back, so it is off and the game runs slower. 15 November: past the field into the next area; 13 of 13 test runs made it, and about 2 hours of real play had 3 crashes, 2 of them at the long loading pause. Speed now, in frames per second: house and village about 21 to 22, field about 18 to 21, area after the field about 14. Don't expect 30 outdoors on a base PS5. The long loading pause when you leave the field: the screen stays black for 18 to 33 seconds in handheld mode, longer docked. Played a while? Save, then restart the app before you leave the field.">
 </p>
 
 Each build is tried on a real console before it goes up.
