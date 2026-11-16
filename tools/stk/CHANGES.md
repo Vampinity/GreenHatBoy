@@ -104,3 +104,9 @@ AC5 refused as `half`. Over the 1,332 GHB runs: 827 complete their route, **212 
 Validated: 24 tests (his 10 + one for END, our 13 adjusted to his `unknown` for an unmet leg). The 18 control
 starts: his result agrees with ours on every one (runWP1, crashed, is `unknown`). Archive (1,332 runs): 810
 `completed`, 18 `tail_unverified`, 22 `failed`, 189 `unknown`, 293 `manual`.
+
+## Crash class when survival is unknown (scorer 6)
+
+21. `crash_class` was `"none"` for every run without a crash file, including the 411 archived runs whose
+    survival is unknown (no end line, no crash file). It is now `null` with `missing_survival_unknown` there:
+    "no crash" is only claimed when the run is known to have ended without one.

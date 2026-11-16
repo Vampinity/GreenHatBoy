@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runfolder import RunFolder  # noqa: E402
 import route_check  # noqa: E402  (waveydude)
 
-SCORER_VERSION = "stk_score 5 (waveydude 1 + run contract v1 + his route_check, 16 Nov 2026)"
+SCORER_VERSION = "stk_score 6 (waveydude 1 + run contract v1 + his route_check, 16 Nov 2026)"
 
 # No machine's paths here: the control's env comes from --alpha-env or $STK_ALPHA_ENV.
 DEFAULT_ALPHA_ENV = os.environ.get("STK_ALPHA_ENV")
@@ -424,6 +424,10 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
         survival_result, survival_source = "running_at_pull", "run_json.was_running_at_stop"
     elif run_meta.get("end"):
         survival_result, survival_source = str(run_meta["end"])[:40], "run_json.end"
+
+    # No crash file and no end line: whether the run crashed is unknown, so the crash class is too.
+    if survival_result in ("unknown", "running_at_pull") and crash_class == "none":
+        crash_class, crash_source = None, "missing_survival_unknown"
 
     # --- Run-contract checks.
     intended = declared.get("intended_cache")
