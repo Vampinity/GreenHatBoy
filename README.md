@@ -56,28 +56,28 @@ We would rather tell you now than have you find out on your own.
 - **The opening stutters the first time you watch it**, and the sound can drop out for a moment. From the second start it plays nearly smooth.
 - **Short stops the first time you see a place**, about a second each. Walk the same way again and they are gone.
 - **Now and then a wrong picture shows for a split second**, under a second in our test recordings.
-- **It is slow outdoors.** About 21 to 22 fps in the house and the village, 18 to 21 in the field and about 14 in the area after the field. Below 20 fps the game itself also runs a bit slower. Don't expect 30 outdoors on a base PS5; see [How fast it runs](#how-fast-it-runs).
+- **It is slow outdoors.** About 21 to 22 fps in the house and the village, about 19 on the walk across the field and about 14 in the area after the field. Below 20 fps the game itself also runs a bit slower. Don't expect 30 outdoors on a base PS5; see [How fast it runs](#how-fast-it-runs).
 - **Use handheld.** Docked gets through the long loading pause but then crawls for half a minute or more.
 
 If it keeps crashing at the same spot, tell us with the crash form (see [below](#where-to-talk-and-how-to-report-a-problem)).
 
 ## How fast it runs
 
-**It depends on how much is on screen.** Closed-in places run fast. Wide open areas with many trees, water and other objects run slower.
-
-The chart below is from an older test (11 November, docked, other settings). The alpha's own speeds are in the second paragraph under it.
+**It depends on how much is on screen.** Wide open areas with many trees, water and other objects run slower.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/img/speed-by-place-dark.svg">
     <source media="(prefers-color-scheme: light)" srcset="docs/img/speed-by-place.svg">
-    <img src="docs/img/speed-by-place.svg" width="760" alt="Frames per second by kind of place on a base PS5 with the fast settings: indoors up to 60; narrow paths and tunnels 30 to 34; open paths 26 to 28; wide open areas with many trees and water 17 to 19.">
+    <img src="docs/img/speed-by-place.svg" width="760" alt="Frames per second by place on a base PS5, firmware 12.40, Handheld at 1x, frame ahead off, builds T185 and T186, 14 and 15 November, slowest to fastest start: the village, standing half a minute to a minute after arriving, 21.6 to 22.6 (4 starts); the field, walking, 18.8 to 19.6 (7 starts); the area after the field 13.3 to 14.1 (7 starts).">
   </picture>
 </p>
 
-Measured on 11 November on a base PS5, firmware 12.40, docked, full resolution, with the fast settings of that day, on test build T120. That was before the guard against jumping icons was added to the fast settings; the guard costs about 3%, so expect a little less now. The clean settings are a little slower: about 16 fps (frames per second) on the walk from Link's house into the village, against about 17 to 19 with the fast settings on the same walk. Wide open areas are where the speed work is going next.
+Measured on 14 and 15 November in scripted starts with the alpha's play settings v4.0, on a base PS5, firmware 12.40, in handheld at 1x, with frame ahead off. The field and the area after the field are 7 starts each on T186, the alpha build. The village is 4 starts, standing in the village half a minute to a minute after arriving: 2 first starts of the alpha on a fresh install (T186) and 2 new-game starts on T185, the build before it. The label at each bar gives the slowest and the fastest start, in fps (frames per second); the bar ends at the fastest. Per start: the average in the village and on the scripted walk across the field up to the load, and the median from 70 seconds after the load in the area after the field.
 
-Since 14 November we test with frame ahead off, because frame ahead makes the ground and some objects flicker. The chart above was measured with it on, docked, with other settings and on other routes, so the two are not comparable one to one. With it off, in our scripted starts on builds T185 and T186 (handheld, 1x), house and village run at about 21 to 22 fps, the field at 18 to 21 and the area after the field at about 14. Docked with frame ahead off, 2 of 2 scripted starts on 15 November got through the load from the field, but then the screen stayed black for 44 to 55 seconds and the game ran under 1 fps for 29 to 47 seconds. That is why the alpha is for handheld for now.
+The chart that was here until 15 November was measured with frame ahead on, docked, with the fast settings of that day and on other routes, so the two are not comparable one to one. Frame ahead is off now, because it makes the ground and some objects flicker. Below 20 fps the game itself also runs a bit slower. Don't expect 30 outdoors on a base PS5. Wide open areas are where the speed work is going next.
+
+Docked with frame ahead off, 2 of 2 scripted starts on 15 November got through the load from the field, but then the screen stayed black for 44 to 55 seconds and the game ran under 1 fps for 29 to 47 seconds. That is why the alpha is for handheld for now.
 
 ## What works, what is fixed, what is being improved
 
@@ -86,7 +86,6 @@ Since 14 November we test with frame ahead off, because frame ahead makes the gr
 - **The game's own resolution, not scaled down to gain speed.** The alpha is tested in handheld at 1x. Handheld draws a smaller picture than docked, so it looks softer. Full docked resolution stays the goal; docked still crawls after the load from the field (see [How fast it runs](#how-fast-it-runs)).
 - **A clean picture with the default settings**: no full-screen flashes and no white fog. Some plants, far trees and objects are still missing until you swing the sword (see below).
 - **A ready-made PS5 app.** Copy it over and start; there is no PC build step and no Linux to boot.
-- **Indoor areas and narrow paths**, at the speeds shown above.
 
 **Fixed since the first test**
 - The white fog over everything, and the bare trees: the forest looks as it should.
@@ -162,14 +161,14 @@ Three of us are in this together: Vampinity, GrowingBlackBeans and waveydude.
 
 ### [Vampinity](https://github.com/Vampinity) · started and runs the project
 
-Builds every version, tests it on a real base PS5 and writes the fixes that come out of that. From 5 to 15 November, in numbers (counted early on 15 November):
+Builds every version, tests it on a real base PS5 and writes the fixes that come out of that. From 5 to 16 November, in numbers (counted early on 16 November):
 
 | | |
 |---:|---|
-| **135 hours** | of PS5 time in automated test batches |
-| **1,535** | test runs, in 434 batches |
-| **113 hours** | of recorded picture checked frame by frame, about 24 million frames |
-| **171** | test builds |
+| **146 hours** | of PS5 time in automated test batches |
+| **1,606** | test runs, in 458 batches |
+| **123 hours** | of recorded picture checked frame by frame, about 26 million frames |
+| **174** | test builds |
 | **643** | patches in T186, the alpha build: own work and ports of other people's work |
 | **697** | switches, own and ported, each tracked in a ledger with the runs that used it |
 
