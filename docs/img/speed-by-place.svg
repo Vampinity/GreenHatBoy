@@ -1,26 +1,25 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 268" width="760" height="268" role="img" aria-label="Frames per second by kind of place">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 268" width="760" height="268" role="img" aria-label="Frames per second by place">
 <rect width="760" height="268" fill="#ffffff"/>
-<text x="20" y="28" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#1f2328">Frames per second by kind of place</text>
-<line x1="270" y1="44" x2="270" y2="238" stroke="#d1d9e0" stroke-width="1"/>
+<text x="20" y="28" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#1f2328">Frames per second by place</text>
+<text x="20" y="46" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="11" fill="#59636e">Base PS5, firmware 12.40, Handheld 1x, frame ahead off, builds T185 and T186, 14-15 Nov 2026</text>
+<line x1="270" y1="56" x2="270" y2="238" stroke="#d1d9e0" stroke-width="1"/>
 <text x="270" y="256" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="11.5" fill="#59636e">0</text>
-<line x1="370" y1="44" x2="370" y2="238" stroke="#d1d9e0" stroke-width="1"/>
+<line x1="370" y1="56" x2="370" y2="238" stroke="#d1d9e0" stroke-width="1"/>
 <text x="370" y="256" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="11.5" fill="#59636e">15</text>
-<line x1="470" y1="44" x2="470" y2="238" stroke="#d1d9e0" stroke-width="1"/>
+<line x1="470" y1="56" x2="470" y2="238" stroke="#d1d9e0" stroke-width="1"/>
 <text x="470" y="256" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="11.5" fill="#59636e">30</text>
-<line x1="570" y1="44" x2="570" y2="238" stroke="#d1d9e0" stroke-width="1"/>
+<line x1="570" y1="56" x2="570" y2="238" stroke="#d1d9e0" stroke-width="1"/>
 <text x="570" y="256" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="11.5" fill="#59636e">45</text>
-<line x1="670" y1="44" x2="670" y2="238" stroke="#d1d9e0" stroke-width="1"/>
+<line x1="670" y1="56" x2="670" y2="238" stroke="#d1d9e0" stroke-width="1"/>
 <text x="670" y="256" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="11.5" fill="#59636e">60</text>
-<text x="258" y="77" text-anchor="end" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" fill="#1f2328">Indoors</text>
-<rect x="270" y="62" width="400" height="22" rx="4" fill="#1a7f37"/>
-<text x="678" y="78" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12.5" font-weight="600" fill="#1f2328">up to 60</text>
-<text x="258" y="121" text-anchor="end" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" fill="#1f2328">Narrow paths and tunnels</text>
-<rect x="270" y="106" width="227" height="22" rx="4" fill="#1a7f37"/>
-<text x="505" y="122" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12.5" font-weight="600" fill="#1f2328">30 to 34</text>
-<text x="258" y="165" text-anchor="end" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" fill="#1f2328">Open paths</text>
-<rect x="270" y="150" width="187" height="22" rx="4" fill="#0969da"/>
-<text x="465" y="166" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12.5" font-weight="600" fill="#1f2328">26 to 28</text>
-<text x="258" y="209" text-anchor="end" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" fill="#1f2328">Wide open, many trees and water</text>
-<rect x="270" y="194" width="127" height="22" rx="4" fill="#0969da"/>
-<text x="405" y="210" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12.5" font-weight="600" fill="#1f2328">17 to 19</text>
+<text x="20" y="256" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="11" fill="#59636e">Labels: slowest to fastest start</text>
+<text x="258" y="89" text-anchor="end" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" fill="#1f2328">The village</text>
+<rect x="270" y="74" width="151" height="22" rx="4" fill="#0969da"/>
+<text x="429" y="90" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12.5" font-weight="600" fill="#1f2328">21.6 to 22.6  (4 starts)</text>
+<text x="258" y="141" text-anchor="end" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" fill="#1f2328">The field, walking</text>
+<rect x="270" y="126" width="131" height="22" rx="4" fill="#0969da"/>
+<text x="409" y="142" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12.5" font-weight="600" fill="#1f2328">18.8 to 19.6  (7 starts)</text>
+<text x="258" y="193" text-anchor="end" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" fill="#1f2328">The area after the field</text>
+<rect x="270" y="178" width="94" height="22" rx="4" fill="#0969da"/>
+<text x="372" y="194" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12.5" font-weight="600" fill="#1f2328">13.3 to 14.1  (7 starts)</text>
 </svg>
