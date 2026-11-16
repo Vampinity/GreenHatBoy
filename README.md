@@ -170,7 +170,7 @@ Builds every version, tests it on a real base PS5 and writes the fixes that come
 | **123 hours** | of recorded picture checked frame by frame, about 26 million frames |
 | **174** | test builds |
 | **643** | patches in T186, the alpha build: own work and ports of other people's work |
-| **697** | switches, own and ported, each tracked in a ledger with the runs that used it |
+| **735** | switches, own and ported, each tracked in a ledger with the runs that used it |
 
 He built the test bench that runs by itself on a real PS5: it starts the game, plays a set walk, records the picture and checks every frame for flashes and stutter. With it he found what causes the flashes in the fast settings and built a guard against them, cut the short freezes in play from over 4 seconds to about 1, and proved the fix that took the dark flashes out of the default settings. On 12 November he found why a fresh install crashed on its very first start and got past that point with two settings, and made the movie behind the title screen play smoothly. He also measured what holds the wide open areas back and where the memory runs out, which is where the work goes next.
 
