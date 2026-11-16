@@ -16,7 +16,7 @@
  "firmware": null,
  "console": "PS5 base 13.60",
  "route": {
-  "script": "Long play, no script: end of the Deku Tree into Hyrule Field. Session B of two; host heap exhausted, SIGSEGV in the pipeline builder at 1186 s, inside a load that never finished.",
+  "script": "Long play, no script: end of the first dungeon into the field. Session B of two; host heap exhausted, SIGSEGV in the pipeline builder at 1186 s, inside a load that never finished.",
   "script_sha": null
  },
  "menu_settings": null,
