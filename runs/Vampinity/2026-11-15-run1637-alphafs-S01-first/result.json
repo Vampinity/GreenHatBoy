@@ -1,0 +1,95 @@
+{
+  "number": 1,
+  "name": "alphafs-S01-first",
+  "folder": "run1637-alphafs-S01-first",
+  "ending": "script_end",
+  "detail": "",
+  "seconds": 601,
+  "game_after": 7,
+  "frames": 132,
+  "notes": [
+    "config: games.0400486024DEC000.renderer is not in the app's file",
+    "config: games.0400486024DEC000.fps_overlay is not in the app's file",
+    "config: games.0400486024DEC000.resolution is not in the app's file",
+    "config: games.0400486024DEC000.upscaling_filter is not in the app's file",
+    "config: games.0400486024DEC000.refresh_rate is not in the app's file",
+    "config: games.0400486024DEC000.frame_gen is not in the app's file",
+    "config: games.0400486024DEC000.frame_gen_type is not in the app's file",
+    "config: games.0400486024DEC000.frame_gen_target is not in the app's file",
+    "config: games.0400486024DEC000.frame_gen_multiplier is not in the app's file",
+    "config: games.0400486024DEC000.performance.block_list is not in the app's file",
+    "config: games.0400486024DEC000.performance.async_shaders is not in the app's file",
+    "config: games.0400486024DEC000.performance.unsafe_cpu is not in the app's file",
+    "config: games.0400486024DEC000.performance.unsafe_dma is not in the app's file",
+    "config: games.0400486024DEC000.performance.skip_invalidation is not in the app's file"
+  ],
+  "config": {
+    "performance": {
+      "block_list": false,
+      "async_shaders": false,
+      "fast_gpu": false,
+      "unsafe_cpu": false,
+      "unsafe_dma": false,
+      "reactive_flushing": true,
+      "skip_invalidation": false
+    },
+    "video": {
+      "renderer": "vulkan",
+      "fps_overlay": true,
+      "resolution": "1x",
+      "upscaling_filter": "bilinear",
+      "refresh_rate": "60",
+      "output_resolution": "1080p",
+      "frame_gen": false,
+      "frame_gen_type": "fsr3",
+      "frame_gen_target": "auto",
+      "frame_gen_multiplier": "2"
+    },
+    "diagnostics": {
+      "immediate_logs": false,
+      "detailed_logging": false
+    },
+    "games": {
+      "0400486024DEC000": {
+        "console_mode": "handheld",
+        "renderer": "vulkan",
+        "fps_overlay": true,
+        "resolution": "1x",
+        "upscaling_filter": "bilinear",
+        "refresh_rate": "60",
+        "frame_gen": false,
+        "frame_gen_type": "fsr3",
+        "frame_gen_target": "auto",
+        "frame_gen_multiplier": "2",
+        "performance": {
+          "block_list": false,
+          "async_shaders": false,
+          "fast_gpu": true,
+          "unsafe_cpu": false,
+          "unsafe_dma": false,
+          "reactive_flushing": false,
+          "skip_invalidation": false
+        }
+      }
+    }
+  },
+  "fps": [
+    25.706,
+    22.572
+  ],
+  "test_marks": [
+    "on boot=0400486024DEC000 script=auto-run-alphafs-S01-first.txt record=0",
+    "boot title=0400486024DEC000",
+    "script_start file=auto-run-alphafs-S01-first.txt events=76 waits=9",
+    "wait_met line=30 at=46.114 score=93 looks=60",
+    "wait_met line=34 at=48.235 score=96 looks=2",
+    "wait_met line=37 at=50.260 score=99 looks=5",
+    "wait_met line=41 at=51.882 score=97 looks=3",
+    "wait_met line=45 at=54.441 score=0 looks=6",
+    "wait_met line=108 at=510.825 score=100 looks=143",
+    "wait_met line=114 at=521.849 score=99 looks=4",
+    "wait_met line=117 at=521.918 score=99 looks=1",
+    "script_end line=126 at=581.918",
+    "script_done at=581.918"
+  ]
+}

@@ -1,0 +1,126 @@
+# FIRST START, opening watched: zelda-first-start-watch-wait-30s.v6.txt (12 Nov 2026, for first-start-run.v6.sh).
+# A copy of zelda-first-start-watch-wait.txt with ONE change: the stand outside the house after the door is 30 s,
+# not 135 s (the long stand only watched memory; the door load and the arrival fall inside the first 30 s).
+# Every command line above the END is byte for byte the old script's.
+# Title, New Game, the overwrite dialog, then the whole opening as a first-time player sees it: the movies with no
+# button at all, then the long cutscene at the end of the opening NOT skipped. A every 6 s from C+230 to C+590
+# advances text boxes the way a reader would (A never skips here: skipping needs TRIANGLE then +). Then control in
+# the house, out of the door, 30 s standing outside (v6; was two minutes). Based on zelda-newgame-full-wait.txt.
+# Timing from the old runs (C = the dialog went): movies to the logo at C+147.5-162, a black load, the first outdoor
+# shot at C+191-195; the cutscene played out reaches the house at about C+418. The A presses start at C+230, well
+# after the movies (an A during a movie is untested), and the hint WAIT starts at C+380 so there are no picture
+# readbacks during the movies. Unverified: whether the cutscene advances by itself or waits for A; the frames every
+# 5 s show it. If the hint never comes by C+680 the WAIT times out and the run counts as "script stopped", not as
+# a crash.
+# LOOK grids copied unchanged from overnight/zelda-newgame-full-wait.txt (make-look.py, see
+# console/notes/wait-scripts-2026-11-08.md):
+#   title    the "Options / Notes setting" line of the title menu, whichever item is lit
+#   newgame  the ornament right of a lit "New Game"
+#   dialog   "Previous autosave data will be overwritten. Would you like to proceed?"
+#   start    the Start button lit (white outline); Cancel lit does not match
+#   skip     "Skip (+)" bottom right (TRIANGLE brings the prompt up, then OPTIONS/+ skips)
+#   hint     "Move (L)  Change View (R)" at the bottom, shown from the first moment of control in the house
+#   aopen    "(A) Open" next to the button diamond, at the house door
+# Sections count from the moment the WAIT before them was met (test_harness.h with sprint/waitfor/front.diff).
+# Save: the queue puts back a six-slot save (named in queue-first-start-*.json) so the overwrite dialog shows;
+# EDEN_TEST_DISCARD_SAVE=1 in the plan keeps every write off the real save. A brand-new player has no save, so no
+# Continue and no dialog: that difference is named in PLAN.md (variant N, not in this script).
+
+# Title, no input before it (an A there picks Continue).
+0 WAIT 180 LOOK 403 848 194 42 24x3:0111010102010101010101010101010101010101010101013233454a4d43421c1e61343e622954453d5828513e444223092d372627231c1f0c221f1f0f140f1f0a211220181d291f
+# DOWN to New Game. The second DOWN only plays if New Game has not lit up 2 s after the first.
+1.5 DOWN 150
+3.5 DOWN 150
+1.6 WAIT 5 LOOK 551 802 23 28 6x3:000103050701091615150c05010102040601
+# New Game.
+0.5 A 150
+0 WAIT 15 LOOK 350 385 300 90 24x4:392a2d1d2023212a2727232d1a224024211f2b262a35281409111419151819181a14131b161314120f1117111019150d000000001a210c260910121c0b180b1311101d1a000000000000000016282f301d30202b1f2c222b26312f0c00000000
+# The dialog: UP lights Start if Cancel is lit; the stick is a second try.
+1.5 UP 150
+3.5 LSTICK 128 0 250
+0.6 WAIT 6 LOOK 400 555 195 95 16x4:21716e6e707271726f6d6d6c6c6c6f5740604f4f4f4f506557574f504f4f4d723f62505151515272755f515151514d712b7d7173717176757474757573727461
+# Start. The second A only plays if the dialog is still up 3 s later.
+0.4 A 150
+3.0 A 150
+0 WAIT 10 GONE 350 385 300 90 24x4:392a2d1d2023212a2727232d1a224024211f2b262a35281409111419151819181a14131b161314120f1117111019150d000000001a210c260910121c0b180b1311101d1a000000000000000016282f301d30202b1f2c222b26312f0c00000000
+# C = the dialog went. Nothing pressed during the movies.
+230 A 150
+236 A 150
+242 A 150
+248 A 150
+254 A 150
+260 A 150
+266 A 150
+272 A 150
+278 A 150
+284 A 150
+290 A 150
+296 A 150
+302 A 150
+308 A 150
+314 A 150
+320 A 150
+326 A 150
+332 A 150
+338 A 150
+344 A 150
+350 A 150
+356 A 150
+362 A 150
+368 A 150
+374 A 150
+380 A 150
+386 A 150
+392 A 150
+398 A 150
+404 A 150
+410 A 150
+416 A 150
+422 A 150
+428 A 150
+434 A 150
+440 A 150
+446 A 150
+452 A 150
+458 A 150
+464 A 150
+470 A 150
+476 A 150
+482 A 150
+488 A 150
+494 A 150
+500 A 150
+506 A 150
+512 A 150
+518 A 150
+524 A 150
+530 A 150
+536 A 150
+542 A 150
+548 A 150
+554 A 150
+560 A 150
+566 A 150
+572 A 150
+578 A 150
+584 A 150
+590 A 150
+380 WAIT 300 LOOK 390 917 215 35 24x3:1f1f02020250da5d020218350101010101131a02021db47f5c69535a4685e19201013c38435b51652c575255534bcfc81f21352720149b1900012338323b485911252f2c2d08984a
+# House: "Saving..." for 3 s, then the camera swing, ZL behind the player, run to the door (as the old route) [G].
+5.5 RSTICK 255 128 1500
+7.2 RSTICK 0 128 1500
+8.9 ZL 200
+9.5 LSTICK 128 0 4000
+9.5 MAYBE 5 LOOK 568 782 75 48 12x3:20a7c280070c13030101020190da87f83f574a4b47573d332eb6d4970b1d27381c251414
+# Fallback if he stopped short: a short push forward, dropped if A Open is already up.
+0.8 LSTICK 128 0 1500
+0 WAIT 3 LOOK 568 782 75 48 12x3:20a7c280070c13030101020190da87f83f574a4b47573d332eb6d4970b1d27381c251414
+# A Open is up: A three times without looking (no picture readbacks in the second after the door press).
+0.4 A 150
+1.4 A 150
+2.4 A 150
+# The village loads, the fly-over with the place card plays, a short scene starts on arrival. Stand still:
+# 30 s after the last A (v6; the old script stood 135 s). Then the script is done; auto-run-wait.py ends the
+# test 10 s later with test-quit, the app's normal close (exit save of the used list, the pipeline records and the
+# prepared store; the 20 s saves have already written most of it).
+60 END

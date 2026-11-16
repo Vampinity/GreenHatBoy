@@ -1,0 +1,51 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1559-calibb185-first-CB1-close10",
+ "date": "2026-11-14",
+ "time": "16:03:02",
+ "batch": "calibb-first-t185",
+ "test": "calibb185-first-CB1-close10",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T185",
+  "commit": null,
+  "version": "01.219.028 (Nov 14 2026 06:51:12)",
+  "eboot_sha256_16": "44d85b399e25c38c"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-first-start-watch-wait-30s.v6.txt",
+  "script_sha": "e68ac8b551b2"
+ },
+ "menu_settings": null,
+ "env_lines": 173,
+ "env_hash": "2ba3eb01a2",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 555,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 81.1,
+ "fps": {
+  "mean": 23.16,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 72.9,
+  "worst_ms": 153.4
+ },
+ "worst_frame_ms": 153.4,
+ "runtime_pipeline_builds": 0,
+ "flashes_per_min": 22.19,
+ "note": "Build T185 (eboot sha16 44d85b399e25c38c), settings CB (the same env as the T186 field starts but for the script line), handheld 1x, frame ahead off, the shader store of earlier starts in place. First of two new-game starts on T185, the build before the alpha. Scripted new game: title, New Game, the opening played out, the house, out of the door (wait_met line=117), then about a minute in the village with no input. Front page, How fast it runs: 21.63 fps standing in the village (mean of the 5 s lines at app 530-555 s). Batch note: runs/Vampinity/2026-11-15-t186-control-README.md.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 3,
+  "profile": 4,
+  "other_dump": 5
+ }
+}

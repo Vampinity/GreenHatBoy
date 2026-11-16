@@ -1,0 +1,52 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1604-dpnh186-CB1-nohog-control",
+ "date": "2026-11-15",
+ "time": "04:49:14",
+ "batch": "dp-nohog-t186b",
+ "test": "dpnh186-CB1-nohog-control",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T186",
+  "commit": null,
+  "version": "01.219.028 (Nov 14 2026 23:24:15)",
+  "eboot_sha256_16": "97bdd9ecea13cfe2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "route-field-to-past-field.works-run1397.txt",
+  "script_sha": "fe9a3ed5049b"
+ },
+ "menu_settings": null,
+ "env_lines": 173,
+ "env_hash": "2ba3eb01a2",
+ "control": true,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 507,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 386.9,
+ "fps": {
+  "mean": 16.27,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 94.2,
+  "worst_ms": 1701.8
+ },
+ "worst_frame_ms": 1701.8,
+ "runtime_pipeline_builds": 1,
+ "flashes_per_min": 10.26,
+ "note": "Build T186, the alpha build (eboot sha16 97bdd9ecea13cfe2), settings CB = play settings v4.0 plus two test lines (EDEN_TEST_DISCARD_SAVE=1, EDEN_UP_FAULT_LOG=1), handheld 1x, frame ahead off. Scripted: a save in the field, walked by minimap steering to the gate, the load into the next area (load start = EDEN_TEST wait_met line=92), then about 300 s there. Control arm (CB1) of a two-arm batch; only the control starts are packed here. Front page, How fast it runs: 19.12 fps on the field walk, 14.00 fps in the area after the field. Batch note: runs/Vampinity/2026-11-15-t186-control-README.md.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 3,
+  "profile": 4,
+  "save": 1,
+  "other_dump": 5
+ }
+}
