@@ -27,6 +27,7 @@ Some boxes without a + keep GrowingBlackBeans' colour but carry my label, becaus
 GrowingBlackBeans' `tools/GrowingBlackBeans/eglog` (`eglog.py`, `anatomy.py`) reads the same "GPU split per second" and texture cache lines with more options. `frame_split.py` is here because it is the exact cut behind my Other areas numbers: the game's part is the frame minus the time blocked on present.
 
 The two times for `ht_split.py` are app seconds, the stamp at the start of each `eden_log.txt` line: when the load starts and when it ends. The example times are from one of my starts (run1621). For `frame_split.py` the times are the window, and the last number leaves out rows with a mean frame over that many ms. `memmap.py` finds the load by the route's `wait_met line=92` mark: line 92 of `tools/Vampinity/routes/field-to-past-field.txt` is the wait for the field load to start. Use `--load-line` for another route.
+Add `--json` to `ht_split.py`, `memmap.py` or `frame_split.py` to get the same numbers as one JSON object on stdout, for other scripts to read.
 
 About `crash_census.py`:
 
