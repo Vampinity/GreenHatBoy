@@ -16,7 +16,7 @@
  "firmware": null,
  "console": "PS5 base 13.60",
  "route": {
-  "script": "Long play, no script: end of the Deku Tree into Hyrule Field. Session A of two; ended in a SIGSEGV on a guest thread at 1032 s.",
+  "script": "Long play, no script: end of the first dungeon into the field. Session A of two; ended in a SIGSEGV on a guest thread at 1032 s.",
   "script_sha": null
  },
  "menu_settings": null,
