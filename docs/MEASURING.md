@@ -60,6 +60,10 @@ time is real.
 
 ## 3. One scorer
 
+**It exists:** [`tools/stk/`](../tools/stk/) — waveydude's scorer and route check, with the run-contract
+changes ([`docs/RUN-CONTRACT.md`](RUN-CONTRACT.md)). It reads any run folder, raw or packed, and scores all
+1,332 packed runs.
+
 One command that reads a whole **run folder** — not just `eden_log`, because the memory lines are in
 `stderr.log` and the crash class is in the crash file — and prints the same row every time:
 
@@ -121,6 +125,12 @@ before. What is missing is that it is his rather than shared.
 
 **It is the one rule we have not settled**, and it is the rule that decides what gets rejected, so it
 needs its own answer.
+
+**16 Nov:** waveydude — yes, with the condition that a row counts against the control only on the same
+shader store. The run contract makes that a comparison key (route, firmware, translation id, store, cold
+or warm; [`docs/RUN-CONTRACT.md`](RUN-CONTRACT.md) §5). The first noise floors, from five cold control
+starts on 13.60 on the new-game route: village ±0.67 fps (door + 62…77 s), lowest largest free block
+±99 MiB. Vampinity: to answer.
 
 ## What is shared, and what is each person's
 
