@@ -13,7 +13,7 @@ Builds every version, tests it on a real base PS5 (the standard model, not the P
 | **113 hours** | of recorded picture checked frame by frame, about 24 million frames |
 | **171** | test builds |
 | **643** | patches in T186, the alpha build: own work and ports of other people's work |
-| **697** | switches, own and ported, each tracked in a ledger with the runs that used it |
+| **735** | switches, own and ported, each tracked in a ledger with the runs that used it |
 
 What came out of it:
 
