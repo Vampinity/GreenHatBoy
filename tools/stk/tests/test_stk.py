@@ -97,6 +97,14 @@ class Synthetic(unittest.TestCase):
                 self.assertIsNone(r[k], k)
             json.dumps(r)
 
+    def test_crash_class_unknown_when_survival_unknown(self):
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "eden_log.txt").write_text("[   1.0] x: a log with no end line\n")
+            r = score_run(td, None)
+            self.assertEqual(r["survival_result"], "unknown")
+            self.assertIsNone(r["crash_class"])
+            self.assertEqual(r["crash_source"], "missing_survival_unknown")
+
     def test_capped_oom_count_is_flagged(self):
         with tempfile.TemporaryDirectory() as td:
             (Path(td) / "stderr.log").write_text("EDEN_RADV_OUT_OF_MEMORY 4608 KiB asked: 0 MiB given back\n" * 64)
