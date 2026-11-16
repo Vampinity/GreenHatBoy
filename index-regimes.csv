@@ -1301,6 +1301,17 @@ runs/Vampinity/2026-11-14-run1469-w20-W1-packinplace,Vampinity,2026-11-14-run146
 runs/Vampinity/2026-11-14-run1470-w20-V1-play39,Vampinity,2026-11-14-run1470-w20-V1-play39,01.219.028,ahead-1,,,,,31.0,1,,0,27.4,1,15.49,68,40.37,40.38,494.7,1,2003,1083,395,,True,True
 runs/Vampinity/2026-11-14-run1471-w20-W2-packinplace,Vampinity,2026-11-14-run1471-w20-W2-packinplace,01.219.028,ahead-1,,,,,30.6,1,,0,27.6,1,17.2,24,37.63,30.22,295.5,0,1002,991,99,,True,True
 runs/Vampinity/2026-11-14-run1472-w20-V2-play39,Vampinity,2026-11-14-run1472-w20-V2-play39,01.219.028,ahead-1,,,,,34.85,2,,0,,0,20.07,15,31.82,30.08,209.5,1,345,861,7,,True,True
+runs/Vampinity/2026-11-14-run1559-calibb185-first-CB1-close10,Vampinity,2026-11-14-run1559-calibb185-first-CB1-close10,01.219.028,unknown,,,,,,0,,0,,0,23.82,60,22.11,17.03,153.4,0,345,1255,0,,True,True
+runs/Vampinity/2026-11-15-run1588-calibb185-first-CB2-close10,Vampinity,2026-11-15-run1588-calibb185-first-CB2-close10,01.219.028,unknown,,,,,,0,,0,,0,24.07,61,22.14,17.11,162.5,0,378,1266,0,,True,True
+runs/Vampinity/2026-11-15-run1590-gate186-CB1-unset,Vampinity,2026-11-15-run1590-gate186-CB1-unset,01.219.028,unknown,,,,,,0,,0,,0,14.87,73,37.82,36.96,289.5,0,1046,745,273,,True,True
+runs/Vampinity/2026-11-15-run1591-gate186-CB2-unset,Vampinity,2026-11-15-run1591-gate186-CB2-unset,01.219.028,unknown,,,,,,0,,0,,0,14.69,78,38.23,38.75,291.4,0,1198,691,226,,True,True
+runs/Vampinity/2026-11-15-run1604-dpnh186-CB1-nohog-control,Vampinity,2026-11-15-run1604-dpnh186-CB1-nohog-control,01.219.028,unknown,,,,,,0,,0,,0,15.05,75,37.54,37.43,426.3,1,829,624,179,,True,True
+runs/Vampinity/2026-11-15-run1607-dpnh186-CB2-nohog-control,Vampinity,2026-11-15-run1607-dpnh186-CB2-nohog-control,01.219.028,unknown,,,,,,0,,0,,0,15.33,77,36.45,37.53,274.1,0,922,641,191,,True,True
+runs/Vampinity/2026-11-15-run1613-w20cb186-CB1-control,Vampinity,2026-11-15-run1613-w20cb186-CB1-control,01.219.028,unknown,,,,,,0,,0,,0,14.63,71,38.35,39.03,365.5,0,1064,721,237,,True,True
+runs/Vampinity/2026-11-15-run1615-w20cb186-CB2-control,Vampinity,2026-11-15-run1615-w20cb186-CB2-control,01.219.028,unknown,,,,,,0,,0,,0,14.91,70,37.59,37.55,359.6,0,999,746,270,,True,True
+runs/Vampinity/2026-11-15-run1616-last186-CB1-before188,Vampinity,2026-11-15-run1616-last186-CB1-before188,01.219.028,unknown,,,,,,0,,0,,0,14.97,71,38.94,37.92,308.5,0,963,678,205,,True,True
+runs/Vampinity/2026-11-15-run1637-alphafs-S01-first,Vampinity,2026-11-15-run1637-alphafs-S01-first,01.219.028,unknown,,,,,,0,,0,,0,24.68,40,20.4,15.82,378.0,22,322,1296,0,,True,True
+runs/Vampinity/2026-11-15-run1638-alphafs-S02-first,Vampinity,2026-11-15-run1638-alphafs-S02-first,01.219.028,unknown,,,,,,0,,0,,0,24.35,37,20.66,15.99,445.8,55,354,1311,0,,True,True
 runs/waveydude/2026-11-11-astc-crash-18m58s,waveydude,2026-11-11-astc-crash-18m58s,01.219.028 (Nov 11 2026 17:28:48),full-wait,118.440538,15.18,19.57,0.71,27.21,11,27.6,3,19.88,11,17.53,66,43.08,27.02,437.2,190,12158,6252,1920,,True,True
 runs/waveydude/2026-11-11-fw940-black-screen,waveydude,2026-11-11-fw940-black-screen,01.219.028 (Nov 11 2026 05:08:26),unknown,,,,,,0,,0,,0,,0,,,,0,,,0,,False,False
 runs/waveydude/2026-11-11-fw940-rendered,waveydude,2026-11-11-fw940-rendered,01.219.028 (Nov 11 2026 05:08:26),unknown,,,,,,0,,0,,0,,0,,,,0,,,0,,False,False

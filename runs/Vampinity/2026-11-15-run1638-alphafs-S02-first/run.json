@@ -1,0 +1,51 @@
+{
+ "format": 0,
+ "author": "Vampinity",
+ "run_id": "run1638-alphafs-S02-first",
+ "date": "2026-11-15",
+ "time": "17:30:00",
+ "batch": "alpha-fs-02-t186",
+ "test": "alphafs-S02-first",
+ "game": "0400486024DEC000",
+ "build": {
+  "tag": "T186",
+  "commit": null,
+  "version": "01.219.028 (Nov 14 2026 23:24:15)",
+  "eboot_sha256_16": "97bdd9ecea13cfe2"
+ },
+ "firmware": "12.40",
+ "console": "PS5 (base model)",
+ "route": {
+  "script": "zelda-first-start-watch-wait-30s.v6.txt",
+  "script_sha": "e68ac8b551b2"
+ },
+ "menu_settings": null,
+ "env_lines": 172,
+ "env_hash": "9a892ed4eb",
+ "control": false,
+ "ending": {
+  "kind": "script_end",
+  "class": "ok",
+  "seconds": 592,
+  "crash_app_s": null
+ },
+ "valid": true,
+ "gameplay_s": 81.3,
+ "fps": {
+  "mean": 19.98,
+  "source": "nx2:vi2 5 s lines",
+  "p99_ms": 111.4,
+  "worst_ms": 2136.2
+ },
+ "worst_frame_ms": 2136.2,
+ "runtime_pipeline_builds": 0,
+ "flashes_per_min": 31.0,
+ "note": "Build T186, the alpha build (eboot sha16 97bdd9ecea13cfe2): the zip's env.txt (play settings v4.0) plus EDEN_TEST_DISCARD_SAVE=1, handheld 1x, frame ahead off, with the shader folder, driver cache and jit list set aside (the log says 'store prep_5093ab9e new (0 pipelines)'). The second of the 2 first starts of the alpha on a fresh install on the front page. Scripted new game: title, New Game, the opening played out, the house, out of the door (wait_met line=117), then about a minute in the village with no input. Front page, How fast it runs: 22.43 fps standing in the village (mean of the 5 s lines at app 584-594 s). Batch note: runs/Vampinity/2026-11-15-t186-control-README.md.",
+ "impressions": "",
+ "flash_times": [],
+ "redacted": {
+  "console_user": 3,
+  "profile": 4,
+  "other_dump": 5
+ }
+}
