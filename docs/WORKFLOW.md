@@ -1,6 +1,6 @@
 # How we work (a proposal for all three of us)
 
-> **Status: proposal, open for discussion.** If we agree, it moves to `docs/WORKFLOW.md` and `AGENTS.md` points at it. Until then, read "`docs/WORKFLOW.md`" below as this file.
+> **Agreed between the three of us, 15 Nov 2026** (Discussion #9). Vampinity follows the measuring and privacy parts and keeps his own folders, build names and session steps; waveydude has not replied. The parts everyone follows are in `docs/MEASURING.md`.
 
 `AGENTS.md` says what to do before and after a job: search, claim it in "Who is working on what", write
 it down. This file covers everything in between, so that any of us, or any of our assistants, picking up
@@ -109,6 +109,9 @@ Everything else is filed under `sessions/<date>/` when a session closes.
 
 ## 5. How we measure
 
+> The four rules that make two people's numbers comparable — one control, controlled routes, one
+> scorer, one gate — are in `docs/MEASURING.md`. What follows is the habits around them.
+
 The project has four **anatomy programmes**, one per way a session can fail. Each has a lead, and all
 three of us feed all four:
 - frame time;
@@ -136,6 +139,9 @@ The plan is in Discussion #5. The same habits apply to all of them:
 - **Post corrections openly,** in the thread where the claim was made.
 
 ## 6. What stays private
+
+**Spoilers.** The opening area is fine to name — it is in the game's own marketing and it is where
+every route starts. Anything past the first load is "a later area".
 
 **Stays private:**
 - briefs, transcripts and `sessions/` folders;
