@@ -36,7 +36,7 @@ The older test build T180 in Releases is replaced by this alpha. It used frame a
 ## Progress so far
 
 <p align="center">
-  <img src="docs/img/progress.png" width="760" alt="Progress on a base PS5, 5 to 15 November. 5 November: black screen after the intro. Later that day: first steps in Link's house. 6 November: the white fog is gone. 7 November: plants back, first public test version. 8 November: no more dark flashes, for now. 13 November: a new game no longer crashes at the door, in 2 of 2 test runs. 14 November: dark flashes back, then gone again; a speed boost had brought them back, so it is off and the game runs slower. 15 November: past the field into the next area; 13 of 13 test runs made it, and about 2 hours of real play had 3 crashes, 2 of them at the long loading pause. Speed now, in frames per second: house and village about 21 to 22, field about 18 to 21, area after the field about 14. Don't expect 30 outdoors on a base PS5. The long loading pause when you leave the field: the screen stays black for 18 to 33 seconds in handheld mode, longer docked. Played a while? Save, then restart the app before you leave the field.">
+  <img src="docs/img/progress.png" width="760" alt="Progress on a base PS5, 5 to 15 November. 5 November: black screen after the intro. Later that day: first steps in Link's house. 6 November: the white fog is gone. 7 November: plants back, first public test version. 8 November: no more dark flashes, for now. 13 November: a new game no longer crashes at the door, in 2 of 2 test runs. 14 November: dark flashes back, then gone again; a speed boost had brought them back, so it is off and the game runs slower. 15 November: past the field into the next area; 13 of 13 test runs made it, and about 2 hours of real play had 3 crashes, 2 of them at the long loading pause. Speed now, in frames per second: closed areas (indoors, the village) about 21 to 22, open areas (walking across the field) about 19, open areas with many objects (the area after the field) about 14. Don't expect 30 outdoors on a base PS5. The long loading pause when you leave the field: the screen stays black for 18 to 33 seconds in handheld mode, longer docked. Played a while? Save, then restart the app before you leave the field.">
 </p>
 
 The picture was made when 13 of the scripted starts through the long loading pause had run. It is 15 of 15 now, with about 18 to 34 seconds of black screen at that pause.
@@ -56,20 +56,20 @@ We would rather tell you now than have you find out on your own.
 - **The opening stutters the first time you watch it**, and the sound can drop out for a moment. From the second start it plays nearly smooth.
 - **Short stops the first time you see a place**, about a second each. Walk the same way again and they are gone.
 - **Now and then a wrong picture shows for a split second**, under a second in our test recordings.
-- **It is slow outdoors.** About 21 to 22 fps in the house and the village, about 19 on the walk across the field and about 14 in the area after the field. Below 20 fps the game itself also runs a bit slower. Don't expect 30 outdoors on a base PS5; see [How fast it runs](#how-fast-it-runs).
+- **It is slow outdoors.** About 21 to 22 fps in closed areas (indoors and the village), about 19 in open areas (walking across the field) and about 14 in open areas with many objects (the area after the field). Below 20 fps the game itself also runs a bit slower. Don't expect 30 outdoors on a base PS5; see [How fast it runs](#how-fast-it-runs).
 - **Use handheld.** Docked gets through the long loading pause but then crawls for half a minute or more.
 
 If it keeps crashing at the same spot, tell us with the crash form (see [below](#where-to-talk-and-how-to-report-a-problem)).
 
 ## How fast it runs
 
-**It depends on how much is on screen.** Wide open areas with many trees, water and other objects run slower.
+**It depends on how much is on screen.** Wide open areas with many trees, water and other objects run slower. In the chart, closed areas are indoors or walled in by trees, so you can't see far; open areas let you see far; many objects means a lot on screen at once.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/img/speed-by-place-dark.svg">
     <source media="(prefers-color-scheme: light)" srcset="docs/img/speed-by-place.svg">
-    <img src="docs/img/speed-by-place.svg" width="760" alt="Frames per second by place on a base PS5, firmware 12.40, Handheld at 1x, frame ahead off, builds T185 and T186, 14 and 15 November, slowest to fastest start: the village, standing half a minute to a minute after arriving, 21.6 to 22.6 (4 starts); the field, walking, 18.8 to 19.6 (7 starts); the area after the field 13.3 to 14.1 (7 starts).">
+    <img src="docs/img/speed-by-place.svg" width="760" alt="Frames per second by place on a base PS5, firmware 12.40, Handheld at 1x, frame ahead off, builds T185 and T186, 14 and 15 November, slowest to fastest start: closed areas (the village, standing half a minute to a minute after arriving) 21.6 to 22.6 (4 starts); open areas (walking across the field) 18.8 to 19.6 (7 starts); open areas with many objects (the area after the field) 13.3 to 14.1 (7 starts).">
   </picture>
 </p>
 

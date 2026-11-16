@@ -13,13 +13,16 @@
 <line x1="670" y1="56" x2="670" y2="238" stroke="#30363d" stroke-width="1"/>
 <text x="670" y="256" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="11.5" fill="#9198a1">60</text>
 <text x="20" y="256" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="11" fill="#9198a1">Labels: slowest to fastest start</text>
-<text x="258" y="89" text-anchor="end" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" fill="#e6edf3">The village</text>
+<text x="258" y="83" text-anchor="end" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="600" fill="#e6edf3">Closed areas</text>
+<text x="258" y="98" text-anchor="end" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="11" fill="#9198a1">the village</text>
 <rect x="270" y="74" width="151" height="22" rx="4" fill="#58a6ff"/>
 <text x="429" y="90" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12.5" font-weight="600" fill="#e6edf3">21.6 to 22.6  (4 starts)</text>
-<text x="258" y="141" text-anchor="end" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" fill="#e6edf3">The field, walking</text>
+<text x="258" y="135" text-anchor="end" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="600" fill="#e6edf3">Open areas</text>
+<text x="258" y="150" text-anchor="end" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="11" fill="#9198a1">walking across the field</text>
 <rect x="270" y="126" width="131" height="22" rx="4" fill="#58a6ff"/>
 <text x="409" y="142" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12.5" font-weight="600" fill="#e6edf3">18.8 to 19.6  (7 starts)</text>
-<text x="258" y="193" text-anchor="end" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" fill="#e6edf3">The area after the field</text>
+<text x="258" y="187" text-anchor="end" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="600" fill="#e6edf3">Open areas, many objects</text>
+<text x="258" y="202" text-anchor="end" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="11" fill="#9198a1">the area after the field</text>
 <rect x="270" y="178" width="94" height="22" rx="4" fill="#58a6ff"/>
 <text x="372" y="194" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12.5" font-weight="600" fill="#e6edf3">13.3 to 14.1  (7 starts)</text>
 </svg>
