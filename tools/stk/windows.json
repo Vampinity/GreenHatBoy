@@ -1,0 +1,93 @@
+{
+  "_doc": "Route scoring windows as data. A route is found by the sha1 (first 12) of the script as run, or by file name. Times are app-clock seconds; a script mark (wait_met / wait_skipped / script_end line=N at=T) is on the script clock, so the scorer adds EDEN_GUEST_START. A 5 s fps line is stamped at the END of its 5 seconds. Definitions transcribed from runs/Vampinity/2026-11-15-t186-control-README.md (Vampinity) and our kokiri-four-stops README; to be confirmed by their owners.",
+  "routes": {
+    "new-game-v6": {
+      "sha1": [
+        "e68ac8b551b2"
+      ],
+      "names": [
+        "zelda-first-start-watch-wait-30s.v6.txt"
+      ],
+      "windows": {
+        "village": {
+          "kind": "stamped",
+          "anchor_line": 117,
+          "from_s": 57,
+          "to_s": 72,
+          "stat": "mean",
+          "note": "the 5 s lines stamped door+57..72 s; reproduces his last-three-lines figures for run1637/1638 (22.57, 22.43)"
+        },
+        "village_late": {
+          "kind": "stamped",
+          "anchor_line": 117,
+          "from_s": 62,
+          "to_s": 77,
+          "stat": "mean",
+          "note": "PROPOSED, not Vampinity's: the same village 5 s later, so the first line no longer overlaps the arrival scene's stall (it spilled into runCC2's first line). Halves our cold-start spread (1.24 -> 0.67 fps); his runs still reach it (logs end ~door+76)."
+        }
+      }
+    },
+    "field-to-past-field": {
+      "sha1": [
+        "fe9a3ed5049b"
+      ],
+      "names": [
+        "field-to-past-field.txt",
+        "route-field-to-past-field.works-run1397.txt"
+      ],
+      "windows": {
+        "field_walk": {
+          "kind": "whole",
+          "start_line": 46,
+          "start_offset_s": 8,
+          "end_line": 92,
+          "stat": "mean",
+          "note": "5 s lines whose whole 5 seconds lie between line 46 met + 8 s and line 92 met"
+        },
+        "after_field": {
+          "kind": "after_load_low",
+          "after_line": 92,
+          "fast_fps": 55,
+          "low_within_s": 45,
+          "from_low_s": 70,
+          "stat": "median",
+          "note": "median of the 5 s lines from 70 s after the lowest line in the load to the end of the log; the lowest line is taken within 45 s after the last line of 55 fps or more following the field walk"
+        }
+      }
+    },
+    "kokiri-four-stops": {
+      "sha1": [
+        "89c854dc2512"
+      ],
+      "names": [
+        "kokiri-four-stops.txt"
+      ],
+      "windows": {
+        "stop_A": {
+          "kind": "between",
+          "start_line": 82,
+          "end_line": 83,
+          "stat": "mean"
+        },
+        "stop_B": {
+          "kind": "between",
+          "start_line": 144,
+          "end_line": 145,
+          "stat": "mean"
+        },
+        "stop_C": {
+          "kind": "between",
+          "start_line": 206,
+          "end_line": 207,
+          "stat": "mean"
+        },
+        "stop_D": {
+          "kind": "between",
+          "start_line": 268,
+          "end_line": 269,
+          "stat": "mean"
+        }
+      }
+    }
+  }
+}
