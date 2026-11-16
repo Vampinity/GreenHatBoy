@@ -39,6 +39,7 @@ in my docs folder.
 
 ## House rules
 
+- Before you compare two runs, read `docs/MEASURING.md`: one control, controlled routes, one scorer, one gate. `docs/WORKFLOW.md` has the rest of how a run, a build and a session are shaped.
 - New behaviour goes behind a switch that is off by default.
 - Never commit game files, keys, firmware, or a log that still holds a console user number. `tools/pack-run.py` removes it.
 - No story spoilers in any text. Some of us are playing for the first time; call later places "a later area".
