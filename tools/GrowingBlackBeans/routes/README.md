@@ -64,8 +64,31 @@ decides they may. The case for deciding they may: the window's content is identi
 confined to getting Link to the door. The case against: it is a different file, and the rule exists so
 that nobody has to take that on trust. We would rather it be Vampinity's call than ours.
 
-**State: linted, not yet run.** `lint.py` reads it as the harness does and it passes with 0 STEER lines.
-It has not been on a console. The next baseline start here runs it, and this README gets the result.
+**First start on a console (runBV1, 17 Nov).** It ran, it reached the door, it scored, and the start was
+`control_eligible`: village **22.40** fps, the later window **22.73**, against 21.43–22.77 and 22.10–22.77
+over our five v6 cold starts. One line from the control env (the script), cold, 13.60, alpha T186.
+
+What the start proves, and what it does not:
+
+    EDEN_TEST wait_met line=114 at=528.107 score=98 looks=6      round 1 reached the door
+    EDEN_TEST wait_met line=122 at=528.532 score=98 looks=1      round 2 met at once, its ZL and push dropped
+    EDEN_TEST wait_met line=126 at=528.973 score=98 looks=1      round 3 the same
+    EDEN_TEST wait_met line=129 at=529.036 score=98 looks=1      the hard check
+    EDEN_TEST script_done at=589.037
+
+So the **no-op path is proven on hardware**: when the door is reached first time the rounds drop
+unstarted and the start behaves as v6 did, which is what the scoring window depends on. The **retry path
+has still never fired**, so it remains reasoned rather than demonstrated.
+
+It did show how thin v6's margin is. Round 1's `MAYBE` was met at **+13.67 s** after line 108, where the
+eight good v6 starts were met at +11.0 to +11.4 and the window expires at +14.5. This start was 0.8 s
+from being a fourth failure, on the control's own env.
+
+One number sits outside the v6 family and is not explained: the cold memory bottom read **500 MiB**,
+against 250–349 over the five v6 starts, same source (`EDEN_MEM_CENSUS_min`). It is not an artefact of
+when the app was closed — in all six starts the minimum falls well before `script_done`, and cutting the
+census at `script_done + 10 s` changes no figure. Either the cold memory floor is wider than five starts
+suggested, or something about this start differed. It is one start, so it is a figure, not a verdict.
 
 **The stronger fix, for later.** Steering the door approach by minimap would remove the open loop
 altogether rather than retrying it, and the minimap works indoors — the Kokiri route steers from the
