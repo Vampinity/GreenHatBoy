@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runfolder import RunFolder  # noqa: E402
 import route_check  # noqa: E402  (waveydude)
 
-SCORER_VERSION = "stk_score 6 (waveydude 1 + run contract v1 + his route_check, 16 Nov 2026)"
+SCORER_VERSION = "stk_score 7 (waveydude 1 + run contract v1 + his route_check + build in the key, 16 Nov 2026)"
 
 # No machine's paths here: the control's env comes from --alpha-env or $STK_ALPHA_ENV.
 DEFAULT_ALPHA_ENV = os.environ.get("STK_ALPHA_ENV")
@@ -442,12 +442,20 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
     intent_ok = True if not intended else bool(cache_matches_intent)  # undeclared runs are not failed on intent
     window_comparable = (intent_ok and bool(env_ok) and survival_result == "completed"
                          and route_completed is True and cache_class in ("cold", "warm"))
-    # Two rows may face each other only with the same key (waveydude): the same route, the same
-    # translation id (a new build can start a new store with an identical env), the same store, and the
-    # same kind of control - cold against cold, warm against warm. Firmware too: the gate judges a change
-    # against the control on the same console, and our 13.60 cold starts sit ~280 MiB tighter than 12.40's.
-    comparison_key = "|".join(str(x) for x in (route_key, firmware, translation_id, shader_store, cache_class)) \
-        if (route_key and firmware and translation_id and shader_store and cache_class) else None
+    # The build the run actually ran. The boot trace's version + compile time tells two builds apart
+    # even when they share a store, which is the case waveydude raised on PR #11: with the translation
+    # id forced to keep a store, A186-keep ... keep4 all carry src116270f1... with different code. The
+    # store stamp's own build number names whichever build wrote the store, not this one, so it is not
+    # used here; a build declared in run.json is, since the runner states it.
+    build_key = build_version_line or (build if build_source == "run_json.build" else None)
+    # Two rows may face each other only with the same key (waveydude): the same route, the same build,
+    # the same translation id (a new build can start a new store with an identical env), the same store,
+    # and the same kind of control - cold against cold, warm against warm. Firmware too: the gate judges
+    # a change against the control on the same console, and our 13.60 cold starts sit ~280 MiB tighter
+    # than 12.40's.
+    comparison_key = "|".join(str(x) for x in
+                              (route_key, firmware, build_key, translation_id, shader_store, cache_class)) \
+        if (route_key and firmware and build_key and translation_id and shader_store and cache_class) else None
     control_eligible = bool(declared.get("control")) and window_comparable and bool(start_ok) and bool(end_ok)
 
     row: dict[str, Any] = {
@@ -456,6 +464,7 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
         "scorer": SCORER_VERSION,
         "firmware": firmware, "firmware_source": firmware_source,
         "build": build, "build_source": build_source, "build_version_line": build_version_line,
+        "build_key": build_key,
         "route": route, "route_key": route_key, "script_sha1": script_sha, "route_source": route_source,
         "settings_profile": settings_profile, "env_hash": env_hash,
         "env_diff_keys": ";".join(env_diffs) if env_diffs else "",

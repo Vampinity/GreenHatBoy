@@ -1,5 +1,5 @@
-"""Tests for the run-contract scorer. Synthetic cases always run; the packed control starts are read from
-this repo's runs/ (or $STK_TEST_GHB), and skipped if they are not there."""
+"""Tests for the run-contract scorer. Synthetic cases always run; real packed runs run when
+$STK_TEST_GHB points at a GreenHatBoy clone (they are skipped otherwise)."""
 import gzip
 import json
 import os
@@ -11,9 +11,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from stk_score import score_run  # noqa: E402
 
-# The packed control starts in this repo (or a clone named by $STK_TEST_GHB).
-GHB = os.environ.get("STK_TEST_GHB") or str(Path(__file__).resolve().parents[3])
-V = Path(GHB) / "runs" / "Vampinity"
+GHB = os.environ.get("STK_TEST_GHB")
+V = Path(GHB) / "runs" / "Vampinity" if GHB else None
 
 
 def stamp(state, pipes):
@@ -162,11 +161,44 @@ class ContractV1(unittest.TestCase):
                           boot="[EglantinePS5 diag] +0ms diagnostic build 01.219.028 (Nov 14 2026 23:24:15), firmware sdk_version 0x13600007, pid 1\n",
                           env="EDEN_TEST_SCRIPT=zelda-first-start-watch-wait-30s.v6.txt\n")
                 keys.append(score_run(td, None)["comparison_key"])
-        self.assertEqual(keys[0], "new-game-v6|13.60|src0123456789|prep_5093ab9e|cold")
-        self.assertEqual(keys[1], "new-game-v6|13.60|src0123456789|prep_5093ab9e|warm")
+        want = "new-game-v6|13.60|01.219.028 (Nov 14 2026 23:24:15)|src0123456789|prep_5093ab9e"
+        self.assertEqual(keys[0], want + "|cold")
+        self.assertEqual(keys[1], want + "|warm")
+
+    def test_comparison_key_separates_two_builds_that_share_a_store(self):
+        """waveydude, PR #11: with the translation id forced to keep a store, his A186-keep ... keep4
+        all carry one id and one store with different code. The build has to split them."""
+        keys = []
+        for compiled in ("Nov 15 2026 09:12:40", "Nov 16 2026 18:03:11"):
+            with tempfile.TemporaryDirectory() as td:
+                write_run(Path(td), stamp("reused", 80999) + "[  10.6] x: Total Pipeline Count: 80999\n",
+                          "[EglantinePS5] test: EDEN_TEST script_start file=x events=1 waits=0\n"
+                          "[EglantinePS5] test: EDEN_TEST script_done at=1.0\n",
+                          boot=f"[EglantinePS5 diag] +0ms diagnostic build 01.219.028 ({compiled}), "
+                               "firmware sdk_version 0x13600007, pid 1\n",
+                          env="EDEN_TEST_SCRIPT=zelda-first-start-watch-wait-30s.v6.txt\n")
+                r = score_run(td, None)
+                self.assertEqual(r["shader_store"], "prep_5093ab9e")
+                self.assertEqual(r["cache_class"], "warm")
+                keys.append(r["comparison_key"])
+        self.assertNotEqual(keys[0], keys[1])
+
+    def test_comparison_key_is_none_without_a_build(self):
+        """No boot trace and no declared build: the run cannot be compared, rather than being
+        compared on four fields out of five."""
+        with tempfile.TemporaryDirectory() as td:
+            write_run(Path(td), stamp("new", 0) + "[  10.6] x: Total Pipeline Count: 0\n"
+                      + "[   0.1] x: sdk_version 0x13600007\n",
+                      "[EglantinePS5] test: EDEN_TEST script_start file=x events=1 waits=0\n"
+                      "[EglantinePS5] test: EDEN_TEST script_done at=1.0\n",
+                      env="EDEN_TEST_SCRIPT=zelda-first-start-watch-wait-30s.v6.txt\n")
+            r = score_run(td, None)
+            self.assertEqual(r["build_source"], "eden_log.SOURCE_STAMP")
+            self.assertIsNone(r["build_key"])
+            self.assertIsNone(r["comparison_key"])
 
 
-@unittest.skipUnless(V.is_dir(), "no runs/Vampinity here; set STK_TEST_GHB to a GreenHatBoy clone")
+@unittest.skipUnless(V and V.is_dir(), "set STK_TEST_GHB to a GreenHatBoy clone")
 class PackedControlStarts(unittest.TestCase):
     """His published figures (runs/Vampinity/2026-11-15-t186-control-README.md)."""
 
