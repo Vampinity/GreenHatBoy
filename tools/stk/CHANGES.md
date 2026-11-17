@@ -80,7 +80,7 @@ AC5 refused as `half`. Over the 1,332 GHB runs: 827 complete their route, **212 
 ## The close time is recorded, not judged (16 Nov, scorer 4)
 
 18. `end_ok` is now a normal close (`end_kind == app_closed`): the app saved its caches, so the next
-    start's cache state is known. The 30 s bound after the script is gone (the user's decision, to put to
+    start's cache state is known. The 30 s bound after the script is gone (GrowingBlackBeans's decision, to put to
     the others): whole-run figures are cut at `script_done` + 10 s, so no number depends on when the app
     closed. `tail_after_script_s` is still recorded. A quit *before* the script ends is still caught, by
     `route_completed`. runCC1–CC3 (closed 65, 69 and 32 s after the script) are now `control_eligible`.
