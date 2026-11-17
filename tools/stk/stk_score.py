@@ -436,7 +436,7 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
     start_ok = None if start_method is None else start_method == "test_boot"
     # The app closed normally (test-quit, or closed properly), so its caches were saved and the next
     # start's cache state is known. How long after the script it closed is recorded, not judged: whole-run
-    # figures are cut at script_done + 10 s, so no number depends on it (dropped 16 Nov by the user).
+    # figures are cut at script_done + 10 s, so no number depends on it (dropped 16 Nov by GrowingBlackBeans).
     end_ok = None if end_kind is None else end_kind == "app_closed"
     env_ok = settings_profile in ("stock_alpha_v40", "stock_alpha_v40_13x") or len(env_diffs) <= 1 if alpha_env else None
     intent_ok = True if not intended else bool(cache_matches_intent)  # undeclared runs are not failed on intent
