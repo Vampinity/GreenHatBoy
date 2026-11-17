@@ -4,8 +4,8 @@
     python3 -I pack_run.py RUN --out <GreenHatBoy clone> [--id ID] [--author NAME] [--date YYYY-MM-DD]
                                [--alpha-env <the control's env.txt>] [--dry-run]
 
-    The date comes from the batch folder's name (`auto-YYYYMMDD-HHMMSS-batch-<name>`, as his runner
-    writes them). A run not in such a folder needs --date: a file's modified time changes when a folder
+    The date comes from the batch folder's name (`auto-YYYYMMDD-HHMMSS-<name>`, as his runner writes
+    them, with or without `batch-`). A run not in such a folder needs --date: a file's modified time changes when a folder
     is copied or unzipped, so it is never used.
 
 What it is, and what it is not:
@@ -136,13 +136,27 @@ def redact_config(text: str, ghb, counts: dict) -> str:
     return redact(json.dumps(data, indent=1, ensure_ascii=False) + "\n", ghb, counts)
 
 
+# A profile id is 32 hex; in config.json one may sit under any key, so any bare 32-hex value is refused.
+BARE_HEX32 = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{32}(?![0-9A-Fa-f])")
+
+
 def config_problems(text: str) -> list[str]:
-    """What the text patterns cannot see in config.json: a profile value or another game's key."""
+    """What the text patterns cannot see in config.json: a profile value or another game's key, a
+    profile id anywhere else in the file, or one of the three keys in a shape redact_config can't read."""
     try:
         data = json.loads(text)
     except ValueError:
         return ["config.json: not JSON, cannot be checked"]
+    if not isinstance(data, dict):
+        return ["config.json: not a JSON object, cannot be checked"]
     problems = []
+    for key in ("profiles", "games", "library"):
+        if key in data and not isinstance(data[key], dict):
+            problems.append(f"config.json: '{key}' is not the shape expected (an object), cannot be checked")
+    if problems:
+        return problems
+    if BARE_HEX32.search(text):
+        problems.append("config.json: a bare 32-hex value (a profile id?)")
     if any(v not in (None, "", "<profile>") for v in (data.get("profiles") or {}).values()):
         problems.append("config.json: a profile id")
     if any(k != GAME_ID and not k.startswith("<other title") for k in (data.get("games") or {})):
@@ -155,8 +169,9 @@ def config_problems(text: str) -> list[str]:
 
 
 def date_from_batch(run: pathlib.Path):
-    """(date, time) from his runner's batch folder, auto-YYYYMMDD-HHMMSS-batch-<name>; else (None, None)."""
-    m = re.match(r"auto-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})-batch-", run.parent.name)
+    """(date, time) from his runner's batch folder, auto-YYYYMMDD-HHMMSS-<name> (since 16 Nov his folders
+    drop the `batch-`, e.g. auto-20261117-091102-list191-e-load); else (None, None)."""
+    m = re.match(r"auto-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})-", run.parent.name)
     return (f"{m[1]}-{m[2]}-{m[3]}", f"{m[4]}:{m[5]}:{m[6]}") if m else (None, None)
 
 
@@ -212,7 +227,7 @@ def pack(run_dir, out, author="GrowingBlackBeans", run_id=None, date=None, alpha
     batch_date, time = date_from_batch(run)
     date = date or batch_date
     if date is None:
-        sys.exit(f"{run} is not in a batch folder (auto-YYYYMMDD-HHMMSS-batch-...): pass --date YYYY-MM-DD")
+        sys.exit(f"{run} is not in a batch folder (auto-YYYYMMDD-HHMMSS-...): pass --date YYYY-MM-DD")
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
         sys.exit(f"--date {date}: want YYYY-MM-DD")
     run_id = redact(run_id or run.name, ghb, {})          # the id goes into a folder name: redacted too
@@ -277,7 +292,7 @@ def main(argv=None):
     ap.add_argument("--out", required=True, help="a GreenHatBoy clone (nothing is pushed)")
     ap.add_argument("--author", default="GrowingBlackBeans")
     ap.add_argument("--id", dest="run_id", help="run id (default: the folder's name)")
-    ap.add_argument("--date", help="YYYY-MM-DD; needed unless the run sits in an auto-...-batch- folder")
+    ap.add_argument("--date", help="YYYY-MM-DD; needed unless the run sits in an auto-YYYYMMDD-HHMMSS-... folder")
     ap.add_argument("--alpha-env", default=stk_score.DEFAULT_ALPHA_ENV)
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
