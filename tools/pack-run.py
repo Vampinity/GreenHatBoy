@@ -27,6 +27,7 @@ REDACT = [
     ("other_dump", re.compile(r"(No cover extracted from )[^\n]*?\.(nup|nsp|xci)\b"), r"\1<other title>.\2"),   # file names of other game dumps
     ("psn_id", re.compile(r"(?i)\b(online[_ ]?id|account[_ ]?id|psn[_ ]?id|np[_ ]?id)\s*[=:]\s*\S+"), r"\1=REDACTED"),
     ("serial", re.compile(r"(?i)\b(serial(?:[_ ]?number)?)\s*[=:]\s*\S+"), r"\1=REDACTED"),
+    ("save_profile", re.compile(r"(user/save/[0-9A-Fa-f]{16}/)[0-9A-Fa-f]{32}"), r"\1<profile>"),   # the save-profile id in a save path, either case (as in tools/stk/pack_run.py)
 ]
 
 # Words that are private to whoever runs this (login name, first name, console name, serials) never go into the tool:
