@@ -106,7 +106,7 @@ class Audit(unittest.TestCase):
             ("EDEN_PAD_OPEN pads=1 user=1234567", "pad user line"),
             ("user/save/0000000000000000/0123456789abcdef0123456789abcdef", "save profile id"),
             ("user/save/0000000000000000/0123456789ABCDEF0123456789ABCDEF", "save profile id"),
-            ("cloned waveydude/ocarina-private", "private repo"),
+            ("cloned someone/thing-private", "private repo"),
             ("# (a plain copy of Somebody's save 3)", "save name"),
             ("No cover extracted from Some Other Game [0100AAAABBBBC000].nsp", "other game's title"),
         ):

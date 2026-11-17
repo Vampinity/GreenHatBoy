@@ -53,7 +53,9 @@ FORBIDDEN = [
     ("MAC address", re.compile(r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b")),
     ("pad user line", re.compile(r"EDEN_PAD_(?:OPEN|USERS)[^\n]*?(?:user|foreground|initial)=\d{4,}")),
     ("save profile id", re.compile(r"user/save/\d{16}/[0-9A-Fa-f]{32}")),
-    ("private repo", re.compile(r"ocarina-private")),
+    # A private repository named as owner/name-private. Particular names (and anything else private) go in
+    # the packer's own ~/.eglantine-private, one per line, never in this file: see private_words().
+    ("private repo", re.compile(r"\b[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+-private\b")),
     ("save name", re.compile(r"a plain copy of (?!<save>)")),
     ("other game's title", re.compile(r"\[(?!" + GAME_ID + r"\])[0-9A-Fa-f]{16}\]\.(?:nup|nsp|xci)\b")),
 ]
