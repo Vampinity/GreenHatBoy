@@ -40,10 +40,21 @@ are cut at the script's end + 10 s, so nothing depends on it — our proposal, a
 keeps one flat folder. Every one of those is checked from the log.
 
 **5. The gate compares two rows only with the same comparison key:**
-`route | firmware | translation id | store | cold-or-warm`. It refuses a row whose route didn't complete,
-whose cache didn't match its declared intent, or whose settings differ from the control by more than
-the one line under test, and it never compares two `>=64` counts. Its numbers are the route windows,
-never whole-run figures. Noise floors are measured per key from control starts.
+`route | firmware | build | translation id | store | cold-or-warm`. The build is there because a store
+only loads on a build whose translation id matches it, so keeping a store across builds means forcing
+that id — and then the id no longer tells the builds apart (waveydude's `A186-keep` … `keep4`). The
+build is read from the boot trace, version and compile time, never from the store's own build number,
+which names whichever build wrote the store. It refuses a row whose route didn't complete, whose cache
+didn't match its declared intent, or whose settings differ from the control by more than the one line
+under test, and it never compares two `>=64` counts. Its numbers are the route windows, never whole-run
+figures. Noise floors are measured per key from control starts.
+
+**5a. One line, or one named bundle.** A test arm normally differs from the control by one line, so the
+result attributes to that line. A bundle of lines that is only ever used together (waveydude's five-line
+config) may be run as one arm against the control, declared by name in `declared.json` with its lines
+listed, and its row carries all of them in `env_diff_keys`. What such an arm can conclude is narrower:
+it screens the bundle rather than settling any line in it. To attribute a win inside a bundle, the lines
+go in one at a time afterwards.
 
 **6. Tools** live in GHB `tools/stk/` (the scorer under waveydude's name; Vampinity's packer,
 generalised, with his own path unchanged). A tool joins when it takes a run folder as an argument,
@@ -59,5 +70,8 @@ Workspace layout, hand-offs and filing, build names, run names, how a runner is 
 - **The true out-of-memory count** for control runs: a log-only uncapped counter (proposal drafted,
   tabled). Until then `>=64` is a floor.
 - **The stamp guard** (`stk check`, waveydude's `stamp_guard.py`) before every start: to come.
+- **waveydude's kokiri → field → town route** has no entry in `windows.json`, so its runs score no
+  windows. He is adding one (field: the village exit + 25 s to the end); it goes in as data, with the
+  script's sha1, like the other routes.
 - **Vampinity**: confirm the route windows as data, review the generalised packer, and whether his runner
   can be shared.

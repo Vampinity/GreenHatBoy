@@ -60,7 +60,8 @@ and cache class 15, route windows 19, memory 1,293, survival 1,332. Missing stay
 
 14. **Cold and warm are two controls.** `control_kind` is `cold` or `warm`; `half` is neither and never
     comparable. Two rows face each other only with the same `comparison_key`:
-    `route | firmware | translation id | store | cold-or-warm`.
+    `route | firmware | build | translation id | store | cold-or-warm` (the build was added in scorer 7,
+    see below).
 15. **Translation id** (`translation_id`, with `translation_files` and `device_id`) from the store line:
     a new build can start a new store with an identical env, so the key refuses a mismatch.
 16. **Route proof.** `route_completed` with `route_reason`: false on any `wait_timeout`, `steer_timeout`,
@@ -110,3 +111,25 @@ starts: his result agrees with ours on every one (runWP1, crashed, is `unknown`)
 21. `crash_class` was `"none"` for every run without a crash file, including the 411 archived runs whose
     survival is unknown (no end line, no crash file). It is now `null` with `missing_survival_unknown` there:
     "no crash" is only claimed when the run is known to have ended without one.
+
+## Review answer: the build in the key (16 Nov, scorer 7)
+
+waveydude's required change on PR #11: *"the comparison key needs the build. With the translation id
+forced to keep a store, our A186-keep → keep4 all carry `src116270f1…` with different code."*
+
+22. **`build_key` is in the comparison key**, between firmware and the translation id. It is the boot
+    trace's `diagnostic build <version> (<compile time>)` — the build that actually ran — or a build
+    declared in `run.json`. It is deliberately **not** the store stamp's own build number: that names
+    whichever build wrote the store, which with a kept store is not this one. A run with neither has
+    `build_key: null` and therefore no key, rather than a key that is right about four fields and silent
+    about the fifth.
+
+**It changes how the archive groups, on his point exactly.** Scored over the 1,332 packed runs,
+`build_key` is known for all 1,332 and the 15 runs that have a full key keep one, so nothing is lost.
+But those 15 went from 2 keys to 4, and the split is not cosmetic: on the field route, warm, 12.40,
+one store and one translation id, the old key pooled four `w20` starts (field walk 21.30–21.91) with
+seven T186 starts (18.76–19.59). Same five fields, 2.4 fps apart, different compile times. Vampinity's
+published figures average the seven, so his numbers were never the problem — the key was.
+
+Validated: 27 tests (25 synthetic, 2 against GHB), including the keep/keep4 case (one store, one
+translation id, two compile times → two keys) and a run with no build (no key at all).
