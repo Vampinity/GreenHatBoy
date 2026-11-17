@@ -1,0 +1,16 @@
+{
+  "run_id": "runKV5",
+  "control": true,
+  "intended_cache": "cold",
+  "route": "kokiri-four-stops.v2.txt",
+  "route_sha1_12": "d40196a1a1d0",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt, one line changed (the script)",
+  "intent": "Kokiri v2 cold control, replacing runKV3 (quit before script_done). Wait ~15 s after the shop-sign stand before test-quit.",
+  "written": "2026-11-17"
+}
