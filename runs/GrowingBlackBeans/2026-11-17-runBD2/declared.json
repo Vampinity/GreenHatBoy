@@ -1,0 +1,17 @@
+{
+  "run_id": "runBD2",
+  "control": true,
+  "intended_cache": "cold",
+  "route": "zelda-first-start-watch-wait-30s.v6.txt",
+  "route_sha1_12": "e68ac8b551b2",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt, no line changed",
+  "capture": "PS5 video recording on for the whole start; video kept only on a door miss",
+  "intent": "Baseline door repro on the control: catch the house-door miss on video to steer the approach. Completes also count as baseline cold controls.",
+  "written": "2026-11-17"
+}

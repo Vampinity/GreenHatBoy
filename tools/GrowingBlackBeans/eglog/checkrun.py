@@ -113,7 +113,10 @@ def main():
         notes.append("set but not visible in the log, can't be verified: " + ", ".join(silent))
     if run.gpu and run.windows:
         n_gpu = len(run.gpu)
-        if run.env.get("EDEN_GPU_TIME") and abs(n_gpu - len(run.windows)) > 8:
+        # GPU-time lines run from boot to close; play windows start after the load-in, which on a cold
+        # start is long (KC1/KC2, 17 Nov: 101 lines for 91-92 windows, one session). Another session's
+        # file shows up as roughly double, or as too few.
+        if run.env.get("EDEN_GPU_TIME") and (n_gpu < len(run.windows) - 8 or n_gpu > 1.5 * len(run.windows)):
             problems.append(f"{run.gpu_source} has {n_gpu} GPU-time lines for {len(run.windows)} 5 s windows: from another session?")
     others = a.others if a.others is not None else [d for d in glob.glob(os.path.join(os.path.dirname(os.path.abspath(folder)), "*/"))
                                                      if os.path.abspath(d).rstrip("/") != os.path.abspath(folder)]
