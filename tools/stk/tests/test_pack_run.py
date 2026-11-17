@@ -43,6 +43,32 @@ class Rules(unittest.TestCase):
         self.assertNotIn("account", out.splitlines()[0])
         self.assertIn("next line", out)
 
+    def test_profile_id_by_value_goes_on_any_line(self):
+        """Vampinity's rule 1 (D2, 17 Nov): an id known from config.json or a save path is replaced anywhere."""
+        counts = {}
+        out = pack_run.redact("profile 0123456789abcdef0123456789abcdef selected\nalso 0123456789ABCDEF0123456789ABCDEF\n",
+                              Fake, counts, frozenset({"0123456789abcdef0123456789abcdef"}))
+        self.assertNotIn("0123456789", out)
+        self.assertEqual(counts["profile_by_value"], 2)
+
+    def test_profile_ids_are_read_from_config_and_save_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "config.json").write_text(json.dumps(CONFIG))
+            ids = pack_run.profile_ids(Path(td), "open user/save/0000000000000000/FEDCBA9876543210FEDCBA9876543210 ok")
+            self.assertEqual(ids, {"0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210"})
+
+    def test_save_path_with_letters_in_the_middle(self):
+        """The middle part is 16 zeros today; a title id there has letters (Vampinity, D2, 17 Nov)."""
+        counts = {}
+        out = pack_run.redact("user/save/0100AAAABBBBC000/0123456789abcdef0123456789abcdef", Fake, counts)
+        self.assertIn("user/save/0100AAAABBBBC000/<profile>", out)
+
+    def test_pad_lines_go_whole(self):
+        counts = {}
+        out = pack_run.redact("a\nx: EDEN_PAD_OPEN player=1 user=REDACTED handle=5\nx: EDEN_PAD_USERS foreground=REDACTED\nb\n", Fake, counts)
+        self.assertEqual(out, "a\nb\n")
+        self.assertEqual(counts["pad_line"], 2)
+
     def test_save_name_in_a_route_comment_goes(self):
         """Vampinity's field route names the save in a comment; his packs carry `a plain copy of <save>`."""
         counts = {}
@@ -139,6 +165,12 @@ class Audit(unittest.TestCase):
             d = Path(td)
             self.write(d, "[ 10.5] nx2:vi2 5 s: 150 frames, 22.67 fps\n/Users/USER/ok\n")
             self.assertEqual(pack_run.audit(d, set()), [])
+
+    def test_audit_catches_a_short_private_word(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            self.write(d, "made on Kip's console\n")
+            self.assertTrue(pack_run.audit(d, {"Kip"}))
 
     def test_audit_catches_a_private_word(self):
         with tempfile.TemporaryDirectory() as td:
