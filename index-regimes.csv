@@ -219,8 +219,12 @@ runs/GrowingBlackBeans/2026-11-16-runCC1,GrowingBlackBeans,2026-11-16-runCC1,01.
 runs/GrowingBlackBeans/2026-11-16-runCC2,GrowingBlackBeans,2026-11-16-runCC2,01.219.028 (Nov 14 2026 23:24:15),full-wait,219.6558,27.25,24.6,1.0,,0,,0,,0,24.86,45,22.54,,433.9,20,915,190,55,,True,False
 runs/GrowingBlackBeans/2026-11-16-runCC3,GrowingBlackBeans,2026-11-16-runCC3,01.219.028 (Nov 14 2026 23:24:15),full-wait,220.037245,27.83,24.7,1.0,,0,,0,,0,25.04,42,21.95,,445.3,29,830,128,0,,True,False
 runs/GrowingBlackBeans/2026-11-16-runCC4,GrowingBlackBeans,2026-11-16-runCC4,01.219.028 (Nov 14 2026 23:24:15),full-wait,233.556373,25.9,26.02,1.0,,0,,0,,0,26.02,65,20.42,,496.3,50,296,84,0,,True,False
+runs/GrowingBlackBeans/2026-11-16-runSW1-failure,GrowingBlackBeans,2026-11-16-runSW1-failure,01.219.028 (Nov 14 2026 23:24:15),full-wait,218.080169,25.1,25.27,1.0,,0,,0,,0,25.41,31,19.67,,347.9,36,435,105,0,,True,False
+runs/GrowingBlackBeans/2026-11-16-runSW1-failure2,GrowingBlackBeans,2026-11-16-runSW1-failure2,01.219.028 (Nov 14 2026 23:24:15),full-wait,222.949991,24.6,24.72,1.0,,0,,0,,0,24.74,46,21.84,,467.9,50,439,124,0,,True,False
 runs/GrowingBlackBeans/2026-11-16-runWP1,GrowingBlackBeans,2026-11-16-runWP1,01.219.926 (Nov 15 2026 17:21:25),ahead-1,90.552463,,,,,0,,0,,0,,0,,,,0,61,904,12,,True,False
 runs/GrowingBlackBeans/2026-11-16-runWP1b,GrowingBlackBeans,2026-11-16-runWP1b,01.219.926 (Nov 15 2026 17:21:25),ahead-1,843.743729,24.28,25.53,0.0,31.6,24,22.27,52,,0,,0,,,202.5,0,677,462,269,,True,True
+runs/GrowingBlackBeans/2026-11-17-runBV1,GrowingBlackBeans,2026-11-17-runBV1,01.219.028 (Nov 14 2026 23:24:15),full-wait,225.837261,27.6,24.47,1.0,,0,,0,,0,24.75,38,22.35,,486.6,11,876,190,0,,True,False
+runs/GrowingBlackBeans/2026-11-17-runSW1,GrowingBlackBeans,2026-11-17-runSW1,01.219.028 (Nov 14 2026 23:24:15),full-wait,222.906188,25.6,23.97,1.0,,0,,0,,0,24.13,45,22.66,,390.9,22,425,108,0,,True,False
 runs/Vampinity/2026-11-05-run10-newgame-0321,Vampinity,2026-11-05-run10-newgame-0321,,unknown,,,,,,0,,0,,0,,0,,,,0,,,0,,False,False
 runs/Vampinity/2026-11-05-run11-0324,Vampinity,2026-11-05-run11-0324,,unknown,,,,,,0,,0,,0,,0,,,,0,,,,,False,False
 runs/Vampinity/2026-11-05-run12-pb-0329,Vampinity,2026-11-05-run12-pb-0329,,unknown,,,,,,0,,0,,0,,0,,,,0,,,,,False,False
