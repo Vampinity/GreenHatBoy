@@ -33,7 +33,7 @@ PACKER_VERSION = "pack_run 1 (Vampinity's pack-run.py redaction + the run contra
 # Ours, on top of his: a save-profile id is 32 hex under user/save/<title>/, and the launcher prints the
 # profile's name, which can be an account name.
 EXTRA = [
-    ("save_profile", re.compile(r"(user/save/\d{16}/)[0-9a-f]{32}"), r"\1<profile>"),
+    ("save_profile", re.compile(r"(user/save/\d{16}/)[0-9A-Fa-f]{32}"), r"\1<profile>"),   # the console writes it in upper case
     ("profile_name", re.compile(r"(launch: Profile ).*"), r"\1<redacted>"),
 ]
 # What must not survive anywhere in a packed run. Checked after writing.
@@ -43,7 +43,7 @@ FORBIDDEN = [
     ("LAN address", re.compile(r"\b(?:192\.168|10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b")),
     ("MAC address", re.compile(r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b")),
     ("pad user line", re.compile(r"EDEN_PAD_(?:OPEN|USERS)[^\n]*?(?:user|foreground|initial)=\d{4,}")),
-    ("save profile id", re.compile(r"user/save/\d{16}/[0-9a-f]{32}")),
+    ("save profile id", re.compile(r"user/save/\d{16}/[0-9A-Fa-f]{32}")),
     ("private repo", re.compile(r"ocarina-private")),
 ]
 

@@ -28,6 +28,14 @@ class Rules(unittest.TestCase):
         self.assertIn("user/save/0000000000000000/<profile>", out)
         self.assertEqual(counts["save_profile"], 1)
 
+    def test_save_profile_id_goes_in_upper_case(self):
+        """The console writes the id in upper case. A lower-case-only pattern let it through into 11
+        packed runs on 16 Nov, and the audit, with the same pattern, did not see it."""
+        counts = {}
+        out = pack_run.redact("open user/save/0000000000000000/5AD607EE29E2CB028954A68B08B6629A ok", Fake, counts)
+        self.assertNotIn("5AD607EE", out)
+        self.assertEqual(counts["save_profile"], 1)
+
     def test_profile_name_goes(self):
         counts = {}
         out = pack_run.redact("launch: Profile Someone's PS5 account\nnext line\n", Fake, counts)
@@ -48,6 +56,7 @@ class Audit(unittest.TestCase):
             ("connected to 192.168.1.42", "LAN address"),
             ("EDEN_PAD_OPEN pads=1 user=1234567", "pad user line"),
             ("user/save/0000000000000000/0123456789abcdef0123456789abcdef", "save profile id"),
+            ("user/save/0000000000000000/0123456789ABCDEF0123456789ABCDEF", "save profile id"),
             ("cloned waveydude/ocarina-private", "private repo"),
         ):
             with tempfile.TemporaryDirectory() as td:
