@@ -9,7 +9,8 @@ session are shaped. This file is the shorter, harder thing: what makes two peopl
 comparable.
 
 **Status.** The control, the routes and the scorer: agreed by all three of us, 15 Nov 2026. The gate:
-proposed, **not yet settled**. Pieces of all four already exist and are named below.
+agreed by all three of us for changes to the shared base — `main`, the alpha, the control (§4). Each
+person's own test builds follow their own rules. Pieces of all four already exist and are named below.
 
 ## 1. One control
 
@@ -60,6 +61,10 @@ time is real.
 
 ## 3. One scorer
 
+**It exists:** [`tools/stk/`](../tools/stk/) — waveydude's scorer and route check, with the run-contract
+changes ([`docs/RUN-CONTRACT.md`](RUN-CONTRACT.md)). It reads any run folder, raw or packed, and scores all
+1,332 packed runs.
+
 One command that reads a whole **run folder** — not just `eden_log`, because the memory lines are in
 `stderr.log` and the crash class is in the crash file — and prints the same row every time:
 
@@ -104,7 +109,7 @@ They are also on different clocks. `EDEN_MEM_CENSUS t_s=` is the script clock (t
 `[ seconds]` uses). The offset is the `EDEN_GUEST_START` stamp in `eden_log.txt` — about forty seconds
 in a field start.
 
-## 4. The gate — proposed, not yet agreed
+## 4. The gate — for changes to the shared base
 
 **A change goes into the base if the row can be explained.**
 
@@ -119,15 +124,26 @@ at one of our Kokiri stops would have manufactured results, because that stop's 
 Vampinity already runs a gate of this kind on every T-build — new switches unset, against the build
 before. What is missing is that it is his rather than shared.
 
-**It is the one rule we have not settled**, and it is the rule that decides what gets rejected, so it
-needs its own answer.
+It is the rule that decides what gets rejected from the base. It does not reach anyone's own test
+builds.
+
+**16 Nov:** waveydude — yes, with the condition that a row counts against the control only on the same
+shader store. The run contract makes that a comparison key (route, firmware, translation id, store, cold
+or warm; [`docs/RUN-CONTRACT.md`](RUN-CONTRACT.md) §5). The first noise floors, from five cold control
+starts on 13.60 on the new-game route: village ±0.67 fps (door + 62…77 s), lowest largest free block
+±99 MiB.
+
+**Vampinity:** fine in principle, for the shared base only — not for his own test builds. So the gate
+covers changes to `main` (the base, the alpha, the control); how anyone screens their own test builds
+is theirs to decide.
 
 ## What is shared, and what is each person's
 
 | | shared | each person's own |
 |---|---|---|
 | privacy rules, decision rules written before the run, scripted places, four runs a side | **yes** | — |
-| the control, the four route scopes, the scorer, the gate | **yes** | — |
+| the control, the four route scopes, the scorer | **yes** | — |
+| the gate | **yes**, for changes to the shared base (`main`) | rules for your own test builds |
 | `develop` and pull requests for build changes | **yes** | — |
 | working folder layout, build names, session routine, filing | — | yours |
 
