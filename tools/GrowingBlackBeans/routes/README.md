@@ -95,3 +95,25 @@ altogether rather than retrying it, and the minimap works indoors — the Kokiri
 house floor at 829,900. It needs the door's points from a recording (`steer-route.py`), which nobody has
 cut yet, and a `STEER` timeout stops a script, so it would be a hard dependency on the minimap being
 readable during the opening. That is worth proving before it replaces a retry that costs nothing.
+
+**Second start on a console (runSW1, 17 Nov): the retry fired, and it does not work.** Round 1 missed
+the door with a near miss, and the two retries made it worse:
+
+    EDEN_TEST wait_skipped line=114  best=66      round 1: beside the door, not square to it
+    EDEN_TEST wait_skipped line=122  best=66      round 2: no better
+    EDEN_TEST wait_skipped line=126  best=19      round 3: pushed away from it
+    EDEN_TEST wait_timeout line=129  best=-21     the hard check
+
+That is the weakness this README already named, now observed: a round re-centres the camera behind Link
+and pushes forward, but it has no idea where Link is, so from a near miss "forward" walks him along or
+away from the door rather than into it. v7 is therefore no better than v6 in outcome — the same starts
+fail, the same starts pass — and as a different file it is a different route key. It does not fix this.
+
+The frame rate matters more than I had concluded. This start fell to **8.3 fps** across the swing and
+the `ZL`, the lowest figure in any start: three of the four failures now dip to 8–13 fps there, against
+15.2–22.9 in all nine starts that reached the door. One failure (16.7) did not dip.
+
+**What would fix it** is position feedback, and the only position the harness can read is the minimap:
+steer the door approach with `STEER`, from points cut out of a capture of a good start
+(`tools/Vampinity/steer/steer-route.py`). Until then, v6 stays the route: on our console 4 of 12
+baseline starts have missed the door, v6 and v7 together.
