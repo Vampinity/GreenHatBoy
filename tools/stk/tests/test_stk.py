@@ -31,6 +31,22 @@ def write_run(d: Path, eden: str, stderr: str = "", boot: str = "", env: str = "
         (d / "env.txt").write_text(env)
 
 
+class WindowsFile(unittest.TestCase):
+    """Every route's windows must use a window kind the scorer implements: a route whose entry the
+    scorer cannot read would score null windows silently (how waveydude's route sat unscored)."""
+
+    def test_every_window_kind_is_implemented(self):
+        import json
+        routes = json.loads((Path(__file__).resolve().parent.parent / "windows.json").read_text())["routes"]
+        known = {"stamped", "whole", "between", "after_load_low"}
+        self.assertIn("wavey-kokiri-field-town", routes)
+        for route, defn in routes.items():
+            self.assertTrue(defn.get("sha1"), route)
+            for name, w in defn["windows"].items():
+                self.assertIn(w["kind"], known, f"{route}.{name}")
+                self.assertIn(w.get("stat"), ("mean", "median"), f"{route}.{name}")
+
+
 class Synthetic(unittest.TestCase):
     def test_cold_start_stamp_new_is_read(self):
         with tempfile.TemporaryDirectory() as td:

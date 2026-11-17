@@ -70,8 +70,9 @@ Workspace layout, hand-offs and filing, build names, run names, how a runner is 
 - **The true out-of-memory count** for control runs: a log-only uncapped counter (proposal drafted,
   tabled). Until then `>=64` is a floor.
 - **The stamp guard** (`stk check`, waveydude's `stamp_guard.py`) before every start: to come.
-- **waveydude's kokiri → field → town route** has no entry in `windows.json`, so its runs score no
-  windows. He is adding one (field: the village exit + 25 s to the end); it goes in as data, with the
-  script's sha1, like the other routes.
+- ~~**waveydude's kokiri → field → town route** has no entry in `windows.json`~~ — **in, 17 Nov**, as
+  data with the script's sha1 (`77184752d1e4`), from his PR #11 review: `field` is the steered walk to
+  the town bridge, `town` is the bridge + 30…55 s. His own earlier figure for that route came from the
+  wrong window and he has retracted it.
 - **Vampinity**: confirm the route windows as data, review the generalised packer, and whether his runner
   can be shared.
