@@ -70,4 +70,6 @@ Runs: `runs/GrowingBlackBeans/2026-11-14-KW2`, `-KS1`, `-KS2`, `-KS3`.
 stop C started on KW2's view (fingerprint 81–89) but drifted during the stand (end 63–83): on the raised ground by
 the cliff the camera pans by itself. Stop D only just passed its search (60–69). v2 re-centres C's camera with L2
 every 10 s during the stand, and searches D's facing in 7.5° steps until the view scores 75. A and B are
-byte-identical to v1. Being tested as runKV1–KV4.
+byte-identical to v1. **Result (KV1–KV4): C fixed** (ring words a frame 1.9% across four starts, against 6.5% on
+v1). **D not** (5.6%): the search passes every time, but Link stops anywhere within the stand's radius, so position
+moves D's work as much as facing does. On v2, per-unit-of-work analysis pools A, B and C; D is a frame-rate floor only.

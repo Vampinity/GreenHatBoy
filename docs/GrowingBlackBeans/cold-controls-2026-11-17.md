@@ -21,8 +21,9 @@ Not pooled: KC4 and BW3 (half warm: the driver cache and pipeline records loaded
 ## Notes
 
 - **Kokiri C and D:** the fps floors are fine, but the view isn't the same from start to start (GPU ring words a
-  frame spread 6.5% at C and 4.7% at D; A 1.0%, B 2.7%). Anything per unit of work uses A and B only. v2 of the route
-  is being tested as KV1–KV4: see `tools/GrowingBlackBeans/steer/kokiri-four-stops/README.md`.
+  frame spread 6.5% at C and 4.7% at D; A 1.0%, B 2.7%). Anything per unit of work uses A and B only. **v2** of the route
+  (KV1–KV4) fixes C (1.9%) but not D (5.6%), so on v2 A, B and C pool and D is a frame-rate floor only. See
+  `tools/GrowingBlackBeans/steer/kokiri-four-stops/README.md`.
 - **Baseline door:** v6 missed the house door 3 times in 14 cold starts. v9 removes the timed camera swing, and opened
   the door 5 of 5 times. See `tools/GrowingBlackBeans/steer/baseline-door/README.md`. The v6 starts in this batch
   (BC1, BD1, BD2) and the failed v8 try (BX1) are packed too.
