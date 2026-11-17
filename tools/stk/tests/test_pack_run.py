@@ -76,6 +76,19 @@ class Config(unittest.TestCase):
         self.assertEqual(counts, {"config_profile": 2, "config_other_title": 3})
         self.assertEqual(pack_run.config_problems(json.dumps(out)), [])
 
+    def test_profile_id_under_another_key_is_refused(self):
+        """A profile id outside "profiles" passes redact_config untouched; the audit must refuse it."""
+        data = json.loads(pack_run.redact_config(json.dumps(CONFIG), Fake, {}))
+        data["accounts"] = {"last_signed_in": "0123456789ABCDEF0123456789ABCDEF"}
+        self.assertIn("config.json: a bare 32-hex value (a profile id?)", pack_run.config_problems(json.dumps(data)))
+
+    def test_unexpected_shape_is_refused(self):
+        for key, bad in (("profiles", ["0123456789ABCDEF0123456789ABCDEF"]), ("games", "x"), ("library", [])):
+            data = dict(CONFIG, **{key: bad})
+            problems = pack_run.config_problems(json.dumps(data))
+            self.assertTrue(any(f"'{key}' is not the shape expected" in p for p in problems), (key, problems))
+        self.assertTrue(pack_run.config_problems("[1, 2]"))
+
     def test_audit_catches_an_unredacted_config(self):
         with tempfile.TemporaryDirectory() as td:
             (Path(td) / "config.json").write_text(json.dumps(CONFIG))
@@ -88,6 +101,11 @@ class Dates(unittest.TestCase):
     def test_date_from_his_batch_folder(self):
         run = Path("/x/auto-20261115-214502-batch-alphafs/run1637-alphafs-S01-first")
         self.assertEqual(pack_run.date_from_batch(run), ("2026-11-15", "21:45:02"))
+
+    def test_date_from_his_newer_batch_folder(self):
+        """Since 16 Nov his batch folders have no "batch" in the name (Vampinity, PR #13 review)."""
+        run = Path("/x/auto-20261117-091102-list191-e-load/run1901-e-load-S01")
+        self.assertEqual(pack_run.date_from_batch(run), ("2026-11-17", "09:11:02"))
 
     def test_no_batch_folder_no_date(self):
         self.assertEqual(pack_run.date_from_batch(Path("/x/runKC1")), (None, None))
