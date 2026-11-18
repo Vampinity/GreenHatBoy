@@ -127,6 +127,22 @@ before. What is missing is that it is his rather than shared.
 It is the rule that decides what gets rejected from the base. It does not reach anyone's own test
 builds.
 
+### Reading the row: stable, then fast, then smooth
+
+Agreed 18 Nov (GrowingBlackBeans and Vampinity, in chat; waveydude to confirm). Every start measures everything it
+can (memory, the picture, fps, hitches): a start stays cheap, and nothing is measured in a separate run. The order
+only decides what gets optimized first, and how a row is read:
+
+1. **Stable**: the start survives, and the memory floor (lowest largest free block) holds. A gate.
+2. **The picture**: no flashes, nothing missing. A gate, next to stability. Counted from a capture at its full
+   frame rate (a capture capped at 20 fps lets short flashes fall between frames), or in the emulator itself once
+   a counter like waveydude's `EDEN_UP_FLASH_COUNT` (1211, on his test builds) is in a base.
+3. **Fast**: fps, per window, against the noise floor.
+4. **Smooth**: hitch ms per minute.
+
+Stability and the picture are a gate, not a queue: a change that gives speed and doesn't hurt either is not
+parked behind the memory work.
+
 **16 Nov:** waveydude — yes, with the condition that a row counts against the control only on the same
 shader store. The run contract makes that a comparison key (route, firmware, translation id, store, cold
 or warm; [`docs/RUN-CONTRACT.md`](RUN-CONTRACT.md) §5). The first noise floors, from five cold control
