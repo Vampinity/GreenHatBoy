@@ -10,7 +10,7 @@ v4.0, swap-ahead 2048 on 13.x). Fully steered: no replayed input anywhere.
 
 **Start:** a save just below the village's entrance stairs, newest entry (make your own: walk down the stairs a few
 steps and save; the player's arrow must be at y 748 per mille or lower). Always with `EDEN_TEST_DISCARD_SAVE=1`.
-**End:** when the title screen is back, the script is done; quit any time after (`test-quit`).
+**End:** the script ends 2 s after the title screen is back; wait 10 s after the title shows, then quit (`test-quit`). A start quit before the END does not count.
 **Scoring windows** (`tools/stk/windows.json`, `later-area-village-lap-v2`): the lap (village check + 8 s to the exit
 leg's last point) and the field stand (30-115 s after the field check).
 
