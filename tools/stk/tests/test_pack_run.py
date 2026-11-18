@@ -65,9 +65,34 @@ class Rules(unittest.TestCase):
 
     def test_pad_lines_go_whole(self):
         counts = {}
-        out = pack_run.redact("a\nx: EDEN_PAD_OPEN player=1 user=REDACTED handle=5\nx: EDEN_PAD_USERS foreground=REDACTED\nb\n", Fake, counts)
+        out = pack_run.redact("a\nx: EDEN_PAD_OPEN player=1 user=REDACTED handle=5\nx: EDEN_PAD_USERS foreground=REDACTED\nb\n", Fake, counts,
+                              drop_pad=True)
         self.assertEqual(out, "a\nb\n")
         self.assertEqual(counts["pad_line"], 2)
+
+    def test_pad_lines_stay_where_line_numbers_count(self):
+        """script.txt's line numbers are the route's marks: no line may go (Vampinity's #15 review, 18 Nov)."""
+        text = "1 A 100\n# EDEN_PAD_OPEN in a comment\n2 A 100\n"
+        self.assertEqual(pack_run.redact(text, Fake, {}).count("\n"), 3)
+
+    def test_numbers_learned_in_one_file_go_from_another(self):
+        """A file with no pad line of its own (heap.log, say) still loses the number the log's pad lines name.
+        The number is made up."""
+        numbers = pack_run.pad_numbers(["x: EDEN_PAD_OPEN player=1 user=271828182 handle=5\n"])
+        self.assertEqual(numbers, frozenset({"271828182"}))
+        counts = {}
+        out = pack_run.redact("heap 271828182 at 0x1033c4d6 and 1033C4D6\n", Fake, counts, numbers=numbers)
+        self.assertNotIn("271828182", out)
+        self.assertNotIn("1033c4d6", out.lower())
+        self.assertEqual(counts["console_user_by_value"], 3)
+
+    def test_after_check_learns_short_numbers_and_sees_0x(self):
+        """The after-check used to learn only 6+ digits and missed a 0x in front of the hex. Made-up number 31415."""
+        words = pack_run.private_words("x: EDEN_PAD_USERS foreground=31415 initial=31415\n")
+        self.assertIn("7ab7", words)
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "stderr.log").write_text("handle 0x7ab7 ok\n")
+            self.assertTrue(pack_run.audit(Path(d), words))
 
     def test_save_name_in_a_route_comment_goes(self):
         """Vampinity's field route names the save in a comment; his packs carry `a plain copy of <save>`."""
@@ -177,6 +202,22 @@ class Audit(unittest.TestCase):
             d = Path(td)
             self.write(d, "the console is called Thornfield\n")
             self.assertTrue(pack_run.audit(d, {"Thornfield"}))
+
+
+@unittest.skipUnless(GHB and (Path(GHB) / "tools/pack-run.py").is_file(), "set STK_TEST_GHB to a GreenHatBoy clone")
+class HisScrubFirst(unittest.TestCase):
+    """With the real tools/pack-run.py: his scrub learns the number from the pad lines, so it must run before they
+    go (Vampinity's #15 review, 18 Nov). The number is made up; copies of it sit on other lines, decimal and 0x hex."""
+    def test_a_copy_of_the_number_on_another_line_goes(self):
+        ghb = pack_run.load_his_redaction(Path(GHB))
+        text = ("x: EDEN_PAD_OPEN player=1 user=271828182 handle=5\n"
+                "y: something for 271828182\n"
+                "z: handle 0x1033c4d6\n")
+        out = pack_run.redact(text, ghb, {}, drop_pad=True)     # no numbers passed: his scrub alone must catch them
+        self.assertNotIn("EDEN_PAD", out)
+        self.assertNotIn("271828182", out)
+        self.assertNotIn("1033c4d6", out.lower())
+        self.assertEqual(out.count("\n"), 2)
 
 
 @unittest.skipUnless(GHB and (Path(GHB) / "tools/pack-run.py").is_file(), "set STK_TEST_GHB to a GreenHatBoy clone")

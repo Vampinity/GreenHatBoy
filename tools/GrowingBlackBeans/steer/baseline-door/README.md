@@ -1,7 +1,7 @@
 # baseline-door: the house door on the baseline route
 
-The baseline route (`zelda-first-start-watch-wait-30s.v6.txt`) missed the house door 3 times in 14 cold starts on the
-control at swap-ahead 2048 (CC4, BD1, BD2). BD2's capture shows why: v6 swings the camera right then left for 1.5 s
+The baseline route (`zelda-first-start-watch-wait-30s.v6.txt`) missed the house door 3 times in 12 starts on the
+control at swap-ahead 2048 (9 of them cold by the scorer; the three misses, CC4, BD1, BD2, were all cold). BD2's capture shows why: v6 swings the camera right then left for 1.5 s
 each, then presses ZL and pushes forward. A timed swing turns by a frame-rate-dependent amount. When the push came
 while the camera was still turning, Link ran in at an angle and stopped just left of the door, outside the spot
 where "Open" shows. There is no minimap inside the house, so it can't be steered by minimap.

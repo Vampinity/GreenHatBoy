@@ -25,6 +25,8 @@ for run in sys.argv[1:]:
     fps = [(float(t), float(f)) for t, f in re.findall(r"\[\s*([\d.]+)\][^\n]*nx2:vi2 5 s: \d+ frames, ([\d.]+) fps", log)]
     row = {}
     for s, (a, b) in stops_from_script(str(run)).items():
+        if a not in marks or b not in marks:      # the run quit (or failed) before this stop: no figure for it
+            continue
         t0, t1 = marks[a], marks[b]
         w = [x for t, x in split if t0 + 5 <= t <= t1]; f = [x for t, x in fps if t0 + 5 <= t <= t1]
         row[s] = (st.mean(w) / st.mean(f), st.mean(f), len(w))
@@ -32,7 +34,8 @@ for run in sys.argv[1:]:
 names = list(res)
 print("stop " + "".join(f"{n:>24}" for n in names) + "   spread  verdict")
 for s in STOPS:
-    vals = [res[n][s][0] for n in names]
-    cells = "".join(f"{res[n][s][0]:>12,.0f} {res[n][s][1]:5.1f}fps n{res[n][s][2]}" for n in names)
+    have = [n for n in names if s in res[n]]
+    vals = [res[n][s][0] for n in have]
+    cells = "".join(f"{res[n][s][0]:>12,.0f} {res[n][s][1]:5.1f}fps n{res[n][s][2]}" if s in res[n] else f"{'not reached':>24}" for n in names)
     sp = (max(vals) - min(vals)) / st.mean(vals) * 100 if len(vals) > 1 else float("nan")
-    print(f"{s:4} {cells}  {sp:6.1f}%  {'same view' if sp <= 3 else 'NOT the same view'}")
+    print(f"{s:4} {cells}  {sp:6.1f}%  {'-' if sp != sp else 'same view' if sp <= 3 else 'NOT the same view'}")
