@@ -73,7 +73,8 @@ One command that reads a whole **run folder** — not just `eden_log`, because t
 | median fps, p10 fps, worst frame ms | the 5 s `nx2:vi2` windows, play windows only |
 | shader builds in play | `pipeline built on the GPU thread` |
 | largest free block at the peak | see the note below |
-| hitch ms a minute | the flight recorder, plus `frame_max` |
+| hitch ms a minute, while moving | the flight recorder, plus `frame_max`, over the route's moving windows only |
+| black screen at each load, s | from the load's start to the first frame of the new area; its own column, never in the hitch score |
 | flashes a minute | `tools/Vampinity/flash-counter/count_flashes.py`, from capture video |
 | game speed | patches 0950/0951 |
 | survival, n of N | did the start get through the load |
@@ -129,16 +130,22 @@ builds.
 
 ### Reading the row: stable, then fast, then smooth
 
-Agreed 18 Nov (GrowingBlackBeans and Vampinity, in chat; waveydude to confirm). Every start measures everything it
-can (memory, the picture, fps, hitches): a start stays cheap, and nothing is measured in a separate run. The order
-only decides what gets optimized first, and how a row is read:
+Agreed 18 Nov (GrowingBlackBeans and Vampinity, in chat; waveydude agreed the same day). Every start measures
+everything it can (memory, the picture, fps, hitches): a start stays cheap, and nothing is measured in a separate
+run. The order only decides what gets optimized first, and how a row is read:
 
 1. **Stable**: the start survives, and the memory floor (lowest largest free block) holds. A gate.
 2. **The picture**: no flashes, nothing missing. A gate, next to stability. Counted from a capture at its full
    frame rate (a capture capped at 20 fps lets short flashes fall between frames), or in the emulator itself once
    a counter like waveydude's `EDEN_UP_FLASH_COUNT` (1211, on his test builds) is in a base.
 3. **Fast**: fps, per window, against the noise floor.
-4. **Smooth**: hitch ms per minute.
+4. **Smooth**: two numbers, side by side and never summed:
+   - **hitch ms per minute while Link is moving** (the route's moving windows);
+   - **the black screen at each load**, its own duration in seconds.
+
+   A change can shorten the load and still make the walk feel worse, or the reverse, so both are on every
+   report (waveydude, 18 Nov). A long black screen is not a hitch, and a hitch-free walk doesn't make up for a
+   long load.
 
 Stability and the picture are a gate, not a queue: a change that gives speed and doesn't hurt either is not
 parked behind the memory work.
