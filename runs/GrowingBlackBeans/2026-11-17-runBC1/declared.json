@@ -1,0 +1,17 @@
+{
+  "run_id": "runBC1",
+  "control": true,
+  "intended_cache": "cold",
+  "route": "zelda-first-start-watch-wait-30s.v6.txt",
+  "route_sha1_12": "e68ac8b551b2",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt, no line changed",
+  "capture": "PS5 video recording on for the whole start",
+  "intent": "Capture a good v6 baseline start, to cut STEER points for the house door approach. Also a baseline cold start towards the 500 MiB question, compared against uncaptured starts before pooling.",
+  "written": "2026-11-17"
+}

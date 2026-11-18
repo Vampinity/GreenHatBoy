@@ -115,6 +115,93 @@
           "stat": "mean"
         }
       }
+    },
+    "new-game-v8": {
+      "sha1": [
+        "6b109d04d8f2"
+      ],
+      "names": [
+        "zelda-first-start-watch-wait-30s.v8.txt"
+      ],
+      "windows": {
+        "village": {
+          "kind": "stamped",
+          "anchor_line": 168,
+          "from_s": 57,
+          "to_s": 72,
+          "stat": "mean",
+          "note": "the 5 s lines stamped door+57..72 s; reproduces his last-three-lines figures for run1637/1638 (22.57, 22.43) v8: lines after the door section moved by +51 (v6 117 = v8 168)."
+        },
+        "village_late": {
+          "kind": "stamped",
+          "anchor_line": 168,
+          "from_s": 62,
+          "to_s": 77,
+          "stat": "mean",
+          "note": "PROPOSED, not Vampinity's: the same village 5 s later, so the first line no longer overlaps the arrival scene's stall (it spilled into runCC2's first line). Halves our cold-start spread (1.24 -> 0.67 fps); his runs still reach it (logs end ~door+76). v8: lines after the door section moved by +51 (v6 117 = v8 168)."
+        }
+      }
+    },
+    "new-game-v9": {
+      "sha1": [
+        "d6e6b8d4cf42"
+      ],
+      "names": [
+        "zelda-first-start-watch-wait-30s.v9.txt"
+      ],
+      "windows": {
+        "village": {
+          "kind": "stamped",
+          "anchor_line": 118,
+          "from_s": 57,
+          "to_s": 72,
+          "stat": "mean",
+          "note": "the 5 s lines stamped door+57..72 s; reproduces his last-three-lines figures for run1637/1638 (22.57, 22.43) v9: v6 117 = v9 118."
+        },
+        "village_late": {
+          "kind": "stamped",
+          "anchor_line": 118,
+          "from_s": 62,
+          "to_s": 77,
+          "stat": "mean",
+          "note": "PROPOSED, not Vampinity's: the same village 5 s later, so the first line no longer overlaps the arrival scene's stall (it spilled into runCC2's first line). Halves our cold-start spread (1.24 -> 0.67 fps); his runs still reach it (logs end ~door+76). v9: v6 117 = v9 118."
+        }
+      }
+    },
+    "kokiri-four-stops-v2": {
+      "sha1": [
+        "d40196a1a1d0"
+      ],
+      "names": [
+        "kokiri-four-stops.v2.txt"
+      ],
+      "windows": {
+        "stop_A": {
+          "kind": "between",
+          "start_line": 83,
+          "end_line": 84,
+          "stat": "mean"
+        },
+        "stop_B": {
+          "kind": "between",
+          "start_line": 145,
+          "end_line": 146,
+          "stat": "mean"
+        },
+        "stop_C": {
+          "kind": "between",
+          "start_line": 207,
+          "end_line": 215,
+          "stat": "mean",
+          "note": "v2: L2 re-centres at 10-60 s inside the stand"
+        },
+        "stop_D": {
+          "kind": "between",
+          "start_line": 324,
+          "end_line": 325,
+          "stat": "mean"
+        }
+      }
     }
   }
 }

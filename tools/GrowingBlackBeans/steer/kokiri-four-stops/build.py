@@ -39,8 +39,13 @@ LEGS = {
 STOPS = {
     "A": dict(s=(843.4, 869.1), cam=338, fp=(43.0, 103.0), walk=14, what="out of the house, hopped down, facing down the main path"),
     "B": dict(s=(806.4, 822.7), cam=286, fp=(119.0, 179.0), walk=13, what="the back of the forest, facing the Kokiri blocking the path"),
-    "C": dict(s=(841.0, 804.2), cam=160, fp=(204.0, 280.0), walk=17, what="after the ivy wall, at the large rock, looking out over the cliff"),
-    "D": dict(s=(858.1, 857.8), cam=258, fp=(311.0, 379.0), walk=23, what="the shop sign, facing it"),
+    # v2 (17 Nov, after runKC1-KC5): C started on KW2's view (81-89) but drifted during the stand (end 63-83; the
+    # camera pans by itself on the raised ground by the cliff edge), so C re-centres the camera every 10 s. D only
+    # just passed the search (60-69 after 7-13 looks), so D searches in 7.5 deg steps and needs 75.
+    "C": dict(s=(841.0, 804.2), cam=160, fp=(204.0, 280.0), walk=17, what="after the ivy wall, at the large rock, looking out over the cliff",
+              recentre=10),
+    "D": dict(s=(858.1, 857.8), cam=258, fp=(311.0, 379.0), walk=23, what="the shop sign, facing it",
+              search_step=7.5, search_min=75, search_taps=48),
 }
 APPROACH = 9.0       # per mille of width: P is the last walked point at least this far before S
 CUT = 2.0            # per mille of width: how far the line P->S may leave the walked path
@@ -146,6 +151,7 @@ def stick(turn):
 def script(video):
     lines = [
         "# The Kokiri benchmark route: house, then stops A, B, C and D, 62 s each, by minimap steering.",
+        "# v2 (17 Nov 2026): stop C re-centres the camera every 10 s in its stand; stop D searches in 7.5 deg steps to 75.",
         "# Made by gbb-tools/steer/kokiri-four-stops/build.py from runKW2 (14 Nov 2026, t134-gbb9): the STEER points",
         "# are Vampinity's steer-route.py on the KW2 capture, the stands and facings are KW2's. Read build.py.",
         "# Start: your house save (the 11 Nov one, top of the load list), EDEN_TEST_DISCARD_SAVE=1 so it stays on top.",
@@ -188,17 +194,21 @@ def script(video):
         # reach radius, so Link's heading on arrival is not set). Small turns the same way as the first,
         # each followed by L2, until the view looks like KW2's (SEARCH_MIN); then the rest are dropped.
         # A, B and C matched at 77-87 in KS1, so they pass on the first look.
-        step = SEARCH_STEP if turn >= 0 else -SEARCH_STEP
+        size, need, taps = st.get("search_step", SEARCH_STEP), st.get("search_min", SEARCH_MIN), st.get("search_taps", SEARCH_TAPS)
+        step = size if turn >= 0 else -size
         x, y = stick(step)
-        lines.append(f"# then turn {step:+d} deg at a time until the view is KW2's (score {SEARCH_MIN}), at most "
-                     f"{SEARCH_TAPS} turns")
-        for k in range(SEARCH_TAPS):
+        lines.append(f"# then turn {step:+g} deg at a time until the view is KW2's (score {need}), at most "
+                     f"{taps} turns")
+        for k in range(taps):
             t = settled + 0.7 + k * SEARCH_EVERY
             lines.append(f"{t:.1f} LSTICK {x} {y} {SEARCH_MS}")
             lines.append(f"{t + 0.6:.1f} L2 150")
-        lines.append(f"{settled} MAYBE {settled + 1 + SEARCH_TAPS * SEARCH_EVERY:.0f} {look(g0, SEARCH_MIN)}")
+        lines.append(f"{settled} MAYBE {settled + 1 + taps * SEARCH_EVERY:.0f} {look(g0, need)}")
         lines.append(f"# fingerprints of KW2's view at video {st['fp'][0]:.0f} s and {st['fp'][1]:.0f} s; between them the stand")
         lines.append(f"1.0 MAYBE 1 {look(g0)}")
+        if st.get("recentre"):
+            lines.append(f"# v2: L2 every {st['recentre']} s re-centres the camera behind Link, who doesn't move")
+            lines += [f"{t} L2 150" for t in range(st["recentre"], HOLD, st["recentre"])]
         lines.append(f"{HOLD} MAYBE 1 {look(g1)}")
     lines += ["", "5 END", ""]
     return "\n".join(lines)
@@ -240,7 +250,7 @@ if __name__ == "__main__":
     for name, before, p, s, heading, turn in plan():
         print(f"{name}: {len(before)} walked points, P {fmt(p)} ({dist(p, s):.1f} per mille), heading {heading:.0f}, "
               f"KW2 facing {STOPS[name]['cam']}, turn {turn:+.0f}" + (f" -> LSTICK {stick(turn)}" if abs(turn) >= TURN_MIN else " (none)"))
-    out = os.path.join(HERE, "kokiri-four-stops.txt")
+    out = os.path.join(HERE, "kokiri-four-stops.v2.txt")
     with open(out, "w") as fh:
         fh.write(script(video))
     print("wrote", out)

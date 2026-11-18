@@ -41,7 +41,7 @@ GAME_ID = "0400486024DEC000"
 # Ours, on top of his: a save-profile id is 32 hex under user/save/<title>/, and the launcher prints the
 # profile's name, which can be an account name.
 EXTRA = [
-    ("save_profile", re.compile(r"(user/save/\d{16}/)[0-9A-Fa-f]{32}"), r"\1<profile>"),   # the console writes it in upper case
+    ("save_profile", re.compile(r"(user/save/[0-9A-Fa-f]{16}/)[0-9A-Fa-f]{32}"), r"\1<profile>"),   # the console writes it in upper case
     ("profile_name", re.compile(r"(launch: Profile ).*"), r"\1<redacted>"),
     ("save_name", re.compile(r"(a plain copy of )(?!<save>)[^)\n]+"), r"\1<save>"),        # his route's comment names the save
 ]
@@ -52,7 +52,7 @@ FORBIDDEN = [
     ("LAN address", re.compile(r"\b(?:192\.168|10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b")),
     ("MAC address", re.compile(r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b")),
     ("pad user line", re.compile(r"EDEN_PAD_(?:OPEN|USERS)[^\n]*?(?:user|foreground|initial)=\d{4,}")),
-    ("save profile id", re.compile(r"user/save/\d{16}/[0-9A-Fa-f]{32}")),
+    ("save profile id", re.compile(r"user/save/[0-9A-Fa-f]{16}/[0-9A-Fa-f]{32}")),
     # A private repository named as owner/name-private. Particular names (and anything else private) go in
     # the packer's own ~/.eglantine-private, one per line, never in this file: see private_words().
     ("private repo", re.compile(r"\b[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+-private\b")),
@@ -85,8 +85,57 @@ def load_his_redaction(repo: pathlib.Path):
     return mod
 
 
-def redact(text: str, ghb, counts: dict) -> str:
-    text = ghb.redact(text, counts)
+PAD_LINE = re.compile(r"^.*EDEN_PAD_(?:OPEN|USERS)\b.*\n?", re.M)
+# The console user number, as his base scrub learns it (4+ digits after user=/foreground=/initial= on an EDEN_PAD line).
+PAD_NUMBER = re.compile(r"EDEN_PAD_\w+\b[^\n]*?\b(?:user|foreground|initial)=(\d{4,})")
+# Logs whose pad lines go whole. Never script.txt (its line numbers are the route's marks) or the small files.
+DROP_PAD_IN = ("eden_log.txt", "stderr.log", "heap.log")
+
+
+def pad_numbers(texts) -> frozenset:
+    """The console user numbers in any of the run's raw files, learned BEFORE anything is scrubbed, so every packed
+    file can lose them, also files with no pad line of their own (Vampinity's #15 review, 18 Nov)."""
+    return frozenset(n for text in texts for n in PAD_NUMBER.findall(text))
+
+
+def number_forms(number: str) -> set[str]:
+    """A user number as it can appear: decimal, hex, and hex padded to 8 (a 0x in front is matched separately)."""
+    value = int(number)
+    return {number, f"{value:x}", f"{value:08x}"}
+
+
+def profile_ids(run: pathlib.Path, raw_log: str) -> set[str]:
+    """Vampinity's rule 1 (D2, 17 Nov): the profile ids by value. Read from the run's own config.json (the values
+    under "profiles") and from any save path in the log, so they can be replaced on any line, in either case."""
+    ids = set()
+    for p in (run / "config.json", run / "logs" / "config.json"):
+        if p.is_file():
+            try:
+                for v in (json.loads(p.read_text(errors="replace")).get("profiles") or {}).values():
+                    if isinstance(v, str) and re.fullmatch(r"[0-9A-Fa-f]{32}", v):
+                        ids.add(v.lower())
+            except (ValueError, AttributeError):
+                pass
+    ids |= {m.lower() for m in re.findall(r"user/save/[0-9A-Fa-f]{16}/([0-9A-Fa-f]{32})", raw_log)}
+    return ids
+
+
+def redact(text: str, ghb, counts: dict, ids: frozenset = frozenset(), numbers: frozenset = frozenset(),
+           drop_pad: bool = False) -> str:
+    for i in ids:
+        text, n = re.subn(re.escape(i), "<profile>", text, flags=re.I)
+        if n:
+            counts["profile_by_value"] = counts.get("profile_by_value", 0) + n
+    text = ghb.redact(text, counts)                       # his scrub first: it learns the number from the pad lines
+    for number in numbers:                                # then the run's numbers, learned from every raw file
+        forms = "|".join(sorted(map(re.escape, number_forms(number)), key=len, reverse=True))
+        text, n = re.subn(r"(?<![0-9A-Za-z])(?:0x)?(?:" + forms + r")(?![0-9A-Za-z])", "REDACTED", text, flags=re.I)
+        if n:
+            counts["console_user_by_value"] = counts.get("console_user_by_value", 0) + n
+    if drop_pad:                                          # our rule, last: the pad lines go whole
+        text, n = PAD_LINE.subn("", text)
+        if n:
+            counts["pad_line"] = counts.get("pad_line", 0) + n
     for name, pattern, repl in EXTRA:
         text, n = pattern.subn(repl, text)
         if n:
@@ -94,7 +143,7 @@ def redact(text: str, ghb, counts: dict) -> str:
     return text
 
 
-def redact_config(text: str, ghb, counts: dict) -> str:
+def redact_config(text: str, ghb, counts: dict, ids: frozenset = frozenset(), numbers: frozenset = frozenset()) -> str:
     """The app's config.json, the way his packs carry it: the profile ids under "profiles" become
     <profile>; every game other than this one becomes <other title N> (a key under "games") or
     <other title> (in "library"); then the text rules run over what is left."""
@@ -133,7 +182,7 @@ def redact_config(text: str, ghb, counts: dict) -> str:
                     if isinstance(item, str) and not ours(item):
                         value[i] = "<other title>"
                         bump("config_other_title")
-    return redact(json.dumps(data, indent=1, ensure_ascii=False) + "\n", ghb, counts)
+    return redact(json.dumps(data, indent=1, ensure_ascii=False) + "\n", ghb, counts, ids, numbers)
 
 
 # A profile id is 32 hex; in config.json one may sit under any key, so any bare 32-hex value is refused.
@@ -191,18 +240,19 @@ def audit(target: pathlib.Path, secrets: set[str]) -> list[str]:
             if pattern.search(text):
                 problems.append(f"{path.name}: {name}")
         for word in secrets:
-            if word and len(word) >= 6 and re.search(r"(?<![A-Za-z0-9])" + re.escape(word) + r"(?![A-Za-z0-9])", text, re.I):
+            if word and len(word) >= 3 and re.search(r"(?<![A-Za-z0-9])(?:0x)?" + re.escape(word) + r"(?![A-Za-z0-9])", text, re.I):
                 problems.append(f"{path.name}: a private word")
     return sorted(set(problems))
 
 
-def private_words(raw: str) -> set[str]:
-    secrets = set(re.findall(r"EDEN_PAD_\w+ .*?(?:user|foreground|initial)=(\d{6,})", raw))
-    for s in list(secrets):
-        secrets |= {hex(int(s))[2:], f"{int(s):08x}"}
+def private_words(raw: str, numbers: frozenset = frozenset()) -> set[str]:
+    secrets = set()
+    for s in set(numbers) | pad_numbers([raw]):           # 4+ digits, as the scrub learns them; decimal and hex
+        secrets |= number_forms(s)
     path = os.path.expanduser("~/.eglantine-private")
     if os.path.exists(path):
-        secrets |= {l.strip() for l in open(path) if l.strip() and not l.startswith("#") and len(l.strip()) >= 6}
+        # checked down to 3 characters, as the base tool replaces them (Vampinity, D2, 17 Nov)
+        secrets |= {l.strip() for l in open(path) if l.strip() and not l.startswith("#") and len(l.strip()) >= 3}
     return secrets
 
 
@@ -241,25 +291,35 @@ def pack(run_dir, out, author="GrowingBlackBeans", run_id=None, date=None, alpha
         sys.exit(f"{target} exists")
 
     counts: dict = {}
-    secrets = private_words(log.read_text(errors="replace"))
+    raw_log = log.read_text(errors="replace")
+    crashes = sorted(list(rf.path.glob("crash-*")) + list((rf.path / "logs").glob("crash-*") if (rf.path / "logs").is_dir() else []))
+    sources = {}
+    for name, packed_name, do_gzip in FILES:
+        source = rf.path / name
+        if not source.is_file() and (rf.path / "logs" / name).is_file():
+            source = rf.path / "logs" / name
+        if source.is_file():
+            sources[name] = source.read_text(errors="replace")
+    crash_texts = {c.name: c.read_text(errors="replace") for c in crashes if c.is_file()}
+    numbers = pad_numbers([raw_log, *sources.values(), *crash_texts.values()])
+    secrets = private_words(raw_log, numbers)
+    ids = frozenset(profile_ids(run, raw_log))
+    secrets |= set(ids)
     target.mkdir(parents=True)
     try:
         for name, packed_name, do_gzip in FILES:
-            source = rf.path / name
-            if not source.is_file() and (rf.path / "logs" / name).is_file():
-                source = rf.path / "logs" / name
-            if not source.is_file():
+            if name not in sources:
                 continue
-            raw = source.read_text(errors="replace")
-            text = redact_config(raw, ghb, counts) if name == "config.json" else redact(raw, ghb, counts)
+            raw = sources[name]
+            text = (redact_config(raw, ghb, counts, ids, numbers) if name == "config.json"
+                    else redact(raw, ghb, counts, ids, numbers, drop_pad=name in DROP_PAD_IN))
             if do_gzip:
                 with gzip.open(target / packed_name, "wt", compresslevel=9) as handle:
                     handle.write(text)
             else:
                 (target / packed_name).write_text(text)
-        for crash in sorted(list(rf.path.glob("crash-*")) + list((rf.path / "logs").glob("crash-*") if (rf.path / "logs").is_dir() else [])):
-            if crash.is_file():
-                (target / crash.name).write_text(redact(crash.read_text(errors="replace"), ghb, counts))
+        for crash_name, raw in crash_texts.items():
+            (target / crash_name).write_text(redact(raw, ghb, counts, ids, numbers, drop_pad=True))
 
         info = {
             "format": 1,
@@ -270,7 +330,7 @@ def pack(run_dir, out, author="GrowingBlackBeans", run_id=None, date=None, alpha
             "time": time,
             "game": GAME_ID,
             "declared": declared,
-            "derived": json.loads(redact(json.dumps(row), ghb, counts)),
+            "derived": json.loads(redact(json.dumps(row), ghb, counts, ids, numbers)),
             "redacted": counts,
         }
         (target / "run.json").write_text(json.dumps(info, indent=1, ensure_ascii=False) + "\n")

@@ -1,0 +1,16 @@
+{
+  "run_id": "runKC4",
+  "control": true,
+  "intended_cache": "cold",
+  "route": "kokiri-four-stops.txt",
+  "route_sha1_12": "89c854dc2512",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt, one line changed (the script)",
+  "intent": "Cold control for the Kokiri scope on the alpha: four starts for the stop A-D noise floors. Our Kokiri depth was all measured on t134-gbb builds, never on the control.",
+  "written": "2026-11-17"
+}

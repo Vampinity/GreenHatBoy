@@ -1,0 +1,16 @@
+{
+  "run_id": "runKV3",
+  "control": true,
+  "intended_cache": "cold",
+  "route": "kokiri-four-stops.v2.txt",
+  "route_sha1_12": "d40196a1a1d0",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt, one line changed (the script)",
+  "intent": "Kokiri v2 cold control: stop C re-centres every 10 s, stop D searches finer. Do C and D now hold one view (ring words under 3%) while A and B stay as KC1-KC5?",
+  "written": "2026-11-17"
+}

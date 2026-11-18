@@ -1,0 +1,17 @@
+{
+  "run_id": "runFC5",
+  "control": true,
+  "intended_cache": "cold",
+  "route": "field-to-past-field.txt",
+  "route_sha1_12": "c4fada64155f",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt, one line changed (the script)",
+  "intent": "Field cold control, the fourth eligible start (runFC1 was quit before END). Also shows whether the RADV out-of-memory count keeps rising across cold starts (FC1-FC4: 6, 9, 10, >=64).",
+  "written": "2026-11-17",
+  "save": "Vampinity's field save (his own save of 13 Nov), shared 17 Nov; newest entry"
+}
