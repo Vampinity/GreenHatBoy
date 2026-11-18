@@ -181,3 +181,16 @@ The four cold control arms are each one build, one env hash, one translation id 
 file's numbers are unchanged, and it gains `arm` per key. Leave-one-out over the 16 controls now reads PROVISIONAL
 (leaning PASS) on all 16, because one start against three is short on both sides. Tests: 40 gate (17 new, 6 of them
 on the CLI's exit code), 3 skipped-anchor, 95 in all.
+
+## Review answer: PR #18, Vampinity's second review (18 Nov, gate 4)
+
+31. **INVALID needs a normal close.** A start that stops before the script's END is INVALID (rerun) only when the
+    app closed normally (`end_kind` app_closed), as KV3, LV5 and FC1 did. A log that just stops, with no crash file,
+    is HUNG and counts against the candidate like a crash: on the field route everything after the WAIT at line 92
+    is MAYBEs, so a freeze in that load met every required leg and was being left out. Test added
+    (stopped_early + log_cut blocks).
+32. The `__pycache__` files are out of the repo, and `.gitignore` keeps them out.
+33. Doc: a field candidate at 0 MiB on all four is worse (likely), so EXPLAIN, not "can't be shown worse".
+
+All 21 cold starts closed normally, so none changes class: KV3, LV5 and FC1 stay INVALID, LV1 stays LOST. 96 tests.
+

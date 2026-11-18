@@ -35,10 +35,11 @@ Stages and what each can do today (18 Nov, the alpha):
   3 fast     each route window's fps, and the whole run's median fps. Worse needs an explanation.
   4 smooth   hitch ms per minute (NOT MEASURED on the alpha: no hitch trace) and the worst frame.
 
-Each start is first sorted (point 5): CRASHED (a crash, or the log's out-of-device-memory) or LOST (a WAIT or STEER
-timed out: the route did not get where it was going) count against the candidate; INVALID (the app was quit before
-the script's END, or a window's anchor line was skipped) says nothing about the candidate, so the start is left out
-and should be rerun.
+Each start is first sorted (point 5): CRASHED (a crash, or the log's out-of-device-memory), LOST (a WAIT or STEER
+timed out: the route did not get where it was going) or HUNG (stopped before the script's END without a normal close:
+the log just ends, a freeze) count against the candidate; INVALID (the app was closed normally before the script's
+END, or a window's anchor line was skipped) says nothing about the candidate, so the start is left out and should be
+rerun.
 
 Each arm must be one thing (waveydude's review of PR #18, 18 Nov). The starts pooled on one side of a key must share
 the build (the boot trace's version and compile time), the effective settings (the env hash, harness lines left out),
@@ -153,7 +154,7 @@ def capped(row: dict, name: str) -> bool:
 
 
 def start_status(row: dict) -> tuple[str, str]:
-    """ok / CRASHED / LOST (both count against the candidate) / INVALID (says nothing about it: rerun)."""
+    """ok / CRASHED / LOST / HUNG (all count against the candidate) / INVALID (says nothing about it: rerun)."""
     if row.get("survival_result") == "crashed" or row.get("crash_class") not in (None, "none"):
         return "CRASHED", f"{row.get('survival_result')}, crash class {row.get('crash_class')}"
     if row.get("route_completed") is False:
@@ -161,7 +162,13 @@ def start_status(row: dict) -> tuple[str, str]:
     if row.get("anchors_skipped"):
         return "INVALID", "window anchor skipped (" + ", ".join(row["anchors_skipped"]) + "): rerun"
     if row.get("survival_result") != "completed":
-        return "INVALID", f"quit before the script's END ({row.get('survival_result')}): rerun"
+        # Only a normal close before END is a quit that says nothing (KV3, LV5, FC1). A log that just stops, with no
+        # crash file, is a freeze: on the field route everything after the WAIT at line 92 is MAYBEs, so a hang in
+        # that load meets every required leg (Vampinity's second review of PR #18).
+        if row.get("end_kind") != "app_closed":
+            return "HUNG", (f"stopped before the script's END with no normal close ({row.get('survival_result')}, "
+                            f"end {row.get('end_kind')}): a freeze")
+        return "INVALID", f"quit before the script's END ({row.get('survival_result')}, closed normally): rerun"
     return "ok", ""
 
 
@@ -296,7 +303,7 @@ def check(rows: list[dict], floors: dict) -> list[dict]:
         # Stage 1, survival first. A crash or a lost route counts against the candidate; a start quit before END, or
         # with a window's anchor skipped, says nothing about it and is left out (rerun it).
         status = {r.get("run_id"): start_status(r) for r in rs}
-        failed = [f"{k} {v[0]}" for k, v in status.items() if v[0] in ("CRASHED", "LOST")]
+        failed = [f"{k} {v[0]}" for k, v in status.items() if v[0] in ("CRASHED", "LOST", "HUNG")]
         invalid = [k for k, v in status.items() if v[0] == "INVALID"]
         alive = [r for r in rs if status[r.get("run_id")][0] == "ok"]
         rep["stages"]["stable"].append({"number": "survival", "verdict": "ok" if not failed else "FAILED",

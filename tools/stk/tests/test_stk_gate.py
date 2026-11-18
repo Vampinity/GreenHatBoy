@@ -15,7 +15,7 @@ import stk_gate  # noqa: E402
 def row(run, fps, low=300, route="r-v1", cache="cold", survived=True, flashes=None, worst=30000.0, **kw):
     r = {"run_id": run, "route_key": route, "firmware": "13.60", "cache_class": cache, "control_eligible": True,
          "survival_result": "completed" if survived else "stopped_early", "crash_class": "none",
-         "route_completed": True, "win_lap_fps": fps, "fps_median": fps + 4, "largest_free_block_min_mib": low,
+         "route_completed": True, "end_kind": "app_closed", "win_lap_fps": fps, "fps_median": fps + 4, "largest_free_block_min_mib": low,
          "largest_free_block_driver_min_mib": low + 40, "radv_oom_events": 0, "flashes_per_min": flashes,
          "hitch_ms_per_min": None, "worst_frame_ms": worst, "shader_store": "prep_x", "store_pipelines": 0,
          "build_key": "01.219.028 (Nov 14 2026 23:24:15)", "env_hash": "57c08732c8ee", "translation_id": "t1",
@@ -92,6 +92,16 @@ class Verdicts(unittest.TestCase):
         self.assertEqual(rep["valid_starts"], 3)
         self.assertIn("provisional", rep)
         self.assertTrue(any(n.startswith("INVALID x2") for n in rep["notes"]))
+
+    def test_a_freeze_before_end_blocks(self):
+        """Vampinity's second review: every required leg met, then the log stops in the load (MAYBEs only), with no
+        crash file and no normal close. That is a freeze, not a quit, so it counts against the candidate."""
+        hung = row("x2", 8.7, survived=False, end_kind="log_cut")
+        rep = self.verdict([row("x1", 8.7), hung, row("x3", 8.8), row("x4", 8.6)])
+        self.assertEqual(rep["verdict"], "BLOCK")
+        surv = rep["stages"]["stable"][0]
+        self.assertIn("x2 HUNG", surv["detail"])
+        self.assertEqual(stk_gate.start_status(hung)[0], "HUNG")
 
     def test_a_skipped_anchor_is_invalid(self):
         """Review point 4: a window placed by a skipped MAYBE is not scored, and the start is rerun."""
