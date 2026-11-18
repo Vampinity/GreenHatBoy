@@ -1,6 +1,11 @@
 """Tests for stk_gate.py on made-up rows: the key, the floor, each stage, and the verdict order."""
+import contextlib
+import io
+import json
 import sys
+import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -12,7 +17,9 @@ def row(run, fps, low=300, route="r-v1", cache="cold", survived=True, flashes=No
          "survival_result": "completed" if survived else "stopped_early", "crash_class": "none",
          "route_completed": True, "win_lap_fps": fps, "fps_median": fps + 4, "largest_free_block_min_mib": low,
          "largest_free_block_driver_min_mib": low + 40, "radv_oom_events": 0, "flashes_per_min": flashes,
-         "hitch_ms_per_min": None, "worst_frame_ms": worst, "shader_store": "prep_x", "store_pipelines": 0}
+         "hitch_ms_per_min": None, "worst_frame_ms": worst, "shader_store": "prep_x", "store_pipelines": 0,
+         "build_key": "01.219.028 (Nov 14 2026 23:24:15)", "env_hash": "57c08732c8ee", "translation_id": "t1",
+         "script_sha1": "s1"}
     r.update(kw)
     return r
 
@@ -80,7 +87,8 @@ class Verdicts(unittest.TestCase):
     def test_quit_before_end_is_invalid_not_block(self):
         """Review point 5 (KV3, LV5, FC1): every leg met, the app closed normally, only END not reached."""
         rep = self.verdict([row("x1", 8.7), row("x2", 8.7, survived=False), row("x3", 8.8), row("x4", 8.6)])
-        self.assertEqual(rep["verdict"], "PASS")
+        self.assertEqual(rep["verdict"], "PROVISIONAL")      # 3 valid: short of 4, not blocked
+        self.assertEqual(rep["leaning"], "PASS")
         self.assertEqual(rep["valid_starts"], 3)
         self.assertIn("provisional", rep)
         self.assertTrue(any(n.startswith("INVALID x2") for n in rep["notes"]))
@@ -92,7 +100,8 @@ class Verdicts(unittest.TestCase):
 
     def test_a_two_start_candidate_is_provisional_and_cannot_be_real(self):
         rep = self.verdict([row("x1", 7.0), row("x2", 7.1)])
-        self.assertIn("provisional", rep)
+        self.assertEqual(rep["verdict"], "PROVISIONAL")
+        self.assertEqual(rep["leaning"], "EXPLAIN")
         lap = [x for x in rep["stages"]["fast"] if x["number"] == "win_lap_fps"][0]
         self.assertGreaterEqual(lap["p"], 0.05)       # 4 v 2: the smallest p is 2/15
         self.assertEqual(lap["verdict"], "worse (likely)")
@@ -104,7 +113,8 @@ class Verdicts(unittest.TestCase):
     def test_one_slightly_worse_start_is_a_watch_not_a_verdict(self):
         """One start can't show anything (smallest p with 4 and 1 is 0.4): beyond the noise is only 'watch'."""
         rep = self.verdict([row("x1", 8.2)])
-        self.assertEqual(rep["verdict"], "PASS")
+        self.assertEqual(rep["verdict"], "PROVISIONAL")
+        self.assertEqual(rep["leaning"], "PASS")
         self.assertTrue(any(n.startswith("watch") and "win_lap_fps" in n for n in rep["notes"]))
 
     def test_fewer_than_four_is_provisional(self):
@@ -161,6 +171,7 @@ class ReviewPoints(unittest.TestCase):
         self.assertEqual(oom["verdict"], "unusable")
         self.assertEqual(rep["verdict"], "PASS")
         self.assertTrue(any(n.startswith("unusable") for n in rep["notes"]))
+        self.assertIn("radv_oom_events (unusable)", rep["not_cleared"])
 
     def test_point3_a_capped_candidate_counts_as_worse(self):
         fl = self.floors([300] * 4, oom=[9, 10, 11, 10])
@@ -169,6 +180,109 @@ class ReviewPoints(unittest.TestCase):
         self.assertEqual(oom["verdict"], "worse (real)")
         self.assertEqual(oom["capped"], 4)
         self.assertEqual(rep["verdict"], "BLOCK")
+
+
+class IncompleteAndMixedArms(unittest.TestCase):
+    """waveydude's review of PR #18 at 281d22b (18 Nov): three cases that printed PASS and exited 0."""
+
+    def setUp(self):
+        self.floors = stk_gate.build_floors(CONTROL)
+
+    def test_case1_one_start_is_provisional_not_pass(self):
+        rep = stk_gate.check([row("x1", 8.7)], self.floors)[0]
+        self.assertEqual(rep["verdict"], "PROVISIONAL")
+        self.assertIn("1 valid candidate start", rep["provisional"])
+
+    def test_case2_missing_memory_readings_are_provisional(self):
+        gone = dict(largest_free_block_min_mib=None, largest_free_block_driver_min_mib=None, radv_oom_events=None)
+        rep = stk_gate.check([row(f"x{i}", 8.7, **gone) for i in range(4)], self.floors)[0]
+        self.assertEqual(rep["verdict"], "PROVISIONAL")
+        for name in gone:
+            self.assertIn(f"{name} read on 0 of 4", rep["provisional"])
+
+    def test_case2_one_missing_reading_of_four_is_short_too(self):
+        cands = [row(f"x{i}", 8.7) for i in range(3)] + [row("x3", 8.7, largest_free_block_min_mib=None)]
+        rep = stk_gate.check(cands, self.floors)[0]
+        self.assertEqual(rep["verdict"], "PROVISIONAL")
+        self.assertIn("largest_free_block_min_mib read on 3 of 4", rep["provisional"])
+
+    def test_case3_two_builds_in_one_arm_are_mixed(self):
+        cands = [row("x1", 8.7), row("x2", 8.7), row("y1", 8.7, build_key="other"), row("y2", 8.7, build_key="other")]
+        rep = stk_gate.check(cands, self.floors)[0]
+        self.assertEqual(rep["verdict"], "MIXED")
+        self.assertIn("build differs", rep["why"])
+        self.assertIn("other (y1, y2)", rep["why"])
+
+    def test_case3_two_settings_in_one_arm_are_mixed(self):
+        cands = [row(f"x{i}", 8.7) for i in range(3)] + [row("x3", 8.7, env_hash="ffffffffffff")]
+        rep = stk_gate.check(cands, self.floors)[0]
+        self.assertEqual(rep["verdict"], "MIXED")
+        self.assertIn("settings (env hash) differs", rep["why"])
+
+    def test_control_and_candidate_may_differ(self):
+        rep = stk_gate.check([row(f"x{i}", 8.7, build_key="cand", env_hash="e2") for i in range(4)], self.floors)[0]
+        self.assertEqual(rep["verdict"], "PASS")
+
+    def test_a_mixed_control_arm_is_refused(self):
+        with self.assertRaises(stk_gate.MixedArm):
+            stk_gate.build_floors(CONTROL[:3] + [row("c4", 8.8, build_key="other")])
+
+    def test_the_floor_records_its_arm(self):
+        self.assertEqual(self.floors["keys"]["r-v1|13.60|cold"]["arm"]["env_hash"], "57c08732c8ee")
+
+    def test_an_unidentified_build_is_provisional(self):
+        rep = stk_gate.check([row(f"x{i}", 8.7, build_key=None) for i in range(4)], self.floors)[0]
+        self.assertEqual(rep["verdict"], "PROVISIONAL")
+        self.assertIn("build not identified", rep["provisional"])
+
+    def test_a_crash_blocks_even_when_short(self):
+        rep = stk_gate.check([row("x1", 8.7, survival_result="crashed", crash_class="oom")], self.floors)[0]
+        self.assertEqual(rep["verdict"], "BLOCK")
+
+    def test_pass_names_what_it_could_not_clear(self):
+        rep = stk_gate.check([row(f"x{i}", 8.7) for i in range(4)], self.floors)[0]
+        self.assertEqual(rep["verdict"], "PASS")
+        self.assertIn("flashes_per_min (not measured)", rep["not_cleared"])
+        self.assertIn("hitch_ms_per_min (not measured)", rep["not_cleared"])
+
+
+class ExitCodes(unittest.TestCase):
+    """The CLI's exit code: 0 only for PASS. waveydude: anything reading just the exit code must not see a short arm
+    as cleared."""
+
+    def run_check(self, cands):
+        by_name = {r["run_id"]: r for r in cands}
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            json.dump(stk_gate.build_floors(CONTROL), fh)
+        import stk_score
+        with mock.patch.object(stk_score, "score_run", lambda path, env=None: by_name[path]), \
+                contextlib.redirect_stdout(io.StringIO()):
+            return stk_gate.main(["check", *by_name, "--floors", fh.name])
+
+    def test_pass_exits_0(self):
+        self.assertEqual(self.run_check([row(f"x{i}", 8.7) for i in range(4)]), 0)
+
+    def test_provisional_exits_2(self):
+        self.assertEqual(self.run_check([row("x1", 8.7)]), 2)
+
+    def test_explain_exits_1(self):
+        self.assertEqual(self.run_check([row(f"x{i}", 7.6 + i / 20) for i in range(4)]), 1)
+
+    def test_mixed_exits_3(self):
+        self.assertEqual(self.run_check([row("x1", 8.7), row("x2", 8.7), row("y1", 8.7, build_key="o"),
+                                         row("y2", 8.7, build_key="o")]), 3)
+
+    def test_block_exits_4_and_wins_over_another_key(self):
+        cands = [row(f"x{i}", 8.7, low=100) for i in range(4)] + [row("z1", 8.7, route="other")]
+        self.assertEqual(self.run_check(cands), 4)
+
+    def test_floors_refuses_a_mixed_control(self):
+        rows = {r["run_id"]: r for r in CONTROL[:3] + [row("c4", 8.8, build_key="other")]}
+        import stk_score
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(stk_score, "score_run", lambda path, env=None: rows[path]), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(stk_gate.main(["floors", *rows, "-o", f"{d}/f.json"]), 3)
 
 
 class SkippedAnchor(unittest.TestCase):

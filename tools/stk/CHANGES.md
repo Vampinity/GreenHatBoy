@@ -158,3 +158,26 @@ Scorer:
 
 Rescored, all 21 cold starts of 17-18 Nov keep every window value; the floor file's numbers are unchanged except
 the field's out-of-memory count, now `usable: false`. Tests: 23 gate, 3 skipped-anchor, 78 in all.
+
+## Review answer: PR #18, waveydude (18 Nov, gate 3)
+
+waveydude's review of the gate at 281d22b: three cases printed PASS and exited 0 (one start; four starts with all
+three memory readings missing; two builds pooled as one candidate).
+
+27. **PROVISIONAL is a verdict, with its own exit code (2).** It covers fewer than 4 valid candidate starts, a floor
+    of fewer than 4, an unidentified build, and a stable number the floor gates on that was read on fewer than 4
+    candidate starts. The report still says what the starts so far lean to. A crash or a lost route blocks, however
+    short the arm.
+28. **Each side must be one thing.** The starts pooled on one side of a key must share the build (version and
+    compile time), the settings (the env hash, harness lines left out), the translation id and the script. The
+    control and the candidate may differ. A mixed candidate arm is MIXED (exit 3), with the runs behind each value
+    named. `floors` refuses a mixed control arm (exit 3), and each floor key now records its arm.
+29. **PASS says what it couldn't clear.** Numbers the floor has no reading of (flashes and hitches on the alpha) or
+    can't use (a control at a counter's cap) are listed as NOT CLEARED under the verdict, and in `not_cleared`.
+30. **Exit codes:** PASS 0, EXPLAIN 1, PROVISIONAL 2, MIXED / INVALID / NO KEY / NO FLOOR 3, BLOCK 4. With several
+    keys, the highest wins. Anything but 0 is not cleared.
+
+The four cold control arms are each one build, one env hash, one translation id and one script; the rebuilt floor
+file's numbers are unchanged, and it gains `arm` per key. Leave-one-out over the 16 controls now reads PROVISIONAL
+(leaning PASS) on all 16, because one start against three is short on both sides. Tests: 40 gate (17 new, 6 of them
+on the CLI's exit code), 3 skipped-anchor, 95 in all.

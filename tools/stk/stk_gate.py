@@ -40,10 +40,26 @@ timed out: the route did not get where it was going) count against the candidate
 the script's END, or a window's anchor line was skipped) says nothing about the candidate, so the start is left out
 and should be rerun.
 
-Verdict: BLOCK (a start crashed or lost its route, or a stable or picture number is really worse); EXPLAIN (a number
-is worse with p < 0.2: a trade is allowed if it can be explained, MEASURING §4); PASS (nothing worse that the test
-supports). A number beyond the noise without that support is listed as "watch". PROVISIONAL when fewer than 4
-candidate starts are valid (our 4-a-side rule), or when the floor itself has fewer than 4. INVALID when none is.
+Each arm must be one thing (waveydude's review of PR #18, 18 Nov). The starts pooled on one side of a key must share
+the build (the boot trace's version and compile time), the effective settings (the env hash, harness lines left out),
+the shader translation id and the script. The control and the candidate may differ; a side may not. A mixed candidate
+arm is MIXED, with the runs that differ named; a mixed control arm is refused when the floor is built. A start whose
+build can't be read leaves the arm unverified, which is PROVISIONAL.
+
+Verdicts, in this order, with the exit code check returns:
+  BLOCK        4  a start crashed or lost its route, or a stable or picture number is really worse. Blocks even
+                  when the arm is short: a crash is a crash.
+  MIXED        3  the candidate arm pools different builds, settings, translation ids or scripts.
+  INVALID      3  no candidate start is valid (all quit early or skipped an anchor); also NO KEY and NO FLOOR.
+  PROVISIONAL  2  the arm is incomplete: fewer than 4 valid candidate starts, a floor of fewer than 4, a stable
+                  number the floor gates on read on fewer than 4 candidate starts, or an unverified build. The
+                  report still shows what the starts so far say ("leaning").
+  EXPLAIN      1  a number is worse with p < 0.2: a trade is allowed if it can be explained (MEASURING §4).
+  PASS         0  nothing worse that the test supports, on what the gate could measure. Numbers it could not
+                  (flashes and hitches on the alpha, a counter at its cap on the floor) are listed as NOT CLEARED:
+                  PASS clears only the checks it names.
+A number beyond the noise without the test's support is listed as "watch". With several keys, the exit code is the
+highest of theirs, so the worst verdict wins. Anything but 0 is not cleared.
 """
 from __future__ import annotations
 
@@ -71,6 +87,27 @@ NUMBERS = {
 }
 STAGES = ("stable", "picture", "fast", "smooth")
 MIN_STARTS = 4
+# What a side of a comparison must share to be pooled (waveydude, PR #18 review): field -> what it names.
+ARM_FIELDS = {"build_key": "build", "env_hash": "settings (env hash)", "translation_id": "translation id",
+              "script_sha1": "script"}
+EXIT = {"PASS": 0, "EXPLAIN": 1, "BLOCK": 4, "PROVISIONAL": 2, "MIXED": 3, "INVALID": 3, "NO KEY": 3, "NO FLOOR": 3}
+
+
+def arm_of(rows: list[dict]) -> tuple[dict, list[str], list[str]]:
+    """The arm's identity, the ways it is mixed, and the ways it can't be verified.
+    identity: field -> the one value (or None); mixed: one line per field with more than one value, naming the runs."""
+    ident, mixed, unverified = {}, [], []
+    for field, label in ARM_FIELDS.items():
+        by: dict = {}
+        for r in rows:
+            by.setdefault(r.get(field), []).append(str(r.get("run_id")))
+        known = {v: rs for v, rs in by.items() if v not in (None, "")}
+        if len(known) > 1:
+            mixed.append(f"{label} differs: " + "; ".join(f"{v} ({', '.join(rs)})" for v, rs in sorted(known.items(), key=str)))
+        if field == "build_key" and (None in by or "" in by):
+            unverified.append("build not identified on " + ", ".join(by.get(None, []) + by.get("", [])))
+        ident[field] = next(iter(known)) if len(known) == 1 else None
+    return ident, mixed, unverified
 
 
 def gate_key(row: dict) -> str | None:
@@ -148,6 +185,10 @@ def perm_p(a: list[float], b: list[float], rounds: int = 20000) -> float:
     return sum(d >= obs - 1e-9 for d in diffs) / len(diffs)
 
 
+class MixedArm(ValueError):
+    pass
+
+
 def build_floors(rows: list[dict]) -> dict:
     groups: dict[str, list[dict]] = {}
     skipped = []
@@ -162,6 +203,9 @@ def build_floors(rows: list[dict]) -> dict:
                    "control start at a counter's cap.",
            "keys": {}, "skipped": skipped}
     for k, rs in sorted(groups.items()):
+        ident, mixed, _ = arm_of(rs)
+        if mixed:
+            raise MixedArm(f"control arm {k} is mixed: " + " | ".join(mixed))
         nums = {}
         names = set()
         for r in rs:
@@ -182,7 +226,7 @@ def build_floors(rows: list[dict]) -> dict:
             if at_cap:
                 nums[name].update(usable=False, why=f"control start(s) at the counter's cap: {', '.join(at_cap)}; "
                                                     "the control's own value is unknown")
-        out["keys"][k] = {"n": len(rs), "runs": [r.get("run_id") for r in rs], "numbers": nums}
+        out["keys"][k] = {"n": len(rs), "runs": [r.get("run_id") for r in rs], "arm": ident, "numbers": nums}
     return out
 
 
@@ -242,6 +286,13 @@ def check(rows: list[dict], floors: dict) -> list[dict]:
             rep.update(verdict="NO FLOOR", why="no control floor for this key")
             reports.append(rep)
             continue
+        ident, mixed, unverified = arm_of(rs)
+        rep["arm"] = ident
+        if mixed:
+            rep.update(verdict="MIXED", why="the candidate arm pools different things; check each on its own: "
+                                            + " | ".join(mixed))
+            reports.append(rep)
+            continue
         # Stage 1, survival first. A crash or a lost route counts against the candidate; a start quit before END, or
         # with a window's anchor skipped, says nothing about it and is left out (rerun it).
         status = {r.get("run_id"): start_status(r) for r in rs}
@@ -271,10 +322,35 @@ def check(rows: list[dict], floors: dict) -> list[dict]:
         watch = [x["number"] for s in STAGES for x in rep["stages"][s]
                  if x["verdict"] == "worse beyond the noise, not yet shown"]
         unusable = [f"{x['number']} ({x['detail']})" for s in STAGES for x in rep["stages"][s] if x["verdict"] == "unusable"]
+        # Is the arm complete? The 4-a-side rule, on the starts and on each stable number the floor gates on.
+        short = []
+        if len(alive) < MIN_STARTS:
+            short.append(f"{len(alive)} valid candidate start(s)")
+        if f["n"] < MIN_STARTS:
+            short.append(f"a floor of {f['n']}")
+        for name, ctrl in f["numbers"].items():
+            if ctrl["stage"] != "stable" or not ctrl.get("measured") or ctrl.get("usable") is False:
+                continue
+            n_read = sum(1 for r in alive if number_value(r, name) is not None)
+            if n_read < MIN_STARTS:
+                short.append(f"{name} read on {n_read} of {len(alive)} start(s)")
+            if len(ctrl["values"]) < MIN_STARTS:
+                short.append(f"{name} on {len(ctrl['values'])} control start(s)")
+        short += unverified
+        if short:
+            rep["provisional"] = "; ".join(short) + f": the rule is {MIN_STARTS} a side"
+        # What a PASS could not clear: numbers the floor has no reading of, or can't use.
+        not_cleared = sorted({f"{x['number']} ({'not measured' if x['verdict'] == 'not measured' else 'unusable'})"
+                              for s in STAGES for x in rep["stages"][s]
+                              if x["verdict"] in ("not measured", "unusable")})
+        rep["not_cleared"] = not_cleared
         if blocking:
             rep["verdict"] = "BLOCK"
         elif not alive:
             rep["verdict"] = "INVALID"
+        elif short:
+            rep["verdict"] = "PROVISIONAL"
+            rep["leaning"] = "EXPLAIN" if explain else "PASS"
         elif explain:
             rep["verdict"] = "EXPLAIN"
         else:
@@ -286,9 +362,6 @@ def check(rows: list[dict], floors: dict) -> list[dict]:
         unseen = sorted({x["number"] for s in STAGES for x in rep["stages"][s] if x["verdict"] == "not measured"})
         if unseen:
             rep["notes"].append("not measured: " + ", ".join(unseen))
-        if len(alive) < MIN_STARTS or f["n"] < MIN_STARTS:
-            rep["provisional"] = (f"candidate {len(alive)} valid start(s), floor {f['n']}: the rule is {MIN_STARTS} "
-                                  "a side")
         reports.append(rep)
     return reports
 
@@ -296,7 +369,7 @@ def check(rows: list[dict], floors: dict) -> list[dict]:
 def print_report(reports: list[dict]) -> None:
     for rep in reports:
         print(f"== {rep.get('key')}  ({', '.join(str(x) for x in rep['runs'])})")
-        if "stages" not in rep or rep.get("verdict") in ("NO FLOOR", "NO KEY"):
+        if "stages" not in rep or rep.get("verdict") in ("NO FLOOR", "NO KEY", "MIXED"):
             print(f"   {rep['verdict']}: {rep.get('why')}\n")
             continue
         for s in STAGES:
@@ -311,7 +384,12 @@ def print_report(reports: list[dict]) -> None:
                     print(f"   {s:7s} {x['number']:34s} {x['detail']}  {x['verdict']}")
         for n in rep["notes"]:
             print(f"   ({n})")
-        print(f"   VERDICT: {rep['verdict']}" + (f"  PROVISIONAL: {rep['provisional']}" if rep.get("provisional") else "") + "\n")
+        line = f"   VERDICT: {rep['verdict']}"
+        if rep["verdict"] == "PROVISIONAL":
+            line += f" (leaning {rep['leaning']}): {rep['provisional']}"
+        if rep["verdict"] in ("PASS", "PROVISIONAL") and rep.get("not_cleared"):
+            line += "\n   NOT CLEARED (the gate could not measure these): " + ", ".join(rep["not_cleared"])
+        print(line + "\n")
 
 
 def main(argv: list[str]) -> int:
@@ -325,7 +403,11 @@ def main(argv: list[str]) -> int:
     args = ap.parse_args(argv)
     rows = [stk_score.score_run(r, args.alpha_env) for r in args.runs]
     if args.cmd == "floors":
-        fl = build_floors(rows)          # run ids only: no run_path, so the file carries no local paths
+        try:
+            fl = build_floors(rows)
+        except MixedArm as e:
+            print(f"refused: {e}", file=sys.stderr)
+            return 3          # run ids only: no run_path, so the file carries no local paths
         Path(args.out).write_text(json.dumps(fl, indent=1) + "\n")
         for k, v in fl["keys"].items():
             print(f"{k}: n={v['n']} ({', '.join(v['runs'])})")
@@ -337,7 +419,7 @@ def main(argv: list[str]) -> int:
         print(json.dumps(reps, indent=1))
     else:
         print_report(reps)
-    return 0 if all(r.get("verdict") == "PASS" for r in reps) else 1
+    return max((EXIT.get(r.get("verdict"), 3) for r in reps), default=3)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,12 @@
     "runFC4",
     "runFC5"
    ],
+   "arm": {
+    "build_key": "01.219.028 (Nov 14 2026 23:24:15)",
+    "env_hash": "57c08732c8ee",
+    "translation_id": "src7f9773909a21e3689fd7c18d27a3c10c",
+    "script_sha1": "c4fada64155f"
+   },
    "numbers": {
     "flashes_per_min": {
      "stage": "picture",
@@ -145,6 +151,12 @@
     "runKV4",
     "runKV5"
    ],
+   "arm": {
+    "build_key": "01.219.028 (Nov 14 2026 23:24:15)",
+    "env_hash": "57c08732c8ee",
+    "translation_id": "src7f9773909a21e3689fd7c18d27a3c10c",
+    "script_sha1": "d40196a1a1d0"
+   },
    "numbers": {
     "flashes_per_min": {
      "stage": "picture",
@@ -312,6 +324,12 @@
     "runLV4",
     "runLV6"
    ],
+   "arm": {
+    "build_key": "01.219.028 (Nov 14 2026 23:24:15)",
+    "env_hash": "57c08732c8ee",
+    "translation_id": "src7f9773909a21e3689fd7c18d27a3c10c",
+    "script_sha1": "9f0a63d5964a"
+   },
    "numbers": {
     "flashes_per_min": {
      "stage": "picture",
@@ -447,6 +465,12 @@
     "runBW4",
     "runBW5"
    ],
+   "arm": {
+    "build_key": "01.219.028 (Nov 14 2026 23:24:15)",
+    "env_hash": "57c08732c8ee",
+    "translation_id": "src7f9773909a21e3689fd7c18d27a3c10c",
+    "script_sha1": "d6e6b8d4cf42"
+   },
    "numbers": {
     "flashes_per_min": {
      "stage": "picture",
@@ -575,5 +599,26 @@
    }
   }
  },
- "skipped": []
+ "skipped": [
+  {
+   "run": "runBW3",
+   "why": "no gate key"
+  },
+  {
+   "run": "runFC1",
+   "why": "not control_eligible"
+  },
+  {
+   "run": "runKV3",
+   "why": "not control_eligible"
+  },
+  {
+   "run": "runLV1",
+   "why": "not control_eligible"
+  },
+  {
+   "run": "runLV5",
+   "why": "not control_eligible"
+  }
+ ]
 }

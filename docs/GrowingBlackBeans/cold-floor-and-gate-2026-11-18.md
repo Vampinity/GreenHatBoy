@@ -45,18 +45,29 @@ the noise of a mean, which is smaller (see the gate, below; revised after Vampin
   INVALID says nothing about it and is left out, to be rerun: the app was quit before the script's END, or a window's
   anchor line was skipped (a `MAYBE` that timed out; the scorer no longer takes a skipped line as a mark, except where a
   window declares its lines clock marks, as the Kokiri stands do).
-- **Verdicts:** BLOCK (a start crashed or lost its route, or memory or the picture really worse), EXPLAIN (a number
-  worse with p < 0.2: a trade is fine if it can be explained), PASS, INVALID (no valid start). Provisional under 4
-  valid starts a side.
+- **Each side must be one thing** (waveydude's review). The starts pooled on one side must share the build, the
+  settings (env hash), the translation id and the script. The control and the candidate may differ. A mixed candidate
+  arm is MIXED, naming the runs that differ, and a mixed control arm can't make a floor.
+- **Verdicts and exit codes:**
+  - BLOCK, 4: a start crashed or lost its route, or memory or the picture is really worse. This applies even with
+    fewer than 4 starts.
+  - MIXED or INVALID, 3: no valid start.
+  - PROVISIONAL, 2: fewer than 4 valid starts on either side, a gated memory reading on fewer than 4 candidate
+    starts, or an unidentified build. It shows what the starts lean to.
+  - EXPLAIN, 1: a number is worse with p < 0.2. A trade is fine if it can be explained.
+  - PASS, 0.
+  - Only 0 is cleared. PASS lists what it could not clear (on the alpha: flashes and hitches; on the field: the
+    out-of-memory count).
 - **Where memory can't block yet:** on the field route. Its control lows are already at 0-1 MiB (census) and 0-2 MiB
   (driver), so a candidate at 0 can't be shown worse by the lowest free block, and its out-of-memory count is unusable
   (FC4 capped). On the baseline, Kokiri and the later area it can: four starts at 0 MiB in the later area block
   (p 0.029), and so do Vampinity's 120-150 MiB on the baseline. The field needs another memory number before memory is
   gated there.
-- **Checked:** 16 of 16 control starts PASS against a floor built from the other three in their scope (leave one
-  out). **This checks the code, not the floors:** with one start against three, the smallest p is 0.25, so a
-  left-out start can only pass or be "watch" (6 of 16 were "watch"). The three starts that didn't reach the script's
-  END (KV3, LV5, FC1) didn't lose their route: every leg was met and the app closed normally, the quit came before the
-  END. They now read INVALID (rerun), not BLOCK. runLV1 (route v1, a STEER timeout) is LOST. 23 gate tests on made-up
-  rows, including each of the review's examples, and 3 for the skipped anchor. Rescored, all 21 starts keep every
-  window value. Not yet seen: a real four-start regression on these routes, because the archive has none.
+- **Checked:** 16 of 16 control starts lean PASS against a floor built from the other three in their scope (leave one
+  out). They read PROVISIONAL, because one start against three is short on both sides. **This checks the code, not the
+  floors:** with one start against three, the smallest p is 0.25, so a left-out start can only pass or be "watch" (6
+  of 16 were "watch"). The three starts that didn't reach the script's END (KV3, LV5, FC1) didn't lose their route:
+  every leg was met and the app closed normally, the quit came before the END. They now read INVALID (rerun), not
+  BLOCK. runLV1 (route v1, a STEER timeout) is LOST. 40 gate tests on made-up rows, including each of both reviews'
+  cases and the CLI's exit codes, and 3 for the skipped anchor. Rescored, all 21 starts keep every window value. Not
+  yet seen: a real four-start regression on these routes, because the archive has none.
