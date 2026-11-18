@@ -33,6 +33,15 @@ leg's last point) and the field stand (30-115 s after the field check).
 
 ## Results so far
 
-- **runLV2** (v2, cold, eligible): every check met, both legs 51/51 and 8/8, the menu back to the title, script_done.
-  Lap 8.56 fps (n 32), field stand 12.90 fps (n 17); largest free block at least 192 MiB on the lap, 61-64 MiB after
-  the load into the field. One start: figures, not a floor. Three more cold starts follow.
+Cold, on the alpha control (scored with `tools/stk/stk_score.py`; the gate's numbers):
+
+| start | status | lap fps | field stand fps | lowest free block, census / driver (MiB) |
+|---|---|---|---|---|
+| runLV1 | v1: STEER timeout at the gatehouse fence (point 53/54), LOST | - | - | 2 / 48 |
+| runLV2 | eligible | 8.56 | 12.9 | 17 / 61 |
+| runLV3 | eligible | 8.71 | 12.8 | 18 / 26 |
+| runLV4 | eligible | 8.87 | 13.1 | 3 / 3 |
+| runLV5 | every leg met; quit 2 s before the END: INVALID, not in the floor | 8.84 | 13.0 | 5 / 12 |
+| runLV6 | eligible | 8.76 | 12.7 | 9 / 17 |
+
+The cold floor is LV2, LV3, LV4 and LV6: lap 8.73, field stand 12.88 (`tools/stk/floors-cold-2026-11-18.json`).

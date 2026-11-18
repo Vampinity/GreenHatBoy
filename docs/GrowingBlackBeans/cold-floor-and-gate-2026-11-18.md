@@ -6,7 +6,8 @@ stable, then the picture, then fast, then smooth (MEASURING.md, PR #17).
 
 ## The cold floor (`tools/stk/floors-cold-2026-11-18.json`)
 
-Noise floor = the control's own spread (max - min of four starts), as MEASURING.md asks.
+"Floor" in the table = the spread of one start (max - min of the four). The gate reads a candidate's **mean** against
+the noise of a mean, which is smaller (see the gate, below; revised after Vampinity's review of PR #18).
 
 | scope (route) | starts | the gate's best numbers: mean, floor | lowest largest free block (census) |
 |---|---|---|---|
@@ -18,21 +19,44 @@ Noise floor = the control's own spread (max - min of four starts), as MEASURING.
 - **The baseline village windows are too noisy to gate on** (floor 6.56 fps, 34%: the two-speed village, a phase 4
   lead). Until that is explained, the baseline is gated on its whole-run median.
 - **Memory is tightest after the field (0-1 MiB) and in the later area (3-18 MiB).** Both are census lows.
+- **The field's out-of-memory count is unusable as a gate number:** FC4's counter hit its cap (">=64"), so the
+  control's own value is unknown (9, 10, 10 and at least 64). The floor file marks it `usable: false`.
 - **The worst frame is a load black** (11-55 s) on every route. It sits in "smooth" only until a hitch trace exists.
 - **Not measured on the alpha: flashes and hitches.** The gate prints both as "not measured" in every report.
 
 ## The gate (`tools/stk/stk_gate.py`)
 
-    python3 tools/stk/stk_gate.py floors CONTROL_RUNS... -o floors.json
-    python3 tools/stk/stk_gate.py check CANDIDATE_RUNS... --floors floors.json
+    python3 tools/stk/stk_gate.py floors CONTROL_RUNS... -o floors.json --alpha-env ALPHA_ENV
+    python3 tools/stk/stk_gate.py check CANDIDATE_RUNS... --floors floors.json --alpha-env ALPHA_ENV
+
+`ALPHA_ENV` is the alpha release's `env.txt`; the scorer reads each run's env against it.
 
 - **The key:** route | firmware | cold or warm (plus the store and its pipeline count when warm). The build is not
   in the key.
-- **A number is worse** when it is on the bad side of the control's mean by more than the floor. It changes the verdict
-  only with the permutation test behind it (p < 0.05 "real", p < 0.2 "likely", abcompare.py's rule). Beyond the floor
-  without that is listed as "watch".
-- **Verdicts:** BLOCK (a start lost its route, or memory or the picture really worse), EXPLAIN (a number worse with
-  p < 0.2: a trade is fine if it can be explained), PASS. Provisional under 4 starts a side.
-- **Checked:** 16 of 16 control starts PASS against a floor built from the other three in their scope (leave one out).
-  All three starts that lost their route block (KV3, LV5, FC1). 14 unit tests on made-up rows. Not yet seen: a real
-  four-start regression on these routes, because the archive has none. The first candidate is the first real use.
+- **A number is worse** when the candidate's mean is on the bad side of the control's mean by more than the noise of
+  a mean, 2 x sd x sqrt(1/n_control + 1/n_candidate). The first version used one start's spread here, which let four
+  candidate starts all below the worst control start pass (Vampinity's example: baseline memory at 120-150 MiB against
+  a control low of 165). It changes the verdict only with the permutation test behind it (p < 0.05 "real", p < 0.2
+  "likely", abcompare.py's rule); beyond the noise without that is "watch". A number is also "real" when p < 0.05 and
+  every candidate start is worse than the control's worst start.
+- **Capped counters:** a candidate start at the out-of-memory counter's cap counts at the cap (a lower bound), so it
+  reads as worse than any uncapped control. A control start at the cap makes that number unusable for its key.
+- **Each start is sorted first.** CRASHED or LOST (a WAIT or STEER timed out) counts against the candidate.
+  INVALID says nothing about it and is left out, to be rerun: the app was quit before the script's END, or a window's
+  anchor line was skipped (a `MAYBE` that timed out; the scorer no longer takes a skipped line as a mark, except where a
+  window declares its lines clock marks, as the Kokiri stands do).
+- **Verdicts:** BLOCK (a start crashed or lost its route, or memory or the picture really worse), EXPLAIN (a number
+  worse with p < 0.2: a trade is fine if it can be explained), PASS, INVALID (no valid start). Provisional under 4
+  valid starts a side.
+- **Where memory can't block yet:** on the field route. Its control lows are already at 0-1 MiB (census) and 0-2 MiB
+  (driver), so a candidate at 0 can't be shown worse by the lowest free block, and its out-of-memory count is unusable
+  (FC4 capped). On the baseline, Kokiri and the later area it can: four starts at 0 MiB in the later area block
+  (p 0.029), and so do Vampinity's 120-150 MiB on the baseline. The field needs another memory number before memory is
+  gated there.
+- **Checked:** 16 of 16 control starts PASS against a floor built from the other three in their scope (leave one
+  out). **This checks the code, not the floors:** with one start against three, the smallest p is 0.25, so a
+  left-out start can only pass or be "watch" (6 of 16 were "watch"). The three starts that didn't reach the script's
+  END (KV3, LV5, FC1) didn't lose their route: every leg was met and the app closed normally, the quit came before the
+  END. They now read INVALID (rerun), not BLOCK. runLV1 (route v1, a STEER timeout) is LOST. 23 gate tests on made-up
+  rows, including each of the review's examples, and 3 for the skipped anchor. Rescored, all 21 starts keep every
+  window value. Not yet seen: a real four-start regression on these routes, because the archive has none.

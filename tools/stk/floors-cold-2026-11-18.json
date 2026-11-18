@@ -1,5 +1,5 @@
 {
- "_doc": "stk_gate.py floors: per gate key, the control's values per number; floor = max - min.",
+ "_doc": "stk_gate.py floors: per gate key, the control's values per number; floor = the spread of one start (max - min); check reads means against the noise of a mean, from sd. usable: false = a control start at a counter's cap.",
  "keys": {
   "field-to-past-field|13.60|cold": {
    "n": 4,
@@ -83,7 +83,9 @@
      "sd": 0.577,
      "min": 9,
      "max": 10,
-     "floor": 1
+     "floor": 1,
+     "usable": false,
+     "why": "control start(s) at the counter's cap: runFC4; the control's own value is unknown"
     },
     "win_after_field_fps": {
      "stage": "fast",
@@ -573,22 +575,5 @@
    }
   }
  },
- "skipped": [
-  {
-   "run": "runBW3",
-   "why": "no gate key"
-  },
-  {
-   "run": "runKV3",
-   "why": "not control_eligible"
-  },
-  {
-   "run": "runFC1",
-   "why": "not control_eligible"
-  },
-  {
-   "run": "runLV5",
-   "why": "not control_eligible"
-  }
- ]
+ "skipped": []
 }

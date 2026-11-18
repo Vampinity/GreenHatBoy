@@ -1,5 +1,5 @@
 {
-  "_doc": "Route scoring windows as data. A route is found by the sha1 (first 12) of the script as run, or by file name. Times are app-clock seconds; a script mark (wait_met / wait_skipped / script_end line=N at=T) is on the script clock, so the scorer adds EDEN_GUEST_START. A 5 s fps line is stamped at the END of its 5 seconds. Definitions transcribed from runs/Vampinity/2026-11-15-t186-control-README.md (Vampinity) and our kokiri-four-stops README; to be confirmed by their owners.",
+  "_doc": "Route scoring windows as data. A route is found by the sha1 (first 12) of the script as run, or by file name. Times are app-clock seconds; a script mark (wait_met / wait_skipped / script_end line=N at=T) is on the script clock, so the scorer adds EDEN_GUEST_START. A 5 s fps line is stamped at the END of its 5 seconds. Definitions transcribed from runs/Vampinity/2026-11-15-t186-control-README.md (Vampinity) and our kokiri-four-stops README; to be confirmed by their owners. A window is placed only by lines that were MET: a line logged as wait_skipped (a MAYBE that timed out) gives the window no value and makes the start INVALID (PR #18 review, 18 Nov), unless the window says \"clock_marks\": true - its lines are short MAYBEs written to time out, used only as a clock (the Kokiri stands).",
   "routes": {
     "wavey-kokiri-field-town": {
       "sha1": [
@@ -94,25 +94,29 @@
           "kind": "between",
           "start_line": 82,
           "end_line": 83,
-          "stat": "mean"
+          "stat": "mean",
+          "clock_marks": true
         },
         "stop_B": {
           "kind": "between",
           "start_line": 144,
           "end_line": 145,
-          "stat": "mean"
+          "stat": "mean",
+          "clock_marks": true
         },
         "stop_C": {
           "kind": "between",
           "start_line": 206,
           "end_line": 207,
-          "stat": "mean"
+          "stat": "mean",
+          "clock_marks": true
         },
         "stop_D": {
           "kind": "between",
           "start_line": 268,
           "end_line": 269,
-          "stat": "mean"
+          "stat": "mean",
+          "clock_marks": true
         }
       }
     },
@@ -180,26 +184,30 @@
           "kind": "between",
           "start_line": 83,
           "end_line": 84,
-          "stat": "mean"
+          "stat": "mean",
+          "clock_marks": true
         },
         "stop_B": {
           "kind": "between",
           "start_line": 145,
           "end_line": 146,
-          "stat": "mean"
+          "stat": "mean",
+          "clock_marks": true
         },
         "stop_C": {
           "kind": "between",
           "start_line": 207,
           "end_line": 215,
           "stat": "mean",
-          "note": "v2: L2 re-centres at 10-60 s inside the stand"
+          "note": "v2: L2 re-centres at 10-60 s inside the stand",
+          "clock_marks": true
         },
         "stop_D": {
           "kind": "between",
           "start_line": 324,
           "end_line": 325,
-          "stat": "mean"
+          "stat": "mean",
+          "clock_marks": true
         }
       }
     },

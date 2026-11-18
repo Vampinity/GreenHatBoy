@@ -133,3 +133,28 @@ published figures average the seven, so his numbers were never the problem — t
 
 Validated: 27 tests (25 synthetic, 2 against GHB), including the keep/keep4 case (one store, one
 translation id, two compile times → two keys) and a run with no build (no key at all).
+
+## Review answer: PR #18 (18 Nov, scorer 8, gate 2)
+
+Vampinity's review of the gate (PR #18), points 1-7. Gate:
+
+23. **Means are read against the noise of a mean** (2 x sd x sqrt(1/n_control + 1/n_candidate)), not one start's
+    spread; and p < 0.05 with every candidate start beyond the control's worst start is "real" whatever the means.
+    Four baseline starts at 120-150 MiB against a control low of 165 now block, and so do four later-area starts at
+    0 MiB. The field's memory lows are already 0-1 MiB, so memory still can't block there; the doc says so.
+24. **Capped counters** (">=64"): a capped candidate start counts at its cap (a lower bound, so worse than any
+    uncapped control); a control start at the cap marks the number `usable: false` for its key (the field's
+    out-of-memory count, FC4).
+25. **Starts are sorted before judging:** CRASHED and LOST block; INVALID (quit before the script's END, or a skipped
+    window anchor) is left out and reported for a rerun. KV3, LV5 and FC1 are INVALID, not BLOCK.
+
+Scorer:
+
+26. **A skipped line is never a window's anchor.** A `MAYBE` that timed out is logged as `wait_skipped line=N`, and
+    was taken as a mark, so a missed field load in the later area would have been scored in the wrong place. Now the
+    window has no value (`anchor_skipped_line_N`), the row lists it in `anchors_skipped`, and the start is not
+    window-comparable. Windows whose lines are short `MAYBE`s written to time out, used only as a clock, say
+    `"clock_marks": true` in windows.json and keep their marks (the Kokiri stands, both versions).
+
+Rescored, all 21 cold starts of 17-18 Nov keep every window value; the floor file's numbers are unchanged except
+the field's out-of-memory count, now `usable: false`. Tests: 23 gate, 3 skipped-anchor, 78 in all.
