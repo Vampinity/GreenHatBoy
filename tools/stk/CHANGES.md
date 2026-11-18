@@ -194,3 +194,15 @@ on the CLI's exit code), 3 skipped-anchor, 95 in all.
 
 All 21 cold starts closed normally, so none changes class: KV3, LV5 and FC1 stay INVALID, LV1 stays LOST. 96 tests.
 
+## Review answer: PR #18, waveydude's second review (18 Nov, gate 5)
+
+34. **Missing identity is unverified, for all four fields.** Only a missing build counted before; a start with no
+    env hash (an empty or missing env.txt), no script or no translation id was pooled as if it matched, and four
+    such rows printed PASS. Now any of the four missing makes the arm PROVISIONAL and names the start
+    ("settings (env hash) not recorded on x3"). On the control side the floor records it (`arm_unverified`), and
+    every check against that floor is PROVISIONAL until it is rebuilt from complete starts. PROVISIONAL rather than
+    INVALID: the start's own numbers may be fine, only its arm can't be shown. Tests: each field missing on one row of
+    four, a control missing one, and the CLI's exit code (2).
+
+All 21 cold starts record all four, so the floors are unchanged (`arm_unverified` empty on every key). 99 tests.
+

@@ -243,7 +243,23 @@ class IncompleteAndMixedArms(unittest.TestCase):
     def test_an_unidentified_build_is_provisional(self):
         rep = stk_gate.check([row(f"x{i}", 8.7, build_key=None) for i in range(4)], self.floors)[0]
         self.assertEqual(rep["verdict"], "PROVISIONAL")
-        self.assertIn("build not identified", rep["provisional"])
+        self.assertIn("build not recorded on x0, x1, x2, x3", rep["provisional"])
+
+    def test_one_missing_identity_field_is_provisional(self):
+        """waveydude's second review: four valid rows, one identity field missing on the fourth, printed PASS."""
+        for field, label in stk_gate.ARM_FIELDS.items():
+            with self.subTest(field=field):
+                cands = [row(f"x{i}", 8.7) for i in range(3)] + [row("x3", 8.7, **{field: None})]
+                rep = stk_gate.check(cands, self.floors)[0]
+                self.assertEqual(rep["verdict"], "PROVISIONAL")
+                self.assertIn(f"{label} not recorded on x3", rep["provisional"])
+
+    def test_a_control_missing_identity_makes_every_check_provisional(self):
+        floors = stk_gate.build_floors(CONTROL[:3] + [row("c4", 8.8, env_hash=None)])
+        self.assertEqual(floors["keys"]["r-v1|13.60|cold"]["arm_unverified"], ["settings (env hash) not recorded on c4"])
+        rep = stk_gate.check([row(f"x{i}", 8.7) for i in range(4)], floors)[0]
+        self.assertEqual(rep["verdict"], "PROVISIONAL")
+        self.assertIn("control: settings (env hash) not recorded on c4", rep["provisional"])
 
     def test_a_crash_blocks_even_when_short(self):
         rep = stk_gate.check([row("x1", 8.7, survival_result="crashed", crash_class="oom")], self.floors)[0]
@@ -274,6 +290,9 @@ class ExitCodes(unittest.TestCase):
 
     def test_provisional_exits_2(self):
         self.assertEqual(self.run_check([row("x1", 8.7)]), 2)
+
+    def test_a_missing_env_hash_exits_2(self):
+        self.assertEqual(self.run_check([row(f"x{i}", 8.7) for i in range(3)] + [row("x3", 8.7, env_hash=None)]), 2)
 
     def test_explain_exits_1(self):
         self.assertEqual(self.run_check([row(f"x{i}", 7.6 + i / 20) for i in range(4)]), 1)

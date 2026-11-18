@@ -44,8 +44,10 @@ rerun.
 Each arm must be one thing (waveydude's review of PR #18, 18 Nov). The starts pooled on one side of a key must share
 the build (the boot trace's version and compile time), the effective settings (the env hash, harness lines left out),
 the shader translation id and the script. The control and the candidate may differ; a side may not. A mixed candidate
-arm is MIXED, with the runs that differ named; a mixed control arm is refused when the floor is built. A start whose
-build can't be read leaves the arm unverified, which is PROVISIONAL.
+arm is MIXED, with the runs that differ named; a mixed control arm is refused when the floor is built. A start
+missing any of the four (no build line, an empty env.txt, no script or translation id) leaves its arm unverified,
+which is PROVISIONAL and names the start (waveydude's second review); on the control side the floor records it, and
+every check against that floor is PROVISIONAL until the floor is rebuilt.
 
 Verdicts, in this order, with the exit code check returns:
   BLOCK        4  a start crashed or lost its route, or a stable or picture number is really worse. Blocks even
@@ -53,7 +55,8 @@ Verdicts, in this order, with the exit code check returns:
   MIXED        3  the candidate arm pools different builds, settings, translation ids or scripts.
   INVALID      3  no candidate start is valid (all quit early or skipped an anchor); also NO KEY and NO FLOOR.
   PROVISIONAL  2  the arm is incomplete: fewer than 4 valid candidate starts, a floor of fewer than 4, a stable
-                  number the floor gates on read on fewer than 4 candidate starts, or an unverified build. The
+                  number the floor gates on read on fewer than 4 candidate starts, or a start on either side with
+                  no record of its build, settings, translation id or script. The
                   report still shows what the starts so far say ("leaning").
   EXPLAIN      1  a number is worse with p < 0.2: a trade is allowed if it can be explained (MEASURING §4).
   PASS         0  nothing worse that the test supports, on what the gate could measure. Numbers it could not
@@ -105,8 +108,9 @@ def arm_of(rows: list[dict]) -> tuple[dict, list[str], list[str]]:
         known = {v: rs for v, rs in by.items() if v not in (None, "")}
         if len(known) > 1:
             mixed.append(f"{label} differs: " + "; ".join(f"{v} ({', '.join(rs)})" for v, rs in sorted(known.items(), key=str)))
-        if field == "build_key" and (None in by or "" in by):
-            unverified.append("build not identified on " + ", ".join(by.get(None, []) + by.get("", [])))
+        missing = by.get(None, []) + by.get("", [])
+        if missing:      # no evidence of which arm the start belongs to (an empty env.txt, a run with no script, ...)
+            unverified.append(f"{label} not recorded on " + ", ".join(missing))
         ident[field] = next(iter(known)) if len(known) == 1 else None
     return ident, mixed, unverified
 
@@ -210,7 +214,7 @@ def build_floors(rows: list[dict]) -> dict:
                    "control start at a counter's cap.",
            "keys": {}, "skipped": skipped}
     for k, rs in sorted(groups.items()):
-        ident, mixed, _ = arm_of(rs)
+        ident, mixed, ctrl_unverified = arm_of(rs)
         if mixed:
             raise MixedArm(f"control arm {k} is mixed: " + " | ".join(mixed))
         nums = {}
@@ -233,7 +237,8 @@ def build_floors(rows: list[dict]) -> dict:
             if at_cap:
                 nums[name].update(usable=False, why=f"control start(s) at the counter's cap: {', '.join(at_cap)}; "
                                                     "the control's own value is unknown")
-        out["keys"][k] = {"n": len(rs), "runs": [r.get("run_id") for r in rs], "arm": ident, "numbers": nums}
+        out["keys"][k] = {"n": len(rs), "runs": [r.get("run_id") for r in rs], "arm": ident,
+                          "arm_unverified": ctrl_unverified, "numbers": nums}
     return out
 
 
@@ -344,6 +349,7 @@ def check(rows: list[dict], floors: dict) -> list[dict]:
             if len(ctrl["values"]) < MIN_STARTS:
                 short.append(f"{name} on {len(ctrl['values'])} control start(s)")
         short += unverified
+        short += [f"control: {u}" for u in f.get("arm_unverified", [])]
         if short:
             rep["provisional"] = "; ".join(short) + f": the rule is {MIN_STARTS} a side"
         # What a PASS could not clear: numbers the floor has no reading of, or can't use.

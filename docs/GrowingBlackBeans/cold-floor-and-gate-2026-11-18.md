@@ -48,13 +48,15 @@ the noise of a mean, which is smaller (see the gate, below; revised after Vampin
   window declares its lines clock marks, as the Kokiri stands do).
 - **Each side must be one thing** (waveydude's review). The starts pooled on one side must share the build, the
   settings (env hash), the translation id and the script. The control and the candidate may differ. A mixed candidate
-  arm is MIXED, naming the runs that differ, and a mixed control arm can't make a floor.
+  arm is MIXED, naming the runs that differ, and a mixed control arm can't make a floor. A start with any of the
+  four not recorded (an empty env.txt, say) leaves its side unverified: PROVISIONAL, naming the start.
 - **Verdicts and exit codes:**
   - BLOCK, 4: a start crashed or lost its route, or memory or the picture is really worse. This applies even with
     fewer than 4 starts.
   - MIXED or INVALID, 3: no valid start.
   - PROVISIONAL, 2: fewer than 4 valid starts on either side, a gated memory reading on fewer than 4 candidate
-    starts, or an unidentified build. It shows what the starts lean to.
+    starts, or a start on either side whose build, settings, translation id or script isn't recorded. It shows
+    what the starts lean to.
   - EXPLAIN, 1: a number is worse with p < 0.2. A trade is fine if it can be explained.
   - PASS, 0.
   - Only 0 is cleared. PASS lists what it could not clear (on the alpha: flashes and hitches; on the field: the
