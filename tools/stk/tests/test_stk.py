@@ -187,10 +187,27 @@ class MemoryAfterPR24(unittest.TestCase):
         self.assertEqual(r["refused_pool_events"], 1)
         self.assertEqual(r["seconds_under_16_mib"], 4.0)
 
-    def test_a_pool_walk_line_with_room_is_not_a_refusal(self):
-        # EDEN_NX2_POOL_WALK=1 prints the pool line every 20 s with nothing refused (his run215).
-        r = self.score(REFUSED.format(16) + REFUSED.format(7680) + REFUSED.format(15) + REFUSED.format(0))
-        self.assertEqual(r["refused_pool_events"], 2)
+    def score_env(self, stderr, env):
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "stderr.log").write_text(stderr)
+            (Path(td) / "env.txt").write_text(env)
+            return score_run(td, None)
+
+    def test_with_the_pool_walk_on_refusals_are_unavailable(self):
+        # EDEN_NX2_POOL_WALK=1 prints the same line every 20 s from the same ReportPool(); at the wall a periodic
+        # print (here 15 MiB) can't be told from a refusal (waveydude, PR #26).
+        log = census(1, 300.0, 40) + REFUSED.format(7680) + census(2, 320.0, 15) + REFUSED.format(15)
+        r = self.score_env(log, "EDEN_NX2_POOL_WALK=1\n")
+        self.assertIsNone(r["refused_pool_events"])
+        self.assertEqual(r["refused_pool_source"], "unavailable_pool_walk_on")
+        self.assertEqual(r["seconds_under_16_mib"], 2.0)          # the census numbers are untouched
+
+    def test_with_the_walk_off_every_line_is_a_refusal(self):
+        log = REFUSED.format(16) + REFUSED.format(7680) + REFUSED.format(15) + REFUSED.format(0)
+        for env in ("", "EDEN_NX2_POOL_WALK=0\n"):
+            r = self.score_env(log, env)
+            self.assertEqual(r["refused_pool_events"], 4)
+            self.assertEqual(r["refused_pool_source"], "stderr.EDEN_REFUSED_POOL")
 
     def test_stranded_is_the_median_of_the_ties_at_the_low(self):
         log = (census(1, 10.0, 0, 100, 200, 300) + census(2, 12.0, 5, 1, 1, 1)

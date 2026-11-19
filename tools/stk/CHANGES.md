@@ -255,6 +255,7 @@ rebuilt; every number they already had is unchanged.
   New column `memory_window` says which. `largest_free_block_min_mib` is unchanged (it still reads the whole log).
 - **A refusal line with 16 MiB or more in its largest block isn't counted** (point 1): `EDEN_NX2_POOL_WALK=1` prints
   the pool line every 20 s with nothing refused. With the filter the count stays usable with that switch on.
+  *Replaced in the PR #26 review, below: at the wall the filter still counts walk prints.*
 - **A control at 0 on every start can't block** (point 3): no noise to read against, so one stray line per start
   read "real". A worse reading there is "watch", with the reason in the note, until there's a minimum size.
 - **`stranded_at_low_mib` is gated only where the control goes under 16 MiB**, and reads the median over the census
@@ -269,3 +270,20 @@ rebuilt; every number they already had is unchanged.
 Floors rebuilt from the same 32 starts. Refusals and seconds under 16 MiB don't move on any key (none of our control
 starts had either after the route ended). Stranded moves on the ties (field cold 1014, 1155, 974, 1106 → 963.5,
 1128, 974, 1005.5) and is gated only on the field, cold and warm, and the cold later area. 131 tests.
+
+## 19 Nov: the PR #26 review (waveydude, Vampinity)
+
+- **With `EDEN_NX2_POOL_WALK` on, `refused_pool_events` is unavailable** (waveydude, requested change). The periodic
+  walk calls the same `ReportPool()` as the refusal path and prints the same `EDEN_REFUSED_POOL` line, so at the wall a
+  walk print with a 15 MiB block read as a refusal (Vampinity's 14 walk runs: 23 of the 80 lines the filter kept). The
+  log can't tell the two callers apart, so the count is left empty, with `refused_pool_source:
+  unavailable_pool_walk_on`; seconds under 16 MiB and stranded come from the census and are unchanged. With the walk
+  off every line is a refusal, whatever block it reports: the 16 MiB filter is gone. No line in any of our starts
+  reported 16 MiB or more, so no floor moves.
+- **The zero-floor rule covers only refusals and seconds under 16 MiB** (Vampinity, point 1). `radv_oom_events` is 0
+  on every control of six keys; driver OOM lines on four starts there block again, as before #26.
+- **The crash-plus-mixed-boot test now has two live boots and a crash** (point 2). The old test passed without the
+  fix: boots are read from live starts only, so the crashed start alone on the other boot never made the arm mixed.
+  The new one reads MIXED on `main`'s gate and BLOCK here; a twin without the crash checks it reads MIXED.
+
+Floors unchanged (refusal counts rescored on the field, cold and warm: 0, 0, 11, 0 and 7, 0, 5, 11). 134 tests.

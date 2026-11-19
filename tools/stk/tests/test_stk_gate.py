@@ -450,11 +450,27 @@ class AfterPR24(unittest.TestCase):
         self.assertNotIn("usable", f)
 
     def test_a_crash_blocks_even_when_the_arm_boots_differently(self):
-        cands = ([warm(f"c{i}", 19.1) for i in range(3)]
-                 + [warm("c3", 19.1, own=36, total=37, survival_result="crashed", crash_class="oom")])
+        # Two live boots plus a crash (Vampinity, PR #26, point 2): boots are read from live starts only, so the
+        # crash alone on the other boot never made the arm mixed. Here it is mixed, and the crash still blocks.
+        cands = ([warm("c0", 19.1), warm("c1", 19.1), warm("c2", 19.1, own=36, total=37),
+                  warm("c3", 19.1, survival_result="crashed", crash_class="oom")])
         fl = stk_gate.build_floors(WARM_CONTROL[:3] + [warm("w4", 19.3, own=36, total=37)], {WKEY})
         rep = stk_gate.check(cands, fl)[0]
         self.assertEqual(rep["verdict"], "BLOCK")
+        self.assertTrue(any("boots differently" in n for n in rep["notes"]))
+
+    def test_the_same_arm_without_the_crash_reads_mixed(self):
+        cands = [warm("c0", 19.1), warm("c1", 19.1), warm("c2", 19.1, own=36, total=37), warm("c3", 19.1)]
+        fl = stk_gate.build_floors(WARM_CONTROL[:3] + [warm("w4", 19.3, own=36, total=37)], {WKEY})
+        self.assertEqual(stk_gate.check(cands, fl)[0]["verdict"], "MIXED")
+
+    def test_driver_oom_on_a_zero_floor_still_blocks(self):
+        # radv_oom_events is outside the zero-floor rule (Vampinity, PR #26, point 1).
+        cands = [row(f"a{i}", 8.7, radv_oom_events=1) for i in range(4)]
+        rep = stk_gate.check(cands, stk_gate.build_floors(CONTROL))[0]
+        self.assertEqual(rep["verdict"], "BLOCK")
+        oom = next(x for x in rep["stages"]["stable"] if x["number"] == "radv_oom_events")
+        self.assertNotIn("zero_floor", oom)
 
 
 class GateNotes(unittest.TestCase):

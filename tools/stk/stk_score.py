@@ -57,7 +57,6 @@ CENSUS_POOL_RE = re.compile(r"^EDEN_MEM_CENSUS_POOL\s+n=(\d+)\b.*?free_pages=(\d
 LOW_MIB = 16          # "under 16 MiB": the census's own low mark for the largest free block (19 Nov)
 CENSUS_EVERY_S = 2.0  # one EDEN_MEM_CENSUS line every 2 s
 RADV_MEM_RE = re.compile(r"^RADV_PS5_MEMORY\s+t_s=([\d.]+)\s+pool_mib=(\d+)\s+available_mib=(\d+)")
-REFUSED_LARGEST_RE = re.compile(r"the largest (\d+) MiB")
 POOL_MEM_RE = re.compile(r"EDEN_MEMORY\s+pool\s+largest\s+free\s+block\s+(\d+)\s+MiB")
 FLASH_RE = re.compile(r"\[\s*([\d.]+)\].*EDEN_UP_FLASH\s+frame")
 RUNTIME_PIPE_RE = re.compile(r"\[\s*([\d.]+)\].*ReportRuntimePipeline:\s*Graphics pipeline built on the GPU thread")
@@ -467,8 +466,11 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
     #   next 10 s, counted on their own clock from the first census line after it (five lines at the 2 s cadence).
     #   Refusal lines carry no time and stop at the same place in the log. A start with no census after script_done
     #   stops at the script_done line; one with no script_done reads to the log's end, as fps does.
-    # - A refusal line whose largest free block is 16 MiB or more is not counted (point 1): EDEN_NX2_POOL_WALK=1 prints
-    #   the pool line every 20 s with nothing refused (his run215: 16 of them, 7.5-11.4 GiB free).
+    # - EDEN_NX2_POOL_WALK=1 prints the same EDEN_REFUSED_POOL line every 20 s from the same ReportPool(), with nothing
+    #   refused (his run215: 16 of them, 7.5-11.4 GiB free). The log can't tell the two callers apart: at the wall a
+    #   walk print reads like a refusal (Vampinity's 14 walk runs: 23 of the 80 lines a "< 16 MiB" filter kept). So
+    #   with the walk on, refused_pool_events is unavailable (waveydude, PR #26); with it off every line is a refusal,
+    #   whatever block size it reports (a request can be refused with a bigger block free).
     # - stranded_at_low_mib is the median over the census lines tied at the lowest block (point 4): docked, many tie
     #   at 0 MiB, and the first of them is the least steady choice.
     mem_lines, memory_window = stderr_lines, "to_log_end"
@@ -490,14 +492,12 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
                 cut_idx = len(stderr_lines)
         mem_lines = stderr_lines[:cut_idx]
         memory_window = "to_script_done+10s" if first_after is not None else "to_script_done_line"
-    refused_pool_events = None
-    if stderr_lines:
-        refused_pool_events = 0
-        for l in mem_lines:
-            if "EDEN_REFUSED_POOL" in l:
-                m = REFUSED_LARGEST_RE.search(l)
-                if m is None or int(m.group(1)) < LOW_MIB:
-                    refused_pool_events += 1
+    refused_pool_events, refused_pool_source = None, "missing_no_stderr"
+    if env.get("EDEN_NX2_POOL_WALK", "0") not in ("", "0"):
+        refused_pool_source = "unavailable_pool_walk_on"
+    elif stderr_lines:
+        refused_pool_events = sum(1 for l in mem_lines if "EDEN_REFUSED_POOL" in l)
+        refused_pool_source = "stderr.EDEN_REFUSED_POOL"
     census_rows = [(int(m.group(1)), int(m.group(4))) for l in mem_lines if (m := CENSUS_RE.match(l))]
     seconds_under_16_mib = (round(sum(1 for _, big in census_rows if big < LOW_MIB) * CENSUS_EVERY_S, 1)
                             if census_rows else None)
@@ -610,7 +610,8 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
         "fps_source": fps_source,
         "shader_builds_in_play": shader_builds_in_play, "shader_builds_source": shader_builds_source,
         "largest_free_block_min_mib": largest_free_block_mib, "largest_free_block_source": largest_free_block_source,
-        "refused_pool_events": refused_pool_events, "seconds_under_16_mib": seconds_under_16_mib,
+        "refused_pool_events": refused_pool_events, "refused_pool_source": refused_pool_source,
+        "seconds_under_16_mib": seconds_under_16_mib,
         "stranded_at_low_mib": stranded_at_low_mib, "memory_window": memory_window, "load_s": load_s, "load_source": load_source,
         "largest_free_block_driver_min_mib": driver_free_min,
         # A count at the cap is a floor, not a count: written ">=64" so no reader can compare two floors.

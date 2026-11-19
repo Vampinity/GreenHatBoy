@@ -96,6 +96,10 @@ NUMBERS = {
 }
 STAGES = ("stable", "picture", "fast", "smooth")
 MIN_STARTS = 4
+# The zero-floor rule (PR #24, point 3) covers only these: refusals and seconds under 16 MiB sit at 0 on real controls
+# and one stray line there is noise. radv_oom_events is 0 on every control of six keys, and a driver OOM line there is
+# a real event, so it still blocks (Vampinity, PR #26, point 1).
+ZERO_FLOOR_NUMBERS = frozenset({"refused_pool_events", "seconds_under_16_mib"})
 LOW_MIB = 16   # the wall: stranded_at_low_mib is gated only on keys whose control goes under it (PR #24, point 4)
 # What a side of a comparison must share to be pooled (waveydude, PR #18 review): field -> what it names.
 ARM_FIELDS = {"build_key": "build", "env_hash": "settings (env hash)", "translation_id": "translation id",
@@ -300,9 +304,9 @@ def noise_of_mean(ctrl: dict, n_cand: int) -> float:
     return 2.0 * sd * math.sqrt(1.0 / len(a) + 1.0 / n_cand)
 
 
-def judge_number(ctrl: dict, cand_vals: list[float], n_capped: int = 0) -> dict:
+def judge_number(ctrl: dict, cand_vals: list[float], n_capped: int = 0, name: str = "") -> dict:
     """One number: candidate values against the control's entry from floors.json. n_capped of cand_vals are a
-    counter's cap (a lower bound)."""
+    counter's cap (a lower bound). name decides whether the zero-floor rule applies (ZERO_FLOOR_NUMBERS)."""
     if not ctrl.get("measured") or not cand_vals:
         return {"verdict": "not measured"}
     if ctrl.get("usable") is False:
@@ -327,7 +331,7 @@ def judge_number(ctrl: dict, cand_vals: list[float], n_capped: int = 0) -> dict:
         verdict = "within the noise"
     # A control at 0 on every start has no noise to read against: four starts with one stray line each would read
     # "real" (p 0.029). Until there is a minimum size, a worse reading there is a watch (Vampinity, PR #24, point 3).
-    zero_floor = d < 0 and all(x == 0 for x in a) and verdict.startswith("worse")
+    zero_floor = name in ZERO_FLOOR_NUMBERS and d < 0 and all(x == 0 for x in a) and verdict.startswith("worse")
     if zero_floor:
         verdict = "worse beyond the noise, not yet shown"
     out = {"verdict": verdict, "control_mean": ctrl["mean"], "candidate_mean": round(st.mean(b), 3),
@@ -379,7 +383,7 @@ def check(rows: list[dict], floors: dict) -> list[dict]:
         rep["valid_starts"] = len(alive)
         for name, ctrl in f["numbers"].items():
             vals = [v for v in (number_value(r, name) for r in alive) if v is not None]
-            j = judge_number(ctrl, vals, sum(1 for r in alive if capped(r, name)))
+            j = judge_number(ctrl, vals, sum(1 for r in alive if capped(r, name)), name)
             j["number"] = name
             rep["stages"][ctrl["stage"]].append(j)
         # Verdict in the agreed order. Only a test-backed "worse" moves the verdict (real: p < 0.05, likely: p < 0.2,
