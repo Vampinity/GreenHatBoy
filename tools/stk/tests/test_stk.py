@@ -146,6 +146,126 @@ class Synthetic(unittest.TestCase):
             self.assertIsNone(r["load_s"])                            # no route, no load window
 
 
+def census(n, t, largest, free_pages=100, fragmented=200, slack=300):
+    return (f"EDEN_MEM_CENSUS n={n} why=low t_s={t} largest={largest} low={largest}\n"
+            f"EDEN_MEM_CENSUS_POOL n={n} out=1 heap=1 (pieces=1 live=1 free_pages={free_pages} idle_arenas=1 "
+            f"fragmented={fragmented} large=0 in_use=1) vma_blocks=1 vma_used=1 vma_slack={slack} rest=1 (MiB)\n")
+
+
+DONE = "[EglantinePS5] test: EDEN_TEST script_done at=400.0\n"
+REFUSED = ("EDEN_REFUSED_POOL 12352 MiB in all, 7 MiB free in 314 blocks after 629 questions: the largest {} MiB, "
+           "0 MiB in blocks of 2 MiB or more\n")
+
+
+class MemoryAfterPR24(unittest.TestCase):
+    """Vampinity's review of PR #24 (19 Nov): where the memory numbers stop, what a refusal is, ties at the low."""
+
+    def score(self, stderr):
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "stderr.log").write_text(stderr)
+            return score_run(td, None)
+
+    def test_memory_stops_ten_census_seconds_after_script_done(self):
+        # Census clock behind the script's: cut by log order, then 10 s on the census clock (lines at 380..388).
+        log = (census(1, 300.0, 40) + REFUSED.format(0) + DONE + census(2, 380.0, 2) + REFUSED.format(1)
+               + "".join(census(n, 380.0 + 2 * (n - 2), 3) for n in range(3, 7))   # 382, 384, 386, 388
+               + census(7, 390.0, 0) + REFUSED.format(0) + REFUSED.format(0))       # past the cut
+        r = self.score(log)
+        self.assertEqual(r["memory_window"], "to_script_done+10s")
+        self.assertEqual(r["refused_pool_events"], 2)            # one before script_done, one in the 10 s
+        self.assertEqual(r["seconds_under_16_mib"], 10.0)        # lines 2-6, 2 s each; line 7 is past the cut
+        self.assertEqual(r["largest_free_block_min_mib"], 0)     # the old minimum still reads the whole log
+
+    def test_no_census_after_script_done_stops_at_its_line(self):
+        r = self.score(census(1, 300.0, 4) + DONE + REFUSED.format(0))
+        self.assertEqual(r["memory_window"], "to_script_done_line")
+        self.assertEqual(r["refused_pool_events"], 0)
+
+    def test_without_script_done_the_whole_log_counts(self):
+        r = self.score(census(1, 300.0, 4) + REFUSED.format(0) + census(2, 302.0, 4))
+        self.assertEqual(r["memory_window"], "to_log_end")
+        self.assertEqual(r["refused_pool_events"], 1)
+        self.assertEqual(r["seconds_under_16_mib"], 4.0)
+
+    def score_env(self, stderr, env):
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "stderr.log").write_text(stderr)
+            (Path(td) / "env.txt").write_text(env)
+            return score_run(td, None)
+
+    def test_with_the_pool_walk_on_refusals_are_unavailable(self):
+        # EDEN_NX2_POOL_WALK=1 prints the same line every 20 s from the same ReportPool(); at the wall a periodic
+        # print (here 15 MiB) can't be told from a refusal (waveydude, PR #26).
+        log = census(1, 300.0, 40) + REFUSED.format(7680) + census(2, 320.0, 15) + REFUSED.format(15)
+        r = self.score_env(log, "EDEN_NX2_POOL_WALK=1\n")
+        self.assertIsNone(r["refused_pool_events"])
+        self.assertEqual(r["refused_pool_source"], "unavailable_pool_walk_on")
+        self.assertEqual(r["seconds_under_16_mib"], 2.0)          # the census numbers are untouched
+
+    def test_with_the_walk_off_every_line_is_a_refusal(self):
+        log = REFUSED.format(16) + REFUSED.format(7680) + REFUSED.format(15) + REFUSED.format(0)
+        for env in ("", "EDEN_NX2_POOL_WALK=0\n"):
+            r = self.score_env(log, env)
+            self.assertEqual(r["refused_pool_events"], 4)
+            self.assertEqual(r["refused_pool_source"], "stderr.EDEN_REFUSED_POOL")
+
+    def test_stranded_is_the_median_of_the_ties_at_the_low(self):
+        log = (census(1, 10.0, 0, 100, 200, 300) + census(2, 12.0, 5, 1, 1, 1)
+               + census(3, 14.0, 0, 100, 200, 500) + census(4, 16.0, 0, 100, 200, 900))
+        self.assertEqual(self.score(log)["stranded_at_low_mib"], 100 + 200 + 500)
+
+
+def vi(t, fps):
+    return f"[ {t:7.1f}] x nx2:vi2 5 s: {int(fps * 5)} frames, {fps} fps, mean 30.0 ms, 1% low 40.0 ms, worst 50.0 ms\n"
+
+
+FIELD_MARKS = ("[EglantinePS5] test: EDEN_TEST steer_met line=46 point=1/1 at=10.0\n"
+               "[EglantinePS5] test: EDEN_TEST wait_met line=92 at=100.0\n"
+               "[EglantinePS5] test: EDEN_TEST script_end line=102 at=390.0\n"
+               "[EglantinePS5] test: EDEN_TEST script_done at=390.0\n")
+
+
+class LoadSeconds(unittest.TestCase):
+    """load_s on a made-up field start (Vampinity, PR #24, point 5): the black, the stall, a false start, the hold."""
+
+    def score(self, eden):
+        with tempfile.TemporaryDirectory() as td:
+            write_run(Path(td), eden, FIELD_MARKS, env="EDEN_TEST_SCRIPT=field-to-past-field.txt\n")
+            return score_run(td, None)
+
+    BEFORE = "".join(vi(t, 20.0) for t in range(5, 100, 5))
+    BLACK = "".join(vi(t, 58.0) for t in range(105, 125, 5))           # the load's black: 55 fps or more
+
+    def test_the_load_ends_where_play_holds_for_15_s(self):
+        stall = vi(125, 3.0) + vi(130, 3.0) + vi(135, 9.0) + vi(140, 4.0)  # 135 is good, but 140 drops: not settled
+        r = self.score(self.BEFORE + self.BLACK + stall + "".join(vi(t, 14.0) for t in range(145, 400, 5)))
+        self.assertEqual(r["win_after_field_fps"], 14.0)
+        self.assertEqual(r["load_s"], 40.0)     # the mark at 100 s to the start of the 145 s line (140 s)
+
+    def test_fewer_than_three_settled_lines_never_settle(self):
+        # Play swings 14 / 4 fps: the window's median is 9, half of it 4.5, so no 15 s ever holds (two lines at most).
+        tail = "".join(vi(t, 14.0 if (t // 5) % 2 else 4.0) for t in range(125, 400, 5))
+        r = self.score(self.BEFORE + self.BLACK + tail)
+        self.assertIsNone(r["load_s"])
+        self.assertEqual(r["load_source"], "missing_play_never_settled")
+
+    def test_two_good_lines_before_the_cut_are_not_a_hold(self):
+        # A late load: the black at 300-320, the stall to 390, then 14 fps at 395 and 400 only (script_done + 10 s
+        # = 400 ends play). The window's median is 14, and two lines are short of the 3-line minimum.
+        eden = ("".join(vi(t, 20.0) for t in range(5, 300, 5)) + "".join(vi(t, 58.0) for t in range(300, 325, 5))
+                + "".join(vi(t, 3.0) for t in range(325, 395, 5)) + vi(395, 14.0) + vi(400, 14.0)
+                + "".join(vi(t, 14.0) for t in range(405, 430, 5)))
+        r = self.score(eden)
+        self.assertEqual(r["win_after_field_fps"], 14.0)
+        self.assertIsNone(r["load_s"])
+        self.assertEqual(r["load_source"], "missing_play_never_settled")
+
+    def test_no_black_no_load(self):
+        r = self.score(self.BEFORE + "".join(vi(t, 14.0) for t in range(105, 400, 5)))
+        self.assertIsNone(r["load_s"])
+        self.assertTrue(r["load_source"].startswith("missing_"))
+
+
 class WarmBootLines(unittest.TestCase):
     def test_warm_boot_lines_are_read(self):
         """PR #23 review: the two boot regexes, on the alpha's own wording."""
@@ -268,8 +388,10 @@ class PackedControlStarts(unittest.TestCase):
             self.assertEqual(r["end_kind"], "app_closed", run)
 
     def test_field_and_after_field(self):
-        want = {"run1590": (18.96, 14.00), "run1591": (18.76, 13.40), "run1604": (19.12, 14.00),
-                "run1607": (19.16, 14.10), "run1613": (19.39, 13.30), "run1615": (19.59, 13.80),
+        # After the field as cut at script_done + 10 s (PR #20): run1591 13.40 -> 13.35, run1604 14.00 -> 13.95 and
+        # run1613 13.30 -> 13.35 against his published values, which read to the log's end.
+        want = {"run1590": (18.96, 14.00), "run1591": (18.76, 13.35), "run1604": (19.12, 13.95),
+                "run1607": (19.16, 14.10), "run1613": (19.39, 13.35), "run1615": (19.59, 13.80),
                 "run1616": (19.39, 13.60)}
         for key, (walk, after) in want.items():
             run = next(p for p in V.iterdir() if f"-{key}-" in p.name)

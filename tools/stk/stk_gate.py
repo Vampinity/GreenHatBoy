@@ -96,6 +96,11 @@ NUMBERS = {
 }
 STAGES = ("stable", "picture", "fast", "smooth")
 MIN_STARTS = 4
+# The zero-floor rule (PR #24, point 3) covers only these: refusals and seconds under 16 MiB sit at 0 on real controls
+# and one stray line there is noise. radv_oom_events is 0 on every control of six keys, and a driver OOM line there is
+# a real event, so it still blocks (Vampinity, PR #26, point 1).
+ZERO_FLOOR_NUMBERS = frozenset({"refused_pool_events", "seconds_under_16_mib"})
+LOW_MIB = 16   # the wall: stranded_at_low_mib is gated only on keys whose control goes under it (PR #24, point 4)
 # What a side of a comparison must share to be pooled (waveydude, PR #18 review): field -> what it names.
 ARM_FIELDS = {"build_key": "build", "env_hash": "settings (env hash)", "translation_id": "translation id",
               "script_sha1": "script"}
@@ -265,6 +270,11 @@ def build_floors(rows: list[dict], allow_mixed_boot: set[str] | frozenset = froz
                           "sd": round(st.stdev(vals), 3) if len(vals) > 1 else 0.0,
                           "min": min(vals) if vals else None, "max": max(vals) if vals else None,
                           "floor": round(max(vals) - min(vals), 3) if vals else None}
+            if name == "stranded_at_low_mib" and vals:
+                lows = [number_value(r, "largest_free_block_min_mib") for r in rs]
+                if not any(v is not None and v < LOW_MIB for v in lows):
+                    nums[name].update(usable=False, why=f"the control never goes under {LOW_MIB} MiB on this key: "
+                                                        "what is stranded is read only at the wall (PR #24)")
             if at_cap:
                 nums[name].update(usable=False, why=f"control start(s) at the counter's cap: {', '.join(at_cap)}; "
                                                     "the control's own value is unknown")
@@ -294,9 +304,9 @@ def noise_of_mean(ctrl: dict, n_cand: int) -> float:
     return 2.0 * sd * math.sqrt(1.0 / len(a) + 1.0 / n_cand)
 
 
-def judge_number(ctrl: dict, cand_vals: list[float], n_capped: int = 0) -> dict:
+def judge_number(ctrl: dict, cand_vals: list[float], n_capped: int = 0, name: str = "") -> dict:
     """One number: candidate values against the control's entry from floors.json. n_capped of cand_vals are a
-    counter's cap (a lower bound)."""
+    counter's cap (a lower bound). name decides whether the zero-floor rule applies (ZERO_FLOOR_NUMBERS)."""
     if not ctrl.get("measured") or not cand_vals:
         return {"verdict": "not measured"}
     if ctrl.get("usable") is False:
@@ -319,10 +329,17 @@ def judge_number(ctrl: dict, cand_vals: list[float], n_capped: int = 0) -> dict:
         verdict = "better (real)" if p < 0.05 else ("better (likely)" if p < 0.2 else "better beyond the noise, not yet shown")
     else:
         verdict = "within the noise"
+    # A control at 0 on every start has no noise to read against: four starts with one stray line each would read
+    # "real" (p 0.029). Until there is a minimum size, a worse reading there is a watch (Vampinity, PR #24, point 3).
+    zero_floor = name in ZERO_FLOOR_NUMBERS and d < 0 and all(x == 0 for x in a) and verdict.startswith("worse")
+    if zero_floor:
+        verdict = "worse beyond the noise, not yet shown"
     out = {"verdict": verdict, "control_mean": ctrl["mean"], "candidate_mean": round(st.mean(b), 3),
            "diff": round(diff, 3), "noise": round(noise, 3), "p": round(p, 3), "n_control": len(a), "n_candidate": len(b)}
     if n_capped:
         out["capped"] = n_capped
+    if zero_floor:
+        out["zero_floor"] = True
     return out
 
 
@@ -366,7 +383,7 @@ def check(rows: list[dict], floors: dict) -> list[dict]:
         rep["valid_starts"] = len(alive)
         for name, ctrl in f["numbers"].items():
             vals = [v for v in (number_value(r, name) for r in alive) if v is not None]
-            j = judge_number(ctrl, vals, sum(1 for r in alive if capped(r, name)))
+            j = judge_number(ctrl, vals, sum(1 for r in alive if capped(r, name)), name)
             j["number"] = name
             rep["stages"][ctrl["stage"]].append(j)
         # Verdict in the agreed order. Only a test-backed "worse" moves the verdict (real: p < 0.05, likely: p < 0.2,
@@ -377,8 +394,8 @@ def check(rows: list[dict], floors: dict) -> list[dict]:
         blocking = bad("stable", {"FAILED", "worse (real)"}) + bad("picture", {"worse (real)"})
         explain = (bad("stable", {"worse (likely)"}) + bad("picture", {"worse (likely)"})
                    + bad("fast", {"worse (real)", "worse (likely)"}) + bad("smooth", {"worse (real)", "worse (likely)"}))
-        watch = [x["number"] for s in STAGES for x in rep["stages"][s]
-                 if x["verdict"] == "worse beyond the noise, not yet shown"]
+        watch = [x["number"] + (" (the control is 0 on every start)" if x.get("zero_floor") else "")
+                 for s in STAGES for x in rep["stages"][s] if x["verdict"] == "worse beyond the noise, not yet shown"]
         unusable = [f"{x['number']} ({x['detail']})" for s in STAGES for x in rep["stages"][s] if x["verdict"] == "unusable"]
         # Is the arm complete? The 4-a-side rule, on the starts and on each stable number the floor gates on.
         short = []
@@ -399,6 +416,7 @@ def check(rows: list[dict], floors: dict) -> list[dict]:
             short += [f"control: {u}" for u in f["arm_unverified"]]
         else:   # Vampinity's note (PR #18): a floor built before the arm check can't vouch for its control's arm
             short.append("control arm not checked (the floor file predates the arm check; rebuild it)")
+        mixed_boot = None
         # The warm boot (19 Nov): a candidate whose boot isn't the prepared state, or isn't the control's, settles
         # nothing about the change it carries.
         if rep["key"].split("|")[2] == "warm":   # rep["key"], not k: the loop above reuses k for run ids
@@ -407,11 +425,9 @@ def check(rows: list[dict], floors: dict) -> list[dict]:
                 if (wp := warm_boot_problem(r)):
                     short.append(f"{r.get('run_id')} warm boot not prepared ({wp})")
             cand_boots = {warm_boot_of(r) for r in alive} - {None}
-            if len(cand_boots) > 1:   # the candidate arm itself pools two warm states
-                rep.update(verdict="MIXED", why="the candidate arm boots differently: " + ", ".join(sorted(cand_boots)))
-                reports.append(rep)
-                continue
-            if "warm_boot" not in f:
+            if len(cand_boots) > 1:   # the candidate arm itself pools two warm states; decided below, after BLOCK
+                mixed_boot = "the candidate arm boots differently: " + ", ".join(sorted(cand_boots))
+            elif "warm_boot" not in f:
                 short.append("control warm boot not recorded (the floor file predates the check; rebuild it)")
             else:
                 ctrl_boots = set(f["warm_boot"]) - {"not logged"}
@@ -430,6 +446,10 @@ def check(rows: list[dict], floors: dict) -> list[dict]:
         rep["not_cleared"] = not_cleared
         if blocking:
             rep["verdict"] = "BLOCK"
+            if mixed_boot:   # a crash or a real loss blocks whatever the arm pools (Vampinity, PR #24)
+                rep["notes"].append(mixed_boot)
+        elif mixed_boot:
+            rep.update(verdict="MIXED", why=mixed_boot)
         elif not alive:
             rep["verdict"] = "INVALID"
         elif short:
