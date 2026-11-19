@@ -12,6 +12,6 @@
   "console": "base PS5, handheld, 1x",
   "env_from": "env-control/env.txt, no line changed",
   "capture": "video for BW1; others optional",
-  "intent": "Baseline (v9): WARM control 3 of 4 on the shared store built in runWS2 (shader set prepass on the alpha), same route and env as the cold floor (runBW1). Store-only: the GROWS files restored from the runWS2 copy first.",
+  "intent": "Baseline (v9): WARM control 3 of 4 on the shared store built in runWS2 (shader set prepass on the alpha), same route and env as the cold floor (runBW1). The whole cache (user/cache and cache) restored from the runWS2 copy first (warm-run-steps, step 0); the boot shows it: 80770 reused, 80770 known, 3 own records, Total Pipeline Count 4. (Wording corrected 19 Nov; it said 'the GROWS files restored', written before the decision.)",
   "written": "2026-11-18"
 }
