@@ -77,6 +77,22 @@
      "max": 1,
      "floor": 1
     },
+    "load_s": {
+     "stage": "smooth",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      159.0,
+      146.0,
+      164.6,
+      151.8
+     ],
+     "mean": 155.35,
+     "sd": 8.143,
+     "min": 146.0,
+     "max": 164.6,
+     "floor": 18.6
+    },
     "radv_oom_events": {
      "stage": "stable",
      "direction": -1,
@@ -93,6 +109,54 @@
      "floor": 1,
      "usable": false,
      "why": "control start(s) at the counter's cap: runFC4; the control's own value is unknown"
+    },
+    "refused_pool_events": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      0,
+      0,
+      11,
+      0
+     ],
+     "mean": 2.75,
+     "sd": 5.5,
+     "min": 0,
+     "max": 11,
+     "floor": 11
+    },
+    "seconds_under_16_mib": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      38.0,
+      30.0,
+      26.0,
+      42.0
+     ],
+     "mean": 34.0,
+     "sd": 7.303,
+     "min": 26.0,
+     "max": 42.0,
+     "floor": 16.0
+    },
+    "stranded_at_low_mib": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      1014,
+      1155,
+      974,
+      1106
+     ],
+     "mean": 1062.25,
+     "sd": 82.931,
+     "min": 974,
+     "max": 1155,
+     "floor": 181
     },
     "win_after_field_fps": {
      "stage": "fast",
@@ -220,6 +284,12 @@
      "max": 479,
      "floor": 260
     },
+    "load_s": {
+     "stage": "smooth",
+     "direction": -1,
+     "values": [],
+     "measured": false
+    },
     "radv_oom_events": {
      "stage": "stable",
      "direction": -1,
@@ -235,6 +305,54 @@
      "min": 0,
      "max": 0,
      "floor": 0
+    },
+    "refused_pool_events": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "mean": 0,
+     "sd": 0.0,
+     "min": 0,
+     "max": 0,
+     "floor": 0
+    },
+    "seconds_under_16_mib": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "mean": 0.0,
+     "sd": 0.0,
+     "min": 0.0,
+     "max": 0.0,
+     "floor": 0.0
+    },
+    "stranded_at_low_mib": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      819,
+      759,
+      904,
+      790
+     ],
+     "mean": 818,
+     "sd": 62.348,
+     "min": 759,
+     "max": 904,
+     "floor": 145
     },
     "win_stop_A_fps": {
      "stage": "fast",
@@ -394,6 +512,12 @@
      "max": 18,
      "floor": 15
     },
+    "load_s": {
+     "stage": "smooth",
+     "direction": -1,
+     "values": [],
+     "measured": false
+    },
     "radv_oom_events": {
      "stage": "stable",
      "direction": -1,
@@ -409,6 +533,54 @@
      "min": 0,
      "max": 0,
      "floor": 0
+    },
+    "refused_pool_events": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "mean": 0,
+     "sd": 0.0,
+     "min": 0,
+     "max": 0,
+     "floor": 0
+    },
+    "seconds_under_16_mib": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      0.0,
+      0.0,
+      2.0,
+      2.0
+     ],
+     "mean": 1.0,
+     "sd": 1.155,
+     "min": 0.0,
+     "max": 2.0,
+     "floor": 2.0
+    },
+    "stranded_at_low_mib": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      955,
+      935,
+      867,
+      920
+     ],
+     "mean": 919.25,
+     "sd": 37.669,
+     "min": 867,
+     "max": 955,
+     "floor": 88
     },
     "win_field_fps": {
      "stage": "fast",
@@ -536,6 +708,12 @@
      "max": 362,
      "floor": 197
     },
+    "load_s": {
+     "stage": "smooth",
+     "direction": -1,
+     "values": [],
+     "measured": false
+    },
     "radv_oom_events": {
      "stage": "stable",
      "direction": -1,
@@ -551,6 +729,54 @@
      "min": 0,
      "max": 0,
      "floor": 0
+    },
+    "refused_pool_events": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "mean": 0,
+     "sd": 0.0,
+     "min": 0,
+     "max": 0,
+     "floor": 0
+    },
+    "seconds_under_16_mib": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "mean": 0.0,
+     "sd": 0.0,
+     "min": 0.0,
+     "max": 0.0,
+     "floor": 0.0
+    },
+    "stranded_at_low_mib": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      848,
+      754,
+      716,
+      891
+     ],
+     "mean": 802.25,
+     "sd": 81.111,
+     "min": 716,
+     "max": 891,
+     "floor": 175
     },
     "win_village_fps": {
      "stage": "fast",
@@ -603,26 +829,5 @@
    }
   }
  },
- "skipped": [
-  {
-   "run": "runBW3",
-   "why": "no gate key"
-  },
-  {
-   "run": "runFC1",
-   "why": "not control_eligible"
-  },
-  {
-   "run": "runKV3",
-   "why": "not control_eligible"
-  },
-  {
-   "run": "runLV1",
-   "why": "not control_eligible"
-  },
-  {
-   "run": "runLV5",
-   "why": "not control_eligible"
-  }
- ]
+ "skipped": []
 }

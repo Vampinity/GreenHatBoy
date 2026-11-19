@@ -53,6 +53,9 @@ DRIVER_LOADED_RE = re.compile(r"Loaded Vulkan driver pipeline cache")
 SDK_RE = re.compile(r"sdk_version\s+0x([0-9a-fA-F]+)")
 BOOT_BUILD_RE = re.compile(r"diagnostic build\s+(\S+)\s+\(([^)]*)\)")
 CENSUS_RE = re.compile(r"^EDEN_MEM_CENSUS\s+n=(\d+)\s+why=(\S+)\s+t_s=([\d.]+)\s+largest=(\d+)")
+CENSUS_POOL_RE = re.compile(r"^EDEN_MEM_CENSUS_POOL\s+n=(\d+)\b.*?free_pages=(\d+).*?fragmented=(\d+).*?vma_slack=(\d+)")
+LOW_MIB = 16          # "under 16 MiB": the census's own low mark for the largest free block (19 Nov)
+CENSUS_EVERY_S = 2.0  # one EDEN_MEM_CENSUS line every 2 s
 RADV_MEM_RE = re.compile(r"^RADV_PS5_MEMORY\s+t_s=([\d.]+)\s+pool_mib=(\d+)\s+available_mib=(\d+)")
 POOL_MEM_RE = re.compile(r"EDEN_MEMORY\s+pool\s+largest\s+free\s+block\s+(\d+)\s+MiB")
 FLASH_RE = re.compile(r"\[\s*([\d.]+)\].*EDEN_UP_FLASH\s+frame")
@@ -393,6 +396,33 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
             route_windows[f"win_{wname}_n"] = n
             route_windows[f"win_{wname}_source"] = why
 
+    # The load (MEASURING.md: "black screen at each load"), for routes with a load window: from the load's mark to the
+    # start of the first 5 s line from which play holds at half the after-load fps or more for 15 s. It takes in the
+    # black (about 60 fps) and the stall after it (0-6 fps) and ends when play has settled; the search starts after the
+    # black's last 5 s line, as the after_load_low window does. 5 s resolution.
+    load_s, load_source = None, "no_load_window_on_this_route"
+    for wname, defn in (routes.get(route_key, {}) if route_key else {}).get("windows", {}).items():
+        if defn.get("kind") != "after_load_low":
+            continue
+        e, steady = marks.get(defn["after_line"]), route_windows.get(f"win_{wname}_fps")
+        if e is None or not steady:
+            load_s, load_source = None, f"missing_mark_or_window_{wname}"
+            break
+        after = [w for w in vi if w[0] > e and (play_end is None or w[0] <= play_end)]
+        fast = [w for w in after if w[2] >= defn["fast_fps"]]   # the black, as the load window finds it
+        if not fast:
+            load_source = "missing_fast_load_stretch"
+            break
+        after = [w for w in after if w[0] > fast[-1][0]]
+        for i, w in enumerate(after):
+            span = [x for x in after[i:] if x[0] <= w[0] + 15.0]
+            if len(span) >= 3 and all(x[2] >= steady / 2 for x in span):
+                load_s, load_source = round(max(0.0, w[0] - 5.0 - e), 1), f"eden_log.nx2_vi2_5s_after_line_{defn['after_line']}"
+                break
+        else:
+            load_source = "missing_play_never_settled"
+        break
+
     shader_builds_in_play, shader_builds_source = None, "missing_no_eden_log"
     if eden_lines:
         shader_builds_in_play = sum(1 for l in eden_lines
@@ -417,6 +447,25 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
             if m:
                 largest_free_block_mib, largest_free_block_source = int(m.group(1)), f"crash_file.{crash_files[-1].name}"
     driver_free_min = min(radv) if radv else None
+
+    # Memory at the wall (19 Nov, Fable's check of the Phase 4 plan): the free block's minimum sits at 0-2 MiB on the
+    # field route, so it can't show a change for the worse. Three numbers that can, all from lines the alpha logs:
+    # - refused_pool_events: EDEN_REFUSED_POOL lines (the pool refused an allocation; not capped like the OOM lines);
+    # - seconds_under_16_mib: census lines whose largest free block is under 16 MiB, at 2 s each;
+    # - stranded_at_low_mib: at the census with the lowest largest free block, what is free but unusable: the heap's
+    #   free pages + fragmented + the GPU blocks' slack (the same pool line memmap.py reads).
+    refused_pool_events = sum(1 for l in stderr_lines if "EDEN_REFUSED_POOL" in l) if stderr_lines else None
+    census_rows = [(int(m.group(1)), int(m.group(4))) for l in stderr_lines if (m := CENSUS_RE.match(l))]
+    seconds_under_16_mib = (round(sum(1 for _, big in census_rows if big < LOW_MIB) * CENSUS_EVERY_S, 1)
+                            if census_rows else None)
+    stranded_at_low_mib = None
+    if census_rows:
+        low_n = min(census_rows, key=lambda r: r[1])[0]
+        for l in stderr_lines:
+            m = CENSUS_POOL_RE.match(l)
+            if m and int(m.group(1)) == low_n:
+                stranded_at_low_mib = int(m.group(2)) + int(m.group(3)) + int(m.group(4))
+                break
 
     hitch_ms_per_min, hitch_source = None, "missing_no_flight_recorder_or_hitch_trace"
     hitch_vals = [float(m.group(1)) for l in (eden_lines + stderr_lines) if (m := HITCH_LINE_RE.search(l))]
@@ -517,6 +566,8 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
         "fps_source": fps_source,
         "shader_builds_in_play": shader_builds_in_play, "shader_builds_source": shader_builds_source,
         "largest_free_block_min_mib": largest_free_block_mib, "largest_free_block_source": largest_free_block_source,
+        "refused_pool_events": refused_pool_events, "seconds_under_16_mib": seconds_under_16_mib,
+        "stranded_at_low_mib": stranded_at_low_mib, "load_s": load_s, "load_source": load_source,
         "largest_free_block_driver_min_mib": driver_free_min,
         # A count at the cap is a floor, not a count: written ">=64" so no reader can compare two floors.
         "radv_oom_events": (f">={OOM_LOG_CAP}" if (radv_oom is not None and radv_oom >= OOM_LOG_CAP) else radv_oom),

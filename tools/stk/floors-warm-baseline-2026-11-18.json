@@ -77,6 +77,12 @@
      "max": 720,
      "floor": 224
     },
+    "load_s": {
+     "stage": "smooth",
+     "direction": -1,
+     "values": [],
+     "measured": false
+    },
     "radv_oom_events": {
      "stage": "stable",
      "direction": -1,
@@ -92,6 +98,54 @@
      "min": 0,
      "max": 0,
      "floor": 0
+    },
+    "refused_pool_events": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "mean": 0,
+     "sd": 0.0,
+     "min": 0,
+     "max": 0,
+     "floor": 0
+    },
+    "seconds_under_16_mib": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "mean": 0.0,
+     "sd": 0.0,
+     "min": 0.0,
+     "max": 0.0,
+     "floor": 0.0
+    },
+    "stranded_at_low_mib": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      475,
+      522,
+      910,
+      908
+     ],
+     "mean": 703.75,
+     "sd": 237.779,
+     "min": 475,
+     "max": 910,
+     "floor": 435
     },
     "win_village_fps": {
      "stage": "fast",

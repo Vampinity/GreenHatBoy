@@ -84,10 +84,15 @@ NUMBERS = {
     "largest_free_block_min_mib": ("stable", +1),
     "largest_free_block_driver_min_mib": ("stable", +1),
     "radv_oom_events": ("stable", -1),
+    # 19 Nov: memory at the wall, where the free block's minimum sits at 0-2 MiB and can't move down.
+    "refused_pool_events": ("stable", -1),
+    "seconds_under_16_mib": ("stable", -1),
+    "stranded_at_low_mib": ("stable", -1),
     "flashes_per_min": ("picture", -1),
     "fps_median": ("fast", +1),
     "hitch_ms_per_min": ("smooth", -1),
     "worst_frame_ms": ("smooth", -1),
+    "load_s": ("smooth", -1),   # the load, black plus stall (MEASURING.md's own column, never in the hitch score)
 }
 STAGES = ("stable", "picture", "fast", "smooth")
 MIN_STARTS = 4
