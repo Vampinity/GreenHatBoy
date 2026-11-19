@@ -1,0 +1,16 @@
+{
+  "run_id": "runWV3",
+  "control": true,
+  "intended_cache": "warm",
+  "route": "later-area-village-lap.v2.txt",
+  "route_sha1_12": "9f0a63d5964a",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt, one line changed (the script)",
+  "intent": "Later area (village v2): WARM control 3 of 4 on the shared store built in runWS2 (shader set prepass on the alpha), same route and env as the cold floor (runLV2). The whole cache (user/cache and cache) restored from the runWS2 copy first (WARM-RUN-STEPS.md step 0).",
+  "written": "2026-11-18"
+}
