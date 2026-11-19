@@ -1,0 +1,17 @@
+{
+  "run_id": "runWB2",
+  "control": true,
+  "intended_cache": "warm",
+  "route": "zelda-first-start-watch-wait-30s.v9.txt",
+  "route_sha1_12": "d6e6b8d4cf42",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt, no line changed",
+  "capture": "video for BW1; others optional",
+  "intent": "Baseline (v9): WARM control 2 of 4 on the shared store built in runWS2 (shader set prepass on the alpha), same route and env as the cold floor (runBW1). Store-only: the GROWS files restored from the runWS2 copy first.",
+  "written": "2026-11-18"
+}

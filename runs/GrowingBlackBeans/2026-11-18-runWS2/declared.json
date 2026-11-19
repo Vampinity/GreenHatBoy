@@ -1,0 +1,15 @@
+{
+  "run_id": "runWS2",
+  "control": false,
+  "intended_cache": "cold",
+  "route": null,
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt without the script, plus Vampinity's seven prepass lines (D2, 14 Nov)",
+  "intent": "Second try at building the shared warm store: runWS1 had no recipe (it lives in the cache folder that was set aside). Same env, recipe oot-v131072-cache-v54.nx2recipe (sha256 b5cd068b...) put back in user/cache/shader/0400486024dec000/ after setting the caches aside.",
+  "written": "2026-11-18"
+}

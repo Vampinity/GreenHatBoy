@@ -1,0 +1,15 @@
+{
+  "run_id": "runWS1",
+  "control": false,
+  "intended_cache": "cold",
+  "route": null,
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt without the script, plus Vampinity's seven prepass lines (D2, 14 Nov)",
+  "intent": "Build the shared warm store (shader set prepass) on the alpha, from empty. Not a measured start: its log gives the store's record and pipeline count for the warm controls.",
+  "written": "2026-11-18"
+}

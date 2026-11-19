@@ -1,0 +1,180 @@
+{
+ "_doc": "stk_gate.py floors: per gate key, the control's values per number; floor = the spread of one start (max - min); check reads means against the noise of a mean, from sd. usable: false = a control start at a counter's cap.",
+ "keys": {
+  "kokiri-four-stops-v2|13.60|warm|prep_5093ab9e|80770": {
+   "n": 4,
+   "runs": [
+    "runWK1",
+    "runWK2",
+    "runWK3",
+    "runWK4"
+   ],
+   "arm": {
+    "build_key": "01.219.028 (Nov 14 2026 23:24:15)",
+    "env_hash": "57c08732c8ee",
+    "translation_id": "src7f9773909a21e3689fd7c18d27a3c10c",
+    "script_sha1": "d40196a1a1d0"
+   },
+   "arm_unverified": [],
+   "numbers": {
+    "flashes_per_min": {
+     "stage": "picture",
+     "direction": -1,
+     "values": [],
+     "measured": false
+    },
+    "fps_median": {
+     "stage": "fast",
+     "direction": 1,
+     "measured": true,
+     "values": [
+      19.3,
+      18.9,
+      19.25,
+      18.9
+     ],
+     "mean": 19.087,
+     "sd": 0.217,
+     "min": 18.9,
+     "max": 19.3,
+     "floor": 0.4
+    },
+    "hitch_ms_per_min": {
+     "stage": "smooth",
+     "direction": -1,
+     "values": [],
+     "measured": false
+    },
+    "largest_free_block_driver_min_mib": {
+     "stage": "stable",
+     "direction": 1,
+     "measured": true,
+     "values": [
+      532,
+      695,
+      708,
+      760
+     ],
+     "mean": 673.75,
+     "sd": 98.585,
+     "min": 532,
+     "max": 760,
+     "floor": 228
+    },
+    "largest_free_block_min_mib": {
+     "stage": "stable",
+     "direction": 1,
+     "measured": true,
+     "values": [
+      532,
+      645,
+      704,
+      697
+     ],
+     "mean": 644.5,
+     "sd": 79.484,
+     "min": 532,
+     "max": 704,
+     "floor": 172
+    },
+    "radv_oom_events": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "mean": 0,
+     "sd": 0.0,
+     "min": 0,
+     "max": 0,
+     "floor": 0
+    },
+    "win_stop_A_fps": {
+     "stage": "fast",
+     "direction": 1,
+     "measured": true,
+     "values": [
+      19.46,
+      19.26,
+      19.24,
+      19.44
+     ],
+     "mean": 19.35,
+     "sd": 0.116,
+     "min": 19.24,
+     "max": 19.46,
+     "floor": 0.22
+    },
+    "win_stop_B_fps": {
+     "stage": "fast",
+     "direction": 1,
+     "measured": true,
+     "values": [
+      29.73,
+      29.86,
+      29.35,
+      30.01
+     ],
+     "mean": 29.738,
+     "sd": 0.283,
+     "min": 29.35,
+     "max": 30.01,
+     "floor": 0.66
+    },
+    "win_stop_C_fps": {
+     "stage": "fast",
+     "direction": 1,
+     "measured": true,
+     "values": [
+      17.53,
+      17.52,
+      17.99,
+      17.75
+     ],
+     "mean": 17.697,
+     "sd": 0.222,
+     "min": 17.52,
+     "max": 17.99,
+     "floor": 0.47
+    },
+    "win_stop_D_fps": {
+     "stage": "fast",
+     "direction": 1,
+     "measured": true,
+     "values": [
+      17.55,
+      17.96,
+      18.78,
+      17.68
+     ],
+     "mean": 17.992,
+     "sd": 0.552,
+     "min": 17.55,
+     "max": 18.78,
+     "floor": 1.23
+    },
+    "worst_frame_ms": {
+     "stage": "smooth",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      2814.4,
+      2974.5,
+      2974.1,
+      2960.3
+     ],
+     "mean": 2930.825,
+     "sd": 77.897,
+     "min": 2814.4,
+     "max": 2974.5,
+     "floor": 160.1
+    }
+   }
+  }
+ },
+ "skipped": []
+}

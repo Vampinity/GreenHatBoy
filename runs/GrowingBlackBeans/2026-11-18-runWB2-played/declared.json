@@ -1,0 +1,17 @@
+{
+  "run_id": "runWB2-played",
+  "control": false,
+  "intended_cache": "warm",
+  "route": "zelda-first-start-watch-wait-30s.v9.txt",
+  "route_sha1_12": "d6e6b8d4cf42",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt, no line changed",
+  "capture": "video for BW1; others optional",
+  "intent": "Played warm (not a control): the store plus runWB1's own records. Kept as a returning-player data point; the warm control is store-only from 18 Nov (WARM-RUN-STEPS.md, restore).",
+  "written": "2026-11-18"
+}
