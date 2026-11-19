@@ -141,6 +141,14 @@
      "max": 3881.5,
      "floor": 131.3
     }
+   },
+   "warm_boot": {
+    "own 3 / total 4": [
+     "runWV2",
+     "runWV3",
+     "runWV4",
+     "runWV5"
+    ]
    }
   }
  },

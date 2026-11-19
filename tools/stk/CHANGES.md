@@ -206,3 +206,15 @@ All 21 cold starts closed normally, so none changes class: KV3, LV5 and FC1 stay
 
 All 21 cold starts record all four, so the floors are unchanged (`arm_unverified` empty on every key). 99 tests.
 
+
+## 19 Nov: the warm boot, and two gate notes
+
+- **The warm boot is checked, not only N.** `stk_score.py` reads `pipelines_known`, `left_to_prepare` and
+  `own_records` from the boot's shader preparation lines. `stk_gate.py floors` leaves out a warm control whose
+  boot isn't prepared (pipelines known not equal to the store's N, or any left to prepare), and records each
+  warm floor's boots as `warm_boot` (`own <records> / total <count>`, with the runs). `check` reads a warm
+  candidate whose boot isn't prepared, or isn't one of the control's, as PROVISIONAL and names it. A floor file
+  without `warm_boot` gets a note saying so. On our runs: runWB2-played (820 own, 80,797 known) is caught;
+  WV2-5 pass. The four warm floor files are rebuilt with it; their numbers are unchanged.
+- **Vampinity's two notes on PR #18:** MIXED now lists the fields not recorded as well as the ones that differ;
+  a floor file built before the arm check (no `arm_unverified`) gets a note instead of passing as verified.

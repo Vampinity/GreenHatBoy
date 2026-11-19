@@ -115,6 +115,27 @@ def arm_of(rows: list[dict]) -> tuple[dict, list[str], list[str]]:
     return ident, mixed, unverified
 
 
+def warm_boot_of(row: dict) -> str | None:
+    """A warm start's boot beyond N: "own <records> / total <count>", or None when not warm or not logged."""
+    if row.get("cache_class") != "warm" or row.get("own_records") is None or row.get("total_pipeline_count") is None:
+        return None
+    return f"own {row['own_records']} / total {row['total_pipeline_count']}"
+
+
+def warm_boot_problem(row: dict) -> str | None:
+    """Why a warm start's boot is not the prepared state (every store pipeline known, none left), or None."""
+    if row.get("cache_class") != "warm":
+        return None
+    known, left, n = row.get("pipelines_known"), row.get("left_to_prepare"), row.get("store_pipelines")
+    if known is None or left is None:
+        return "the boot's 'pipelines known' line is missing"
+    if n is not None and known != n:
+        return f"{known} pipelines known, the store holds {n}"
+    if left:
+        return f"{left} pipelines left to prepare at boot"
+    return None
+
+
 def gate_key(row: dict) -> str | None:
     cc = row.get("cache_class")
     if cc not in ("cold", "warm") or not row.get("route_key") or not row.get("firmware"):
@@ -208,6 +229,9 @@ def build_floors(rows: list[dict]) -> dict:
         if not r.get("control_eligible") or k is None:
             skipped.append({"run": r.get("run_id"), "why": "not control_eligible" if k else "no gate key"})
             continue
+        if (wp := warm_boot_problem(r)):
+            skipped.append({"run": r.get("run_id"), "why": f"warm boot not prepared: {wp}"})
+            continue
         groups.setdefault(k, []).append(r)
     out = {"_doc": "stk_gate.py floors: per gate key, the control's values per number; floor = the spread of one "
                    "start (max - min); check reads means against the noise of a mean, from sd. usable: false = a "
@@ -239,6 +263,11 @@ def build_floors(rows: list[dict]) -> dict:
                                                     "the control's own value is unknown")
         out["keys"][k] = {"n": len(rs), "runs": [r.get("run_id") for r in rs], "arm": ident,
                           "arm_unverified": ctrl_unverified, "numbers": nums}
+        if k.split("|")[2] == "warm":   # the warm boots the control was built from, with the runs of each
+            seen: dict = {}
+            for r in rs:
+                seen.setdefault(warm_boot_of(r) or "not logged", []).append(r.get("run_id"))
+            out["keys"][k]["warm_boot"] = seen
     return out
 
 
@@ -301,8 +330,9 @@ def check(rows: list[dict], floors: dict) -> list[dict]:
         ident, mixed, unverified = arm_of(rs)
         rep["arm"] = ident
         if mixed:
+            # Vampinity's note (PR #18): say what is missing as well as what differs.
             rep.update(verdict="MIXED", why="the candidate arm pools different things; check each on its own: "
-                                            + " | ".join(mixed))
+                                            + " | ".join(mixed + unverified))
             reports.append(rep)
             continue
         # Stage 1, survival first. A crash or a lost route counts against the candidate; a start quit before END, or
@@ -349,7 +379,26 @@ def check(rows: list[dict], floors: dict) -> list[dict]:
             if len(ctrl["values"]) < MIN_STARTS:
                 short.append(f"{name} on {len(ctrl['values'])} control start(s)")
         short += unverified
-        short += [f"control: {u}" for u in f.get("arm_unverified", [])]
+        if "arm_unverified" in f:
+            short += [f"control: {u}" for u in f["arm_unverified"]]
+        else:   # Vampinity's note (PR #18): a floor built before the arm check can't vouch for its control's arm
+            rep["notes"].append("control arm not checked: this floor file predates the arm check; rebuild it")
+        # The warm boot (19 Nov): a candidate whose boot isn't the prepared state, or isn't the control's, settles
+        # nothing about the change it carries.
+        if rep["key"].split("|")[2] == "warm":   # rep["key"], not k: the loop above reuses k for run ids
+            for r in rs:
+                if (wp := warm_boot_problem(r)):
+                    short.append(f"{r.get('run_id')} warm boot not prepared ({wp})")
+            if "warm_boot" not in f:
+                rep["notes"].append("control warm boot not recorded: this floor file predates the check; rebuild it")
+            else:
+                ctrl_boots = set(f["warm_boot"]) - {"not logged"}
+                for r in rs:
+                    b = warm_boot_of(r)
+                    if b is None:
+                        short.append(f"{r.get('run_id')} warm boot not logged")
+                    elif ctrl_boots and b not in ctrl_boots:
+                        short.append(f"{r.get('run_id')} warm boot {b}, the control's: {', '.join(sorted(ctrl_boots))}")
         if short:
             rep["provisional"] = "; ".join(short) + f": the rule is {MIN_STARTS} a side"
         # What a PASS could not clear: numbers the floor has no reading of, or can't use.

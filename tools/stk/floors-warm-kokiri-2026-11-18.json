@@ -173,6 +173,14 @@
      "max": 2974.5,
      "floor": 160.1
     }
+   },
+   "warm_boot": {
+    "own 3 / total 4": [
+     "runWK1",
+     "runWK2",
+     "runWK3",
+     "runWK4"
+    ]
    }
   }
  },
