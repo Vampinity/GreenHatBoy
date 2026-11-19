@@ -1,0 +1,148 @@
+{
+ "_doc": "stk_gate.py floors: per gate key, the control's values per number; floor = the spread of one start (max - min); check reads means against the noise of a mean, from sd. usable: false = a control start at a counter's cap.",
+ "keys": {
+  "later-area-village-lap-v2|13.60|warm|prep_5093ab9e|80770": {
+   "n": 4,
+   "runs": [
+    "runWV2",
+    "runWV3",
+    "runWV4",
+    "runWV5"
+   ],
+   "arm": {
+    "build_key": "01.219.028 (Nov 14 2026 23:24:15)",
+    "env_hash": "57c08732c8ee",
+    "translation_id": "src7f9773909a21e3689fd7c18d27a3c10c",
+    "script_sha1": "9f0a63d5964a"
+   },
+   "arm_unverified": [],
+   "numbers": {
+    "flashes_per_min": {
+     "stage": "picture",
+     "direction": -1,
+     "values": [],
+     "measured": false
+    },
+    "fps_median": {
+     "stage": "fast",
+     "direction": 1,
+     "measured": true,
+     "values": [
+      13.65,
+      14.9,
+      14.95,
+      13.3
+     ],
+     "mean": 14.2,
+     "sd": 0.85,
+     "min": 13.3,
+     "max": 14.95,
+     "floor": 1.65
+    },
+    "hitch_ms_per_min": {
+     "stage": "smooth",
+     "direction": -1,
+     "values": [],
+     "measured": false
+    },
+    "largest_free_block_driver_min_mib": {
+     "stage": "stable",
+     "direction": 1,
+     "measured": true,
+     "values": [
+      101,
+      150,
+      144,
+      122
+     ],
+     "mean": 129.25,
+     "sd": 22.351,
+     "min": 101,
+     "max": 150,
+     "floor": 49
+    },
+    "largest_free_block_min_mib": {
+     "stage": "stable",
+     "direction": 1,
+     "measured": true,
+     "values": [
+      97,
+      221,
+      144,
+      168
+     ],
+     "mean": 157.5,
+     "sd": 51.591,
+     "min": 97,
+     "max": 221,
+     "floor": 124
+    },
+    "radv_oom_events": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "mean": 0,
+     "sd": 0.0,
+     "min": 0,
+     "max": 0,
+     "floor": 0
+    },
+    "win_field_fps": {
+     "stage": "fast",
+     "direction": 1,
+     "measured": true,
+     "values": [
+      13.2,
+      13.2,
+      13.1,
+      12.8
+     ],
+     "mean": 13.075,
+     "sd": 0.189,
+     "min": 12.8,
+     "max": 13.2,
+     "floor": 0.4
+    },
+    "win_village_lap_fps": {
+     "stage": "fast",
+     "direction": 1,
+     "measured": true,
+     "values": [
+      19.33,
+      18.97,
+      19.41,
+      19.17
+     ],
+     "mean": 19.22,
+     "sd": 0.194,
+     "min": 18.97,
+     "max": 19.41,
+     "floor": 0.44
+    },
+    "worst_frame_ms": {
+     "stage": "smooth",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      3881.5,
+      3847.1,
+      3750.2,
+      3801.6
+     ],
+     "mean": 3820.1,
+     "sd": 56.942,
+     "min": 3750.2,
+     "max": 3881.5,
+     "floor": 131.3
+    }
+   }
+  }
+ },
+ "skipped": []
+}

@@ -1,0 +1,147 @@
+{
+ "_doc": "stk_gate.py floors: per gate key, the control's values per number; floor = the spread of one start (max - min); check reads means against the noise of a mean, from sd. usable: false = a control start at a counter's cap.",
+ "keys": {
+  "field-to-past-field|13.60|warm|prep_5093ab9e|80770": {
+   "n": 4,
+   "runs": [
+    "runWF2",
+    "runWF3",
+    "runWF4",
+    "runWF5"
+   ],
+   "arm": {
+    "build_key": "01.219.028 (Nov 14 2026 23:24:15)",
+    "env_hash": "57c08732c8ee",
+    "translation_id": "src7f9773909a21e3689fd7c18d27a3c10c",
+    "script_sha1": "c4fada64155f"
+   },
+   "arm_unverified": [],
+   "numbers": {
+    "flashes_per_min": {
+     "stage": "picture",
+     "direction": -1,
+     "values": [],
+     "measured": false
+    },
+    "fps_median": {
+     "stage": "fast",
+     "direction": 1,
+     "measured": true,
+     "values": [
+      14.2,
+      14.2,
+      14.2,
+      14.3
+     ],
+     "mean": 14.225,
+     "sd": 0.05,
+     "min": 14.2,
+     "max": 14.3,
+     "floor": 0.1
+    },
+    "hitch_ms_per_min": {
+     "stage": "smooth",
+     "direction": -1,
+     "values": [],
+     "measured": false
+    },
+    "largest_free_block_driver_min_mib": {
+     "stage": "stable",
+     "direction": 1,
+     "measured": true,
+     "values": [
+      0,
+      5,
+      0,
+      0
+     ],
+     "mean": 1.25,
+     "sd": 2.5,
+     "min": 0,
+     "max": 5,
+     "floor": 5
+    },
+    "largest_free_block_min_mib": {
+     "stage": "stable",
+     "direction": 1,
+     "measured": true,
+     "values": [
+      0,
+      2,
+      0,
+      0
+     ],
+     "mean": 0.5,
+     "sd": 1.0,
+     "min": 0,
+     "max": 2,
+     "floor": 2
+    },
+    "radv_oom_events": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      18
+     ],
+     "mean": 18,
+     "sd": 0.0,
+     "min": 18,
+     "max": 18,
+     "floor": 0,
+     "usable": false,
+     "why": "control start(s) at the counter's cap: runWF2, runWF4, runWF5; the control's own value is unknown"
+    },
+    "win_after_field_fps": {
+     "stage": "fast",
+     "direction": 1,
+     "measured": true,
+     "values": [
+      14.4,
+      14.1,
+      14.3,
+      14.6
+     ],
+     "mean": 14.35,
+     "sd": 0.208,
+     "min": 14.1,
+     "max": 14.6,
+     "floor": 0.5
+    },
+    "win_field_walk_fps": {
+     "stage": "fast",
+     "direction": 1,
+     "measured": true,
+     "values": [
+      18.82,
+      18.94,
+      19.09,
+      18.9
+     ],
+     "mean": 18.938,
+     "sd": 0.113,
+     "min": 18.82,
+     "max": 19.09,
+     "floor": 0.27
+    },
+    "worst_frame_ms": {
+     "stage": "smooth",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      3843.5,
+      4107.5,
+      3889.6,
+      4138.3
+     ],
+     "mean": 3994.725,
+     "sd": 149.724,
+     "min": 3843.5,
+     "max": 4138.3,
+     "floor": 294.8
+    }
+   }
+  }
+ },
+ "skipped": []
+}
