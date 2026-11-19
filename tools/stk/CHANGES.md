@@ -217,7 +217,21 @@ All 21 cold starts record all four, so the floors are unchanged (`arm_unverified
   without `warm_boot` gets a note saying so. On our runs: runWB2-played (820 own, 80,797 known) is caught;
   WV2-5 pass. The four warm floor files are rebuilt with it; their numbers are unchanged.
 - **Vampinity's two notes on PR #18:** MIXED now lists the fields not recorded as well as the ones that differ;
-  a floor file built before the arm check (no `arm_unverified`) gets a note instead of passing as verified.
+  a floor file built before the arm check (no `arm_unverified`) makes the verdict PROVISIONAL, as does one without
+  `warm_boot`.
+- **After Vampinity's review of PR #23:** a warm control with two boots is refused unless allowed on purpose
+  (`floors --allow-mixed-boot KEY`; our baseline, for WB1's 36 own records, is the one such floor and carries
+  `warm_boot_mixed_on_purpose`). That also catches a grown own cache with exactly N known (his 14-15 Nov warm runs:
+  6,646-7,816 own records). `floors` prints each key's boots. A candidate arm whose starts boot differently is
+  MIXED. A control start with no boot lines goes into `arm_unverified`. The boot checks read only valid starts. The
+  scorer has tests for the two boot lines. 16 new tests in all.
+
+## 19 Nov: the after-the-load window stops at script_done + 10 s
+
+`after_load_low` ("from 70 s past the load's lowest line to the end") ran to the log's end, so a start quit later
+got more tail (Vampinity, PR #20). It now stops at script_done + 10 s, like every whole-run number. The other window
+kinds end at their own marks or stamps and are unchanged (new-game's village windows run a few seconds past
+script_done by design). Floors rebuilt: only `win_after_field_fps` moves (cold 13.80-14.00, warm 14.0-14.15).
 
 ## 19 Nov: memory at the wall, and the load's length
 
@@ -231,17 +245,3 @@ the worse (Fable's check of the Phase 4 plan). Four numbers that can, from lines
   past the black, to the first 5 s line from which play holds at half the after-load fps for 15 s. 5 s resolution.
 On the field: warm 7, 0, 5, 11 refusals; 22-56 s under 16 MiB; load 12-23 s (cold 146-165 s). All floor files are
 rebuilt; every number they already had is unchanged.
-  a floor file built before the arm check (no `arm_unverified`) makes the verdict PROVISIONAL, as does one without
-  `warm_boot`.
-- **After Vampinity's review of PR #23:** a warm control with two boots is refused unless allowed on purpose
-  (`floors --allow-mixed-boot KEY`; our baseline, for WB1's 36 own records, is the one such floor and carries
-  `warm_boot_mixed_on_purpose`). That also catches a grown own cache with exactly N known (his 14-15 Nov warm runs:
-  6,646-7,816 own records). `floors` prints each key's boots. A candidate arm whose starts boot differently is
-  MIXED. A control start with no boot lines goes into `arm_unverified`. The boot checks read only valid starts. The
-  scorer has tests for the two boot lines. 16 new tests in all.
-## 19 Nov: the after-the-load window stops at script_done + 10 s
-
-`after_load_low` ("from 70 s past the load's lowest line to the end") ran to the log's end, so a start quit later
-got more tail (Vampinity, PR #20). It now stops at script_done + 10 s, like every whole-run number. The other window
-kinds end at their own marks or stamps and are unchanged (new-game's village windows run a few seconds past
-script_done by design). Floors rebuilt: only `win_after_field_fps` moves (cold 13.80-14.00, warm 14.0-14.15).
