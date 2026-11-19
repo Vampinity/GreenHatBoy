@@ -1,0 +1,61 @@
+EglantinePS5 crash report
+version: 01.219.028 (code size 0x2da44e0)
+time: 2026-11-19 08:35:48, 331 s after the app started
+what: SIGSEGV (invalid memory access), code 2, address 0x0000008130e1c495
+where: 0x0000001248cf59fb (outside the app's code: a system library or generated code)
+thread: CPUCore_4 (0x880f598c0)
+running: game The Legend of Zelda Ocarina of Time [0400486024DEC000].nup (0400486024dec000), Vulkan, resolution 1x, Bilinear, output 1080p, 60 Hz, mods: none
+memory: largest free block 0 MiB of 12352 MiB, heap 1696 MiB and 0 MiB in 0 large blocks
+registers:
+  rip 0000001248cf59fb  rsp 00000012f541b970  rbp 00000012f541bd80
+  rax 000000118c9ce495  rbx 0000006039600000  rcx 0000001248cf5ae0
+  rdx 0000006fa444e000  rsi 0000002156f1b01c  rdi 00000000809756c0
+  r8  000000106403e778  r9  0000000000000100  r10 0000000000000018
+  r11 2000000083aa38d0  r12 000000225fb6cd33  r13 0000002156fe76f8
+  r14 00000011c0e00000  r15 0000001009acd090  flags 0000000000010206
+  trap 12  error 0x4
+code: 0x0000000000400000 to 0x00000000031a44e0 (eboot+offset is an address in the build's llvm-pie.elf)
+calls found on the stack, most recent first ("?": not checked against a call instruction):
+  eboot+0x1d456f6 ?
+  eboot+0x1d456f6 ?
+  eboot+0x7b4dbc ?
+  eboot+0x33d680 ?
+  eboot+0x1d456f6 ?
+  eboot+0x1d456f6 ?
+  eboot+0x1d456f6 ?
+  eboot+0x7b4dbc ?
+  eboot+0x33d680 ?
+  eboot+0x1d456f6 ?
+  eboot+0x7941f0 ?
+  eboot+0x1d456f6 ?
+  eboot+0x7941f0 ?
+  eboot+0x1d456f6 ?
+  eboot+0x7941f0 ?
+  eboot+0x7b4dbc ?
+  eboot+0x33bf51 ?
+  eboot+0x7941f0 ?
+  eboot+0x1d456f6 ?
+  eboot+0x29ced50 ?
+  eboot+0x2a653e0 ?
+  eboot+0x2a63898 ?
+  eboot+0x338874 ?
+  eboot+0xc00000 ?
+  eboot+0x33b84b ?
+  eboot+0x2a6206d ?
+  eboot+0x7941f0 ?
+  eboot+0x1d456f6 ?
+  eboot+0x4a9dd7 ?
+  eboot+0x4aa663 ?
+  eboot+0x7b4dbc ?
+  eboot+0x1d456f6 ?
+  eboot+0x4aa540 ?
+  eboot+0x1d456f6 ?
+  eboot+0x4aa540 ?
+  eboot+0x4aad60 ?
+  eboot+0x4f035c ?
+  eboot+0x4f02b9 ?
+  eboot+0x1d6bd80 ?
+  eboot+0x1d6bd10 ?
+  eboot+0x1e0d11f ?
+  eboot+0x1e0d11f ?
+then: the app starts again

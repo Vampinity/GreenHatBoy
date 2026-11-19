@@ -1,0 +1,18 @@
+{
+ "author": "Vampinity",
+ "run_id": "run2015-b1-DCB3-load",
+ "batch": "batch B, load switches, docked block",
+ "arm": "DCB3: control",
+ "arm_lines": [],
+ "control": true,
+ "counted": true,
+ "route": "route-field-to-past-field.works-run1397.txt",
+ "intended_cache": "warm",
+ "runner": "Vampinity's bench runner",
+ "console": "base PS5, docked, 1x",
+ "build": {
+  "tag": "T191"
+ },
+ "notes": "batch B's docked control: play settings v4.0 plus two test lines (EDEN_TEST_DISCARD_SAVE=1, EDEN_UP_FAULT_LOG=1). Docked, 1x. Scripted field route: a save in the field, walked by minimap steering to the gate, the load into the next area, then about 300 s there.",
+ "written": "2026-11-19"
+}
