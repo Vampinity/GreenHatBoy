@@ -217,4 +217,11 @@ All 21 cold starts record all four, so the floors are unchanged (`arm_unverified
   without `warm_boot` gets a note saying so. On our runs: runWB2-played (820 own, 80,797 known) is caught;
   WV2-5 pass. The four warm floor files are rebuilt with it; their numbers are unchanged.
 - **Vampinity's two notes on PR #18:** MIXED now lists the fields not recorded as well as the ones that differ;
-  a floor file built before the arm check (no `arm_unverified`) gets a note instead of passing as verified.
+  a floor file built before the arm check (no `arm_unverified`) makes the verdict PROVISIONAL, as does one without
+  `warm_boot`.
+- **After Vampinity's review of PR #23:** a warm control with two boots is refused unless allowed on purpose
+  (`floors --allow-mixed-boot KEY`; our baseline, for WB1's 36 own records, is the one such floor and carries
+  `warm_boot_mixed_on_purpose`). That also catches a grown own cache with exactly N known (his 14-15 Nov warm runs:
+  6,646-7,816 own records). `floors` prints each key's boots. A candidate arm whose starts boot differently is
+  MIXED. A control start with no boot lines goes into `arm_unverified`. The boot checks read only valid starts. The
+  scorer has tests for the two boot lines. 16 new tests in all.
