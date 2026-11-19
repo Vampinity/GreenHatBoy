@@ -1,0 +1,18 @@
+{
+ "author": "Vampinity",
+ "run_id": "run2006-a11-DCK3-load",
+ "batch": "batch A, docked split, start 11 of 12",
+ "arm": "DCK3: control",
+ "arm_lines": [],
+ "control": true,
+ "counted": true,
+ "route": "route-field-to-past-field.works-run1397.txt",
+ "intended_cache": "warm",
+ "runner": "Vampinity's bench runner",
+ "console": "base PS5, docked, 1x",
+ "build": {
+  "tag": "T196"
+ },
+ "notes": "the docked control (batch B's control env), on T196. Docked, 1x. Scripted field route: a save in the field, walked by minimap steering to the gate, the load into the next area, then about 300 s there. First start after a fresh install (the other build went on, then this one).",
+ "written": "2026-11-19"
+}

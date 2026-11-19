@@ -1,6 +1,6 @@
-# Docked starts of 19 Nov 2026: the load switches, the pair, and the controls that crashed (runs 2001 to 2034)
+# Docked starts of 19 Nov 2026: the load switches, the pair, and the docked controls (runs 1997 to 2034)
 
-Twenty scripted starts, all docked, packed so GrowingBlackBeans (discussion 2, 19 Nov) and anyone else can read
+Twenty-four scripted starts, all docked, packed so GrowingBlackBeans (discussion 2, 19 Nov) and anyone else can read
 them with their own numbers: refused-pool lines, time under 16 MiB, stranded MiB, and the rest. Logs as they came
 off the console, packed with `tools/stk/pack_run.py` (run contract v1, author Vampinity). The only changes are the
 redactions counted under "redacted" in each run.json: the console user number and its pad lines, the save-profile
@@ -15,8 +15,12 @@ The arm names: **CB** = the docked control, **SD** and **SL** = the pair (`EDEN_
 
 | run | batch | arm | build | how it ended | app s | crash class |
 |---|---|---|---|---|---|---|
+| 1997 | A, start 2 of 12 | DCP1, control | T191 | script done | 522 | |
+| 1999 | A, start 4 of 12 | DCK1, control | T196 | script done | 522 | |
 | 2001 | A, start 6 of 12 | DCK2, control | T196 | crash, SIGSEGV on CPUCore_2 | 238 | G |
+| 2002 | A, start 7 of 12 | DCP2, control | T191 | script done | 521 | |
 | 2004 | A, start 9 of 12 | DCP3, control | T191 | crash, SIGSEGV on CPUCore_4 | 386 | G |
+| 2006 | A, start 11 of 12 | DCK3, control | T196 | script done | 525 | |
 | 2008 | B, docked block | DCB0, control (throwaway, not counted) | T191 | crash, SIGSEGV on CPUCore_4 | 331 | G |
 | 2009 | B | DSD1, the pair | T191 | script done | 521 | |
 | 2010 | B | DDP1, drain to pool | T191 | script done | 524 | |
@@ -36,9 +40,15 @@ The arm names: **CB** = the docked control, **SD** and **SL** = the pair (`EDEN_
 | 2033 | S | DSL4, the pair | T191 | script done | 537 | |
 | 2034 | S | DSP4, pair + park wait | T191 | script done | 508 | |
 
-As counts: in batch B all four docked controls crashed (DCB0 not counted) and none of the six arm starts did.
-Batch S had eight arm starts, no control and no crash. Run2001 and run2004 are the two of batch A's six docked
-controls that crashed; the other four (runs 1997, 1999, 2002 and 2006) ran to the end and are not in this set.
+As counts: in batch B all three counted controls crashed, and so did DCB0, and none of the six arm starts did.
+Batch S had eight arm starts, no control and no crash. Batch A's six docked controls are all here: run2001 and
+run2004 crashed, and the other four (runs 1997, 1999, 2002 and 2006) ran to the end. That is one crash in three
+on each build: on T191 run2004 crashed and run1997 and run2002 did not, on T196 run2001 crashed and run1999 and
+run2006 did not. Those four are the only controls in the set that ran the whole route.
+
+**Builds.** run1999, run2001 and run2006 (DCK1 to DCK3) ran on T196, every other start on T191. So run2001 is a
+T196 control and cannot be pooled with the T191 controls; read it next to run1999 and run2006. The T191
+controls are run1997, run2002 and run2004 in batch A, and DCB1 to DCB3 (plus DCB0, not counted) in batch B.
 
 "app s" is the time after the app started at the crash, or at the log's last line for the starts that ran to the
 end (from run.json, `derived.session_age_s`).
@@ -48,12 +58,14 @@ end (from run.json, `derived.session_age_s`).
 - **B**: the driver refuses an 8,294,400-byte buffer (1920 x 1080 x 4, usage 0x3), the "asked once more" retry
   is refused again, and the app ends with `terminate: VK_ERROR_OUT_OF_DEVICE_MEMORY` on GPUBack. The line is
   `EDEN_GRAPHICS_MEMORY asked once more: result -2, buffer of 8294400 bytes, usage 0x3`, near the end of the
-  crash copy of stderr (run2011, run2013).
+  crash copy of stderr (run2011, run2013). `asked once more` lines with other sizes are in most runs. run2006
+  asked once more for the same 8,294,400-byte buffer twice and got it both times (`result 0`), and ran to the end.
 - **G**: a game CPU thread touches swapped-out memory, the 10 s memory wait runs out
   (`EDEN_UP_FAULT_NAMED end ... waited_ms=10053 to 10075 outcome=lost`, in the crash copy of stderr), then a SIGSEGV on a game CPU thread (`CPUCore_N`),
   at an address outside the app's code (run2001, run2004, run2008, run2015).
 
-No start that ran to the end had a lost wait; their longest memory wait was 1.6 to 8.1 s.
+No start that ran to the end had a lost wait. Their longest memory wait was 1.6 to 8.1 s in the arms and 7.2 to
+9.8 s in the four batch A controls.
 
 ## Setup
 
@@ -62,13 +74,13 @@ No start that ran to the end had a lost wait; their longest memory wait was 1.6 
 - **Settings.** The control is play settings v4.0 plus `EDEN_TEST_DISCARD_SAVE=1` (writes go to a copy, never to
   the save) and `EDEN_UP_FAULT_LOG=1`. Every arm differs from it by its own lines only; `derived.env_diff_keys` in
   run.json lists them against run2011's env (so `settings_profile: stock_alpha_v40` on a control only means "the
-  same env as run2011"). The two batch A controls have the same env as batch B's control.
+  same env as run2011"). The six batch A controls have the same env as batch B's control.
 - **Route** (`script.txt`, route-field-to-past-field.works-run1397.txt, the same route as the 15 Nov field
   starts): a save in the field, walked by minimap steering to the gate, the load into the next area, then about
   300 s there. The six crashes came 238 to 386 s after the app started.
 - **Order.** Batch B's docked block ran DCB0 then DSD1 DDP1 DCB1 DDP2 DCB2 DSD2 DCB3 DSD3 DDP3, an arm before a
   control. DCB0 was the first start after batch A had put T196 on and T191 back, so it is a throwaway and not
-  counted. Batch S ran SP1 SL1 SL2 SP2 SP3 SL3 SL4 SP4. The two batch A starts were each the first start after a
+  counted. Batch S ran SP1 SL1 SL2 SP2 SP3 SL3 SL4 SP4. The six batch A starts were each the first start after a
   fresh install (the other build went on first, then this one).
 - **Capture.** Starts 2030 to 2032 had no game picture on the capture card. That does not touch these logs. No
   video, pictures or frame grids are in this set.
