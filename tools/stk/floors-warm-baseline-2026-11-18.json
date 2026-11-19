@@ -205,7 +205,8 @@
      "runWB3",
      "runWB4"
     ]
-   }
+   },
+   "warm_boot_mixed_on_purpose": true
   }
  },
  "skipped": []

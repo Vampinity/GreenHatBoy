@@ -355,10 +355,36 @@ class WarmBoot(unittest.TestCase):
         f = stk_gate.build_floors(WARM_CONTROL)["keys"][WKEY]
         self.assertEqual(f["warm_boot"], {"own 3 / total 4": ["w1", "w2", "w3", "w4"]})
 
-    def test_floor_keeps_a_control_with_another_boot_and_names_it(self):
-        f = stk_gate.build_floors(WARM_CONTROL[:3] + [warm("w4", 19.3, own=36, total=37)])["keys"][WKEY]
+    def test_floor_refuses_a_control_with_two_boots(self):
+        with self.assertRaises(stk_gate.MixedArm):
+            stk_gate.build_floors(WARM_CONTROL[:3] + [warm("w4", 19.3, own=36, total=37)])
+
+    def test_floor_refuses_a_grown_own_cache_too(self):
+        # Vampinity's 14-15 Nov warm runs: exactly N known, but 6,646-7,816 own records.
+        with self.assertRaises(stk_gate.MixedArm):
+            stk_gate.build_floors(WARM_CONTROL[:3] + [warm("w4", 19.3, own=6646, total=6647)])
+
+    def test_floor_keeps_two_boots_when_allowed_on_purpose(self):
+        f = stk_gate.build_floors(WARM_CONTROL[:3] + [warm("w4", 19.3, own=36, total=37)], {WKEY})["keys"][WKEY]
         self.assertEqual(f["n"], 4)
         self.assertEqual(f["warm_boot"]["own 36 / total 37"], ["w4"])
+        self.assertTrue(f["warm_boot_mixed_on_purpose"])
+
+    def test_control_without_boot_lines_is_unverified(self):
+        f = stk_gate.build_floors(WARM_CONTROL[:3] + [warm("w4", 19.3, own=None)])["keys"][WKEY]
+        self.assertIn("warm boot not recorded on w4", f["arm_unverified"])
+
+    def test_candidate_arm_mixing_boots_is_mixed(self):
+        cands = [warm(f"c{i}", 19.1) for i in range(3)] + [warm("c3", 19.1, own=36, total=37)]
+        fl = stk_gate.build_floors(WARM_CONTROL[:3] + [warm("w4", 19.3, own=36, total=37)], {WKEY})
+        rep = stk_gate.check(cands, fl)[0]
+        self.assertEqual(rep["verdict"], "MIXED")
+
+    def test_invalid_start_does_not_count_for_the_boot(self):
+        cands = [warm(f"c{i}", 19.1 + i / 20) for i in range(4)] + [
+            warm("bad", 19.1, own=820, total=821, survival_result="stopped_early")]
+        rep = stk_gate.check(cands, stk_gate.build_floors(WARM_CONTROL))[0]
+        self.assertNotIn("bad warm boot", rep.get("provisional", ""))
 
     def test_floor_leaves_out_a_control_not_prepared(self):
         fl = stk_gate.build_floors(WARM_CONTROL + [warm("w5", 19.1, known=80798)])
@@ -370,7 +396,7 @@ class WarmBoot(unittest.TestCase):
         self.assertEqual(rep["verdict"], "PASS")
 
     def test_candidate_with_another_boot_is_provisional(self):
-        cands = [warm(f"c{i}", 19.1) for i in range(3)] + [warm("c3", 19.1, own=820, total=821)]
+        cands = [warm(f"c{i}", 19.1, own=820, total=821) for i in range(4)]
         rep = stk_gate.check(cands, stk_gate.build_floors(WARM_CONTROL))[0]
         self.assertEqual(rep["verdict"], "PROVISIONAL")
         self.assertIn("c3 warm boot own 820 / total 821", rep["provisional"])
@@ -381,11 +407,12 @@ class WarmBoot(unittest.TestCase):
         self.assertEqual(rep["verdict"], "PROVISIONAL")
         self.assertIn("12 pipelines left to prepare", rep["provisional"])
 
-    def test_old_floor_without_warm_boot_says_so(self):
+    def test_old_floor_without_warm_boot_is_provisional(self):
         fl = stk_gate.build_floors(WARM_CONTROL)
         del fl["keys"][WKEY]["warm_boot"]
         rep = stk_gate.check([warm(f"c{i}", 19.1) for i in range(4)], fl)[0]
-        self.assertTrue(any("warm boot not recorded" in n for n in rep["notes"]))
+        self.assertEqual(rep["verdict"], "PROVISIONAL")
+        self.assertIn("control warm boot not recorded", rep["provisional"])
 
     def test_cold_starts_are_untouched(self):
         rep = stk_gate.check([row(f"c{i}", 8.7) for i in range(4)], stk_gate.build_floors(CONTROL))[0]
@@ -403,11 +430,12 @@ class GateNotes(unittest.TestCase):
         self.assertIn("script differs", rep["why"])
         self.assertIn("settings (env hash) not recorded on c", rep["why"])
 
-    def test_floor_without_arm_unverified_says_so(self):
+    def test_floor_without_arm_unverified_is_provisional(self):
         fl = stk_gate.build_floors(CONTROL)
         del fl["keys"]["r-v1|13.60|cold"]["arm_unverified"]
         rep = stk_gate.check([row(f"c{i}", 8.7) for i in range(4)], fl)[0]
-        self.assertTrue(any("predates the arm check" in n for n in rep["notes"]))
+        self.assertEqual(rep["verdict"], "PROVISIONAL")
+        self.assertIn("predates the arm check", rep["provisional"])
 
 
 if __name__ == "__main__":

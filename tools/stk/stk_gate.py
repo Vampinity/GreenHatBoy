@@ -226,7 +226,9 @@ class MixedArm(ValueError):
     pass
 
 
-def build_floors(rows: list[dict]) -> dict:
+def build_floors(rows: list[dict], allow_mixed_boot: set[str] | frozenset = frozenset()) -> dict:
+    """allow_mixed_boot: warm gate keys whose control may hold more than one warm boot, on purpose (our baseline:
+    WB1 booted with 36 own records, WB2-4 with 3). Any other warm key with two boots is refused (Vampinity, PR #23)."""
     groups: dict[str, list[dict]] = {}
     skipped = []
     for r in rows:
@@ -272,7 +274,16 @@ def build_floors(rows: list[dict]) -> dict:
             seen: dict = {}
             for r in rs:
                 seen.setdefault(warm_boot_of(r) or "not logged", []).append(r.get("run_id"))
+            logged = {b: rs_ for b, rs_ in seen.items() if b != "not logged"}
+            if len(logged) > 1 and k not in allow_mixed_boot:
+                raise MixedArm(f"control arm {k} boots differently: "
+                               + "; ".join(f"{b} ({', '.join(x)})" for b, x in sorted(logged.items()))
+                               + ". Rebuild with the starts of one boot, or allow it on purpose (--allow-mixed-boot)")
+            if "not logged" in seen:   # no own/total line: the control's warm state can't be vouched for
+                out["keys"][k]["arm_unverified"].append("warm boot not recorded on " + ", ".join(seen["not logged"]))
             out["keys"][k]["warm_boot"] = seen
+            if len(logged) > 1:
+                out["keys"][k]["warm_boot_mixed_on_purpose"] = True
     return out
 
 
@@ -387,18 +398,24 @@ def check(rows: list[dict], floors: dict) -> list[dict]:
         if "arm_unverified" in f:
             short += [f"control: {u}" for u in f["arm_unverified"]]
         else:   # Vampinity's note (PR #18): a floor built before the arm check can't vouch for its control's arm
-            rep["notes"].append("control arm not checked: this floor file predates the arm check; rebuild it")
+            short.append("control arm not checked (the floor file predates the arm check; rebuild it)")
         # The warm boot (19 Nov): a candidate whose boot isn't the prepared state, or isn't the control's, settles
         # nothing about the change it carries.
         if rep["key"].split("|")[2] == "warm":   # rep["key"], not k: the loop above reuses k for run ids
-            for r in rs:
+            # Only valid starts (alive): an INVALID start is already left out of the verdict (Vampinity, PR #23).
+            for r in alive:
                 if (wp := warm_boot_problem(r)):
                     short.append(f"{r.get('run_id')} warm boot not prepared ({wp})")
+            cand_boots = {warm_boot_of(r) for r in alive} - {None}
+            if len(cand_boots) > 1:   # the candidate arm itself pools two warm states
+                rep.update(verdict="MIXED", why="the candidate arm boots differently: " + ", ".join(sorted(cand_boots)))
+                reports.append(rep)
+                continue
             if "warm_boot" not in f:
-                rep["notes"].append("control warm boot not recorded: this floor file predates the check; rebuild it")
+                short.append("control warm boot not recorded (the floor file predates the check; rebuild it)")
             else:
                 ctrl_boots = set(f["warm_boot"]) - {"not logged"}
-                for r in rs:
+                for r in alive:
                     b = warm_boot_of(r)
                     if b is None:
                         short.append(f"{r.get('run_id')} warm boot not logged")
@@ -465,19 +482,23 @@ def main(argv: list[str]) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     a = sub.add_parser("floors"); a.add_argument("runs", nargs="+"); a.add_argument("-o", "--out", required=True)
     a.add_argument("--alpha-env", default=stk_score.DEFAULT_ALPHA_ENV)
+    a.add_argument("--allow-mixed-boot", action="append", default=[], metavar="GATE_KEY",
+                   help="a warm gate key whose control may hold two warm boots on purpose (repeatable)")
     c = sub.add_parser("check"); c.add_argument("runs", nargs="+"); c.add_argument("--floors", required=True)
     c.add_argument("--alpha-env", default=stk_score.DEFAULT_ALPHA_ENV); c.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
     rows = [stk_score.score_run(r, args.alpha_env) for r in args.runs]
     if args.cmd == "floors":
         try:
-            fl = build_floors(rows)
+            fl = build_floors(rows, set(args.allow_mixed_boot))
         except MixedArm as e:
             print(f"refused: {e}", file=sys.stderr)
             return 3          # run ids only: no run_path, so the file carries no local paths
         Path(args.out).write_text(json.dumps(fl, indent=1) + "\n")
         for k, v in fl["keys"].items():
             print(f"{k}: n={v['n']} ({', '.join(v['runs'])})")
+            for b, x in v.get("warm_boot", {}).items():   # the boots, so a mixed control is seen (Vampinity, PR #23)
+                print(f"  warm boot {b}: {', '.join(x)}")
         for s in fl["skipped"]:
             print(f"skipped {s['run']}: {s['why']}")
         return 0

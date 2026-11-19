@@ -63,6 +63,10 @@ radv OOM events 0 on every start. Hitches and flashes are not measured on the al
 - On both routes the store turns the first-load stall into about 3 s on every start (from 11-22 s and about 34 s),
   and roughly doubles the largest free block at its lowest point.
 - The median fps gains +1.2 because the loads are shorter, not because play is faster.
+  **Correction (19 Nov):** that holds where the player stands (these two routes' stops and the baseline village).
+  Where a route walks through new scenery, the walk's mean fps is higher warm, mostly because stalls go away: the
+  field walk 13.4 -> 18.9 fps and the village lap 8.7 -> 19.2, every warm start beyond every cold one (`warm-floors-field-later-area-2026-11-19.md`). An earlier
+  draft of this write-up said "the store helps loading, not steady frame rate"; that was wrong for walking.
 - The stops don't move: at 4 starts a side, no change bigger than about 0.4 fps. The baseline's village window is
   too noisy at 4 a side (cold 15.9-22.4) to say either way.
 - **Open question:** what is still built during play with all 80,770 known. The about 190 above counts only
