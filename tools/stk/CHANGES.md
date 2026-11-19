@@ -225,3 +225,9 @@ All 21 cold starts record all four, so the floors are unchanged (`arm_unverified
   6,646-7,816 own records). `floors` prints each key's boots. A candidate arm whose starts boot differently is
   MIXED. A control start with no boot lines goes into `arm_unverified`. The boot checks read only valid starts. The
   scorer has tests for the two boot lines. 16 new tests in all.
+## 19 Nov: the after-the-load window stops at script_done + 10 s
+
+`after_load_low` ("from 70 s past the load's lowest line to the end") ran to the log's end, so a start quit later
+got more tail (Vampinity, PR #20). It now stops at script_done + 10 s, like every whole-run number. The other window
+kinds end at their own marks or stamps and are unchanged (new-game's village windows run a few seconds past
+script_done by design). Floors rebuilt: only `win_after_field_fps` moves (cold 13.80-14.00, warm 14.0-14.15).

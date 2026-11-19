@@ -386,7 +386,13 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
                 v, n, why = None, 0, f"route_{route_result}: {route_reason}"  # not scored: the route did not run to its end
             else:
                 placed = {**skipped_at, **marks} if defn.get("clock_marks") else marks
-                v, n, why = window_value(defn, vi, placed, last_t, skipped_lines)
+                # The open-ended window (after_load_low: "to the end") stops where test-quit ends a run, script_done
+                # + 10 s (Vampinity, PR #20); it used to run to the log's end, so a start quit later got more tail.
+                # The other kinds end at their own marks or stamps (some, like new-game's village, by design a few
+                # seconds past script_done), so they are left as they were.
+                vi_win = ([w for w in vi if play_end is None or w[0] <= play_end]
+                          if defn.get("kind") == "after_load_low" else vi)
+                v, n, why = window_value(defn, vi_win, placed, last_t, skipped_lines)
                 if why.startswith("anchor_skipped_line_"):
                     anchors_skipped.append(f"{wname}:{why.rsplit('_', 1)[1]}")
             route_windows[f"win_{wname}_fps"] = v
