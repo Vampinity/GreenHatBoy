@@ -131,10 +131,21 @@ def identify_route(rf: RunFolder, env: dict[str, str]) -> tuple[str | None, str 
     return None, sha, source
 
 
-def window_value(defn: dict[str, Any], vi: list[tuple], marks: dict[int, float], last_t: float | None):
-    """One window's value from the 5 s lines (app clock); (value, n, reason)."""
+def window_lines(defn: dict[str, Any]) -> list[int]:
+    """The script lines a window is placed by."""
+    return [defn[k] for k in ("anchor_line", "start_line", "end_line", "after_line") if k in defn]
+
+
+def window_value(defn: dict[str, Any], vi: list[tuple], marks: dict[int, float], last_t: float | None,
+                 skipped: set[int] | frozenset = frozenset()):
+    """One window's value from the 5 s lines (app clock); (value, n, reason). A window placed by a line that was
+    skipped (a MAYBE that timed out) has no value: the place it measures was not reached or not seen."""
     stat = st.median if defn.get("stat") == "median" else st.mean
     kind = defn["kind"]
+    if not defn.get("clock_marks"):
+        for ln in window_lines(defn):
+            if ln in skipped and ln not in marks:
+                return None, 0, f"anchor_skipped_line_{ln}"
     if kind == "stamped":
         a = marks.get(defn["anchor_line"])
         if a is None:
@@ -257,7 +268,9 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
         if m:
             guest_start_t = float(m.group(1))
             break
-    marks: dict[int, float] = {}
+    marks: dict[int, float] = {}       # lines met (wait_met, steer_met, script_end): where a window can anchor
+    skipped_lines: set[int] = set()     # lines logged as wait_skipped: never an anchor (PR #18 review, point 4) ...
+    skipped_at: dict[int, float] = {}   # ... except in a window whose lines are clock marks (windows.json)
     script_done_t = None
     waits_met = 0
     for l in stderr_lines:
@@ -266,7 +279,10 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
             continue
         kind, line, at = m.group(1), m.group(2), float(m.group(3))
         app_t = at + (guest_start_t or 0.0)
-        if line:
+        if line and kind == "wait_skipped":
+            skipped_lines.add(int(line))   # a MAYBE that timed out: logged with its line, but nothing was seen there
+            skipped_at.setdefault(int(line), app_t)
+        elif line:
             marks.setdefault(int(line), app_t)
         if kind == "wait_met":
             waits_met += 1
@@ -349,13 +365,17 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
 
     # Route windows (the gate's numbers).
     route_windows: dict[str, Any] = {}
+    anchors_skipped: list[str] = []     # "window:line" for each window whose anchor was skipped
     routes = load_windows()
     if route_key and route_key in routes:
         for wname, defn in routes[route_key]["windows"].items():
             if route_completed is False:
                 v, n, why = None, 0, f"route_{route_result}: {route_reason}"  # not scored: the route did not run to its end
             else:
-                v, n, why = window_value(defn, vi, marks, last_t)
+                placed = {**skipped_at, **marks} if defn.get("clock_marks") else marks
+                v, n, why = window_value(defn, vi, placed, last_t, skipped_lines)
+                if why.startswith("anchor_skipped_line_"):
+                    anchors_skipped.append(f"{wname}:{why.rsplit('_', 1)[1]}")
             route_windows[f"win_{wname}_fps"] = v
             route_windows[f"win_{wname}_n"] = n
             route_windows[f"win_{wname}_source"] = why
@@ -441,7 +461,7 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
     env_ok = settings_profile in ("stock_alpha_v40", "stock_alpha_v40_13x") or len(env_diffs) <= 1 if alpha_env else None
     intent_ok = True if not intended else bool(cache_matches_intent)  # undeclared runs are not failed on intent
     window_comparable = (intent_ok and bool(env_ok) and survival_result == "completed"
-                         and route_completed is True and cache_class in ("cold", "warm"))
+                         and route_completed is True and cache_class in ("cold", "warm") and not anchors_skipped)
     # The build the run actually ran. The boot trace's version + compile time tells two builds apart
     # even when they share a store, which is the case waveydude raised on PR #11: with the translation
     # id forced to keep a store, A186-keep ... keep4 all carry src116270f1... with different code. The
@@ -495,6 +515,7 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
         "waits_met": waits_met, "waits_skipped": test_counts.get("wait_skipped", 0),
         "wait_timeouts": test_counts.get("wait_timeout", 0), "steer_timeouts": test_counts.get("steer_timeout", 0),
         "route_result": route_result, "route_reason": route_reason, "route_completed": route_completed,
+        "anchors_skipped": anchors_skipped,
         "steer_legs_met": rc["steer_legs_met"], "steer_legs_expected": rc["steer_legs_expected"],
         "required_waits_met": rc["required_waits_met"], "required_waits_expected": rc["required_waits_expected"],
         "route_sha256_12": rc["route_sha256_12"],

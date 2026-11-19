@@ -1,0 +1,17 @@
+{
+  "run_id": "runLA3",
+  "control": true,
+  "intended_cache": "cold",
+  "route": "later-area-descent.v3.txt",
+  "route_sha1_12": "75886966ee4f",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt, one line changed (the script)",
+  "intent": "Later-area scope: first start of our route v3 (the user's recorded walk replayed for the top half, STEER for the rest), cold and watched. If clean and unchanged, cold control 1 of 4.",
+  "written": "2026-11-18",
+  "save": "the user's fence save (save-make-LA, 18 Nov), newest entry"
+}

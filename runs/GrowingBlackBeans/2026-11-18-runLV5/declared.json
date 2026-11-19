@@ -1,0 +1,17 @@
+{
+  "run_id": "runLV5",
+  "control": true,
+  "intended_cache": "cold",
+  "route": "later-area-village-lap.v2.txt",
+  "route_sha1_12": "9f0a63d5964a",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt, one line changed (the script)",
+  "intent": "Later-area scope (the village): cold control 4 of 4 on village route v2 (the exit round the fence, a menu tail to the title).",
+  "written": "2026-11-18",
+  "save": "the user's village save just below the entrance stairs (18 Nov), newest entry"
+}

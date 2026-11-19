@@ -1,0 +1,42 @@
+# Later-area route, the VILLAGE, v1 (GrowingBlackBeans, 18 Nov 2026): from a save just below the village's entrance
+# stairs, a lap of the village, out through the gate to the field, then a stand in the field. For the alpha (T186).
+#
+# Why: the mountain route was retired (its top half had to be replayed blind; runLA4 was thrown off by a boulder).
+# The village is steerable from just below its entrance stairs (the entrance itself is above the harness's marker box,
+# x 742-992, y 743-993 per mille, and there the detector reads building icons as the player). Fully closed loop.
+#
+# Save: the user's village save (made 18 Nov on the alpha; the arrow at 890,750), the NEWEST entry.
+# Always run with EDEN_TEST_DISCARD_SAVE=1. Clock: seconds count from EDEN_GUEST_START; after a WAIT, MAYBE or STEER
+# they count from the moment that line was met (test_harness.h).
+#
+# LOOK grids, scored at 1 s steps over runVR1's capture (376 s: menus, load, village, load, field):
+#   title, load  the field route's, unchanged
+#   village      845 820 48 80 8x8, cut from runLA1 (met at 98 in runLA3). 80-99 on village frames, 41 or less on the
+#                menus, the loads and the field
+#   field        the field route's own map check, 845 820 48 80 8x8: 80-99 on field frames, 41 or less in the village
+# --- Title: Continue is lit by default. The second A only plays if the load screen has not come 3 s after the first.
+0 WAIT 180 LOOK 403 848 194 42 24x3:0111010102010101010101010101010101010101010101013233454a4d43421c1e61343e622954453d5828513e444223092d372627231c1f0c221f1f0f140f1f0a211220181d291f
+1.5 A 150
+4.5 A 150
+1.0 WAIT 8 LOOK 400 0 200 75 16x4:3634333437373737393b3b3b3a3939394745454748484f494d554d4b49494b4b5d5c5e5e5d5e8091a78763636262626378787c7b7b7c817c7c827d7d7d7e7c7f
+# --- Load screen: A on the newest save (our village start save), A on Load. A every 2 s until the screen goes, the rest is dropped.
+1.0 A 150
+3.0 A 150
+5.0 A 150
+7.0 A 150
+9.0 A 150
+0.5 WAIT 15 GONE 400 0 200 75 16x4:3634333437373737393b3b3b3a3939394745454748484f494d554d4b49494b4b5d5c5e5e5d5e8091a78763636262626378787c7b7b7c817c7c827d7d7d7e7c7f
+# --- Loading the village. No input. Met = the village minimap. A different map (wrong entry) does not match: the
+# script stops here (wait_timeout), the sign that the save's entry is not the newest.
+0 WAIT 240 LOOK 845 820 48 80 8x8:91918d7a6d9494989894868e8d9090938c8a837e80807b7f2d6c9a9981825e892a2e87936ca07a8826264174968587962526277a8f938e934347466888818981 80
+# --- The lap. STEER from 8 s (past the place card). 54 points: steer-route.py on runVR1's capture, 97-229 s (step 6), read
+# 96-100% of frames; two readings of building icons (869,764 and 918,770) left out. Down the right side, round the
+# bottom, up the left, a small loop, then to the gate in the lower left. The hand walk took ~130 s: timeout 260.
+8 STEER 260 889,753 888,757 889,768 891,770 897,775 899,777 902,784 904,795 905,804 908,816 915,818 922,818 928,824 929,835 929,847 930,853 931,864 932,875 934,886 932,897 926,904 920,908 914,904 908,901 903,894 896,884 889,881 882,881 876,881 871,879 867,871 862,862 859,854 855,843 851,833 851,822 854,812 859,803 865,798 871,799 877,804 880,808 884,819 882,829 876,830 869,833 863,832 857,831 850,837 844,841 838,844 832,850 826,856 820,851 r=6
+# --- Through the gate: in the hand walk the black came 2-3 s after the last point. A forward push to be sure.
+0 LSTICK 128 0 6000
+# --- The load into the field (37 s of black in runVR1). Met = the field minimap; skipped = no field within 300 s
+# (crash, freeze, or the push missed the gate). It labels the run.
+1 MAYBE 300 LOOK 845 820 48 80 8x8:94958b8a848f9ea8929f96887a687ca893949a897b696da096acb2b1b1ae999692afadaeadaeb09581acacafb0aead967d9fb0b0aeafae9a7c63759095988b9d 80
+# --- Stand in the field, no input, then END 2 minutes after arriving. Make test-quit a minute or so after.
+120 END

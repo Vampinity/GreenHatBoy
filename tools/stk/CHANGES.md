@@ -133,3 +133,76 @@ published figures average the seven, so his numbers were never the problem — t
 
 Validated: 27 tests (25 synthetic, 2 against GHB), including the keep/keep4 case (one store, one
 translation id, two compile times → two keys) and a run with no build (no key at all).
+
+## Review answer: PR #18 (18 Nov, scorer 8, gate 2)
+
+Vampinity's review of the gate (PR #18), points 1-7. Gate:
+
+23. **Means are read against the noise of a mean** (2 x sd x sqrt(1/n_control + 1/n_candidate)), not one start's
+    spread; and p < 0.05 with every candidate start beyond the control's worst start is "real" whatever the means.
+    Four baseline starts at 120-150 MiB against a control low of 165 now block, and so do four later-area starts at
+    0 MiB. The field's memory lows are already 0-1 MiB, so memory still can't block there; the doc says so.
+24. **Capped counters** (">=64"): a capped candidate start counts at its cap (a lower bound, so worse than any
+    uncapped control); a control start at the cap marks the number `usable: false` for its key (the field's
+    out-of-memory count, FC4).
+25. **Starts are sorted before judging:** CRASHED and LOST block; INVALID (quit before the script's END, or a skipped
+    window anchor) is left out and reported for a rerun. KV3, LV5 and FC1 are INVALID, not BLOCK.
+
+Scorer:
+
+26. **A skipped line is never a window's anchor.** A `MAYBE` that timed out is logged as `wait_skipped line=N`, and
+    was taken as a mark, so a missed field load in the later area would have been scored in the wrong place. Now the
+    window has no value (`anchor_skipped_line_N`), the row lists it in `anchors_skipped`, and the start is not
+    window-comparable. Windows whose lines are short `MAYBE`s written to time out, used only as a clock, say
+    `"clock_marks": true` in windows.json and keep their marks (the Kokiri stands, both versions).
+
+Rescored, all 21 cold starts of 17-18 Nov keep every window value; the floor file's numbers are unchanged except
+the field's out-of-memory count, now `usable: false`. Tests: 23 gate, 3 skipped-anchor, 78 in all.
+
+## Review answer: PR #18, waveydude (18 Nov, gate 3)
+
+waveydude's review of the gate at 281d22b: three cases printed PASS and exited 0 (one start; four starts with all
+three memory readings missing; two builds pooled as one candidate).
+
+27. **PROVISIONAL is a verdict, with its own exit code (2).** It covers fewer than 4 valid candidate starts, a floor
+    of fewer than 4, an unidentified build, and a stable number the floor gates on that was read on fewer than 4
+    candidate starts. The report still says what the starts so far lean to. A crash or a lost route blocks, however
+    short the arm.
+28. **Each side must be one thing.** The starts pooled on one side of a key must share the build (version and
+    compile time), the settings (the env hash, harness lines left out), the translation id and the script. The
+    control and the candidate may differ. A mixed candidate arm is MIXED (exit 3), with the runs behind each value
+    named. `floors` refuses a mixed control arm (exit 3), and each floor key now records its arm.
+29. **PASS says what it couldn't clear.** Numbers the floor has no reading of (flashes and hitches on the alpha) or
+    can't use (a control at a counter's cap) are listed as NOT CLEARED under the verdict, and in `not_cleared`.
+30. **Exit codes:** PASS 0, EXPLAIN 1, PROVISIONAL 2, MIXED / INVALID / NO KEY / NO FLOOR 3, BLOCK 4. With several
+    keys, the highest wins. Anything but 0 is not cleared.
+
+The four cold control arms are each one build, one env hash, one translation id and one script; the rebuilt floor
+file's numbers are unchanged, and it gains `arm` per key. Leave-one-out over the 16 controls now reads PROVISIONAL
+(leaning PASS) on all 16, because one start against three is short on both sides. Tests: 40 gate (17 new, 6 of them
+on the CLI's exit code), 3 skipped-anchor, 95 in all.
+
+## Review answer: PR #18, Vampinity's second review (18 Nov, gate 4)
+
+31. **INVALID needs a normal close.** A start that stops before the script's END is INVALID (rerun) only when the
+    app closed normally (`end_kind` app_closed), as KV3, LV5 and FC1 did. A log that just stops, with no crash file,
+    is HUNG and counts against the candidate like a crash: on the field route everything after the WAIT at line 92
+    is MAYBEs, so a freeze in that load met every required leg and was being left out. Test added
+    (stopped_early + log_cut blocks).
+32. The `__pycache__` files are out of the repo, and `.gitignore` keeps them out.
+33. Doc: a field candidate at 0 MiB on all four is worse (likely), so EXPLAIN, not "can't be shown worse".
+
+All 21 cold starts closed normally, so none changes class: KV3, LV5 and FC1 stay INVALID, LV1 stays LOST. 96 tests.
+
+## Review answer: PR #18, waveydude's second review (18 Nov, gate 5)
+
+34. **Missing identity is unverified, for all four fields.** Only a missing build counted before; a start with no
+    env hash (an empty or missing env.txt), no script or no translation id was pooled as if it matched, and four
+    such rows printed PASS. Now any of the four missing makes the arm PROVISIONAL and names the start
+    ("settings (env hash) not recorded on x3"). On the control side the floor records it (`arm_unverified`), and
+    every check against that floor is PROVISIONAL until it is rebuilt from complete starts. PROVISIONAL rather than
+    INVALID: the start's own numbers may be fine, only its arm can't be shown. Tests: each field missing on one row of
+    four, a control missing one, and the CLI's exit code (2).
+
+All 21 cold starts record all four, so the floors are unchanged (`arm_unverified` empty on every key). 99 tests.
+

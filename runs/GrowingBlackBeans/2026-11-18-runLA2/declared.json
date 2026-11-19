@@ -1,0 +1,17 @@
+{
+  "run_id": "runLA2",
+  "control": true,
+  "intended_cache": "cold",
+  "route": "later-area-descent.v1.txt",
+  "route_sha1_12": "fefbe77310be",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt, one line changed (the script)",
+  "intent": "Later-area scope: first start of our own route v1 (STEER points from runLA1's hand walk on the alpha), cold and watched. If it runs clean and unchanged, it is cold control 1 of 4.",
+  "written": "2026-11-18",
+  "save": "our own start save at the fence, made on the alpha from waveydude's slot 02 (save-make-LA); newest entry"
+}

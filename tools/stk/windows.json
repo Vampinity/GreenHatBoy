@@ -1,5 +1,5 @@
 {
-  "_doc": "Route scoring windows as data. A route is found by the sha1 (first 12) of the script as run, or by file name. Times are app-clock seconds; a script mark (wait_met / wait_skipped / script_end line=N at=T) is on the script clock, so the scorer adds EDEN_GUEST_START. A 5 s fps line is stamped at the END of its 5 seconds. Definitions transcribed from runs/Vampinity/2026-11-15-t186-control-README.md (Vampinity) and our kokiri-four-stops README; to be confirmed by their owners.",
+  "_doc": "Route scoring windows as data. A route is found by the sha1 (first 12) of the script as run, or by file name. Times are app-clock seconds; a script mark (wait_met / wait_skipped / script_end line=N at=T) is on the script clock, so the scorer adds EDEN_GUEST_START. A 5 s fps line is stamped at the END of its 5 seconds. Definitions transcribed from runs/Vampinity/2026-11-15-t186-control-README.md (Vampinity) and our kokiri-four-stops README; to be confirmed by their owners. A window is placed only by lines that were MET: a line logged as wait_skipped (a MAYBE that timed out) gives the window no value and makes the start INVALID (PR #18 review, 18 Nov), unless the window says \"clock_marks\": true - its lines are short MAYBEs written to time out, used only as a clock (the Kokiri stands).",
   "routes": {
     "wavey-kokiri-field-town": {
       "sha1": [
@@ -94,25 +94,29 @@
           "kind": "between",
           "start_line": 82,
           "end_line": 83,
-          "stat": "mean"
+          "stat": "mean",
+          "clock_marks": true
         },
         "stop_B": {
           "kind": "between",
           "start_line": 144,
           "end_line": 145,
-          "stat": "mean"
+          "stat": "mean",
+          "clock_marks": true
         },
         "stop_C": {
           "kind": "between",
           "start_line": 206,
           "end_line": 207,
-          "stat": "mean"
+          "stat": "mean",
+          "clock_marks": true
         },
         "stop_D": {
           "kind": "between",
           "start_line": 268,
           "end_line": 269,
-          "stat": "mean"
+          "stat": "mean",
+          "clock_marks": true
         }
       }
     },
@@ -180,26 +184,186 @@
           "kind": "between",
           "start_line": 83,
           "end_line": 84,
-          "stat": "mean"
+          "stat": "mean",
+          "clock_marks": true
         },
         "stop_B": {
           "kind": "between",
           "start_line": 145,
           "end_line": 146,
-          "stat": "mean"
+          "stat": "mean",
+          "clock_marks": true
         },
         "stop_C": {
           "kind": "between",
           "start_line": 207,
           "end_line": 215,
           "stat": "mean",
-          "note": "v2: L2 re-centres at 10-60 s inside the stand"
+          "note": "v2: L2 re-centres at 10-60 s inside the stand",
+          "clock_marks": true
         },
         "stop_D": {
           "kind": "between",
           "start_line": 324,
           "end_line": 325,
-          "stat": "mean"
+          "stat": "mean",
+          "clock_marks": true
+        }
+      }
+    },
+    "later-area-descent-v1": {
+      "names": [
+        "later-area-descent.v1.txt"
+      ],
+      "sha1": [
+        "fefbe77310be"
+      ],
+      "windows": {
+        "descent": {
+          "kind": "whole",
+          "start_line": 37,
+          "start_offset_s": 8,
+          "end_line": 42,
+          "stat": "mean",
+          "note": "SUPERSEDED by v2 (runLA2: the fence start is above the harness's marker box, STEER 0/27). ours, 18 Nov: 5 s lines whose whole 5 seconds lie between line 37 met (the mountain minimap) + 8 s and line 42 met (the STEER's last point, at the exit). PROVISIONAL until the first starts."
+        },
+        "village": {
+          "kind": "stamped",
+          "anchor_line": 47,
+          "from_s": 30,
+          "to_s": 235,
+          "stat": "median",
+          "note": "SUPERSEDED by v2 (runLA2: the fence start is above the harness's marker box, STEER 0/27). ours, 18 Nov: median of the 5 s lines from 30 s to 235 s after line 47 met (the village minimap, after the exit load), standing. PROVISIONAL until the first starts."
+        }
+      }
+    },
+    "later-area-descent-v2": {
+      "names": [
+        "later-area-descent.v2.txt"
+      ],
+      "sha1": [
+        "e455a45a4223"
+      ],
+      "windows": {
+        "descent": {
+          "kind": "whole",
+          "start_line": 37,
+          "start_offset_s": 8,
+          "end_line": 42,
+          "stat": "mean",
+          "note": "DROPPED (v2 was never run: its save would have cut the route in half). ours, 18 Nov, v2 (same lines as v1): 5 s lines whose whole 5 seconds lie between line 37 met (the mountain minimap) + 8 s and line 42 met (the STEER's last point, at the exit). PROVISIONAL until the first starts."
+        },
+        "village": {
+          "kind": "stamped",
+          "anchor_line": 47,
+          "from_s": 30,
+          "to_s": 235,
+          "stat": "median",
+          "note": "DROPPED (v2 was never run: its save would have cut the route in half). ours, 18 Nov, v2 (same lines as v1): median of the 5 s lines from 30 s to 235 s after line 47 met (the village minimap, after the exit load), standing. PROVISIONAL until the first starts."
+        }
+      }
+    },
+    "later-area-descent-v3": {
+      "names": [
+        "later-area-descent.v3.txt"
+      ],
+      "sha1": [
+        "75886966ee4f"
+      ],
+      "windows": {
+        "descent": {
+          "kind": "whole",
+          "start_line": 26,
+          "start_offset_s": 15,
+          "end_line": 385,
+          "stat": "mean",
+          "note": "RETIRED 18 Nov (the mountain route: replay thrown off by a boulder in runLA4; scope moved to the village). ours, 18 Nov, v3: 5 s lines whose whole 5 seconds lie between line 26 met (the mountain minimap) + 15 s (the replay starts walking) and line 385 met (the STEER's last point, at the exit). Replay (open loop) then STEER. PROVISIONAL until the first starts."
+        },
+        "village": {
+          "kind": "stamped",
+          "anchor_line": 390,
+          "from_s": 30,
+          "to_s": 235,
+          "stat": "median",
+          "note": "RETIRED 18 Nov (the mountain route: replay thrown off by a boulder in runLA4; scope moved to the village). ours, 18 Nov, v3: median of the 5 s lines from 30 s to 235 s after line 390 met (the village minimap, after the exit load), standing. PROVISIONAL until the first starts."
+        }
+      }
+    },
+    "later-area-descent-v4": {
+      "names": [
+        "later-area-descent.v4.txt"
+      ],
+      "sha1": [
+        "5cf24fcfcb9e"
+      ],
+      "windows": {
+        "descent": {
+          "kind": "whole",
+          "start_line": 28,
+          "start_offset_s": 15,
+          "end_line": 387,
+          "stat": "mean",
+          "note": "RETIRED 18 Nov (the mountain route: replay thrown off by a boulder in runLA4; scope moved to the village). ours, 18 Nov, v4 (= v3 with a 120 s village stand): 5 s lines whose whole 5 seconds lie between line 28 met (the mountain minimap) + 15 s (the replay starts walking) and line 387 met (the STEER's last point, at the exit). Replay (open loop) then STEER."
+        },
+        "village": {
+          "kind": "stamped",
+          "anchor_line": 392,
+          "from_s": 30,
+          "to_s": 115,
+          "stat": "median",
+          "note": "RETIRED 18 Nov (the mountain route: replay thrown off by a boulder in runLA4; scope moved to the village). ours, 18 Nov, v4: median of the 5 s lines from 30 s to 115 s after line 392 met (the village minimap, after the exit load), standing; END is at 120 s."
+        }
+      }
+    },
+    "later-area-village-lap-v1": {
+      "names": [
+        "later-area-village-lap.v1.txt"
+      ],
+      "sha1": [
+        "b0c54fa6a23e"
+      ],
+      "windows": {
+        "village_lap": {
+          "kind": "whole",
+          "start_line": 31,
+          "start_offset_s": 8,
+          "end_line": 35,
+          "stat": "mean",
+          "note": "SUPERSEDED by v2 (runLV1: stopped at the fence in the gatehouse, point 53/54). ours, 18 Nov: 5 s lines whose whole 5 seconds lie between line 31 met (the village minimap) + 8 s and line 35 met (the STEER's last point, at the gate to the field). PROVISIONAL until the first starts."
+        },
+        "field": {
+          "kind": "stamped",
+          "anchor_line": 40,
+          "from_s": 30,
+          "to_s": 115,
+          "stat": "median",
+          "note": "SUPERSEDED by v2 (runLV1: stopped at the fence in the gatehouse, point 53/54). ours, 18 Nov: median of the 5 s lines from 30 s to 115 s after line 40 met (the field minimap, after the load from the village), standing; END is at 120 s. PROVISIONAL until the first starts."
+        }
+      }
+    },
+    "later-area-village-lap-v2": {
+      "names": [
+        "later-area-village-lap.v2.txt"
+      ],
+      "sha1": [
+        "9f0a63d5964a"
+      ],
+      "windows": {
+        "village_lap": {
+          "kind": "whole",
+          "start_line": 43,
+          "start_offset_s": 8,
+          "end_line": 49,
+          "stat": "mean",
+          "note": "ours, 18 Nov, v2: 5 s lines whose whole 5 seconds lie between line 43 met (the village minimap) + 8 s and line 49 met (the exit leg's last point, past the fence in the gatehouse). Two STEER legs (47: the lap; 49: the exit)."
+        },
+        "field": {
+          "kind": "stamped",
+          "anchor_line": 54,
+          "from_s": 30,
+          "to_s": 115,
+          "stat": "median",
+          "note": "ours, 18 Nov, v2: median of the 5 s lines from 30 s to 115 s after line 54 met (the field minimap, after the load from the village), standing; the menu tail starts at 120 s."
         }
       }
     }

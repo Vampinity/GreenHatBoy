@@ -1,0 +1,49 @@
+# Later-area route v1 (GrowingBlackBeans, 18 Nov 2026): the walk down the mountain path from the fence by the
+# summit trail to the exit, the load into the village below, then a stand there. Made for the alpha control (T186).
+#
+# Why our own: waveydude's route (17 Nov) did not run on our control (runLA1: its title presses are on a timer and
+# its STEER never saw the player's marker, 0/20 in 198 looks). This one uses the field route's proven title and
+# load-list checks, a map check before walking, and STEER points read from a hand walk on the alpha itself.
+#
+# Save: our own start save, made on the alpha from waveydude's slot 02 (the fence) and exported to
+# save-exports/later-area/. Its entry must be the newest: the script presses A on the top entry.
+# Always run with EDEN_TEST_DISCARD_SAVE=1.
+#
+# Clock: seconds count from EDEN_GUEST_START. Lines after a WAIT, MAYBE or STEER count from the moment that line
+# was met (test_harness.h). Stick: raw 0-255, 128 centre, y=0 is up on the stick = where the camera looks.
+#
+# LOOK grids (make-look.py, cut from runLA1's capture, scored at 1 s steps over its 262 s):
+#   title, load  the field route's, unchanged (game menus, the same for every save)
+#   mountain     the minimap's lower-left lobe, 892 769 26 102 4x8, from 3 s (standing at the fence). Scores: 100 on
+#                the walk (down to 22 only while the sign's text box covered the screen, which this route never
+#                opens), 0 on the whole black of the exit load, -28 to 8 in the village. The marker never enters it.
+#   village      the village minimap, 845 820 48 80 8x8, from 231 s. Scores: 94-100 from the first village frame
+#                (222 s) to the end, -36 to 41 on the mountain, 0 on the black.
+
+# --- Title: Continue is lit by default. The second A only plays if the load screen has not come 3 s after the first.
+0 WAIT 180 LOOK 403 848 194 42 24x3:0111010102010101010101010101010101010101010101013233454a4d43421c1e61343e622954453d5828513e444223092d372627231c1f0c221f1f0f140f1f0a211220181d291f
+1.5 A 150
+4.5 A 150
+1.0 WAIT 8 LOOK 400 0 200 75 16x4:3634333437373737393b3b3b3a3939394745454748484f494d554d4b49494b4b5d5c5e5e5d5e8091a78763636262626378787c7b7b7c817c7c827d7d7d7e7c7f
+# --- Load screen: A on the newest save (our mountain start save), A on Load. A every 2 s until the screen goes, the rest is dropped.
+1.0 A 150
+3.0 A 150
+5.0 A 150
+7.0 A 150
+9.0 A 150
+0.5 WAIT 15 GONE 400 0 200 75 16x4:3634333437373737393b3b3b3a3939394745454748484f494d554d4b49494b4b5d5c5e5e5d5e8091a78763636262626378787c7b7b7c817c7c827d7d7d7e7c7f
+# --- Loading the mountain. No input. Met = the mountain minimap is on screen. A different minimap (wrong entry)
+# does not match: the script stops here (wait_timeout), the sign that the save's entry is not the newest.
+0 WAIT 240 LOOK 892 769 26 102 4x8:283048322b2d61742e2e3d7b2f2d4d802a2f73752c5d7977347771815c7a6087 80
+# --- The walk down. STEER from 8 s (past the place card). Points: steer-route.py on runLA1's capture, 0-88 s and
+# 92-115 s (step 8, r=6), joined; the spur up to the sign (914,800) left out. The switchback up to 919,815 and back
+# down is the path itself: waveydude's own line has it too (919,813 -> 910,827). The last point, 929,936, is the
+# last one read before the black, and his line ends there as well. The hand walk took ~70 s of walking: timeout 150.
+8 STEER 150 943,745 941,759 941,774 942,790 942,804 941,820 944,835 945,850 942,865 936,876 928,874 920,870 915,858 915,843 917,829 919,815 911,819 907,834 905,848 902,862 899,875 900,890 903,903 910,911 918,916 925,924 929,936 r=6
+# --- Into the exit: in the hand walk the black came ~1 s after the last point. A forward push to be sure.
+0 LSTICK 128 0 6000
+# --- The exit load, then the village. In runLA1 the black lasted ~108 s. Met = the village minimap; skipped = the
+# load did not end in the village within 300 s (crash, freeze, or the push missed the exit). It labels the run.
+1 MAYBE 300 LOOK 845 820 48 80 8x8:91918d7a6d9494989894868e8d9090938c8a837e80807b7f2d6c9a9981825e892a2e87936ca07a8826264174968587962526277a8f938e934347466888818981 80
+# --- Stand in the village, no input, then END ~4 minutes after arriving. Make test-quit a minute or so after.
+240 END
