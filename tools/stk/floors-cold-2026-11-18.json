@@ -147,16 +147,16 @@
      "direction": -1,
      "measured": true,
      "values": [
-      1014,
-      1155,
+      963.5,
+      1128,
       974,
-      1106
+      1005.5
      ],
-     "mean": 1062.25,
-     "sd": 82.931,
-     "min": 974,
-     "max": 1155,
-     "floor": 181
+     "mean": 1017.75,
+     "sd": 75.636,
+     "min": 963.5,
+     "max": 1128,
+     "floor": 164.5
     },
     "win_after_field_fps": {
      "stage": "fast",
@@ -352,7 +352,9 @@
      "sd": 62.348,
      "min": 759,
      "max": 904,
-     "floor": 145
+     "floor": 145,
+     "usable": false,
+     "why": "the control never goes under 16 MiB on this key: what is stranded is read only at the wall (PR #24)"
     },
     "win_stop_A_fps": {
      "stage": "fast",
@@ -768,15 +770,17 @@
      "measured": true,
      "values": [
       848,
-      754,
-      716,
+      776,
+      665,
       891
      ],
-     "mean": 802.25,
-     "sd": 81.111,
-     "min": 716,
+     "mean": 795,
+     "sd": 98.803,
+     "min": 665,
      "max": 891,
-     "floor": 175
+     "floor": 226,
+     "usable": false,
+     "why": "the control never goes under 16 MiB on this key: what is stranded is read only at the wall (PR #24)"
     },
     "win_village_fps": {
      "stage": "fast",

@@ -137,15 +137,17 @@
      "measured": true,
      "values": [
       475,
-      522,
-      910,
-      908
+      557,
+      554,
+      615
      ],
-     "mean": 703.75,
-     "sd": 237.779,
+     "mean": 550.25,
+     "sd": 57.488,
      "min": 475,
-     "max": 910,
-     "floor": 435
+     "max": 615,
+     "floor": 140,
+     "usable": false,
+     "why": "the control never goes under 16 MiB on this key: what is stranded is read only at the wall (PR #24)"
     },
     "win_village_fps": {
      "stage": "fast",

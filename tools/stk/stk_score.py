@@ -57,6 +57,7 @@ CENSUS_POOL_RE = re.compile(r"^EDEN_MEM_CENSUS_POOL\s+n=(\d+)\b.*?free_pages=(\d
 LOW_MIB = 16          # "under 16 MiB": the census's own low mark for the largest free block (19 Nov)
 CENSUS_EVERY_S = 2.0  # one EDEN_MEM_CENSUS line every 2 s
 RADV_MEM_RE = re.compile(r"^RADV_PS5_MEMORY\s+t_s=([\d.]+)\s+pool_mib=(\d+)\s+available_mib=(\d+)")
+REFUSED_LARGEST_RE = re.compile(r"the largest (\d+) MiB")
 POOL_MEM_RE = re.compile(r"EDEN_MEMORY\s+pool\s+largest\s+free\s+block\s+(\d+)\s+MiB")
 FLASH_RE = re.compile(r"\[\s*([\d.]+)\].*EDEN_UP_FLASH\s+frame")
 RUNTIME_PIPE_RE = re.compile(r"\[\s*([\d.]+)\].*ReportRuntimePipeline:\s*Graphics pipeline built on the GPU thread")
@@ -460,18 +461,55 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
     # - seconds_under_16_mib: census lines whose largest free block is under 16 MiB, at 2 s each;
     # - stranded_at_low_mib: at the census with the lowest largest free block, what is free but unusable: the heap's
     #   free pages + fragmented + the GPU blocks' slack (the same pool line memmap.py reads).
-    refused_pool_events = sum(1 for l in stderr_lines if "EDEN_REFUSED_POOL" in l) if stderr_lines else None
-    census_rows = [(int(m.group(1)), int(m.group(4))) for l in stderr_lines if (m := CENSUS_RE.match(l))]
+    # 20 Nov, after Vampinity's review of PR #24:
+    # - They stop where test-quit ends a run, like fps (point 2). The census clock (t_s) runs about 13 s behind the
+    #   script's, so the cut is by log order: everything up to the script_done line, then the census lines of the
+    #   next 10 s, counted on their own clock from the first census line after it (five lines at the 2 s cadence).
+    #   Refusal lines carry no time and stop at the same place in the log. A start with no census after script_done
+    #   stops at the script_done line; one with no script_done reads to the log's end, as fps does.
+    # - A refusal line whose largest free block is 16 MiB or more is not counted (point 1): EDEN_NX2_POOL_WALK=1 prints
+    #   the pool line every 20 s with nothing refused (his run215: 16 of them, 7.5-11.4 GiB free).
+    # - stranded_at_low_mib is the median over the census lines tied at the lowest block (point 4): docked, many tie
+    #   at 0 MiB, and the first of them is the least steady choice.
+    mem_lines, memory_window = stderr_lines, "to_log_end"
+    sd_idx = next((i for i, l in enumerate(stderr_lines) if "EDEN_TEST script_done" in l), None)
+    if sd_idx is not None:
+        cut_idx, first_after = sd_idx + 1, None
+        for i in range(sd_idx + 1, len(stderr_lines)):
+            m = CENSUS_RE.match(stderr_lines[i])
+            if not m:
+                continue
+            t = float(m.group(3))
+            if first_after is None:
+                first_after = t
+            elif t >= first_after + 10.0:
+                cut_idx = i
+                break
+        else:
+            if first_after is not None:
+                cut_idx = len(stderr_lines)
+        mem_lines = stderr_lines[:cut_idx]
+        memory_window = "to_script_done+10s" if first_after is not None else "to_script_done_line"
+    refused_pool_events = None
+    if stderr_lines:
+        refused_pool_events = 0
+        for l in mem_lines:
+            if "EDEN_REFUSED_POOL" in l:
+                m = REFUSED_LARGEST_RE.search(l)
+                if m is None or int(m.group(1)) < LOW_MIB:
+                    refused_pool_events += 1
+    census_rows = [(int(m.group(1)), int(m.group(4))) for l in mem_lines if (m := CENSUS_RE.match(l))]
     seconds_under_16_mib = (round(sum(1 for _, big in census_rows if big < LOW_MIB) * CENSUS_EVERY_S, 1)
                             if census_rows else None)
     stranded_at_low_mib = None
     if census_rows:
-        low_n = min(census_rows, key=lambda r: r[1])[0]
-        for l in stderr_lines:
-            m = CENSUS_POOL_RE.match(l)
-            if m and int(m.group(1)) == low_n:
-                stranded_at_low_mib = int(m.group(2)) + int(m.group(3)) + int(m.group(4))
-                break
+        low = min(big for _, big in census_rows)
+        tied = {n for n, big in census_rows if big == low}
+        stranded = [int(m.group(2)) + int(m.group(3)) + int(m.group(4))
+                    for l in mem_lines if (m := CENSUS_POOL_RE.match(l)) and int(m.group(1)) in tied]
+        if stranded:
+            v = st.median(stranded)
+            stranded_at_low_mib = int(v) if v == int(v) else round(v, 1)
 
     hitch_ms_per_min, hitch_source = None, "missing_no_flight_recorder_or_hitch_trace"
     hitch_vals = [float(m.group(1)) for l in (eden_lines + stderr_lines) if (m := HITCH_LINE_RE.search(l))]
@@ -573,7 +611,7 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
         "shader_builds_in_play": shader_builds_in_play, "shader_builds_source": shader_builds_source,
         "largest_free_block_min_mib": largest_free_block_mib, "largest_free_block_source": largest_free_block_source,
         "refused_pool_events": refused_pool_events, "seconds_under_16_mib": seconds_under_16_mib,
-        "stranded_at_low_mib": stranded_at_low_mib, "load_s": load_s, "load_source": load_source,
+        "stranded_at_low_mib": stranded_at_low_mib, "memory_window": memory_window, "load_s": load_s, "load_source": load_source,
         "largest_free_block_driver_min_mib": driver_free_min,
         # A count at the cap is a floor, not a count: written ">=64" so no reader can compare two floors.
         "radv_oom_events": (f">={OOM_LOG_CAP}" if (radv_oom is not None and radv_oom >= OOM_LOG_CAP) else radv_oom),

@@ -245,3 +245,27 @@ the worse (Fable's check of the Phase 4 plan). Four numbers that can, from lines
   past the black, to the first 5 s line from which play holds at half the after-load fps for 15 s. 5 s resolution.
 On the field: warm 7, 0, 5, 11 refusals; 22-56 s under 16 MiB; load 12-23 s (cold 146-165 s). All floor files are
 rebuilt; every number they already had is unchanged.
+
+## 20 Nov: after Vampinity's review of PR #24
+
+- **The memory numbers stop where test-quit ends a run** (his point 2). Refusals, seconds under 16 MiB and
+  stranded at the low read the log up to the `script_done` line, then the census lines of the next 10 s on the
+  census's own clock (it runs about 13 s behind the script's, so the cut is by log order, not `t_s`). A start with
+  no census after `script_done` stops at its line; one with no `script_done` reads to the log's end, as fps does.
+  New column `memory_window` says which. `largest_free_block_min_mib` is unchanged (it still reads the whole log).
+- **A refusal line with 16 MiB or more in its largest block isn't counted** (point 1): `EDEN_NX2_POOL_WALK=1` prints
+  the pool line every 20 s with nothing refused. With the filter the count stays usable with that switch on.
+- **A control at 0 on every start can't block** (point 3): no noise to read against, so one stray line per start
+  read "real". A worse reading there is "watch", with the reason in the note, until there's a minimum size.
+- **`stranded_at_low_mib` is gated only where the control goes under 16 MiB**, and reads the median over the census
+  lines tied at the lowest block (point 4). Elsewhere the floor marks it unusable, with the reason.
+- **`load_s` has fixtures** (point 5): the black, the stall and a false start; play that never holds; two good lines
+  before the cut (the 3-line minimum); no black.
+- **From the #23 follow-up:** a candidate arm that boots two ways is still BLOCK when a start crashed or a stable
+  number is really worse (MIXED used to hide it); the invalid-start test now fails without its fix.
+- The packed-run test of his seven field starts carries the after-the-field values as cut by PR #20 (run1591 13.35,
+  run1604 13.95, run1613 13.35); it failed on `main` since that merge.
+
+Floors rebuilt from the same 32 starts. Refusals and seconds under 16 MiB don't move on any key (none of our control
+starts had either after the route ended). Stranded moves on the ties (field cold 1014, 1155, 974, 1106 → 963.5,
+1128, 974, 1005.5) and is gated only on the field, cold and warm, and the cold later area. 131 tests.
