@@ -158,7 +158,7 @@ REFUSED = ("EDEN_REFUSED_POOL 12352 MiB in all, 7 MiB free in 314 blocks after 6
 
 
 class MemoryAfterPR24(unittest.TestCase):
-    """Vampinity's review of PR #24 (20 Nov): where the memory numbers stop, what a refusal is, ties at the low."""
+    """Vampinity's review of PR #24 (19 Nov): where the memory numbers stop, what a refusal is, ties at the low."""
 
     def score(self, stderr):
         with tempfile.TemporaryDirectory() as td:

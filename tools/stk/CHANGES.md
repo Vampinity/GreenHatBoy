@@ -246,7 +246,7 @@ the worse (Fable's check of the Phase 4 plan). Four numbers that can, from lines
 On the field: warm 7, 0, 5, 11 refusals; 22-56 s under 16 MiB; load 12-23 s (cold 146-165 s). All floor files are
 rebuilt; every number they already had is unchanged.
 
-## 20 Nov: after Vampinity's review of PR #24
+## 19 Nov: after Vampinity's review of PR #24
 
 - **The memory numbers stop where test-quit ends a run** (his point 2). Refusals, seconds under 16 MiB and
   stranded at the low read the log up to the `script_done` line, then the census lines of the next 10 s on the

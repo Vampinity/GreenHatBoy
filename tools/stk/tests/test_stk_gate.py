@@ -423,7 +423,7 @@ class WarmBoot(unittest.TestCase):
 
 
 class AfterPR24(unittest.TestCase):
-    """Vampinity's review of PR #24 (20 Nov): zero floors, stranded only at the wall, MIXED never hides a BLOCK."""
+    """Vampinity's review of PR #24 (19 Nov): zero floors, stranded only at the wall, MIXED never hides a BLOCK."""
 
     def test_one_stray_refusal_on_a_zero_floor_is_a_watch(self):
         ctrl = [row(f"c{i}", 8.7, refused_pool_events=0) for i in range(4)]

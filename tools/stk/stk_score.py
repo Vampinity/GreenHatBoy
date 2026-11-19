@@ -461,7 +461,7 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
     # - seconds_under_16_mib: census lines whose largest free block is under 16 MiB, at 2 s each;
     # - stranded_at_low_mib: at the census with the lowest largest free block, what is free but unusable: the heap's
     #   free pages + fragmented + the GPU blocks' slack (the same pool line memmap.py reads).
-    # 20 Nov, after Vampinity's review of PR #24:
+    # 19 Nov, after Vampinity's review of PR #24:
     # - They stop where test-quit ends a run, like fps (point 2). The census clock (t_s) runs about 13 s behind the
     #   script's, so the cut is by log order: everything up to the script_done line, then the census lines of the
     #   next 10 s, counted on their own clock from the first census line after it (five lines at the 2 s cadence).
