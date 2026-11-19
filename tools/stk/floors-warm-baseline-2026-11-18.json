@@ -141,7 +141,18 @@
      "max": 3055.7,
      "floor": 168.0
     }
-   }
+   },
+   "warm_boot": {
+    "own 36 / total 37": [
+     "runWB1"
+    ],
+    "own 3 / total 4": [
+     "runWB2",
+     "runWB3",
+     "runWB4"
+    ]
+   },
+   "warm_boot_mixed_on_purpose": true
   }
  },
  "skipped": []

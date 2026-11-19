@@ -47,6 +47,8 @@ STAMP_RE = re.compile(
 DEVICE_RE = re.compile(r"\(files\s+(\d+)\)\s+(dev[0-9a-f]+)")
 TEST_RE = re.compile(r"EDEN_TEST ([a-z_]+)")
 TOTAL_PIPES_RE = re.compile(r"Total Pipeline Count:\s*(\d+)")
+KNOWN_RE = re.compile(r"Shader preparation: (\d+) pipelines known, (\d+) left to prepare")
+OWN_RE = re.compile(r"Shader preparation stats: (\d+) records read \((\d+) own")
 DRIVER_LOADED_RE = re.compile(r"Loaded Vulkan driver pipeline cache")
 SDK_RE = re.compile(r"sdk_version\s+0x([0-9a-fA-F]+)")
 BOOT_BUILD_RE = re.compile(r"diagnostic build\s+(\S+)\s+\(([^)]*)\)")
@@ -250,6 +252,17 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
             total_pipelines = int(m.group(1))
             break
     driver_cache_loaded = any(DRIVER_LOADED_RE.search(l) for l in eden_lines[:5000]) if eden_lines else None
+    # The warm boot (19 Nov): what the start booted with besides the store. A warm control restores the whole cache
+    # first, and the boot proves it: every store pipeline known, none left to prepare, and the app's own records and
+    # the total count the same as the control's (ours: 80770 / 0 / 3 own / 4). N alone doesn't show it.
+    pipelines_known = left_to_prepare = own_records = None
+    for l in eden_lines[:5000]:
+        if pipelines_known is None and (m := KNOWN_RE.search(l)):
+            pipelines_known, left_to_prepare = int(m.group(1)), int(m.group(2))
+        if own_records is None and (m := OWN_RE.search(l)):
+            own_records = int(m.group(2))
+        if pipelines_known is not None and own_records is not None:
+            break
     if cache_store_state is None:
         cache_class = None
     elif cache_store_state == "reused":
@@ -497,6 +510,7 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
         "translation_id": translation_id, "translation_files": translation_files, "device_id": device_id,
         "shader_store": shader_store, "store_state": cache_store_state, "store_pipelines": store_pipelines,
         "total_pipeline_count": total_pipelines, "driver_cache_loaded": driver_cache_loaded,
+        "pipelines_known": pipelines_known, "left_to_prepare": left_to_prepare, "own_records": own_records,
         "cache_class": cache_class, "cache_source": cache_source,
         "start_method": start_method, "game_start_app_s": guest_start_t,
         "end_kind": end_kind, "tail_after_script_s": tail_after_script_s,

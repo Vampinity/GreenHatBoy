@@ -339,5 +339,104 @@ class SkippedAnchor(unittest.TestCase):
         self.assertEqual(v, 13.0)
 
 
+def warm(run, fps, own=3, total=4, known=80770, left=0, **kw):
+    return row(run, fps, cache="warm", store_pipelines=80770, pipelines_known=known, left_to_prepare=left,
+               own_records=own, total_pipeline_count=total, **kw)
+
+
+WARM_CONTROL = [warm("w1", 19.0), warm("w2", 19.2), warm("w3", 19.1), warm("w4", 19.3)]
+WKEY = "r-v1|13.60|warm|prep_x|80770"
+
+
+class WarmBoot(unittest.TestCase):
+    """The warm-state check (19 Nov): a warm start must boot in the prepared state, and in the control's."""
+
+    def test_floor_records_the_control_boots(self):
+        f = stk_gate.build_floors(WARM_CONTROL)["keys"][WKEY]
+        self.assertEqual(f["warm_boot"], {"own 3 / total 4": ["w1", "w2", "w3", "w4"]})
+
+    def test_floor_refuses_a_control_with_two_boots(self):
+        with self.assertRaises(stk_gate.MixedArm):
+            stk_gate.build_floors(WARM_CONTROL[:3] + [warm("w4", 19.3, own=36, total=37)])
+
+    def test_floor_refuses_a_grown_own_cache_too(self):
+        # Vampinity's 14-15 Nov warm runs: exactly N known, but 6,646-7,816 own records.
+        with self.assertRaises(stk_gate.MixedArm):
+            stk_gate.build_floors(WARM_CONTROL[:3] + [warm("w4", 19.3, own=6646, total=6647)])
+
+    def test_floor_keeps_two_boots_when_allowed_on_purpose(self):
+        f = stk_gate.build_floors(WARM_CONTROL[:3] + [warm("w4", 19.3, own=36, total=37)], {WKEY})["keys"][WKEY]
+        self.assertEqual(f["n"], 4)
+        self.assertEqual(f["warm_boot"]["own 36 / total 37"], ["w4"])
+        self.assertTrue(f["warm_boot_mixed_on_purpose"])
+
+    def test_control_without_boot_lines_is_unverified(self):
+        f = stk_gate.build_floors(WARM_CONTROL[:3] + [warm("w4", 19.3, own=None)])["keys"][WKEY]
+        self.assertIn("warm boot not recorded on w4", f["arm_unverified"])
+
+    def test_candidate_arm_mixing_boots_is_mixed(self):
+        cands = [warm(f"c{i}", 19.1) for i in range(3)] + [warm("c3", 19.1, own=36, total=37)]
+        fl = stk_gate.build_floors(WARM_CONTROL[:3] + [warm("w4", 19.3, own=36, total=37)], {WKEY})
+        rep = stk_gate.check(cands, fl)[0]
+        self.assertEqual(rep["verdict"], "MIXED")
+
+    def test_invalid_start_does_not_count_for_the_boot(self):
+        cands = [warm(f"c{i}", 19.1 + i / 20) for i in range(4)] + [
+            warm("bad", 19.1, own=820, total=821, survival_result="stopped_early")]
+        rep = stk_gate.check(cands, stk_gate.build_floors(WARM_CONTROL))[0]
+        self.assertNotIn("bad warm boot", rep.get("provisional", ""))
+
+    def test_floor_leaves_out_a_control_not_prepared(self):
+        fl = stk_gate.build_floors(WARM_CONTROL + [warm("w5", 19.1, known=80798)])
+        self.assertEqual(fl["keys"][WKEY]["n"], 4)
+        self.assertIn("warm boot not prepared", fl["skipped"][0]["why"])
+
+    def test_candidate_with_the_control_boot_passes(self):
+        rep = stk_gate.check([warm(f"c{i}", 19.1 + i / 20) for i in range(4)], stk_gate.build_floors(WARM_CONTROL))[0]
+        self.assertEqual(rep["verdict"], "PASS")
+
+    def test_candidate_with_another_boot_is_provisional(self):
+        cands = [warm(f"c{i}", 19.1, own=820, total=821) for i in range(4)]
+        rep = stk_gate.check(cands, stk_gate.build_floors(WARM_CONTROL))[0]
+        self.assertEqual(rep["verdict"], "PROVISIONAL")
+        self.assertIn("c3 warm boot own 820 / total 821", rep["provisional"])
+
+    def test_candidate_not_prepared_is_provisional(self):
+        cands = [warm(f"c{i}", 19.1) for i in range(3)] + [warm("c3", 19.1, left=12)]
+        rep = stk_gate.check(cands, stk_gate.build_floors(WARM_CONTROL))[0]
+        self.assertEqual(rep["verdict"], "PROVISIONAL")
+        self.assertIn("12 pipelines left to prepare", rep["provisional"])
+
+    def test_old_floor_without_warm_boot_is_provisional(self):
+        fl = stk_gate.build_floors(WARM_CONTROL)
+        del fl["keys"][WKEY]["warm_boot"]
+        rep = stk_gate.check([warm(f"c{i}", 19.1) for i in range(4)], fl)[0]
+        self.assertEqual(rep["verdict"], "PROVISIONAL")
+        self.assertIn("control warm boot not recorded", rep["provisional"])
+
+    def test_cold_starts_are_untouched(self):
+        rep = stk_gate.check([row(f"c{i}", 8.7) for i in range(4)], stk_gate.build_floors(CONTROL))[0]
+        self.assertFalse(any("warm boot" in n for n in rep["notes"]))
+        self.assertEqual(rep["verdict"], "PASS")
+
+
+class GateNotes(unittest.TestCase):
+    """Vampinity's two non-blocking notes on PR #18."""
+
+    def test_mixed_lists_what_is_missing_too(self):
+        cands = [row("a", 8.7), row("b", 8.7, script_sha1="s2"), row("c", 8.7, env_hash=None), row("d", 8.7)]
+        rep = stk_gate.check(cands, stk_gate.build_floors(CONTROL))[0]
+        self.assertEqual(rep["verdict"], "MIXED")
+        self.assertIn("script differs", rep["why"])
+        self.assertIn("settings (env hash) not recorded on c", rep["why"])
+
+    def test_floor_without_arm_unverified_is_provisional(self):
+        fl = stk_gate.build_floors(CONTROL)
+        del fl["keys"]["r-v1|13.60|cold"]["arm_unverified"]
+        rep = stk_gate.check([row(f"c{i}", 8.7) for i in range(4)], fl)[0]
+        self.assertEqual(rep["verdict"], "PROVISIONAL")
+        self.assertIn("predates the arm check", rep["provisional"])
+
+
 if __name__ == "__main__":
     unittest.main()

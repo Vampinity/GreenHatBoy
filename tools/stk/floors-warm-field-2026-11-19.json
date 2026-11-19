@@ -140,6 +140,14 @@
      "max": 4138.3,
      "floor": 294.8
     }
+   },
+   "warm_boot": {
+    "own 3 / total 4": [
+     "runWF2",
+     "runWF3",
+     "runWF4",
+     "runWF5"
+    ]
    }
   }
  },

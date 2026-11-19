@@ -128,6 +128,29 @@ class Synthetic(unittest.TestCase):
             self.assertTrue(r["radv_oom_capped"])
 
 
+class WarmBootLines(unittest.TestCase):
+    def test_warm_boot_lines_are_read(self):
+        """PR #23 review: the two boot regexes, on the alpha's own wording."""
+        eden = (stamp("reused", 80770)
+                + "[   3.83] Render.Vulkan <Info> x.cpp:5793:PrepareKept: Shader preparation: 80770 pipelines known, 0 left "
+                  "to prepare (0 of this console's own records, 0 predicted), 0 struck out\n"
+                + "[   3.84] Render.Vulkan <Info> x.cpp:5803:PrepareKept: Shader preparation stats: 3 records read (3 own, 0 "
+                  "predicted): 0 not taken by the boot\n"
+                + "[   3.90] Render.Vulkan <Info> x.cpp:1:Load: Total Pipeline Count: 4\n")
+        with tempfile.TemporaryDirectory() as td:
+            write_run(Path(td), eden)
+            r = score_run(td, None)
+            self.assertEqual((r["pipelines_known"], r["left_to_prepare"], r["own_records"], r["total_pipeline_count"]),
+                             (80770, 0, 3, 4))
+
+    def test_missing_boot_lines_are_null(self):
+        with tempfile.TemporaryDirectory() as td:
+            write_run(Path(td), stamp("reused", 80770))
+            r = score_run(td, None)
+            self.assertIsNone(r["pipelines_known"])
+            self.assertIsNone(r["own_records"])
+
+
 class ContractV1(unittest.TestCase):
     """waveydude's four points for run.json v1."""
 
