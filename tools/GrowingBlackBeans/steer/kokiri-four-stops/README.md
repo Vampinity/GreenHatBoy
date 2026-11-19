@@ -11,7 +11,7 @@ pad. At each stop Link stands still for 62 s. Those windows are what we compare 
 | `kokiri-four-stops.txt` | the script |
 | `build.py` | makes the script from a recorded walk (KW2) and its capture video |
 | `lint.py` | reads a script the way `test_harness.h` does, and stops on any line the harness would reject |
-| `points.png` | the STEER points over the KW2 minimap, to check by eye |
+| `points.png` | the STEER points over the KW2 minimap, to check by eye. `build.py` writes it locally; it is not kept in the repo (it is drawn on the game's picture), and `.gitignore` keeps it out |
 
 ## How it works
 
