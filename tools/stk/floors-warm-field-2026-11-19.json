@@ -97,16 +97,16 @@
      "direction": 1,
      "measured": true,
      "values": [
-      14.4,
+      14.0,
       14.1,
-      14.3,
-      14.6
+      14.1,
+      14.15
      ],
-     "mean": 14.35,
-     "sd": 0.208,
-     "min": 14.1,
-     "max": 14.6,
-     "floor": 0.5
+     "mean": 14.088,
+     "sd": 0.063,
+     "min": 14.0,
+     "max": 14.15,
+     "floor": 0.15
     },
     "win_field_walk_fps": {
      "stage": "fast",

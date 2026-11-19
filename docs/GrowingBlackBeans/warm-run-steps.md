@@ -3,7 +3,8 @@
 How our warm controls were run: runWB1-4, runWK1-4 (PR #19) and runWF2-5, runWV2-5 (19 Nov). The same as a cold
 control start (`RUN-CONTRACT.md`: env from the run folder, logs aside, test-boot-once, press nothing, test-quit, copy
 back flat), with one difference: **instead of setting the caches aside, put back the whole cache as it was right
-after the store was built.**
+after the store was built** (the whole cache: the store, and the app's and the driver's pipeline files, among them
+`vulkan_pipelines.bin`).
 
 Each of us builds the store on our own console (shader set prepass on the alpha, from the recipe). No store or cache
 is shared between people; what is shared is how it is built and the number a warm start must log.
@@ -27,7 +28,7 @@ Check the copy against the list before each use.
 
 4. Open the app, press nothing.
 5. Quit with `test-quit` only after the script's END. Late is free: the scorer cuts every number at script_done +
-   10 s. Early voids the start. **Count from a fixed event in the route, not from a load finishing:** a warm load
+   10 s (the after-the-load window too, since 19 Nov; before that it ran to the log's end). Early voids the start. **Count from a fixed event in the route, not from a load finishing:** a warm load
    is short, so a cold-start rule like "4 minutes after the area past the field shows" lands before END
    (our runWF1). For the field route: 6 minutes or more after the screen goes black at the gate.
 6. Copy back, flat: `user/log/eden_log.txt` and everything in the new `logs/`.
@@ -47,9 +48,10 @@ Then `control_eligible: true` from stk, as for a cold start. Anything else, and 
 - Play grows the app's own pipeline files. After runWB1, runWB2 read 820 own records and built 6 shaders in play
   (`runWB2-played`). N didn't show it: N counts only the store.
 - After a restore of those growing files only, the store itself read 80,798 (`runWB2-n80798`), with no log line.
-- Check on 19 Nov: after a normal warm start from a whole restore (runWV1), all eight store files, both large
-  `.bin` files included, were byte-identical to the copy. So a normal start doesn't change the store; the 80,798
-  most likely came from the partial restore. The whole restore stays: it is what makes every start alike.
+- Check on 19 Nov: after runWV1, all eight store files, both large `.bin` files included, were byte-identical to the
+  copy. **That doesn't settle it** (Vampinity, PR #20): WV1's close never finished, so the app never wrote its cache
+  at shutdown. Whether a normal start changes the store is still open; the check is to be repeated after a start
+  that closes cleanly. The whole restore stays either way: it is what makes every start alike.
 
 ## A crash at quit (seen 19 Nov)
 

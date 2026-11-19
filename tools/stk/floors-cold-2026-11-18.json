@@ -100,15 +100,15 @@
      "measured": true,
      "values": [
       14.0,
-      13.85,
-      13.85,
-      13.9
+      13.8,
+      13.8,
+      13.95
      ],
-     "mean": 13.9,
-     "sd": 0.071,
-     "min": 13.85,
+     "mean": 13.887,
+     "sd": 0.103,
+     "min": 13.8,
      "max": 14.0,
-     "floor": 0.15
+     "floor": 0.2
     },
     "win_field_walk_fps": {
      "stage": "fast",
@@ -603,26 +603,5 @@
    }
   }
  },
- "skipped": [
-  {
-   "run": "runBW3",
-   "why": "no gate key"
-  },
-  {
-   "run": "runFC1",
-   "why": "not control_eligible"
-  },
-  {
-   "run": "runKV3",
-   "why": "not control_eligible"
-  },
-  {
-   "run": "runLV1",
-   "why": "not control_eligible"
-  },
-  {
-   "run": "runLV5",
-   "why": "not control_eligible"
-  }
- ]
+ "skipped": []
 }

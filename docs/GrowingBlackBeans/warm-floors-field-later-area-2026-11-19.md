@@ -22,7 +22,7 @@ nominal (not corrected across the numbers). "Largest free block" is its lowest p
 |---|---|---|---|
 | worst frame, ms | 31,149-33,030 | 3,844-4,138 | 0.029 |
 | field walk fps | 12.93-14.10 | 18.82-19.09 | 0.029 |
-| after the field fps | 13.85-14.00 | 14.1-14.6 | 0.029 |
+| after the field fps | 13.80-14.00 (mean 13.89) | 14.0-14.15 (mean 14.09) | 0.057 |
 | largest free block, MiB | 0-1 | 0-2 | 1.0 |
 | radv OOM lines (in the load past the field) | 9, 10, 10, >=64 | >=64, 18, >=64, >=64 | not gateable (cap) |
 
@@ -39,12 +39,16 @@ nominal (not corrected across the numbers). "Largest free block" is its lowest p
 Hitches and flashes are not measured on the alpha.
 
 ## What it says
-- **Warm moves steady fps where the route walks through new scenery:** the field walk +5.5 (13.4 -> 18.9) and the
-  village lap +10.5 (8.7 -> 19.2). Where the player stands (Kokiri's stops, the field stand, the baseline village)
-  it doesn't. Likely: a cold start is still building shaders while it walks. Not shown yet: stk's
-  `shader_builds_in_play` reads about 360 on every start of both routes, warm or cold, so it doesn't count what
-  the store saves. That goes with the open question on PR #19 (what is still built in play).
-- **The worst frame drops to about 4 s on both routes**, as on the baseline and Kokiri.
+- **The walk's mean fps is higher warm where the route walks through new scenery,** mostly because stalls go away:
+  the field walk 13.4 -> 18.9 and the village lap 8.7 -> 19.2. Where the player stands (Kokiri's stops, the field
+  stand, the baseline village) it doesn't move. The 10 s build totals show the same builds cold and warm, at about
+  5 s of GPU-thread time against 21 s a start. stk's `shader_builds_in_play` can't show this: it stops at 400 lines
+  and counts only builds over 2 ms. What the stalls are made of is still open (PR #19's question).
+- **After the field, +0.2 fps (p 0.057):** corrected 19 Nov after Vampinity's review. The window used to run to the
+  log's end, so the warm starts, quit later, got more tail (it read 14.1-14.6, p 0.029). It now stops at
+  script_done + 10 s, like every whole-run number.
+- **The worst frame drops to about 4 s on both routes,** and that 4 s is now the first load. The load past the field
+  drops from 31-33 s cold to 1.3-2.2 s warm.
 - **Memory:** in the later area the largest free block goes from about 12 to about 158 MiB. Past the field it
   stays at 0-2 MiB, warm or cold: the store doesn't help that wall.
 - **Watch, not a verdict:** the out-of-memory lines in the load past the field reach the log's cap of 64 in 3 of 4
