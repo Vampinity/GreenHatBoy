@@ -77,6 +77,22 @@
      "max": 2,
      "floor": 2
     },
+    "load_s": {
+     "stage": "smooth",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      21.2,
+      12.1,
+      21.5,
+      23.1
+     ],
+     "mean": 19.475,
+     "sd": 4.987,
+     "min": 12.1,
+     "max": 23.1,
+     "floor": 11.0
+    },
     "radv_oom_events": {
      "stage": "stable",
      "direction": -1,
@@ -91,6 +107,54 @@
      "floor": 0,
      "usable": false,
      "why": "control start(s) at the counter's cap: runWF2, runWF4, runWF5; the control's own value is unknown"
+    },
+    "refused_pool_events": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      7,
+      0,
+      5,
+      11
+     ],
+     "mean": 5.75,
+     "sd": 4.573,
+     "min": 0,
+     "max": 11,
+     "floor": 11
+    },
+    "seconds_under_16_mib": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      24.0,
+      22.0,
+      38.0,
+      56.0
+     ],
+     "mean": 35.0,
+     "sd": 15.706,
+     "min": 22.0,
+     "max": 56.0,
+     "floor": 34.0
+    },
+    "stranded_at_low_mib": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      967,
+      886,
+      872,
+      1036
+     ],
+     "mean": 940.25,
+     "sd": 76.343,
+     "min": 872,
+     "max": 1036,
+     "floor": 164
     },
     "win_after_field_fps": {
      "stage": "fast",

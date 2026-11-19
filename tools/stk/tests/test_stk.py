@@ -127,6 +127,24 @@ class Synthetic(unittest.TestCase):
             self.assertEqual(r["radv_oom_events"], ">=64")   # a floor, never a count
             self.assertTrue(r["radv_oom_capped"])
 
+    def test_memory_at_the_wall(self):
+        """19 Nov: refusals, seconds under 16 MiB, and what is stranded at the lowest census."""
+        census = ("EDEN_MEM_CENSUS n=1 why=low t_s=10.0 largest=40 low=40\n"
+                  "EDEN_MEM_CENSUS_POOL n=1 out=1 heap=1 (pieces=1 live=1 free_pages=100 idle_arenas=1 fragmented=200 "
+                  "large=0 in_use=1) vma_blocks=1 vma_used=1 vma_slack=300 rest=1 (MiB)\n"
+                  "EDEN_MEM_CENSUS n=2 why=low t_s=12.0 largest=2 low=2\n"
+                  "EDEN_MEM_CENSUS_POOL n=2 out=1 heap=1 (pieces=1 live=1 free_pages=110 idle_arenas=1 fragmented=280 "
+                  "large=0 in_use=1) vma_blocks=1 vma_used=1 vma_slack=560 rest=1 (MiB)\n"
+                  "EDEN_MEM_CENSUS n=3 why=low t_s=14.0 largest=9 low=2\n"
+                  "EDEN_REFUSED_POOL 4 MiB\nEDEN_REFUSED_POOL 8 MiB\n")
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "stderr.log").write_text(census)
+            r = score_run(td, None)
+            self.assertEqual(r["refused_pool_events"], 2)
+            self.assertEqual(r["seconds_under_16_mib"], 4.0)         # two census lines under 16, 2 s each
+            self.assertEqual(r["stranded_at_low_mib"], 110 + 280 + 560)  # the pool line of the lowest census
+            self.assertIsNone(r["load_s"])                            # no route, no load window
+
 
 class WarmBootLines(unittest.TestCase):
     def test_warm_boot_lines_are_read(self):

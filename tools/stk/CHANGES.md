@@ -225,9 +225,23 @@ All 21 cold starts record all four, so the floors are unchanged (`arm_unverified
   6,646-7,816 own records). `floors` prints each key's boots. A candidate arm whose starts boot differently is
   MIXED. A control start with no boot lines goes into `arm_unverified`. The boot checks read only valid starts. The
   scorer has tests for the two boot lines. 16 new tests in all.
+
 ## 19 Nov: the after-the-load window stops at script_done + 10 s
 
 `after_load_low` ("from 70 s past the load's lowest line to the end") ran to the log's end, so a start quit later
 got more tail (Vampinity, PR #20). It now stops at script_done + 10 s, like every whole-run number. The other window
 kinds end at their own marks or stamps and are unchanged (new-game's village windows run a few seconds past
 script_done by design). Floors rebuilt: only `win_after_field_fps` moves (cold 13.80-14.00, warm 14.0-14.15).
+
+## 19 Nov: memory at the wall, and the load's length
+
+On the field route the largest free block's minimum sits at 0-2 MiB on every start, so it can't show a change for
+the worse (Fable's check of the Phase 4 plan). Four numbers that can, from lines the alpha already logs:
+- `refused_pool_events` (stable): `EDEN_REFUSED_POOL` lines; not capped like the OOM lines.
+- `seconds_under_16_mib` (stable): census lines with the largest free block under 16 MiB, 2 s each.
+- `stranded_at_low_mib` (stable): at the lowest census, the heap's free pages + fragmented + the GPU blocks' slack
+  (the pool line `memmap.py` reads).
+- `load_s` (smooth): MEASURING.md's "black screen at each load", on routes with a load window: from the load's mark,
+  past the black, to the first 5 s line from which play holds at half the after-load fps for 15 s. 5 s resolution.
+On the field: warm 7, 0, 5, 11 refusals; 22-56 s under 16 MiB; load 12-23 s (cold 146-165 s). All floor files are
+rebuilt; every number they already had is unchanged.
