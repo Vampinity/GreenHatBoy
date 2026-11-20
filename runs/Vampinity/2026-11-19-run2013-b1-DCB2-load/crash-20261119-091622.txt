@@ -1,0 +1,33 @@
+EglantinePS5 crash report
+version: 01.219.028 (code size 0x2da44e0)
+time: 2026-11-19 09:16:22, 321 s after the app started
+what: the app stopped itself
+reason: VK_ERROR_OUT_OF_DEVICE_MEMORY
+where: eboot+0xba395
+thread: GPUBack (0x880f5cec0)
+running: game The Legend of Zelda Ocarina of Time [0400486024DEC000].nup (0400486024dec000), Vulkan, resolution 1x, Bilinear, output 1080p, 60 Hz, mods: none
+memory: largest free block 1 MiB of 12352 MiB, heap 1632 MiB and 0 MiB in 0 large blocks
+registers:
+  rip 00000000004ba395  rsp 0000000406b33ac0
+code: 0x0000000000400000 to 0x00000000031a44e0 (eboot+offset is an address in the build's llvm-pie.elf)
+calls found on the stack, most recent first ("?": not checked against a call instruction):
+  eboot+0xba395 ?
+  eboot+0x2a12036 ?
+  eboot+0x2a13d17 ?
+  eboot+0x1a65791 ?
+  eboot+0x6a7000 ?
+  eboot+0x3b51d2 ?
+  eboot+0x1600e94 ?
+  eboot+0x16691da ?
+  eboot+0x29cf84a ?
+  eboot+0x1668a86 ?
+  eboot+0x16c0856 ?
+  eboot+0x1d456f6 ?
+  eboot+0xfd33dd ?
+  eboot+0x1668777 ?
+  eboot+0x29c8767 ?
+  eboot+0xcc2b3 ?
+  eboot+0x16030c6 ?
+  eboot+0x16072c2 ?
+  eboot+0x2a1b7a9 ?
+then: the app starts again

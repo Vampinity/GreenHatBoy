@@ -1,0 +1,118 @@
+{
+  "number": 4,
+  "name": "b1-DCB1-load",
+  "folder": "run2011-b1-DCB1-load",
+  "ending": "crash",
+  "detail": "VK_ERROR_OUT_OF_DEVICE_MEMORY on GPUBack at eboot+0xba395",
+  "seconds": 350,
+  "game_after": 6,
+  "frames": 79,
+  "notes": [
+    "config: games.0400486024DEC000.renderer is not in the app's file",
+    "config: games.0400486024DEC000.fps_overlay is not in the app's file",
+    "config: games.0400486024DEC000.resolution is not in the app's file",
+    "config: games.0400486024DEC000.upscaling_filter is not in the app's file",
+    "config: games.0400486024DEC000.refresh_rate is not in the app's file",
+    "config: games.0400486024DEC000.frame_gen is not in the app's file",
+    "config: games.0400486024DEC000.frame_gen_type is not in the app's file",
+    "config: games.0400486024DEC000.frame_gen_target is not in the app's file",
+    "config: games.0400486024DEC000.frame_gen_multiplier is not in the app's file",
+    "config: games.0400486024DEC000.performance.block_list is not in the app's file",
+    "config: games.0400486024DEC000.performance.async_shaders is not in the app's file",
+    "config: games.0400486024DEC000.performance.unsafe_cpu is not in the app's file",
+    "config: games.0400486024DEC000.performance.unsafe_dma is not in the app's file",
+    "config: games.0400486024DEC000.performance.skip_invalidation is not in the app's file"
+  ],
+  "config": {
+    "performance": {
+      "block_list": false,
+      "async_shaders": false,
+      "fast_gpu": false,
+      "unsafe_cpu": false,
+      "unsafe_dma": false,
+      "reactive_flushing": true,
+      "skip_invalidation": false
+    },
+    "video": {
+      "renderer": "vulkan",
+      "fps_overlay": true,
+      "resolution": "1x",
+      "upscaling_filter": "bilinear",
+      "refresh_rate": "60",
+      "output_resolution": "1080p",
+      "frame_gen": false,
+      "frame_gen_type": "fsr3",
+      "frame_gen_target": "auto",
+      "frame_gen_multiplier": "2"
+    },
+    "diagnostics": {
+      "immediate_logs": false,
+      "detailed_logging": false
+    },
+    "games": {
+      "0400486024DEC000": {
+        "console_mode": "docked",
+        "renderer": "vulkan",
+        "fps_overlay": true,
+        "resolution": "1x",
+        "upscaling_filter": "bilinear",
+        "refresh_rate": "60",
+        "frame_gen": false,
+        "frame_gen_type": "fsr3",
+        "frame_gen_target": "auto",
+        "frame_gen_multiplier": "2",
+        "performance": {
+          "block_list": false,
+          "async_shaders": false,
+          "fast_gpu": true,
+          "unsafe_cpu": false,
+          "unsafe_dma": false,
+          "reactive_flushing": false,
+          "skip_invalidation": false
+        }
+      }
+    }
+  },
+  "fps": [
+    18.664,
+    0.267
+  ],
+  "crash": {
+    "time": "2026-11-19 09:00:57, 350 s after the app started",
+    "what": "the app stopped itself",
+    "reason": "VK_ERROR_OUT_OF_DEVICE_MEMORY",
+    "where": "eboot+0xba395",
+    "thread": "GPUBack (0x880f5cec0)",
+    "memory": "largest free block 2 MiB of 12352 MiB, heap 1632 MiB and 0 MiB in 0 large blocks",
+    "then": "the app starts again",
+    "report": "crash-20261119-090057.txt"
+  },
+  "test_marks": [
+    "on boot=0400486024DEC000 script=auto-run-b1-DCB1-load.txt record=0",
+    "boot title=0400486024DEC000",
+    "script_start file=auto-run-b1-DCB1-load.txt events=13 waits=10",
+    "wait_met line=32 at=45.339 score=86 looks=60",
+    "wait_met line=35 at=47.365 score=99 looks=3",
+    "wait_met line=42 at=52.410 score=0 looks=10",
+    "wait_met line=46 at=77.920 score=100 looks=51",
+    "steer_point line=57 at=85.986 point=1/11 looks=1 seen=1",
+    "steer_point line=57 at=88.011 point=2/11 looks=5 seen=3",
+    "steer_point line=57 at=91.478 point=3/11 looks=12 seen=10",
+    "steer_point line=57 at=126.155 point=4/11 looks=81 seen=18",
+    "steer_point line=57 at=129.161 point=5/11 looks=87 seen=22",
+    "steer_point line=57 at=132.709 point=6/11 looks=94 seen=29",
+    "steer_point line=57 at=136.719 point=7/11 looks=102 seen=37",
+    "steer_point line=57 at=140.765 point=8/11 looks=110 seen=45",
+    "steer_point line=57 at=144.730 point=9/11 looks=118 seen=53",
+    "steer_point line=57 at=148.275 point=10/11 looks=125 seen=60",
+    "steer_point line=57 at=151.783 point=11/11 looks=132 seen=67",
+    "steer_met line=57 at=151.783 point=11/11 looks=132 seen=67",
+    "steer_point line=70 at=155.841 point=1/3 looks=9 seen=9",
+    "steer_point line=70 at=159.853 point=2/3 looks=17 seen=17",
+    "steer_point line=70 at=162.391 point=3/3 looks=22 seen=22",
+    "steer_met line=70 at=162.391 point=3/3 looks=22 seen=22",
+    "steer_point line=75 at=165.969 point=1/1 looks=8 seen=8",
+    "steer_met line=75 at=165.969 point=1/1 looks=8 seen=8",
+    "wait_met line=92 at=175.045 score=-1 looks=16"
+  ]
+}
