@@ -1,0 +1,16 @@
+{
+  "run_id": "runCL1A",
+  "control": false,
+  "intended_cache": "cold",
+  "route": "field-to-past-field.txt",
+  "route_sha1_12": "c4fada64155f",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt, one line changed (the script)",
+  "intent": "Phase 4, cold field: the pair: EDEN_NX2_TC_SUPERSEDED=1 + EDEN_UP_DRAIN_TO_POOL=1. Read against floors-cold (field, FC2-5); report as a cold handheld read.",
+  "written": "2026-11-19"
+}

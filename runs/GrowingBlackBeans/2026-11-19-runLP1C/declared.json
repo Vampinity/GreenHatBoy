@@ -1,0 +1,16 @@
+{
+  "run_id": "runLP1C",
+  "control": false,
+  "intended_cache": "warm",
+  "route": "field-to-past-field.txt",
+  "route_sha1_12": "c4fada64155f",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt, one line changed (the script)",
+  "intent": "Phase 4: the two load switches + park wait. Warm field, whole cache restored first. Read against floors-warm-field (and LP1 against L1 with abcompare.py).",
+  "written": "2026-11-19"
+}
