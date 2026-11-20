@@ -6,6 +6,8 @@ What I built, what each switch does and what my tests found. Read this before yo
 |---|---|
 | [BUILDS.md](BUILDS.md) | Every test build, newest first: what it added, what it was built on, how it tested. T14 to T187. |
 | [SWITCHES.md](SWITCHES.md) | Every `EDEN_...` switch, one row each: patch, default, first build that has it, values in my play settings, how many runs used it, and the latest verdict. |
+| [control-switch-ledger-2026-11-19.md](control-switch-ledger-2026-11-19.md) | Every line of the control (play settings v4.0 plus the two test lines), one row each: what it does, its verdict, the evidence, and whether phase 4 should screen it or can skip it. Machine-readable twin: the `.json` beside it. |
+| [grouped-screening-method.md](grouped-screening-method.md) | How we test 3 or 4 switches in one start without losing what single arms show, and how that maps onto switching control lines off in groups (phase 4). |
 | [findings/](findings/) | One note per finding from the last days (9 to 15 Nov). Each starts with two lines: what was found, and what follows from it. |
 
 ## How to search
