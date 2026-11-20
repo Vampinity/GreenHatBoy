@@ -11,10 +11,10 @@ Counts over the 171 lines:
 | Verdict | Lines | Of which only as a group or a set |
 |---|---|---|
 | kept: helps | 41 | 19 |
-| kept: needed for X | 20 | 0 |
+| kept: needed for X | 21 | 0 |
 | no effect seen | 10 | 0 |
 | harmful | 0 | 0 |
-| never tested alone | 75 | 0 |
+| never tested alone | 74 | 0 |
 | unknown | 25 | 0 |
 | **all** | **171** | **19** |
 
@@ -22,8 +22,8 @@ What that means for phase 4:
 
 | Phase 4 | Lines | What to do |
 |---|---|---|
-| screen | 86 | no verdict: switch it off in a group (the method page) |
-| reach first | 12 | no verdict, and it may not act on the control at all: a desk reach check before any start |
+| screen | 87 | no verdict: switch it off in a group (the method page) |
+| reach first | 11 | no verdict, and it may not act on the control at all: a desk reach check before any start |
 | weak verdict | 34 | a verdict from one or two starts, an old build or another setup: GBB's call whether to re-open it |
 | skip | 39 | a verdict that holds, or a log or test line |
 
@@ -89,7 +89,7 @@ What that means for phase 4:
 
 | Line | What it does | Verdict | Evidence | Date | Phase 4 | Store |
 |---|---|---|---|---|---|---|
-| `EDEN_UP_DRIVER_CACHE_EVERY=1024` | The driver's pipeline cache is written in play only every 1024 new pipelines. | never tested alone | never on and off apart; reach read (19 Nov, 12 controls, T197M): only 2 pipelines are built in play on the field route, so it hardly acts there | 2026-11-19 | reach first | - |
+| `EDEN_UP_DRIVER_CACHE_EVERY=1024` | The driver's pipeline cache is written in play only every 1024 new pipelines. | never tested alone | never on and off apart. Reached in GrowingBlackBeans' warm field starts (T186, handheld, 19 Nov): one write of 1,031 to 1,047 pipelines, 1.4 to 1.5 s, at 161 to 183 s, inside the load at the gate, in all four warm field controls and both L1 starts. Not reached in play in our starts on T197M with the full prepared store (reach read, 19 Nov, 12 controls: 2 pipelines built in play; batch C, 42 of 42 starts: only the boot write, 99 MiB, 0 pipelines counted). Build and store were not told apart; whether it acts likely depends on the cache a start begins with. Screen it as a load question (load_s), 6 or more starts with it off | 2026-11-19 | screen | - |
 | `EDEN_UP_CACHE_KEEP_GOOD=1` | A failed pipeline cache write no longer deletes the whole cache file. | never tested alone | on in about 570 runs, never on and off apart; a guard | 2026-11-18 | screen | - |
 | `MESA_SHADER_CACHE_MAX_SIZE=8G` | Size cap of the driver's disk shader cache (8 GB). | never tested alone | every run that sets it sets 8G; never on and off apart (GrowingBlackBeans' screen of 17 Nov) | 2026-11-17 | screen | - |
 | `RADV_PS5_DISK_CACHE_SKIP_KNOWN=1` | The driver's disk cache drops a write it already holds before compressing it. | never tested alone | on in about 540 runs, never on and off apart | 2026-11-18 | screen | - |
@@ -176,7 +176,7 @@ What that means for phase 4:
 | Line | What it does | Verdict | Evidence | Date | Phase 4 | Store |
 |---|---|---|---|---|---|---|
 | `EDEN_GUEST_SWAP=3` | Packs guest memory that has not been touched for a while into compressed slots (mode 3). | never tested alone | on in about 1,840 runs, never on and off apart | 2026-11-18 | screen | - |
-| `EDEN_GUEST_SWAP_AHEAD_MIB=12288` | Packs cold slots early while the pool's largest free block is under this size (12288 MiB). | never tested alone | off never run; only 2048 was tried: 332 s, no crash, same speed (run205, T51, one start). Firmware 13.x needs 2048 (see the settings file) | 2026-11-07 | screen | - |
+| `EDEN_GUEST_SWAP_AHEAD_MIB=12288` | Packs cold slots early while the pool's largest free block is under this size (12288 MiB). | kept: needed for firmware 13.x, as 2048 (medium) | off never run; at 12288 (the control's value) never on and off apart on our firmware. Firmware 13.x, GrowingBlackBeans (16 and 17 Nov, alpha T186, 13.60, handheld, cold first start): 12288 missed the house door in 3 of 3 starts, the frame rate falling to 8 to 17 fps across the door step, against 1 of 10 controls at 2048 (Fisher's exact, one-sided, about 1.4 %; the third 12288 start ran route v7, not v6; runs/GrowingBlackBeans/ runSW1-failure, runSW1-failure2, runSW1 against the runCC series). So a 13.x control runs 2048, not the 12288 listed here, and phase 4 on 13.x skips this line. Older: 2048 on our firmware, 332 s, no crash, same speed (run205, T51, one start) | 2026-11-17 | screen | - |
 | `EDEN_GUEST_SWAP_RECLAIM=1` | With guest swap on, memory in packed slots is taken back when the pool is short. | never tested alone | on in about 1,810 runs, never on and off apart | 2026-11-18 | screen | - |
 | `EDEN_NX2_CRAM_RESERVE_MIB=256` | Size of a memory reserve held back in blocks (256 MiB; 128 before). | kept: helps (weak) | t66-c (New Game): 256 got through 5 min 4 of 4; the 128 control ran out of GPU memory at 29 s (one control); off never run | 2026-11-08 | weak verdict | - |
 | `EDEN_GUEST_SWAP_COLD_S=15` | Guest memory untouched this many seconds (15) counts as cold and can be packed. | never tested alone | 15 never compared; only =90 was tried: ran out of memory 123 s after launch (hand run, T54) | 2026-11-08 | screen | - |
@@ -400,7 +400,7 @@ What that means for phase 4:
 - `EDEN_NX2_TABLE_POOL_MIB` (never tested alone): off never run; only values: 192 against 128 the same speed (run233, T54); 128 kept because the game reads about 130 MiB past a pointer (upstream note).
 - `EDEN_NX2_TRANSCODE_KEEP_MIB` (never tested alone): acts: 64 dropped by 127 s on T49 (run149, live-t49); never on and off apart.
 - `EDEN_NX2_TRANSCODE_WAIT` (never tested alone): added with the line above for run149 (T35); never on and off apart.
-- `EDEN_GUEST_SWAP_AHEAD_MIB` (never tested alone): off never run; only 2048 was tried: 332 s, no crash, same speed (run205, T51, one start). Firmware 13.x needs 2048 (see the settings file).
+- `EDEN_GUEST_SWAP_AHEAD_MIB` (kept: needed for): off never run; at 12288 (the control's value) never on and off apart on our firmware. Firmware 13.x, GrowingBlackBeans (16 and 17 Nov, alpha T186, 13.60, handheld, cold first start): 12288 missed the house door in 3 of 3 starts, the frame rate falling to 8 to 17 fps across the door step, against 1 of 10 controls at 2048 (Fisher's exact, one-sided, about 1.4 %; the third 12288 start ran route v7, not v6; runs/GrowingBlackBeans/ runSW1-failure, runSW1-failure2, runSW1 against the runCC series). So a 13.x control runs 2048, not the 12288 listed here, and phase 4 on 13.x skips this line. Older: 2048 on our firmware, 332 s, no crash, same speed (run205, T51, one start).
 - `EDEN_NX2_DOWNLOAD_GUARDS` (never tested alone): only =2 was tried: both starts crashed at about 86 s (run319/320, T61); 0 against unset never compared.
 - `EDEN_NX2_NATIVE_TABLES` (never tested alone): off never run; only =compute was tried (flicker the same, hand-0947, video only); =1 is the setup of the first long hand playthrough.
 - `EDEN_MEMORY_REPORT_THREAD` (never tested alone): on since T51, never on and off apart.
@@ -461,5 +461,7 @@ Not control lines, so not in the table; here so nobody queues them again by mist
 - **A line that never acted.** A start without it shows nothing if the code never runs on the route. That is what "reach first" is for.
 - **The route.** Most results are from the field route, handheld. Docked, the village and the town are other questions.
 - **The source facts** were read on T197M (see How to read).
+- **The cache a start begins with.** A reach note can hold on one cache state and not on another: `EDEN_UP_DRIVER_CACHE_EVERY` never writes in play in our T197M starts with the full prepared store, and writes once inside the load in GrowingBlackBeans' warm starts on T186.
+- **The firmware.** A 13.x control differs from this one (`EDEN_GUEST_SWAP_AHEAD_MIB=2048`, and no `EDEN_UP_FAULT_LOG`).
 
 Made on 19 Nov 2026 from the owner's switch ledger (18 Nov, T197M, 1,985 runs read), its reason file, the read of this week's batches and their second checks, and the T197M source, with local paths and private details taken out.
