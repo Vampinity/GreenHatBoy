@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/img/banner.png" width="100%" alt="Green Hat Boy. Hey! Listen! It runs on a PS5.">
+<img src="docs/img/banner.png" width="100%" alt="Green Hat Boy. It runs on a PS5.">
 
 # Green Hat Boy
 
@@ -31,12 +31,12 @@ What it is tested on, and how far:
 - **The very first start on a fresh install** (no shaders and no graphics driver cache prepared yet; a test save was on the console): 2 of 2 scripted first starts of the alpha's app got through the opening and the house door into the village on 15 November. Our bar for the alpha was that first start into the village. We had said something like 10 clean first starts in a row; this check ran 2.
 - **The area after the field** runs, but slowly (about 14 fps). All three crashes by hand came at the loading pause into that area or inside it.
 
-The older test build T180 in Releases is replaced by this alpha. It used frame ahead, which makes the ground and some objects flicker.
+The older test build T180 is replaced by this alpha and is no longer in Releases. It used frame ahead, which makes the ground and some objects flicker.
 
 ## Progress so far
 
 <p align="center">
-  <img src="docs/img/progress.png" width="760" alt="Progress on a base PS5, 5 to 15 November. 5 November: black screen after the intro. Later that day: first steps in Link's house. 6 November: the white fog is gone. 7 November: plants back, first public test version. 8 November: no more dark flashes, for now. 13 November: a new game no longer crashes at the door, in 2 of 2 test runs. 14 November: dark flashes back, then gone again; a speed boost had brought them back, so it is off and the game runs slower. 15 November: past the field into the next area; 13 of 13 test runs made it, and about 2 hours of real play had 3 crashes, 2 of them at the long loading pause. Speed now, in frames per second: closed areas (indoors, the village) about 21 to 22, open areas (walking across the field) about 19, open areas with many objects (the area after the field) about 14. Don't expect 30 outdoors on a base PS5. The long loading pause when you leave the field: the screen stays black for 18 to 33 seconds in handheld mode, longer docked. Played a while? Save, then restart the app before you leave the field.">
+  <img src="docs/img/progress.png" width="760" alt="Green Hat Boy on a base PS5, progress 5 to 15 November. 5 November: black screen after the intro. Later that day: first steps in the player's house. 6 November: the white fog is gone. 7 November: plants back, first public test version. 8 November: no more dark flashes, for now. 13 November: a new game no longer crashes at the door, in 2 of 2 test runs. 14 November: dark flashes back, then gone again; a speed boost had brought them back, so it is off and the game runs slower. 15 November: past the field into the next area; 13 of 13 test runs made it, and about 2 hours of real play had 3 crashes, 2 of them at the long loading pause. Speed now, in frames per second: closed areas (indoors, the village) about 21 to 22, open areas (walking across the field) about 19, open areas with many objects (the area after the field) about 14. Don't expect 30 outdoors on a base PS5. The long loading pause when you leave the field: the screen stays black for 18 to 33 seconds in handheld mode, longer docked. Played a while? Save, then restart the app before you leave the field.">
 </p>
 
 The picture was made when 13 of the scripted starts through the long loading pause had run. It is 15 of 15 now, with about 18 to 34 seconds of black screen at that pause.
