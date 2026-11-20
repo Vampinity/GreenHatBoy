@@ -1,0 +1,25 @@
+{
+  "run_id": "runL1E",
+  "control": false,
+  "intended_cache": "warm",
+  "route": "field-to-past-field.txt",
+  "route_sha1_12": "c4fada64155f",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt: the script line changed (as every field start) and 2 lines added: the arm L1",
+  "intent": "Phase 4: Vampinity's two load switches. Warm field, whole cache restored first. Read against floors-warm-field (and LP1 against L1 with abcompare.py).",
+  "written": "2026-11-19",
+  "replaces": "runL1C (quit before END: no script_done)",
+  "arm": {
+    "name": "L1",
+    "kind": "named bundle (RUN-CONTRACT 5a): screens the bundle, settles no single line",
+    "lines": [
+      "EDEN_NX2_TC_SUPERSEDED=1",
+      "EDEN_UP_DRAIN_TO_POOL=1"
+    ]
+  }
+}
