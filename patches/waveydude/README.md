@@ -23,3 +23,16 @@ Apply 1108 and 1109 in order to the W-32/T183 core after its existing mic stack 
 - 1109 defers raw microphone PCM delivery until sysmix engages the stream. The feed is opt-in through `EDEN_UP_MIC_FEED=1`, with controller capture enabled by `EDEN_UP_MIC_PROBE=1`.
 
 See the [9.40 findings](../../docs/waveydude/ocarina-mic-2026-11-14.md) for the tested build and recognition limits.
+
+## 1211 shown-frame flash counter
+
+[Patch 1211](1211-up-flash-count.patch) is the original waveydude core patch from the W-series T186 stack. It applies after the existing BlackProbe present-path changes. The patch adds the detector, Vulkan probe, and renderer hookup. Enable it with `EDEN_UP_FLASH_COUNT=1` on both comparison arms. It defaults to off.
+
+W-39 on a base PS5 with firmware 9.40 initialized the probe in Docked and logged its 10-second summaries. Verify each run has a summary with a positive probed-frame count before reading zero event lines as zero detected flashes. The detector measures one-frame flashes at 576 sample points. Longer flashes and persistent missing assets still need visual evidence. Per-event detail is capped at 20 lines per 10-second window, so use the summary counts for totals.
+
+The [host test](test-flash-counter.cpp) exercises the detector independently. After applying the patch to the emulator core, run from that core's root:
+
+```sh
+c++ -std=c++20 -Isrc /path/to/GreenHatBoy/patches/waveydude/test-flash-counter.cpp -o /tmp/test-flash-counter
+/tmp/test-flash-counter
+```
