@@ -1,0 +1,27 @@
+{
+  "run_id": "runM1-06-S3",
+  "control": false,
+  "intended_cache": "warm",
+  "route": "field-to-past-field.txt",
+  "route_sha1_12": "c4fada64155f",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt: the script line changed and 2 lines removed (guest swap split S3)",
+  "intent": "Phase 4 M1A-S: the guest swap split by its 12-start table (grouped-screening method), the swapper on. Warm field, whole cache restored first. Read against the batch's own controls.",
+  "written": "2026-11-20",
+  "batch": "M1 (from 20 Nov 2026)",
+  "batch_position": 6,
+  "arm": {
+    "name": "M1A-S3",
+    "kind": "split table start (grouped-screening method, 12-start table for 5 units)",
+    "pattern_PRCAT": "+-++-",
+    "lines_removed": [
+      "EDEN_GUEST_SWAP_COLD_S",
+      "EDEN_UP_PACK_ON_REFUSAL"
+    ]
+  }
+}
