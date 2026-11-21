@@ -1,0 +1,30 @@
+{
+  "run_id": "runM1A4",
+  "control": false,
+  "intended_cache": "warm",
+  "route": "field-to-past-field.txt",
+  "route_sha1_12": "c4fada64155f",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt: the script line changed and 8 lines removed (the guest swapper and its tuning lines)",
+  "intent": "Phase 4 M1A: the guest swapper off with its tuning lines, one member under the grouped-screening method's parent rule. Warm field, whole cache restored first. Read against floors-warm-field (WF2-5).",
+  "written": "2026-11-20",
+  "arm": {
+    "name": "M1A",
+    "kind": "one member: a parent with its tuning lines (grouped-screening method); settles the swapper as a unit",
+    "lines_removed": [
+      "EDEN_GUEST_SWAP",
+      "EDEN_GUEST_SWAP_AHEAD_MIB",
+      "EDEN_GUEST_SWAP_COLD_S",
+      "EDEN_GUEST_SWAP_RECLAIM",
+      "EDEN_UP_PACK_ON_REFUSAL",
+      "EDEN_UP_PACK_PRESSURE_COLD_S",
+      "EDEN_UP_PACK_PRESSURE_MIB",
+      "EDEN_UP_PACK_PRESSURE_MS"
+    ]
+  }
+}
