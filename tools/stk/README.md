@@ -16,3 +16,18 @@ definitions, transcribed from `runs/Vampinity/2026-11-15-t186-control-README.md`
 
 A run folder can be raw (flat, or with `logs/`) or packed (`runs/<author>/…`, logs `.gz`). Standard library
 only; it reads and never writes, except `--out`. Missing numbers are `null` with a reason, never 0.
+
+## Shader store preflight
+
+    python3 tools/stk/stamp_guard.py reference.env candidate.env --cpp /path/to/vk_pipeline_prep.cpp
+
+Use the warm run's environment as the reference and the renderer source from the build
+being tested. Add `--reference-overlay` and `--candidate-overlay` for title-specific
+environment files. Later values take precedence, as on the console. A changed stamp
+input exits 1 and lists the difference. Missing or unreadable inputs exit 2.
+
+Use `--source-stamp` when the target build is known to use its source translation stamp.
+The check covers the supplied environment files. Keep the build, driver, runtime settings
+(including render scale), and existing store consistent, and confirm reuse in the boot log.
+
+Originally written by waveydude for the local tester workflow.
