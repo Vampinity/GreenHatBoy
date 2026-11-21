@@ -1,0 +1,59 @@
+EglantinePS5 crash report
+version: 01.219.028 (code size 0x2d8f380)
+time: 2026-11-20 12:12:16, 221 s after the app started
+what: SIGSEGV (invalid memory access), code 2, address 0x000000816c000000
+where: 0x00000012131fe40b (outside the app's code: a system library or generated code)
+thread: CPUCore_5 (0x880f59440)
+running: game The Legend of Zelda Ocarina of TIme [04004860224DEC000].nup (0400486024dec000), Vulkan, resolution 1x, Bilinear, output 1080p, 60 Hz, mods: none
+memory: largest free block 1 MiB of 12352 MiB, heap 1248 MiB and 0 MiB in 0 large blocks
+registers:
+  rip 00000012131fe40b  rsp 00000012f343b970  rbp 00000012f343bd80
+  rax 000000131b200000  rbx 0000000000000030  rcx 324244a638193962
+  rdx 0000006e50e00000  rsi 000000131b8d1730  rdi 000000131b200038
+  r8  000000131b1ffff0  r9  00000021104ad949  r10 0000000000000400
+  r11 00000021104a6fd8  r12 00000010c4d54c98  r13 0000000000008600
+  r14 00000011c0e00000  r15 0000001007ad2090  flags 0000000000010206
+  trap 12  error 0x7
+code: 0x0000000000400000 to 0x000000000318f380 (eboot+offset is an address in the build's llvm-pie.elf)
+calls found on the stack, most recent first ("?": not checked against a call instruction):
+  eboot+0x1d333f6 ?
+  eboot+0x1d333f6 ?
+  eboot+0x7adf1c ?
+  eboot+0x33d1d0 ?
+  eboot+0x1d333f6 ?
+  eboot+0x78d350 ?
+  eboot+0x1d333f6 ?
+  eboot+0x78d350 ?
+  eboot+0x1d333f6 ?
+  eboot+0x78d350 ?
+  eboot+0x7adf1c ?
+  eboot+0x33baa1 ?
+  eboot+0x78d350 ?
+  eboot+0x7adf1c ?
+  eboot+0x3392d9 ?
+  eboot+0x3383c4 ?
+  eboot+0x1d333f6 ?
+  eboot+0x29b9bd0 ?
+  eboot+0x2a50260 ?
+  eboot+0x2a4e718 ?
+  eboot+0xc00000 ?
+  eboot+0x2a4ceed ?
+  eboot+0x78d350 ?
+  eboot+0x1d333f6 ?
+  eboot+0x4a67d7 ?
+  eboot+0x4a7063 ?
+  eboot+0x78d350 ?
+  eboot+0x7adf1c ?
+  eboot+0x1d333f6 ?
+  eboot+0x4a6f40 ?
+  eboot+0x1d333f6 ?
+  eboot+0x7ac600 ?
+  eboot+0x4a6f40 ?
+  eboot+0x4a7760 ?
+  eboot+0x4ecb8c ?
+  eboot+0x4ecae9 ?
+  eboot+0x1d56f10 ?
+  eboot+0x1d56ea0 ?
+  eboot+0x1df7f9f ?
+  eboot+0x1df7f9f ?
+then: the app starts again

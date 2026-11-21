@@ -1,0 +1,25 @@
+{
+  "run_id": "run1211-01-on",
+  "control": false,
+  "intended_cache": "warm",
+  "route": "field-to-past-field.txt",
+  "route_sha1_12": "c4fada64155f",
+  "build": {
+    "tag": "a186-gbb2",
+    "note": "the alpha's code + waveydude's 1211 (PR #29), 01.219.928, eboot sha256 1e33e4d5..."
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt: the script line changed and 1 line added",
+  "intent": "Patch 1211 cost: the flash counter on against off on the same build, 4 warm field starts a side, ABBA order. Asked for on GHB PR #29 before its merge.",
+  "written": "2026-11-20",
+  "batch": "1211 cost (20 Nov 2026)",
+  "batch_position": 1,
+  "arm": {
+    "name": "1211-on",
+    "kind": "single switch, on against off on one build",
+    "lines_added": [
+      "EDEN_UP_FLASH_COUNT=1"
+    ]
+  }
+}
