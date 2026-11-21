@@ -12,11 +12,13 @@ The first memory family of phase 4. M1A removes `EDEN_GUEST_SWAP` and its seven 
 |---|---|---|---|
 | M1A2 | no | 41-59 s into the load, ~1 MiB free | 458 MiB |
 | M1A3 | no | same | 452 MiB |
-| M1A4 | no | same | 513 MiB |
-| control (WF2-5) | 4 of 4 | none | 1,194-2,368 MiB |
+| M1A4 | no | same | 582 MiB |
+| control (WF2-5) | 4 of 4 | none | 1,030-1,239 MiB |
 
 M1A1 also crashed there, but isn't counted: its cache wasn't restored (179 own records, not 3; NOTE.md). Its block
 at the black was 603 MiB.
+
+**Corrected 21 Nov:** the block at the black was first read from the census line, which prints only when something triggers it, so its last value before the black can be ~100 s old (WF3's 2,368 and WF4's 2,239 came from the first area change). Every figure here is now the driver's last `RADV_PS5_MEMORY available_mib` before `wait_met line=92`. The controls arrived with 1.0-1.2 GB, not 1.2-2.4; the swapper-off starts with about half that. The call doesn't change.
 
 **Read:** M1A is worse. The swapper is what gets the control through the field's exit load. By the arm's rule two
 early ends were enough to call it; three clean ones did.
@@ -53,9 +55,9 @@ the build has its own translation id and every start builds a new store from the
 | heavy fps | 14.65 ± 0.14 | 14.70 ± 0.12 | noise (p 0.66) |
 | worst frame | 391 ± 58 ms | 452 ± 24 ms | p 0.057, inside the 82 ms allowance |
 | through the load | 4 of 4 | 4 of 4 | |
-| largest free block at the black | 1,192-2,416 MiB | 1,083-2,435 MiB | |
+| largest free block at the black | 987-1,204 MiB | 1,083-1,457 MiB | |
 
-No speed or memory cost. The worst frame leans higher with it on; most of the gap is one quiet off start (306 ms).
+No speed or memory cost (the black figures corrected 21 Nov, as above; the on side is not lower). The worst frame leans higher with it on; most of the gap is one quiet off start (306 ms).
 #29 was approved on this and merged.
 
 ## Wear-down in play (not a measured start)

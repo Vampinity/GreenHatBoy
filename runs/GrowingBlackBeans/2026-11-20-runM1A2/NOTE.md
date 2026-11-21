@@ -13,13 +13,13 @@ That's the warm state, the same as WF2-5. There were 0 swapper or pack lines.
 | start | at the black | in the load |
 |---|---|---|
 | WF2 | 1,194 MiB | 0, recovered |
-| WF3 | 2,368 MiB | 2, recovered |
-| WF4 | 2,239 MiB | 0, recovered |
-| WF5 | 1,201 MiB | 0, recovered |
+| WF3 | 1,030 MiB (corrected 21 Nov; 2,368 was a stale census line) | 2, recovered |
+| WF4 | 1,051 MiB (corrected 21 Nov; 2,239 was a stale census line) | 0, recovered |
+| WF5 | 1,239 MiB (corrected 21 Nov; 1,201 was a census line) | 0, recovered |
 | M1A1 (play5's caches) | 603 MiB | 1, crashed ~59 s in |
 | M1A2 | 458 MiB | 1, crashed ~54 s in |
 
-Every start hits the bottom in this load. With the swapper on, the controls reach the gate with 1.2-2.4 GB to spare
+Every start hits the bottom in this load. With the swapper on, the controls reach the gate with 1.0-1.2 GB to spare (corrected 21 Nov from 1.2-2.4: the driver line, not the census)
 and come back from it. With it off, the starts reach the gate with about 0.5 GB and don't come back.
 
 **Rule:** one clean early end (this) plus M1A1 (an early end with dirty caches). M1A3 was already running when this
