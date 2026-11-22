@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runfolder import RunFolder  # noqa: E402
 import route_check  # noqa: E402  (waveydude)
 
-SCORER_VERSION = "stk_score 9 (waveydude 1 + run contract v1 + his route_check + build in the key + graphics refusals, 22 Nov 2026)"
+SCORER_VERSION = "stk_score 10 (waveydude 1 + run contract v1 + his route_check + build in the key + graphics refusals + crash copies, 22 Nov 2026)"
 # ReleaseRefused's line (tools/prepare-vulkan-port.py in the build): one per refused image or buffer, never throttled.
 GRAPHICS_REFUSED = ("EDEN_GRAPHICS_MEMORY an image was refused:", "EDEN_GRAPHICS_MEMORY a buffer was refused:")
 
@@ -191,6 +191,15 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
     eden_lines = rf.lines("eden_log.txt")
     stderr_lines = rf.lines("stderr.log")
     boot_text = rf.text("boot-trace.txt")
+    # A crash, then the app's relaunch: the main logs are the relaunch's (22 Nov). Read the crash's own copies, or
+    # nothing: a relaunch's 0 refusals is not the run's.
+    crash_files, other_crash_files = rf.crash_files()
+    logs_read, from_copy = "main", False
+    if crash_files and rf.is_relaunch():
+        stem = crash_files[-1].name[:-len(".txt")]
+        eden_lines, stderr_lines = rf.lines(f"{stem}-eden_log.txt"), rf.lines(f"{stem}-stderr.log")
+        from_copy = bool(eden_lines or stderr_lines)
+        logs_read = f"crash_copy.{stem}" if from_copy else "missing_relaunch_logs_only"
 
     run_meta: dict[str, Any] = {}
     if rf.has("run.json"):
@@ -328,8 +337,9 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
         start_method = "test_boot"
     else:
         start_method = None
-    crash_files, other_crash_files = rf.crash_files()
-    last_t = rf.last_app_time()
+    if logs_read != "main":     # the boot trace is the relaunch's too: how the run started is in the copy
+        start_method = "test_boot" if any("EDEN_TEST boot title=" in l for l in stderr_lines) else None
+    last_t = rf.last_app_time() if logs_read == "main" else None
     if crash_files:
         end_kind = "crash"
     elif any(CLOSE_RE.search(l) for l in eden_lines[-3000:]):
@@ -403,6 +413,22 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
             route_windows[f"win_{wname}_fps"] = v
             route_windows[f"win_{wname}_n"] = n
             route_windows[f"win_{wname}_source"] = why
+
+    # The worst frame from the load's black to script_done + 10 s (22 Nov). On the field route the run's worst frame
+    # is the save's own load, before the gate, so it hides any hitch in the load under test shorter than ~3.8 s.
+    # Reported, not gated: one start's worst frame has a long tail (controls 1.1-3.1 s on 21-22 Nov).
+    worst_after_black_ms, worst_after_black_source = None, "no_load_window_on_this_route"
+    for defn in (routes.get(route_key, {}) if route_key else {}).get("windows", {}).values():
+        if defn.get("kind") != "after_load_low":
+            continue
+        e = marks.get(defn["after_line"])
+        seen = [w[5] for w in vi if e is not None and w[0] > e and (play_end is None or w[0] <= play_end)]
+        if seen:
+            worst_after_black_ms = round(max(seen), 1)
+            worst_after_black_source = f"eden_log.nx2_vi2_5s_after_line_{defn['after_line']}"
+        else:
+            worst_after_black_source = f"missing_mark_or_lines_after_line_{defn['after_line']}"
+        break
 
     # The load (MEASURING.md: "black screen at each load"), for routes with a load window: from the load's mark to the
     # start of the first 5 s line from which play holds at half the after-load fps or more for 15 s. It takes in the
@@ -618,13 +644,14 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
         "cache_class": cache_class, "cache_source": cache_source,
         "start_method": start_method, "game_start_app_s": guest_start_t,
         "end_kind": end_kind, "tail_after_script_s": tail_after_script_s,
-        "crash_files_ignored": other_crash_files,
+        "crash_files_ignored": other_crash_files, "logs_read": logs_read,
         "mode_resolution": mode_resolution, "mode_source": mode_source,
         "session_age_s": round(session_age_s, 1) if session_age_s is not None else None,
         "session_age_source": session_age_source,
         "sampling_window": sampling_window,
         "fps_mean": fps_mean, "fps_median": fps_median, "fps_p10": fps_p10, "worst_frame_ms": worst_frame_ms,
         "fps_source": fps_source,
+        "worst_after_black_ms": worst_after_black_ms, "worst_after_black_source": worst_after_black_source,
         "shader_builds_in_play": shader_builds_in_play, "shader_builds_source": shader_builds_source,
         "largest_free_block_min_mib": largest_free_block_mib, "largest_free_block_source": largest_free_block_source,
         "graphics_refusals": graphics_refusals, "graphics_refusals_source": graphics_refusals_source,

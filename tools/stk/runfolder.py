@@ -8,6 +8,9 @@ Crash files are matched to THIS run, never just globbed: a `crash-*.txt` belongs
 `version:` equals the boot trace's build and its "N s after the app started" is within a minute after
 the run's last log timestamp. Other sessions' crash files in the same folder are ignored and counted.
 
+After a crash the app starts itself again, so the main logs are the relaunch's (after_crash=1, and no script or game
+started). Then the run's crash is the newest one of its build, and its logs are that crash's copies (22 Nov).
+
 Standard library only. Reads; never writes.
 """
 from __future__ import annotations
@@ -68,6 +71,13 @@ class RunFolder:
         m = _BOOT_VER.search(self.text("boot-trace.txt"))
         return m.group(1) if m else None
 
+    def is_relaunch(self) -> bool:
+        """The main logs are the app starting again after a crash: no script and no game ran in them."""
+        head = self.lines("stderr.log")[:5]
+        return (any("EDEN_CRASH_REPORT" in l and "after_crash=1" in l for l in head)
+                and "EDEN_TEST script_start" not in self.text("stderr.log")
+                and "EDEN_GUEST_START" not in self.text("eden_log.txt"))
+
     def crash_files(self) -> tuple[list[Path], int]:
         """This run's crash reports, and how many other crash reports were in the folder."""
         found: list[Path] = []
@@ -78,6 +88,9 @@ class RunFolder:
         if not found:
             return [], 0
         ver, last = self.boot_version(), self.last_app_time()
+        relaunch = self.is_relaunch()
+        if relaunch:
+            last = None          # the relaunch's clock says nothing about when the crashed session died
         mine, others = [], 0
         for p in sorted(found):
             t = p.read_text(errors="replace")
@@ -91,4 +104,7 @@ class RunFolder:
         # A packed run holds only its own crash file; trust it when nothing else can be checked.
         if not mine and len(found) == 1 and ver is None and last is None:
             return found, 0
+        if relaunch and len(mine) > 1:      # names are crash-<date>-<time>: the newest is the one just before it
+            others += len(mine) - 1
+            mine = mine[-1:]
         return mine, others
