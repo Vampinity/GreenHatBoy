@@ -1,0 +1,18 @@
+[EglantinePS5 diag] +1ms diagnostic build 01.219.028 (Nov 14 2026 23:24:15), firmware sdk_version 0x13600007, pid 119, uid 1/1
+[EglantinePS5 diag] +9ms PS5 keyboard module: 0
+[EglantinePS5 diag] +11ms requesting filesystem access
+[EglantinePS5 diag] +30ms filesystem access returned status=0, uid 1/1 gid 1/1
+[EglantinePS5 diag] +66ms trace file /data/eglantineps5/logs/boot-trace.txt
+[EglantinePS5 diag] +68ms logs and crash handler ready (/data/eglantineps5/logs)
+[EglantinePS5 diag] +70ms app folder candidate /app0: eboot yes, font yes
+[EglantinePS5 diag] +72ms app folder candidate /system_ex/app/PPSA98515: eboot no, font no
+[EglantinePS5 diag] +76ms app folder candidate /data/homebrew/PPSA98515: eboot yes, font yes
+[EglantinePS5 diag] +80ms app folder candidate /mnt/sandbox/PPSA98515_000/app0: eboot no, font no
+[EglantinePS5 diag] +84ms app folder: /app0
+[EglantinePS5 diag] +877ms launcher closed: a game was chosen
+[EglantinePS5 diag] +1487ms opening the controllers
+[EglantinePS5 diag] +1495ms controllers open
+[EglantinePS5 diag] +1498ms opening the graphics window (Vulkan)
+[EglantinePS5 diag] +1500ms graphics window open
+[EglantinePS5 diag] +1857ms loading the game
+[EglantinePS5 diag] +4049ms game loaded (status 0)

@@ -1,0 +1,1554 @@
+[headless-startup] directories_ready
+EDEN_ENV EDEN_NX2_TC_LOG=1
+EDEN_ENV EDEN_HEAP_KEEP_ARENAS=1
+EDEN_ENV EDEN_NX2_PIPELINE_FAIL_SOFT=1
+EDEN_ENV EDEN_NX2_OOT_MAX_RESOLUTION=1
+EDEN_ENV EDEN_NX2_UPSCALE_SAME_SIZE=1
+EDEN_ENV EDEN_NX2_UPSCALE_SQUARE=1
+EDEN_ENV EDEN_NX2_TENSOR=compact
+EDEN_ENV EDEN_NX2_TENSOR_ONLY=c00
+EDEN_ENV EDEN_NX2_TENSOR_BACKGROUND=1
+EDEN_ENV EDEN_NX2_NET_BARRIER=1
+EDEN_ENV EDEN_NX2_HANG_WATCH=1
+EDEN_ENV EDEN_NX2_OOT_DYNAMIC_FPS=1
+EDEN_ENV EDEN_NX2_TABLE_POOL_MIB=128
+EDEN_ENV EDEN_NX2_OOT_VISUAL_WORKAROUND=0
+EDEN_ENV EDEN_NX2_TRANSCODE_KEEP_MIB=32
+EDEN_ENV EDEN_NX2_TRANSCODE_WAIT=1
+EDEN_ENV EDEN_NX2_BC_COLLECT_MIB=256
+EDEN_ENV EDEN_NX2_TC_TEMP_BUFFER_FRAMES=600
+EDEN_ENV EDEN_PS5_LAZY_PRESENT=1
+EDEN_ENV EDEN_NX2_UPLOAD_CAP_MIB=256
+EDEN_ENV EDEN_AREA_CHANGE_SCRATCH_RELEASE=1
+EDEN_ENV RADV_PS5_MEMORY_REPORT=1
+EDEN_ENV EDEN_NX2_JUNK_TRACE=1
+EDEN_ENV EDEN_GUEST_SWAP=3
+EDEN_ENV EDEN_GUEST_SWAP_AHEAD_MIB=2048
+EDEN_ENV EDEN_NX2_RADV_MESH_COMPUTE=1
+EDEN_ENV EDEN_NX2_RADV_STALL_DUMP=1
+EDEN_ENV EDEN_NX2_DOWNLOAD_GUARDS=0
+EDEN_ENV EDEN_NX2_PAIRED_POINTERS=1
+EDEN_ENV EDEN_NX2_NATIVE_TABLES=1
+EDEN_ENV EDEN_NX2_COND_TRACE=1
+EDEN_ENV EDEN_KERNEL_RESOURCE_MIB=8
+EDEN_ENV EDEN_GMMU_SPARSE=1
+EDEN_ENV EDEN_GUEST_RESERVE_FLOOR=32
+EDEN_ENV EDEN_JIT_RESERVE_LEND=1
+EDEN_ENV EDEN_GUEST_SWAP_RECLAIM=1
+EDEN_ENV EDEN_NX2_RADV_MESH_COMPUTE_LONE=1
+EDEN_ENV EDEN_NX2_TEX_TRIM_MIB=64
+EDEN_ENV EDEN_NX2_NO_UPLOAD_STORE=1
+EDEN_ENV EDEN_NX2_RADV_MESH_COMPUTE_LATE_DEREFS=1
+EDEN_ENV EDEN_NX2_ZPASS_PAUSE=1
+EDEN_ENV EDEN_MEMORY_REPORT_THREAD=1
+EDEN_ENV EDEN_JIT_CACHE_MIB=256,192,192
+EDEN_ENV EDEN_NX2_FETCH_COUNT=1
+EDEN_ENV EDEN_GBB_FPS_5S=1
+EDEN_ENV EDEN_JIT_TABLE=1
+EDEN_ENV EDEN_JIT_FCMP_ADC=1
+EDEN_ENV EDEN_JIT_CHECKBIT_FLAGS=1
+EDEN_ENV EDEN_JIT_FREE_MOVES=1
+EDEN_ENV EDEN_JIT_R13=1
+EDEN_ENV EDEN_UP_OOT_FRAME_WAIT=1
+EDEN_ENV EDEN_NX2_AREA_EVICT=40
+EDEN_ENV EDEN_NX2_CRAM_RESERVE_MIB=256
+EDEN_ENV EDEN_UP_VDEC_BUSY=1
+EDEN_ENV EDEN_UP_FS_NO_THROTTLE=1
+EDEN_ENV EDEN_UP_AM_THREADS=1
+EDEN_ENV EDEN_UP_MOVIE_PACE=1
+EDEN_ENV EDEN_UP_MOVIE_CLOCK=1
+EDEN_ENV EDEN_NX2_DMA_SNAPSHOT=1
+EDEN_ENV EDEN_JIT_PAGE_REUSE=1
+EDEN_ENV EDEN_NX2_PIPELINE_WORKERS=2
+EDEN_ENV EDEN_NX2_TC_EXPECTED_MIB=2560
+EDEN_ENV EDEN_NX2_TC_CRITICAL_MIB=3328
+EDEN_ENV EDEN_NX2_QUERY_KEEP_PENDING=0
+EDEN_ENV EDEN_GBB_PIPELINE_SAVE_20S=1
+EDEN_ENV EDEN_UP_NUP_LAZY_DECODE=1
+EDEN_ENV EDEN_UP_BLIT_EDGE_CLAMP=1
+EDEN_ENV EDEN_PS5_PIN=pairs
+EDEN_ENV EDEN_PS5_PLACE=CPUCore_4=0/CPUCore_0=1/CPUCore_5=2/CPUCore_1=3/CPUCore_3=4/CPUCore_2=5/GPU=6/GPUBack=8/VulkanWorker=10,11
+EDEN_ENV EDEN_UP_WIDE_COMPUTE_SSBOS=1
+EDEN_ENV EDEN_UP_SHADER_PREP=1
+EDEN_ENV EDEN_GBB_TRUST_COPY=1
+EDEN_ENV EDEN_NX2_RESNAPSHOT=0
+EDEN_ENV RADV_PS5_SUBMIT_THREAD=1
+EDEN_ENV EDEN_NX2_GPU_TRANSCODE_MIB=256
+EDEN_ENV EDEN_UP_HEAP_WAIT_MS=2000
+EDEN_ENV EDEN_UP_FRITCHII_USAGE_TRACKER=1
+EDEN_ENV EDEN_UP_PREP_UNREAD_HANDLE=1
+EDEN_ENV EDEN_UP_AREA_BUDGET=1
+EDEN_ENV EDEN_NX2_AV1_THREADS=8
+EDEN_ENV EDEN_NX2_AV1_FRAME_DELAY=4
+EDEN_ENV EDEN_UP_JIT_LEND_UNDER_FLOOR=2
+EDEN_ENV EDEN_NX2_TRANSCODE_THREADS=2
+EDEN_ENV EDEN_NX2_TC_KEEP_ASYNC=120
+EDEN_ENV EDEN_GUEST_SWAP_COLD_S=15
+EDEN_ENV EDEN_UP_GUEST_WRITE_WAIT_MS=10000
+EDEN_ENV EDEN_UP_JIT_COMMIT_WAIT_MS=10000
+EDEN_ENV EDEN_UP_NEW_WAIT_MS=2000
+EDEN_ENV EDEN_PIPELINE_MEMORY_GATE_MIB=1024
+EDEN_ENV EDEN_PIPELINE_MEMORY_GATE_MS=2000
+EDEN_ENV EDEN_NX2_GRAPHICS_PIPELINE_OOM_RETRY=1
+EDEN_ENV EDEN_JIT_DISPATCH_BITS=16
+EDEN_ENV EDEN_NUP_CACHE_MIB=32
+EDEN_ENV EDEN_STREAM_RING_MIB=64
+EDEN_ENV EDEN_TC_SCRATCH_KEEP_MIB=16
+EDEN_ENV EDEN_UP_STALE_TARGETS=1
+EDEN_ENV EDEN_NX2_DEFER_WRITEBACK_OOM=1
+EDEN_ENV EDEN_UP_DRIVER_CACHE_EVERY=1024
+EDEN_ENV EDEN_NX2_RADV_COPY_PROP_FREE=1
+EDEN_ENV EDEN_UP_MEM_CENSUS=1
+EDEN_ENV EDEN_PERF_REPORT=1
+EDEN_ENV EDEN_GPU_TIME=1
+EDEN_ENV EDEN_NX2_SPLIT_WAITS=1
+EDEN_ENV EDEN_UP_FRITCHII_WIDEAFF=1
+EDEN_ENV EDEN_UP_FRITCHII_GRHAND=1
+EDEN_ENV EDEN_UP_OOT_NATIVE_ZSTD=1
+EDEN_ENV EDEN_UP_OOT_FAST_LOOKUP=1
+EDEN_ENV EDEN_UP_OOT_POLL_BACKOFF=1
+EDEN_ENV EDEN_GBB_NAN_GUARD=1
+EDEN_ENV EDEN_GBB_POSITION_INVARIANT=1
+EDEN_ENV EDEN_NX2_MASK_UNWRITTEN=1
+EDEN_ENV EDEN_NX2_PRELOAD_ALL_PIPELINES=1
+EDEN_ENV EDEN_PIPELINE_MEMORY_GATE_WORKERS=1
+EDEN_ENV EDEN_UP_HEAP_RESCUE=1
+EDEN_ENV EDEN_UP_IR_FREE=1
+EDEN_ENV EDEN_UP_IR_FREE_RUNTIME=1
+EDEN_ENV EDEN_UP_SKIP_STALE_UPLOADS=1
+EDEN_ENV EDEN_VMA_BLOCK_MIB=8
+EDEN_ENV EDEN_UP_TC_SHORT_COLLECT=1024
+EDEN_ENV EDEN_UP_AREA_VMA_SNAPSHOT=1
+EDEN_ENV EDEN_UP_PRESSURE_DRAIN_COUNT=1
+EDEN_ENV EDEN_UP_BLOCK_WAIT_TRIM=1
+EDEN_ENV EDEN_UP_SHADER_REMOVAL_REFRESH=1
+EDEN_ENV EDEN_UP_CACHE_KEEP_GOOD=1
+EDEN_ENV EDEN_UP_BIG_IMAGE_LOG=1
+EDEN_ENV EDEN_UP_PASSED_ACQUIRE_COUNT=1
+EDEN_ENV EDEN_UP_KEEP_BOOT_PIPELINES=1
+EDEN_ENV EDEN_UP_KEEP_BOOT_PIPELINES_FLOOR_MIB=256
+EDEN_ENV EDEN_UP_CANONICAL_KEYS=1
+EDEN_ENV EDEN_UP_SHADER_SET_STREAM=1
+EDEN_ENV EDEN_UP_SHADER_SET_INDEX=1
+EDEN_ENV EDEN_UP_SHADER_SET_PREPASS_WORKERS=8
+EDEN_ENV EDEN_UP_SHADER_SET_COMPUTE=1
+EDEN_ENV EDEN_UP_SHADER_SET_MESH=1
+EDEN_ENV EDEN_UP_FIRST_START_LIST_WRITE=1
+EDEN_ENV EDEN_UP_SHADER_PREP_SOURCE_STAMP=1
+EDEN_ENV MESA_SHADER_CACHE_MAX_SIZE=8G
+EDEN_ENV RADV_PS5_DISK_CACHE_SKIP_KNOWN=1
+EDEN_ENV RADV_PS5_DISK_CACHE_PUT_NEW=2
+EDEN_ENV RADV_PS5_DISK_CACHE_ZLIB_LEVEL=1
+EDEN_ENV RADV_PS5_DISK_CACHE_DRAIN_EXIT=5
+EDEN_ENV EDEN_UP_PRESSURE_DRAIN=1
+EDEN_ENV EDEN_UP_PRESSURE_DRAIN_PENDING_MIB=256
+EDEN_ENV EDEN_UP_HEAP_HOLD_AT_LOAD=20
+EDEN_ENV EDEN_UP_RESERVE_TABLES=1
+EDEN_ENV EDEN_UP_DRAIN_AT_AREA=1
+EDEN_ENV EDEN_UP_PACK_PRESSURE_MS=250
+EDEN_ENV EDEN_UP_PACK_PRESSURE_MIB=2560
+EDEN_ENV EDEN_UP_PACK_PRESSURE_COLD_S=4
+EDEN_ENV EDEN_UP_PACK_ON_REFUSAL=1
+EDEN_ENV EDEN_UP_LOAD_HOLD=8000
+EDEN_ENV EDEN_UP_LOAD_HOLD_FREE_MIB=2200/512
+EDEN_ENV EDEN_UP_TABLE_RESERVE=8
+EDEN_ENV EDEN_UP_HEAP_HOLD_REFILL_MIB=96
+EDEN_ENV EDEN_UP_HEAP_HOLD_SPARE_MIB=64
+EDEN_ENV EDEN_UP_DMA_SCRATCH_MIB=11
+EDEN_ENV EDEN_UP_GPU_BADALLOC_BACKSTOP=1
+EDEN_ENV EDEN_UP_TC_OOM_SPARE_FRAMES=60
+EDEN_ENV EDEN_UP_WAIT_RECLAIM=1
+EDEN_ENV EDEN_UP_GPU_READ_THROUGH=2
+EDEN_ENV EDEN_UP_FAULT_RESERVE=1
+EDEN_ENV EDEN_UP_FAULT_LAST_TRY=1
+EDEN_ENV EDEN_UP_GPU_READ_THROUGH_LOADS=1
+EDEN_ENV EDEN_UP_GPU_READ_THROUGH_LOADS_MIB=256
+EDEN_ENV EDEN_UP_GPU_READ_THROUGH_LOADS_HOLD_MIB=2
+EDEN_ENV EDEN_UP_GPU_READ_THROUGH_LOADS_WAIT_MS=250
+EDEN_ENV EDEN_UP_GPU_READ_THROUGH_LOADS_CLOSE_S=10
+EDEN_ENV RADV_PS5_INTERNAL_RESERVE_MIB=64
+EDEN_ENV EDEN_UP_VK_OOM_RETRY=5
+EDEN_ENV EDEN_TEST_DISCARD_SAVE=1
+EDEN_ENV EDEN_TEST_BOOT=0400486024DEC000
+EDEN_ENV EDEN_TEST_SCRIPT=field-to-past-field.txt
+EDEN_ENV_TRIM env.txt: 0 of 192 lines trimmed (a carriage return, spaces or tabs at the end, or spaces before the name)
+EDEN_JIT_CODEGEN free_moves=1 r13=1 plain_ordered=0 fcmp_adc=1 light_dmb=0 checkbit_flags=1 page_reuse=1
+EDEN_WORKER_PROBE allowed=1fff probed=13 stopped_at=64 refused=0 bad_level=0 shift=1 first_id=0 last_id=0
+EDEN_WORKER_SECONDARY mask=1e80
+EDEN_WORKER_TOPOLOGY ready=1 distinct_cores=5 cpus=0,2,4,6,8
+EDEN_PERF_OWNER_CLOCK_CHECK valid=1 busy_ns=19977000 idle_ns=78000
+EDEN_PERF_CPU_CLOCK_CHECK valid=0 worker_error=0 process_error=0 worker_clock=14 process_clock=15 busy_ns=77000 idle_ns=8000 process_sleep_ns=20113069
+EDEN_PERF_CLOCK leaf_max=10 invariant=1 tsc_hz=1596300000 native=1
+EDEN_PERF_CLOCK_READ calls=100000 elapsed_ns=2652053 checksum=12845024749668157
+EDEN_PERF_DIAGNOSTIC_CLOCK calls=1000 system_ns=899921 counter_ns=26542 checksum=26223366208648222
+EDEN_PERF_SLEEP requested_us=1000 mono_ns=1107521 wall_ns=1108497
+EDEN_PERF_SLEEP requested_us=16667 mono_ns=16774790 wall_ns=16775788
+EDEN_PERF_SLEEP requested_us=50000 mono_ns=50108270 wall_ns=50109334
+EDEN_PERF_MEMORY pattern=stream bytes=67108864 elapsed_ns=6109327 checksum=8796088827904
+EDEN_PERF_MEMORY pattern=dependent working_bytes=32768 steps=1048576 elapsed_ns=1547419 checksum=0
+EDEN_PERF_MEMORY pattern=dependent working_bytes=16777216 steps=1048576 elapsed_ns=133008529 checksum=0
+EDEN_UP_NEW_WAIT_MS=2000: operator new waits that long for memory before it gives up
+EDEN_UP_JIT_COMMIT_WAIT_MS=10000: the JIT code cache waits that long for memory
+EDEN_UP_GUEST_WRITE_WAIT_MS=10000: a guest write waits that long for a block
+EDEN_GAME_ASSETS_READY
+EDEN_STAGE backend=Vulkan phase=session_start mono_ns=6688905715802
+[ps5-opengl-heap] phase=session_start sample=0 state=2 live_bytes=558855 peak_bytes=46095488 blocks=5569 failures=0 ambiguous_zero_reallocs=0
+[headless-startup] absolute_paths_ready
+EDEN_WORKER_INHERIT enabled=1 mask=1e80 error=0
+EDEN_GPU_FENCE 0
+EDEN_VULKAN_FRAME_SIZE 1920x1080
+EDEN_WORKER_PLACED name=KWorkerTaskManager mask=1e80 error=0
+EDEN_SOCKET_PRIME write=1 write_errno=0 read=1 read_errno=0 value=90
+EDEN_STAGE backend=Vulkan phase=core_constructed mono_ns=6689473962295
+[ps5-opengl-heap] phase=core_constructed sample=0 state=2 live_bytes=20995095 peak_bytes=46121984 blocks=5749 failures=0 ambiguous_zero_reallocs=0
+EDEN_STAGE backend=Vulkan phase=core_initialized mono_ns=6689544952613
+[ps5-opengl-heap] phase=core_initialized sample=0 state=2 live_bytes=27498134 peak_bytes=46121984 blocks=5817 failures=0 ambiguous_zero_reallocs=0
+EDEN_JIT_TABLE direct=1
+EDEN_JIT_ALIAS bytes=268435456 active=1 code=1210e00000 grows=1
+EDEN_JIT_FEATURES mask=1ff01f cache_bytes=268435456
+EDEN_JIT_ALIAS bytes=201326592 active=1 code=122ce00000 grows=1
+EDEN_JIT_FEATURES mask=1ff01f cache_bytes=201326592
+EDEN_JIT_ALIAS bytes=201326592 active=1 code=1244e00000 grows=1
+EDEN_JIT_FEATURES mask=1ff01f cache_bytes=201326592
+EDEN_JIT_ALIAS bytes=201326592 active=1 code=125ce00000 grows=1
+EDEN_JIT_FEATURES mask=1ff01f cache_bytes=201326592
+EDEN_JIT_ALIAS bytes=201326592 active=1 code=1274e00000 grows=1
+EDEN_JIT_FEATURES mask=1ff01f cache_bytes=201326592
+EDEN_JIT_ALIAS bytes=201326592 active=1 code=128ce00000 grows=1
+EDEN_JIT_FEATURES mask=1ff01f cache_bytes=201326592
+EDEN_VULKAN_MEMORY integrated=1 heaps=2 local=8634679296 initial_usage=0 device_access=6442450944 capacity=11777605632
+EDEN_WORKER_PLACED name=MemoryReport mask=1e80 error=0
+EDEN_GPU_TIME_INIT period_ns=10.000000000 valid_bits=64 slots=512
+EDEN_GPU_SUBMIT_ANCHOR address=1a64c50 coverage=upload+graphics
+EDEN_WORKER_PLACED name=VulkanWorker mask=c00 error=0
+EDEN_WORKER_PLACED name=TextureDecoder mask=1e80 error=0
+EDEN_WORKER_PLACED name=VkPipelineBuilder mask=1e80 error=0
+EDEN_WORKER_PLACED name=VkPipelineBuilder mask=1e80 error=0
+EDEN_WORKER_PLACED name=VkPipelineSerialization mask=1e80 error=0
+EDEN_VULKAN_DYNAMIC blend=0 enables=0 vertex=1
+EDEN_WORKER_PLACED name=GPUFencingThread mask=1e80 error=0
+EDEN_WORKER_PLACED name=AudioManager mask=1e80 error=0
+EDEN_WORKER_PLACED name=DSP_OpusDecoder_Init mask=1e80 error=0
+EDEN_WORKER_PLACED name=DSP_OpusDecoder_Main mask=1e80 error=0
+EDEN_WORKER_PLACED name=audio mask=1e80 error=0
+EDEN_WORKER_PLACED name=FS mask=1e80 error=0
+EDEN_WORKER_PLACED name=ldn mask=1e80 error=0
+EDEN_WORKER_PLACED name=nvservices mask=1e80 error=0
+EDEN_WORKER_PLACED name=bsdsocket mask=1e80 error=0
+EDEN_WORKER_PLACED name=vi mask=1e80 error=0
+EDEN_WORKER_PLACED name=bsdsocket:1 mask=1e80 error=0
+EDEN_WORKER_PLACED name=bsdsocket:2 mask=1e80 error=0
+EDEN_WORKER_PIN name=CPUCore_1 cpu=3 verified=1
+EDEN_WORKER_PIN name=CPUCore_0 cpu=1 verified=1
+EDEN_WORKER_PIN name=CPUCore_3 cpu=4 verified=1
+EDEN_WORKER_PIN name=CPUCore_2 cpu=5 verified=1
+EDEN_WORKER_PLACED name=CPUCore_4 mask=1 error=0
+EDEN_WORKER_PLACED name=CPUCore_5 mask=4 error=0
+EDEN_STAGE backend=Vulkan phase=game_loaded mono_ns=6696447258064
+[ps5-opengl-heap] phase=game_loaded sample=0 state=2 live_bytes=246682762 peak_bytes=363237093 blocks=539424 failures=0 ambiguous_zero_reallocs=0
+EDEN_GPU_WORKER_STACK bytes=1048576
+EDEN_STAGE backend=Vulkan phase=cpu_manager_ready mono_ns=6696451552715
+[ps5-opengl-heap] phase=cpu_manager_ready sample=0 state=2 live_bytes=246682762 peak_bytes=363237093 blocks=539424 failures=0 ambiguous_zero_reallocs=0
+EDEN_WORKER_PIN name=GPU cpu=6 verified=1
+EDEN_WORKER_PLACED name=TimeWorker mask=1e80 error=0
+EDEN_SHADER_CACHE_LOADED
+EDEN_GPU_TIME wall_ms=5014.2 busy_ms=3.7 submissions=21 max_ms=0.27 cumulative_ns=3691200 cumulative_submissions=21 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=3
+EDEN_GPU_SUBMIT_ORIGIN caller=1a3335f finish=0 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a37256 finish=0 count=18
+EDEN_GPU_SUBMIT_TOTAL count=22 overflow=0
+EDEN_WORKER_PLACED name=am:EventObserver mask=1e80 error=0
+EDEN_WORKER_PLACED name=am:1 mask=1e80 error=0
+EDEN_WORKER_PLACED name=am:2 mask=1e80 error=0
+EDEN_WORKER_PLACED name=nx2:ColdHint mask=1e80 error=0
+EDEN_WORKER_PLACED name=GPUBack mask=100 error=0
+EDEN_GPU_TIME wall_ms=5016.0 busy_ms=60.8 submissions=301 max_ms=0.23 cumulative_ns=64441280 cumulative_submissions=322 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a37256 finish=0 count=301
+EDEN_GPU_SUBMIT_TOTAL count=301 overflow=0
+EDEN_WORKER_PLACED name=DSP_AudioRenderer_Main mask=1e80 error=0
+EDEN_WORKER_PLACED name=AudioRenderSystemManager mask=1e80 error=0
+EDEN_GPU_TIME wall_ms=5000.5 busy_ms=60.6 submissions=300 max_ms=0.24 cumulative_ns=125022640 cumulative_submissions=622 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a37256 finish=0 count=300
+EDEN_GPU_SUBMIT_TOTAL count=300 overflow=0
+EDEN_GPU_TIME wall_ms=5000.0 busy_ms=60.4 submissions=300 max_ms=0.21 cumulative_ns=185441080 cumulative_submissions=922 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a37256 finish=0 count=300
+EDEN_GPU_SUBMIT_TOTAL count=300 overflow=0
+EDEN_WORKER_PLACED name=MemCensus mask=1e80 error=0
+EDEN_WORKER_PLACED name=DeviceMemory:ColdHint mask=1e80 error=0
+EDEN_LOADING_DONE frames=936 seconds=15.66
+EDEN_STAGE backend=Vulkan phase=first_frame_callback mono_ns=6712113702591
+EDEN_VULKAN_HIDE_SPLASH rc=00000000
+MKW_SEMAPHORE_STATE frame=30 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=60 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=90 enabled=0 hits=0
+MKW_MAPPED_STATS frame=120 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=120 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=120 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=120 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=150 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=180 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=210 enabled=0 hits=0
+MKW_MAPPED_STATS frame=240 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=240 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=240 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=240 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5001.7 busy_ms=99.4 submissions=592 max_ms=0.41 cumulative_ns=284865160 cumulative_submissions=1514 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=14
+EDEN_GPU_SUBMIT_ORIGIN caller=1a37256 finish=0 count=16
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=270
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=12
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=11
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=269
+EDEN_GPU_SUBMIT_TOTAL count=592 overflow=0
+MKW_SEMAPHORE_STATE frame=270 enabled=0 hits=0
+EDEN_VULKAN_FRAME frames=290 seconds=5.001590 fps=57.982 worst_ms=115.952 total=291 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=3299/78 compute_pipeline=961/7 submit=41/2785 fence_wait=1/1227 semaphore_wait=10/80 device_idle=0/17 present_sync=0/1227 texture_cpu_download=0/42 shader_prepare=1/1 pipeline_cache_save=15/1 shader_pool_reset=0/1 shader_cfg=0/2 shader_ir=0/2 shader_spirv=0/2 shader_module=0/2
+EDEN_GUEST_RUN 86=10138/69730 102=2309/249 100=1235/142 111=1226/12626 101=1110/4450 112=428/5571 152=361/53451 110=337/915 153=310/47840 116=300/3070 95=272/25746 157=267/46165
+EDEN_PERF_IDLE c0=8048 c1=17794 c2=18062 c3=18170 c4=17061 c5=16512
+EDEN_GUEST_WAKE c0=50385/2764/0/0 c1=37796/4645/0/0 c2=38687/4495/0/0 c3=42512/5551/0/0 c4=28293/4027/0/0 c5=32907/4419/0/0
+EDEN_JIT_PAGE_REUSE groups=138951 accesses=621064
+MKW_SEMAPHORE_STATE frame=300 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=330 enabled=0 hits=0
+MKW_MAPPED_STATS frame=360 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=360 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=360 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=360 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=390 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=420 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=450 enabled=0 hits=0
+MKW_MAPPED_STATS frame=480 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=480 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=480 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=480 enabled=0 hits=0
+EDEN_WORKER_PLACED name=nx2:vdec mask=1e80 error=0
+MKW_SEMAPHORE_STATE frame=510 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=540 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5040.0 busy_ms=110.3 submissions=587 max_ms=0.64 cumulative_ns=395160920 cumulative_submissions=2101 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=276
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=276
+EDEN_GPU_SUBMIT_ORIGIN caller=1b42678 finish=1 count=5
+EDEN_GPU_SUBMIT_TOTAL count=587 overflow=0
+EDEN_VULKAN_FRAME frames=262 seconds=5.014105 fps=52.253 worst_ms=111.614 total=553 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=9/54 compute_pipeline=1/1 submit=13/821 fence_wait=0/262 semaphore_wait=10/70 device_idle=0/10 texture_sync=1/5 present_sync=0/262 texture_cpu_download=24/31509 pipeline_ready_wait=3/2 shader_prepare=1/3 shader_pool_reset=0/3 shader_cfg=0/5 shader_ir=0/5 shader_spirv=0/5 shader_module=0/5
+EDEN_GUEST_RUN 132=702/5439 101=576/3243 86=398/54405 153=362/43833 178=304/8776 152=252/49915 154=221/40230 155=210/37376 157=188/40576 156=188/35816 103=167/1106 102=164/405
+EDEN_PERF_IDLE c0=3501 c1=2946 c2=3714 c3=3692 c4=3206 c5=3642
+EDEN_GUEST_WAKE c0=41087/2012/0/0 c1=24846/2190/0/0 c2=32452/2541/0/0 c3=27539/3076/0/0 c4=21060/2359/0/0 c5=25995/2514/0/0
+EDEN_PERF_THREAD name=present cpu_ms=601 wall_ms=5014
+EDEN_JIT_PAGE_REUSE groups=157115 accesses=703393
+MKW_SEMAPHORE_STATE frame=570 enabled=0 hits=0
+MKW_MAPPED_STATS frame=600 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=600 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=600 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=600 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=630 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=660 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=690 enabled=0 hits=0
+MKW_MAPPED_STATS frame=720 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=720 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=720 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=720 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=750 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=780 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=810 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5005.3 busy_ms=172.4 submissions=576 max_ms=0.39 cumulative_ns=567587120 cumulative_submissions=2677 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=273
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=273
+EDEN_GPU_SUBMIT_TOTAL count=576 overflow=0
+EDEN_VULKAN_FRAME frames=286 seconds=5.005025 fps=57.143 worst_ms=53.064 total=839 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=0/50 submit=13/888 fence_wait=0/286 semaphore_wait=5/60 device_idle=0/10 present_sync=0/286 texture_cpu_download=9/217646
+EDEN_GUEST_RUN 178=1017/40786 101=577/3350 100=564/3133 103=481/2739 86=416/60766 102=398/2097 152=319/54457 154=278/43747 153=266/47876 155=259/39688 156=242/38298 188=224/4672
+EDEN_PERF_IDLE c0=3352 c1=3514 c2=3691 c3=3613 c4=2489 c5=2456
+EDEN_GUEST_WAKE c0=39874/2423/0/0 c1=27694/3002/0/0 c2=34033/2558/0/0 c3=27255/2943/0/0 c4=15699/2205/0/0 c5=17140/2193/0/0
+EDEN_PERF_THREAD name=present cpu_ms=1243 wall_ms=5005
+EDEN_JIT_PAGE_REUSE groups=157171 accesses=703578
+MKW_MAPPED_STATS frame=840 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=840 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=840 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=840 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=870 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=900 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=930 enabled=0 hits=0
+MKW_MAPPED_STATS frame=960 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=960 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=960 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=960 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=990 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=1020 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=1050 enabled=0 hits=0
+MKW_MAPPED_STATS frame=1080 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=1080 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=1080 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=1080 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=1110 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5016.6 busy_ms=195.2 submissions=632 max_ms=0.39 cumulative_ns=762794160 cumulative_submissions=3309 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=301
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=301
+EDEN_GPU_SUBMIT_TOTAL count=632 overflow=0
+EDEN_VULKAN_FRAME frames=300 seconds=5.001390 fps=59.983 worst_ms=22.387 total=1139 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=0/50 submit=14/930 fence_wait=0/300 semaphore_wait=5/60 device_idle=0/10 present_sync=0/300 texture_cpu_download=10/228300
+EDEN_GUEST_RUN 178=1596/65714 102=728/4463 86=439/63823 103=401/2592 101=378/2333 152=341/57311 154=294/45097 155=282/42083 153=282/50627 156=260/40401 188=242/4899 100=233/1456
+EDEN_PERF_IDLE c0=3090 c1=3291 c2=3512 c3=3534 c4=3203 c5=2345
+EDEN_GUEST_WAKE c0=38624/2456/0/0 c1=27665/2922/0/0 c2=33845/2415/0/0 c3=28850/3117/0/0 c4=20854/2712/0/0 c5=16497/1997/0/0
+EDEN_PERF_THREAD name=present cpu_ms=1341 wall_ms=5001
+EDEN_JIT_PAGE_REUSE groups=157184 accesses=703626
+MKW_SEMAPHORE_STATE frame=1140 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=1170 enabled=0 hits=0
+MKW_MAPPED_STATS frame=1200 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=1200 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=1200 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=1200 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=1230 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=1260 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=1290 enabled=0 hits=0
+MKW_MAPPED_STATS frame=1320 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=1320 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=1320 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=1320 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=1350 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=1380 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=1410 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5000.5 busy_ms=199.4 submissions=630 max_ms=0.77 cumulative_ns=962235360 cumulative_submissions=3939 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=300
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=300
+EDEN_GPU_SUBMIT_TOTAL count=630 overflow=0
+EDEN_VULKAN_FRAME frames=300 seconds=5.003424 fps=59.959 worst_ms=41.684 total=1439 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=0/50 submit=14/930 fence_wait=0/300 semaphore_wait=47/60 device_idle=0/10 present_sync=0/300 texture_cpu_download=10/228300
+EDEN_GUEST_RUN 178=3007/66818 100=2950/17645 86=439/63373 152=331/56989 154=302/45260 153=299/49776 155=289/43017 188=245/4928 156=229/42507 173=167/39529 139=138/3185 135=137/4110
+EDEN_PERF_IDLE c0=2798 c1=3064 c2=3084 c3=3376 c4=3340 c5=1279
+EDEN_GUEST_WAKE c0=34782/2052/0/0 c1=26966/2277/0/0 c2=27648/2189/0/0 c3=26296/2824/0/0 c4=23268/2345/0/0 c5=7554/920/0/0
+EDEN_PERF_THREAD name=present cpu_ms=1313 wall_ms=5003
+EDEN_JIT_PAGE_REUSE groups=157190 accesses=703656
+MKW_MAPPED_STATS frame=1440 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=1440 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=1440 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=1440 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=1470 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=1500 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=1530 enabled=0 hits=0
+MKW_MAPPED_STATS frame=1560 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=1560 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=1560 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=1560 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=1590 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=1620 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=1650 enabled=0 hits=0
+MKW_MAPPED_STATS frame=1680 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=1680 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=1680 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=1680 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5010.5 busy_ms=194.8 submissions=606 max_ms=1.02 cumulative_ns=1157060920 cumulative_submissions=4545 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=285
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=287
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=5
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=2
+EDEN_GPU_SUBMIT_TOTAL count=606 overflow=0
+MKW_SEMAPHORE_STATE frame=1710 enabled=0 hits=0
+EDEN_VULKAN_FRAME frames=286 seconds=5.002529 fps=57.171 worst_ms=159.597 total=1725 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=132/57 submit=17/890 fence_wait=0/286 semaphore_wait=78/56 device_idle=0/9 present_sync=0/286 texture_cpu_download=10/217780 pipeline_ready_wait=45/30 shader_prepare=62/12 shader_pool_reset=0/12 shader_cfg=0/24 shader_ir=40/24 shader_spirv=4/24 shader_module=0/24
+EDEN_GUEST_RUN 100=3212/16913 178=3012/65206 86=442/61105 153=400/47584 152=327/54576 154=315/42297 155=274/41246 156=246/40439 188=245/5106 173=156/34570 139=135/3359 135=134/4043
+EDEN_PERF_IDLE c0=2788 c1=3096 c2=3139 c3=3071 c4=3279 c5=1327
+EDEN_GUEST_WAKE c0=31727/2210/0/0 c1=25832/2428/0/0 c2=26763/2241/0/0 c3=22831/2563/0/0 c4=19946/2280/0/0 c5=8483/979/0/0
+EDEN_PERF_THREAD name=present cpu_ms=1387 wall_ms=5002
+EDEN_JIT_PAGE_REUSE groups=159009 accesses=712392
+MKW_SEMAPHORE_STATE frame=1740 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=1770 enabled=0 hits=0
+MKW_MAPPED_STATS frame=1800 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=1800 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=1800 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=1800 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=1830 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=1860 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=1890 enabled=0 hits=0
+MKW_MAPPED_STATS frame=1920 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=1920 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=1920 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=1920 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=1950 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=1980 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5011.1 busy_ms=290.8 submissions=717 max_ms=1.70 cumulative_ns=1447820000 cumulative_submissions=5262 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=178
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=284
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=15
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=106
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=104
+EDEN_GPU_SUBMIT_TOTAL count=717 overflow=0
+EDEN_VULKAN_FRAME frames=284 seconds=5.003614 fps=56.759 worst_ms=163.866 total=2009 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=382/75 submit=18/1001 fence_wait=0/284 semaphore_wait=86/60 device_idle=0/10 present_sync=0/284 texture_cpu_download=10/216359 pipeline_ready_wait=201/109 shader_prepare=160/24 shader_pool_reset=0/24 shader_cfg=1/48 shader_ir=122/48 shader_spirv=10/48 shader_module=0/48
+EDEN_GUEST_RUN 100=3119/16499 178=3055/61473 86=513/61486 154=466/42377 153=427/47856 152=362/54466 155=324/40296 156=264/39973 188=228/4784 173=158/36850 135=147/4050 139=138/3298
+EDEN_PERF_IDLE c0=2736 c1=3021 c2=3166 c3=2810 c4=3431 c5=1200
+EDEN_GUEST_WAKE c0=32312/2173/0/0 c1=24859/2631/0/0 c2=28713/2345/0/0 c3=23400/2671/0/0 c4=21402/2519/0/0 c5=7325/875/0/0
+EDEN_PERF_THREAD name=present cpu_ms=1627 wall_ms=5003
+EDEN_JIT_PAGE_REUSE groups=160944 accesses=721116
+MKW_SEMAPHORE_STATE frame=2010 enabled=0 hits=0
+MKW_MAPPED_STATS frame=2040 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=2040 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=2040 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=2040 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=2070 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=2100 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=2130 enabled=0 hits=0
+MKW_MAPPED_STATS frame=2160 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=2160 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=2160 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=2160 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=2190 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=2220 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=2250 enabled=0 hits=0
+MKW_MAPPED_STATS frame=2280 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=2280 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=2280 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=2280 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5007.9 busy_ms=229.3 submissions=625 max_ms=1.05 cumulative_ns=1677106800 cumulative_submissions=5887 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=11
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=296
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=11
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=11
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=296
+EDEN_GPU_SUBMIT_TOTAL count=625 overflow=0
+EDEN_VULKAN_FRAME frames=296 seconds=5.000290 fps=59.197 worst_ms=78.340 total=2305 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=0/55 submit=15/921 fence_wait=0/296 semaphore_wait=9/66 device_idle=0/11 present_sync=0/296 texture_cpu_download=3/82949
+EDEN_GUEST_RUN 178=1443/29902 100=1431/8005 103=745/4250 102=698/3823 86=505/61616 112=421/2803 153=401/48231 152=343/56451 154=340/44267 155=303/42378 156=282/41613 173=169/41350
+EDEN_PERF_IDLE c0=3115 c1=3140 c2=2959 c3=3561 c4=2846 c5=2159
+EDEN_GUEST_WAKE c0=35492/1920/0/0 c1=28052/2351/0/0 c2=23457/1829/0/0 c3=28166/2837/0/0 c4=18794/2006/0/0 c5=13257/1459/0/0
+EDEN_PERF_THREAD name=present cpu_ms=888 wall_ms=5000
+EDEN_JIT_PAGE_REUSE groups=182239 accesses=810092
+MKW_SEMAPHORE_STATE frame=2310 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=2340 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=2370 enabled=0 hits=0
+MKW_MAPPED_STATS frame=2400 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=2400 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=2400 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=2400 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=2430 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=2460 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=2490 enabled=0 hits=0
+MKW_MAPPED_STATS frame=2520 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=2520 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=2520 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=2520 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=2550 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=2580 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5017.3 busy_ms=114.7 submissions=626 max_ms=0.27 cumulative_ns=1791814680 cumulative_submissions=6513 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=298
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=298
+EDEN_GPU_SUBMIT_TOTAL count=626 overflow=0
+EDEN_VULKAN_FRAME frames=297 seconds=5.000687 fps=59.392 worst_ms=81.020 total=2602 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=0/50 submit=13/921 fence_wait=0/297 semaphore_wait=4/60 device_idle=0/10 present_sync=0/297
+EDEN_GUEST_RUN 117=1634/14344 103=997/5184 86=653/58162 118=574/9692 100=560/2925 121=558/8774 102=551/2871 116=541/9523 119=531/8851 101=479/2619 156=444/40818 153=442/49837
+EDEN_PERF_IDLE c0=2554 c1=1135 c2=2725 c3=2819 c4=1965 c5=1459
+EDEN_GUEST_WAKE c0=34860/2317/0/0 c1=9771/1067/0/0 c2=31942/2488/0/0 c3=29405/2992/0/0 c4=20290/2305/0/0 c5=16940/1866/0/0
+EDEN_PERF_THREAD name=present cpu_ms=701 wall_ms=5000
+EDEN_JIT_PAGE_REUSE groups=218668 accesses=975461
+MKW_SEMAPHORE_STATE frame=2610 enabled=0 hits=0
+MKW_MAPPED_STATS frame=2640 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=2640 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=2640 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=2640 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=2670 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=2700 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=2730 enabled=0 hits=0
+MKW_MAPPED_STATS frame=2760 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=2760 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=2760 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=2760 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=2790 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=2820 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5630.4 busy_ms=141.1 submissions=554 max_ms=25.06 cumulative_ns=1932957800 cumulative_submissions=7067 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=8
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=259
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=8
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=8
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=260
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=8
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=3
+EDEN_GPU_SUBMIT_TOTAL count=554 overflow=0
+EDEN_GPU_TIME wall_ms=5084.0 busy_ms=19.2 submissions=35 max_ms=4.06 cumulative_ns=1952178320 cumulative_submissions=7102 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=18
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=3
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa01d1 finish=0 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=8
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=2
+EDEN_GPU_SUBMIT_TOTAL count=35 overflow=0
+EDEN_VULKAN_FRAME frames=243 seconds=14.559691 fps=16.690 worst_ms=10529.050 total=2845 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=9579/251 compute_pipeline=5791/29 submit=13/875 fence_wait=0/243 semaphore_wait=12190/91 device_idle=0/9 guest_fence=4003/3 buffer_sync=8086/14 present_sync=0/243 texture_cpu_download=0/3228 pipeline_ready_wait=9392/3232 shader_prepare=1447/235 shader_pool_reset=0/235 shader_cfg=29/452 shader_ir=978/450 shader_spirv=169/449 shader_module=8/449
+EDEN_GUEST_RUN 178=4004/10785 121=840/11962 152=820/48693 86=734/59943 120=692/10229 156=669/44733 118=549/10398 153=488/52524 116=471/11591 155=465/48435 154=446/49724 139=404/5714
+EDEN_PERF_IDLE c0=10319 c1=10422 c2=11818 c3=12502 c4=11644 c5=11645
+EDEN_GUEST_WAKE c0=112219/5154/0/0 c1=32861/5477/0/0 c2=37281/6973/0/0 c3=33909/6685/0/0 c4=25750/5170/0/0 c5=23126/4087/0/0
+EDEN_PERF_THREAD name=present cpu_ms=2191 wall_ms=14559
+EDEN_JIT_PAGE_REUSE groups=244756 accesses=1090035
+EDEN_GPU_TIME wall_ms=7588.2 busy_ms=21.1 submissions=113 max_ms=1.49 cumulative_ns=1973322280 cumulative_submissions=7215 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=13
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=8
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=52
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa01d1 finish=0 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=16
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=4
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=1
+EDEN_GPU_SUBMIT_TOTAL count=113 overflow=0
+MKW_SEMAPHORE_STATE frame=2850 enabled=0 hits=0
+EDEN_WORKER_PLACED name=ImageTranscode mask=1e80 error=0
+EDEN_WORKER_PLACED name=ImageTranscode mask=1e80 error=0
+EDEN_VULKAN_FRAME frames=14 seconds=6.165264 fps=2.271 worst_ms=3262.661 total=2859 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=1650/53 compute_pipeline=3159/5 submit=5/345 fence_wait=0/14 semaphore_wait=9267/344 device_idle=0/5 guest_fence=1462/80 buffer_sync=28/32 present_sync=0/14 texture_cpu_download=0/359 pipeline_ready_wait=4677/373 shader_prepare=228/33 shader_pool_reset=0/33 shader_cfg=4/61 shader_ir=171/61 shader_spirv=20/61 shader_module=1/61
+EDEN_GUEST_RUN 178=2106/3123 157=487/2119 162=439/1140 159=433/1511 158=415/1651 161=386/1331 160=341/894 152=292/3599 154=212/3214 86=210/3719 139=175/1477 155=167/3086
+EDEN_PERF_IDLE c0=4510 c1=4137 c2=5117 c3=1970 c4=5328 c5=5364
+EDEN_GUEST_WAKE c0=31215/990/0/0 c1=5699/1476/0/0 c2=15080/1494/0/0 c3=2855/709/0/0 c4=3085/1149/0/0 c5=3610/560/0/0
+EDEN_PERF_THREAD name=present cpu_ms=570 wall_ms=6165
+EDEN_JIT_PAGE_REUSE groups=284199 accesses=1264147
+EDEN_GPU_TIME wall_ms=5107.0 busy_ms=80.7 submissions=328 max_ms=1.33 cumulative_ns=2053999200 cumulative_submissions=7543 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=4
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=25
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=4
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=4
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=13
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=15
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=138
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=66
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=26
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=24
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=9
+EDEN_GPU_SUBMIT_TOTAL count=328 overflow=0
+EDEN_GPU_TIME wall_ms=5744.8 busy_ms=14.5 submissions=53 max_ms=1.38 cumulative_ns=2068451880 cumulative_submissions=7596 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=13
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=5
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=14
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=10
+EDEN_GPU_SUBMIT_TOTAL count=53 overflow=0
+EDEN_GPU_TIME wall_ms=5057.8 busy_ms=57.9 submissions=146 max_ms=1.55 cumulative_ns=2126391840 cumulative_submissions=7742 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=140
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa01d1 finish=0 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=1
+EDEN_GPU_SUBMIT_TOTAL count=146 overflow=0
+EDEN_GPU_TIME wall_ms=8046.1 busy_ms=8.7 submissions=39 max_ms=0.90 cumulative_ns=2135045600 cumulative_submissions=7781 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=37
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=1
+EDEN_GPU_SUBMIT_TOTAL count=39 overflow=0
+EDEN_VULKAN_FRAME frames=1 seconds=23.407917 fps=0.043 worst_ms=23407.917 total=2860 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=33759/145 compute_pipeline=18265/34 submit=6/286 fence_wait=0/1 semaphore_wait=34118/86 device_idle=0/1 guest_fence=14453/17 buffer_sync=5894/21 present_sync=0/1 texture_gc=0/1 texture_cpu_download=0/3948 pipeline_ready_wait=22324/686 shader_prepare=4945/173 shader_pool_reset=1/173 shader_cfg=94/320 shader_ir=3984/320 shader_spirv=462/320 shader_module=12/320
+EDEN_GUEST_RUN 178=5852/31610 86=2097/1287 100=726/315 103=605/164 173=565/195313 139=526/4120 152=494/691 135=380/15469 101=344/132 95=164/10345 102=130/37 96=101/4840
+EDEN_PERF_IDLE c0=17509 c1=20557 c2=11405 c3=14844 c4=21047 c5=21827
+EDEN_GUEST_WAKE c0=157931/3531/0/0 c1=16766/8653/0/0 c2=27549/2951/0/0 c3=7631/5376/0/0 c4=12640/3333/0/0 c5=10531/3432/0/0
+EDEN_PERF_THREAD name=present cpu_ms=5118 wall_ms=23407
+EDEN_JIT_PAGE_REUSE groups=289898 accesses=1288490
+EDEN_GPU_TIME wall_ms=5091.6 busy_ms=61.9 submissions=137 max_ms=7.72 cumulative_ns=2196960080 cumulative_submissions=7918 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=52
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=21
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=18
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=27
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=3
+EDEN_GPU_SUBMIT_TOTAL count=137 overflow=0
+EDEN_VULKAN_FRAME frames=2 seconds=5.755642 fps=0.347 worst_ms=3595.151 total=2862 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=4954/92 compute_pipeline=2884/12 submit=3/206 fence_wait=0/2 semaphore_wait=7189/146 device_idle=0/2 guest_fence=1398/30 buffer_sync=1822/26 present_sync=0/2 texture_gc=0/2 texture_cpu_download=0/1960 pipeline_ready_wait=5172/265 shader_prepare=1323/94 shader_pool_reset=0/94 shader_cfg=26/176 shader_ir=1017/176 shader_spirv=121/176 shader_module=5/176
+EDEN_GUEST_RUN 153=11003/534 154=1175/916 155=1070/519 139=143/1200 173=137/49403 135=89/4635 86=67/920 158=67/615 162=63/442 159=61/509 161=50/412 157=41/541
+EDEN_PERF_IDLE c0=5188 c1=5466 c2=4319 c3=4474 c4=4626 c5=5530
+EDEN_GUEST_WAKE c0=41288/864/0/0 c1=7762/1655/0/0 c2=2250/1261/0/0 c3=2370/1058/0/0 c4=696/166/0/0 c5=4134/1075/0/0
+EDEN_PERF_THREAD name=present cpu_ms=1497 wall_ms=5755
+EDEN_JIT_PAGE_REUSE groups=292575 accesses=1299612
+MKW_MAPPED_STATS frame=2880 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=2880 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=2880 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=2880 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5006.0 busy_ms=734.7 submissions=1423 max_ms=10.47 cumulative_ns=2931703600 cumulative_submissions=9341 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=7
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=43
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=7
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=7
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=22
+EDEN_GPU_SUBMIT_ORIGIN caller=1b42678 finish=1 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=6
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=772
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=276
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=69
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=177
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=36
+EDEN_GPU_SUBMIT_TOTAL count=1423 overflow=0
+MKW_SEMAPHORE_STATE frame=2910 enabled=0 hits=0
+EDEN_VULKAN_FRAME frames=67 seconds=5.043446 fps=13.285 worst_ms=868.867 total=2929 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=337/64 compute_pipeline=709/3 submit=53/4329 fence_wait=0/67 semaphore_wait=4419/4690 device_idle=0/7 guest_fence=1569/1549 buffer_sync=711/112 texture_sync=2/1 present_sync=0/67 texture_gc=1/67 texture_cpu_download=8/4761 pipeline_ready_wait=930/45 shader_prepare=123/32 shader_pool_reset=0/32 shader_cfg=2/61 shader_ir=82/61 shader_spirv=12/61 shader_module=0/61
+EDEN_GUEST_RUN 86=1303/16070 152=1301/17171 155=1135/14148 154=524/14627 157=453/17344 159=447/12755 153=438/14277 119=429/3516 158=405/12675 156=404/13537 162=403/10800 161=380/11370
+EDEN_PERF_IDLE c0=2693 c1=2646 c2=3224 c3=1882 c4=3048 c5=3784
+EDEN_GUEST_WAKE c0=18326/1663/0/0 c1=12813/1550/0/0 c2=15500/1923/0/0 c3=14649/1599/0/0 c4=13410/2193/0/0 c5=13555/2382/0/0
+EDEN_PERF_THREAD name=present cpu_ms=2417 wall_ms=5043
+EDEN_JIT_PAGE_REUSE groups=298527 accesses=1323527
+MKW_SEMAPHORE_STATE frame=2940 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5024.0 busy_ms=2747.7 submissions=5401 max_ms=10.63 cumulative_ns=5679395800 cumulative_submissions=14742 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=67
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=86
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=14
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=3386
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=933
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=85
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=732
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=92
+EDEN_GPU_SUBMIT_TOTAL count=5401 overflow=0
+MKW_SEMAPHORE_STATE frame=2970 enabled=0 hits=0
+MKW_MAPPED_STATS frame=3000 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=3000 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=3000 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=3000 enabled=0 hits=0
+EDEN_VULKAN_TEXTURE_BUDGET frame=3000 usage=1224741888 expected=2684354560 critical=3489660928 keep_dirty=1 memory_short=0
+EDEN_VULKAN_FRAME frames=92 seconds=5.000336 fps=18.399 worst_ms=78.994 total=3021 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST submit=67/5640 fence_wait=0/92 semaphore_wait=3569/5916 guest_fence=1939/1984 buffer_sync=17/72 present_sync=0/92 texture_gc=2/92 texture_cpu_download=0/82
+EDEN_GUEST_RUN 152=748/22396 86=734/22762 154=660/19123 155=655/19748 157=563/23415 153=547/20543 156=531/18942 159=514/17728 158=509/18416 161=465/14560 162=460/15251 160=458/15301
+EDEN_PERF_IDLE c0=3272 c1=3247 c2=3548 c3=2344 c4=3577 c5=3636
+EDEN_GUEST_WAKE c0=23911/2034/0/0 c1=12916/1945/0/0 c2=14883/2484/0/0 c3=14236/2614/0/0 c4=13302/2748/0/0 c5=17619/2859/0/0
+EDEN_PERF_THREAD name=present cpu_ms=3033 wall_ms=5000
+EDEN_JIT_PAGE_REUSE groups=298562 accesses=1323624
+MKW_SEMAPHORE_STATE frame=3030 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5013.5 busy_ms=2825.3 submissions=5151 max_ms=10.58 cumulative_ns=8504724840 cumulative_submissions=19893 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=3
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=150
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=3
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=3
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=88
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=14
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=3167
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=937
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=53
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=655
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=78
+EDEN_GPU_SUBMIT_TOTAL count=5151 overflow=0
+MKW_SEMAPHORE_STATE frame=3060 enabled=0 hits=0
+EDEN_VULKAN_FRAME frames=58 seconds=5.375391 fps=10.790 worst_ms=708.249 total=3079 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=2532/72 submit=40/3443 fence_wait=0/58 semaphore_wait=5251/3570 device_idle=0/9 guest_fence=2521/1247 buffer_sync=11/36 present_sync=0/58 texture_gc=2/58 texture_cpu_download=0/1020 pipeline_ready_wait=1587/105 shader_prepare=635/27 shader_pool_reset=0/27 shader_cfg=8/54 shader_ir=502/54 shader_spirv=53/54 shader_module=2/54
+EDEN_GUEST_RUN 152=483/14351 86=468/14449 154=416/12008 159=407/11101 157=394/14718 155=392/11890 158=368/11955 162=366/9406 153=366/12861 156=350/12000 161=334/9284 160=321/9438
+EDEN_PERF_IDLE c0=4117 c1=4166 c2=4294 c3=3144 c4=4380 c5=4453
+EDEN_GUEST_WAKE c0=25326/1694/0/0 c1=9231/1817/0/0 c2=13589/1905/0/0 c3=8854/2002/0/0 c4=15467/1876/0/0 c5=10526/1918/0/0
+EDEN_PERF_THREAD name=present cpu_ms=2596 wall_ms=5375
+EDEN_JIT_PAGE_REUSE groups=300564 accesses=1332292
+MKW_SEMAPHORE_STATE frame=3090 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5076.8 busy_ms=1179.0 submissions=2001 max_ms=9.98 cumulative_ns=9683758560 cumulative_submissions=21894 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=8
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=55
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=8
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=8
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=34
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=13
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=1191
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=394
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=19
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=252
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=19
+EDEN_GPU_SUBMIT_TOTAL count=2001 overflow=0
+MKW_MAPPED_STATS frame=3120 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=3120 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=3120 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=3120 enabled=0 hits=0
+EDEN_VULKAN_FRAME frames=56 seconds=5.025391 fps=11.143 worst_ms=832.254 total=3135 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=1791/62 submit=42/3427 fence_wait=0/56 semaphore_wait=5474/3494 device_idle=0/10 guest_fence=2424/1288 buffer_sync=10/32 present_sync=0/56 texture_gc=2/56 texture_cpu_download=0/405 pipeline_ready_wait=1606/20 shader_prepare=275/12 shader_pool_reset=0/12 shader_cfg=4/24 shader_ir=229/24 shader_spirv=23/24 shader_module=0/24
+EDEN_GUEST_RUN 103=672/1418 178=654/17699 102=639/1755 101=624/1171 100=508/1435 152=503/13634 86=462/12877 154=414/12364 157=413/13389 156=383/11186 159=370/10680 158=365/10957
+EDEN_PERF_IDLE c0=3423 c1=3239 c2=3580 c3=2476 c4=2544 c5=2548
+EDEN_GUEST_WAKE c0=30551/1478/0/0 c1=7379/1782/0/0 c2=12974/1693/0/0 c3=10949/1901/0/0 c4=4169/1201/0/0 c5=4036/1023/0/0
+EDEN_PERF_THREAD name=present cpu_ms=2327 wall_ms=5025
+EDEN_JIT_PAGE_REUSE groups=301836 accesses=1336683
+MKW_SEMAPHORE_STATE frame=3150 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5003.4 busy_ms=2472.2 submissions=4288 max_ms=10.26 cumulative_ns=12155969880 cumulative_submissions=26182 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=11
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=140
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=11
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=11
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=71
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=2485
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=814
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=39
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=635
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=69
+EDEN_GPU_SUBMIT_TOTAL count=4288 overflow=0
+MKW_SEMAPHORE_STATE frame=3180 enabled=0 hits=0
+EDEN_VULKAN_FRAME frames=58 seconds=5.003267 fps=11.592 worst_ms=994.473 total=3193 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=1700/59 compute_pipeline=6/2 submit=45/3648 fence_wait=0/58 semaphore_wait=4440/3848 device_idle=0/9 guest_fence=2291/1276 buffer_sync=4/16 present_sync=0/58 texture_gc=2/58 texture_cpu_download=0/460 pipeline_ready_wait=1066/32 shader_prepare=384/16 shader_pool_reset=0/16 shader_cfg=5/31 shader_ir=325/31 shader_spirv=30/31 shader_module=1/31
+EDEN_GUEST_RUN 178=1153/49257 152=506/14475 86=505/14134 154=427/13082 159=414/11176 157=408/14494 158=396/11480 155=393/12136 156=370/11833 153=365/13110 162=362/8829 161=349/8788
+EDEN_PERF_IDLE c0=3206 c1=3044 c2=3319 c3=1472 c4=3201 c5=3477
+EDEN_GUEST_WAKE c0=26004/1399/0/0 c1=13965/1577/0/0 c2=9595/1681/0/0 c3=9046/1644/0/0 c4=7905/1674/0/0 c5=7962/2012/0/0
+EDEN_PERF_THREAD name=present cpu_ms=2528 wall_ms=5003
+EDEN_JIT_PAGE_REUSE groups=302548 accesses=1339263
+EDEN_GPU_TIME wall_ms=5825.7 busy_ms=1394.2 submissions=2607 max_ms=9.65 cumulative_ns=13550177720 cumulative_submissions=28789 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=7
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=51
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=7
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=7
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=41
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=57
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=1605
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=507
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=4
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=282
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=39
+EDEN_GPU_SUBMIT_TOTAL count=2607 overflow=0
+MKW_SEMAPHORE_STATE frame=3210 enabled=0 hits=0
+EDEN_VULKAN_FRAME frames=31 seconds=5.030190 fps=6.163 worst_ms=1916.421 total=3224 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=3156/44 submit=25/2058 fence_wait=0/31 semaphore_wait=7014/2107 device_idle=0/7 guest_fence=3373/684 buffer_sync=1/5 present_sync=0/31 texture_gc=1/31 texture_cpu_download=0/291 pipeline_ready_wait=3006/12 shader_prepare=358/9 shader_pool_reset=0/9 shader_cfg=6/20 shader_ir=303/20 shader_spirv=30/20 shader_module=1/20
+EDEN_GUEST_RUN 146=349/891 152=284/7796 86=270/7949 154=243/6812 157=237/7533 155=230/6595 159=224/6305 158=213/6413 153=207/7019 162=197/4920 161=193/4830 160=180/5581
+EDEN_PERF_IDLE c0=4125 c1=3895 c2=4135 c3=1944 c4=4344 c5=4387
+EDEN_GUEST_WAKE c0=23867/1207/0/0 c1=3631/1074/0/0 c2=11904/849/0/0 c3=6130/1223/0/0 c4=8724/1581/0/0 c5=10132/1165/0/0
+EDEN_PERF_THREAD name=present cpu_ms=1485 wall_ms=5030
+EDEN_JIT_PAGE_REUSE groups=303092 accesses=1341114
+MKW_MAPPED_STATS frame=3240 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=3240 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=3240 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=3240 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5028.6 busy_ms=2096.8 submissions=4131 max_ms=9.70 cumulative_ns=15647027720 cumulative_submissions=32920 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=11
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=129
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=11
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=11
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=66
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=95
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=2484
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=786
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa01d1 finish=0 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=18
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=446
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=73
+EDEN_GPU_SUBMIT_TOTAL count=4131 overflow=0
+MKW_SEMAPHORE_STATE frame=3270 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=3300 enabled=0 hits=0
+EDEN_VULKAN_TEXTURE_BUDGET frame=3300 usage=1276699648 expected=2684354560 critical=3489660928 keep_dirty=1 memory_short=0
+EDEN_VULKAN_FRAME frames=87 seconds=5.008895 fps=17.369 worst_ms=138.593 total=3311 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=129/55 compute_pipeline=8/2 submit=65/5456 fence_wait=0/87 semaphore_wait=3600/5768 device_idle=0/10 guest_fence=1631/1885 buffer_sync=11/21 present_sync=0/87 texture_gc=2/87 texture_cpu_download=0/146 pipeline_ready_wait=118/7 shader_prepare=48/7 shader_pool_reset=0/7 shader_cfg=0/12 shader_ir=37/12 shader_spirv=4/12 shader_module=0/12
+EDEN_GUEST_RUN 152=780/21850 178=776/20448 86=756/21210 157=591/21387 154=580/17995 158=571/17359 159=566/17088 155=553/17725 153=552/19035 156=536/17626 161=521/13935 160=504/14894
+EDEN_PERF_IDLE c0=2875 c1=2558 c2=3049 c3=2240 c4=3002 c5=2978
+EDEN_GUEST_WAKE c0=26893/1902/0/0 c1=9903/1730/0/0 c2=15103/2127/0/0 c3=13640/2478/0/0 c4=11732/2323/0/0 c5=11923/2364/0/0
+EDEN_PERF_THREAD name=present cpu_ms=3105 wall_ms=5008
+EDEN_JIT_PAGE_REUSE groups=304265 accesses=1345412
+MKW_SEMAPHORE_STATE frame=3330 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5004.7 busy_ms=2849.8 submissions=5461 max_ms=9.48 cumulative_ns=18496813400 cumulative_submissions=38381 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=167
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=90
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=15
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=3365
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=1049
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=646
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=90
+EDEN_GPU_SUBMIT_TOTAL count=5461 overflow=0
+MKW_MAPPED_STATS frame=3360 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=3360 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=3360 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=3360 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=3390 enabled=0 hits=0
+EDEN_VULKAN_FRAME frames=86 seconds=5.033808 fps=17.084 worst_ms=125.242 total=3397 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=54/51 submit=62/5298 fence_wait=0/86 semaphore_wait=3410/5480 device_idle=0/10 guest_fence=1580/1870 buffer_sync=0/3 present_sync=0/86 texture_gc=3/86 texture_cpu_download=0/40 pipeline_ready_wait=53/1 shader_prepare=12/1 shader_pool_reset=0/1 shader_cfg=0/2 shader_ir=10/2 shader_spirv=1/2 shader_module=0/2
+EDEN_GUEST_RUN 152=704/21208 86=648/20893 154=616/17472 157=574/21629 159=525/16176 153=504/18969 158=501/16839 162=491/13541 156=485/17151 155=485/17928 161=484/14065 160=451/13713
+EDEN_PERF_IDLE c0=3412 c1=3097 c2=3664 c3=1796 c4=3742 c5=3748
+EDEN_GUEST_WAKE c0=22674/1921/0/0 c1=13254/1590/0/0 c2=15445/2311/0/0 c3=12486/2346/0/0 c4=14193/2584/0/0 c5=14416/2640/0/0
+EDEN_PERF_THREAD name=present cpu_ms=2898 wall_ms=5033
+EDEN_JIT_PAGE_REUSE groups=304278 accesses=1345448
+MKW_SEMAPHORE_STATE frame=3420 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5014.9 busy_ms=2747.3 submissions=5296 max_ms=9.41 cumulative_ns=21244076560 cumulative_submissions=43677 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=134
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=88
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=63
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=3268
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=979
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=650
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=82
+EDEN_GPU_SUBMIT_TOTAL count=5296 overflow=0
+MKW_SEMAPHORE_STATE frame=3450 enabled=0 hits=0
+MKW_MAPPED_STATS frame=3480 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=3480 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=3480 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=3480 enabled=0 hits=0
+EDEN_VULKAN_FRAME frames=91 seconds=5.024035 fps=18.113 worst_ms=78.447 total=3488 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=0/50 submit=66/5491 fence_wait=0/91 semaphore_wait=3629/5608 device_idle=0/10 guest_fence=1695/1991 present_sync=0/91 texture_gc=4/91 texture_cpu_download=0/5
+EDEN_GUEST_RUN 86=755/21734 152=750/22612 157=589/22668 155=562/18513 159=558/17204 154=542/18872 158=536/18422 153=526/20314 162=524/13914 156=511/17580 161=501/14547 160=497/14835
+EDEN_PERF_IDLE c0=3270 c1=3117 c2=3612 c3=2231 c4=3639 c5=3670
+EDEN_GUEST_WAKE c0=23334/1871/0/0 c1=13163/1830/0/0 c2=16294/2344/0/0 c3=13472/2671/0/0 c4=15161/2655/0/0 c5=13339/2702/0/0
+EDEN_PERF_THREAD name=present cpu_ms=3055 wall_ms=5024
+EDEN_JIT_PAGE_REUSE groups=304288 accesses=1345485
+MKW_SEMAPHORE_STATE frame=3510 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5000.0 busy_ms=2738.3 submissions=5217 max_ms=9.40 cumulative_ns=23982412280 cumulative_submissions=48894 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=119
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=88
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=12
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=3242
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=964
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=682
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=79
+EDEN_GPU_SUBMIT_TOTAL count=5217 overflow=0
+MKW_SEMAPHORE_STATE frame=3540 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=3570 enabled=0 hits=0
+EDEN_VULKAN_FRAME frames=89 seconds=5.059313 fps=17.591 worst_ms=77.201 total=3577 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=0/50 submit=62/5315 fence_wait=0/89 semaphore_wait=3468/5386 device_idle=0/10 guest_fence=1879/1974 buffer_sync=0/2 present_sync=0/89 texture_gc=4/89 texture_cpu_download=0/6
+EDEN_GUEST_RUN 152=720/21381 86=670/21159 154=636/18757 157=595/22475 159=548/16800 158=540/17405 156=518/17418 153=509/20098 162=506/13603 161=502/14494 155=497/18073 160=466/14459
+EDEN_PERF_IDLE c0=3381 c1=3245 c2=3584 c3=1858 c4=3747 c5=3697
+EDEN_GUEST_WAKE c0=22306/1909/0/0 c1=12446/1639/0/0 c2=16488/2316/0/0 c3=12926/2339/0/0 c4=13283/2642/0/0 c5=15424/2668/0/0
+EDEN_PERF_THREAD name=present cpu_ms=2957 wall_ms=5059
+EDEN_JIT_PAGE_REUSE groups=304291 accesses=1345505
+MKW_MAPPED_STATS frame=3600 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=3600 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=3600 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=3600 enabled=0 hits=0
+EDEN_VULKAN_TEXTURE_BUDGET frame=3600 usage=1347462144 expected=2684354560 critical=3489660928 keep_dirty=1 memory_short=0
+EDEN_GPU_TIME wall_ms=5002.4 busy_ms=2906.9 submissions=5434 max_ms=9.51 cumulative_ns=26889283920 cumulative_submissions=54328 pending=4
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=124
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=92
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=25
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=3359
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=974
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=741
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=91
+EDEN_GPU_SUBMIT_TOTAL count=5437 overflow=0
+MKW_SEMAPHORE_STATE frame=3630 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=3660 enabled=0 hits=0
+EDEN_VULKAN_FRAME frames=93 seconds=5.007290 fps=18.573 worst_ms=83.513 total=3670 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=27/57 submit=70/5750 fence_wait=0/93 semaphore_wait=3691/5950 device_idle=0/10 guest_fence=2005/2041 buffer_sync=4/10 present_sync=0/93 texture_gc=4/93 texture_cpu_download=0/63 pipeline_ready_wait=19/5 shader_prepare=6/7 shader_pool_reset=0/7 shader_cfg=0/14 shader_ir=1/14 shader_spirv=1/14 shader_module=0/14
+EDEN_GUEST_RUN 86=811/21751 152=798/23432 159=661/18005 157=643/23925 154=617/19086 158=605/18240 162=595/14003 160=586/15862 155=577/19264 153=572/20135 161=566/15370 156=555/19231
+EDEN_PERF_IDLE c0=3096 c1=2848 c2=3302 c3=2393 c4=3453 c5=3484
+EDEN_GUEST_WAKE c0=23211/2129/0/0 c1=12596/1881/0/0 c2=15029/2447/0/0 c3=14381/2777/0/0 c4=15235/2801/0/0 c5=16538/2861/0/0
+EDEN_PERF_THREAD name=present cpu_ms=3157 wall_ms=5007
+EDEN_JIT_PAGE_REUSE groups=305432 accesses=1350337
+MKW_SEMAPHORE_STATE frame=3690 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5401.7 busy_ms=2825.8 submissions=5207 max_ms=9.54 cumulative_ns=29715073240 cumulative_submissions=59535 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=85
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=84
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=13
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=3342
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=974
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=11
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=576
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=89
+EDEN_GPU_SUBMIT_TOTAL count=5204 overflow=0
+MKW_MAPPED_STATS frame=3720 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=3720 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=3720 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=3720 enabled=0 hits=0
+EDEN_VULKAN_FRAME frames=66 seconds=5.004735 fps=13.188 worst_ms=555.457 total=3736 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=2309/63 submit=48/4098 fence_wait=0/66 semaphore_wait=4929/4470 device_idle=0/10 guest_fence=2295/1439 buffer_sync=0/1 present_sync=0/66 texture_gc=3/66 texture_cpu_download=0/412 pipeline_ready_wait=1235/17 shader_prepare=209/13 shader_pool_reset=0/13 shader_cfg=3/26 shader_ir=172/26 shader_spirv=21/26 shader_module=1/26
+EDEN_GUEST_RUN 86=589/16178 152=580/16543 146=556/2152 159=544/13647 157=474/16022 158=457/13525 154=444/14117 160=441/11251 162=439/10292 161=432/10818 156=409/13163 155=404/13356
+EDEN_PERF_IDLE c0=3574 c1=3013 c2=3465 c3=2229 c4=3806 c5=3826
+EDEN_GUEST_WAKE c0=19898/1778/0/0 c1=7933/1191/0/0 c2=9027/1546/0/0 c3=10556/2173/0/0 c4=16570/2139/0/0 c5=16110/2160/0/0
+EDEN_PERF_THREAD name=present cpu_ms=2458 wall_ms=5004
+EDEN_JIT_PAGE_REUSE groups=306731 accesses=1355468
+MKW_SEMAPHORE_STATE frame=3750 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=3780 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5554.6 busy_ms=2445.6 submissions=4647 max_ms=9.68 cumulative_ns=32160637240 cumulative_submissions=64182 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=11
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=136
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=11
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=11
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=76
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=33
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=2996
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=822
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=14
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=469
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=68
+EDEN_GPU_SUBMIT_TOTAL count=4647 overflow=0
+MKW_SEMAPHORE_STATE frame=3810 enabled=0 hits=0
+EDEN_VULKAN_FRAME frames=78 seconds=5.040001 fps=15.476 worst_ms=714.969 total=3814 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=890/61 submit=57/4789 fence_wait=0/78 semaphore_wait=4610/5428 device_idle=0/10 guest_fence=1415/1753 buffer_sync=3/16 present_sync=0/78 texture_gc=4/78 texture_cpu_download=0/287 pipeline_ready_wait=808/12 shader_prepare=66/11 shader_pool_reset=0/11 shader_cfg=1/22 shader_ir=47/22 shader_spirv=11/22 shader_module=0/22
+EDEN_GUEST_RUN 86=712/18740 152=656/19417 154=610/16764 159=571/15841 158=551/16227 157=546/19174 162=516/12350 161=510/13048 155=490/15981 156=488/16309 153=477/16999 160=452/12968
+EDEN_PERF_IDLE c0=3294 c1=3194 c2=3390 c3=2659 c4=3724 c5=3690
+EDEN_GUEST_WAKE c0=26470/1905/0/0 c1=12418/1872/0/0 c2=12247/2076/0/0 c3=12427/2414/0/0 c4=12818/2452/0/0 c5=13214/2643/0/0
+EDEN_PERF_THREAD name=present cpu_ms=2685 wall_ms=5040
+EDEN_JIT_PAGE_REUSE groups=307298 accesses=1357658
+MKW_MAPPED_STATS frame=3840 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=3840 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=3840 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=3840 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5210.6 busy_ms=2114.6 submissions=3813 max_ms=9.82 cumulative_ns=34275278560 cumulative_submissions=67995 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=133
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=64
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=5
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=2385
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=628
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=3
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=504
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=64
+EDEN_GPU_SUBMIT_TOTAL count=3813 overflow=0
+EDEN_VULKAN_FRAME frames=49 seconds=5.046463 fps=9.710 worst_ms=1105.572 total=3863 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=2420/51 compute_pipeline=4/1 submit=35/2998 fence_wait=0/49 semaphore_wait=6432/3394 device_idle=0/9 guest_fence=3346/1165 buffer_sync=0/1 present_sync=0/49 texture_gc=2/49 texture_cpu_download=0/239 pipeline_ready_wait=2268/16 shader_prepare=161/7 shader_pool_reset=0/7 shader_cfg=2/13 shader_ir=130/13 shader_spirv=20/13 shader_module=0/13
+EDEN_GUEST_RUN 86=459/12219 152=415/11930 159=360/9870 154=330/10544 158=329/9886 162=321/7590 157=319/12061 161=308/8356 156=299/9642 153=298/10318 160=284/8342 155=278/10364
+EDEN_PERF_IDLE c0=3850 c1=3919 c2=4067 c3=3094 c4=4228 c5=4272
+EDEN_GUEST_WAKE c0=31201/1327/0/0 c1=9797/1635/0/0 c2=8905/1622/0/0 c3=8670/1904/0/0 c4=8764/1724/0/0 c5=7685/1566/0/0
+EDEN_PERF_THREAD name=present cpu_ms=1785 wall_ms=5046
+EDEN_JIT_PAGE_REUSE groups=307438 accesses=1358171
+MKW_SEMAPHORE_STATE frame=3870 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5476.0 busy_ms=1165.0 submissions=2280 max_ms=8.90 cumulative_ns=35440261160 cumulative_submissions=70275 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=67
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=37
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=1455
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=336
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=3
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=307
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=38
+EDEN_GPU_SUBMIT_TOTAL count=2280 overflow=0
+EDEN_VULKAN_FRAME frames=29 seconds=5.042546 fps=5.751 worst_ms=1870.392 total=3892 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=5601/45 submit=28/1824 fence_wait=0/29 semaphore_wait=7068/2060 device_idle=0/7 guest_fence=3581/669 buffer_sync=0/3 present_sync=0/29 texture_gc=1/29 texture_cpu_download=0/397 pipeline_ready_wait=3181/18 shader_prepare=389/10 shader_pool_reset=0/10 shader_cfg=4/21 shader_ir=307/21 shader_spirv=56/21 shader_module=1/21
+EDEN_GUEST_RUN 119=372/2196 86=264/6936 152=235/7235 159=217/6097 157=198/7153 158=197/5947 154=196/6288 162=189/4445 155=184/5921 156=182/5682 161=182/4798 153=174/6484
+EDEN_PERF_IDLE c0=4120 c1=4230 c2=4336 c3=411 c4=4410 c5=4502
+EDEN_GUEST_WAKE c0=30326/859/0/0 c1=11926/1065/0/0 c2=5112/972/0/0 c3=3301/628/0/0 c4=5962/1316/0/0 c5=5955/1139/0/0
+EDEN_PERF_THREAD name=present cpu_ms=1370 wall_ms=5042
+EDEN_JIT_PAGE_REUSE groups=307546 accesses=1358659
+MKW_SEMAPHORE_STATE frame=3900 enabled=0 hits=0
+EDEN_VULKAN_TEXTURE_BUDGET frame=3900 usage=1539176448 expected=2684354560 critical=3489660928 keep_dirty=1 memory_short=0
+MKW_SEMAPHORE_STATE frame=3930 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5000.3 busy_ms=1888.9 submissions=3612 max_ms=8.47 cumulative_ns=37329200880 cumulative_submissions=73887 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=118
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=61
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=6
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=2240
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=558
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=8
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=529
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=62
+EDEN_GPU_SUBMIT_TOTAL count=3612 overflow=0
+MKW_MAPPED_STATS frame=3960 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=3960 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=3960 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=3960 enabled=0 hits=0
+EDEN_VULKAN_FRAME frames=70 seconds=5.014405 fps=13.960 worst_ms=729.568 total=3962 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=620/63 compute_pipeline=664/1 submit=49/4264 fence_wait=0/70 semaphore_wait=4690/4776 device_idle=0/10 guest_fence=2509/1623 buffer_sync=667/23 present_sync=0/70 texture_gc=3/70 texture_cpu_download=0/343 pipeline_ready_wait=1095/22 shader_prepare=158/14 shader_pool_reset=0/14 shader_cfg=2/27 shader_ir=129/27 shader_spirv=15/27 shader_module=0/27
+EDEN_GUEST_RUN 152=1270/17727 86=699/16596 159=539/14058 154=514/15091 162=499/11830 158=491/14547 157=474/17750 161=473/11619 160=416/11502 155=410/14377 153=401/15596 156=364/14187
+EDEN_PERF_IDLE c0=3452 c1=2654 c2=3469 c3=2634 c4=3774 c5=3757
+EDEN_GUEST_WAKE c0=19423/1772/0/0 c1=9016/1480/0/0 c2=12650/1704/0/0 c3=11533/2259/0/0 c4=12770/2231/0/0 c5=18474/2309/0/0
+EDEN_PERF_THREAD name=present cpu_ms=2472 wall_ms=5014
+EDEN_JIT_PAGE_REUSE groups=307860 accesses=1360006
+MKW_SEMAPHORE_STATE frame=3990 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5000.1 busy_ms=1947.9 submissions=4046 max_ms=7.19 cumulative_ns=39277084960 cumulative_submissions=77933 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=113
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=66
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=5
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=2555
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=625
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=16
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=583
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=56
+EDEN_GPU_SUBMIT_TOTAL count=4046 overflow=0
+MKW_SEMAPHORE_STATE frame=4020 enabled=0 hits=0
+EDEN_VULKAN_FRAME frames=70 seconds=5.013731 fps=13.962 worst_ms=723.020 total=4032 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=1348/50 submit=51/4320 fence_wait=0/70 semaphore_wait=5043/4688 device_idle=0/9 guest_fence=1953/1593 buffer_sync=0/2 present_sync=0/70 texture_gc=3/70 texture_cpu_download=0/165 pipeline_ready_wait=1340/6 shader_prepare=98/5 shader_pool_reset=0/5 shader_cfg=1/10 shader_ir=76/10 shader_spirv=15/10 shader_module=0/10
+EDEN_GUEST_RUN 86=669/17246 152=600/17162 159=581/14067 162=510/11557 157=510/17409 158=489/14370 161=477/11618 154=473/14947 160=472/11973 155=454/14735 153=423/14932 156=410/13786
+EDEN_PERF_IDLE c0=3405 c1=3338 c2=3534 c3=2329 c4=3798 c5=3824
+EDEN_GUEST_WAKE c0=27272/1614/0/0 c1=9277/1650/0/0 c2=10531/1775/0/0 c3=10649/2190/0/0 c4=13712/2280/0/0 c5=11822/2182/0/0
+EDEN_PERF_THREAD name=present cpu_ms=2434 wall_ms=5013
+EDEN_JIT_PAGE_REUSE groups=308261 accesses=1361634
+MKW_SEMAPHORE_STATE frame=4050 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5070.7 busy_ms=1440.4 submissions=3046 max_ms=7.31 cumulative_ns=40717455480 cumulative_submissions=80979 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=6
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=62
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=6
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=6
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=50
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=20
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=1924
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=530
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=378
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=55
+EDEN_GPU_SUBMIT_TOTAL count=3046 overflow=0
+MKW_MAPPED_STATS frame=4080 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=4080 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=4080 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=4080 enabled=0 hits=0
+EDEN_VULKAN_FRAME frames=48 seconds=5.022141 fps=9.558 worst_ms=2498.591 total=4080 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=4625/54 submit=35/3032 fence_wait=0/48 semaphore_wait=5968/3262 device_idle=0/8 guest_fence=3049/1043 buffer_sync=3/12 texture_sync=1/20 present_sync=0/48 texture_gc=5/48 texture_cpu_download=0/574 pipeline_ready_wait=2571/33 shader_prepare=472/14 shader_pool_reset=0/14 shader_cfg=5/28 shader_ir=382/28 shader_spirv=55/28 shader_module=1/28
+EDEN_GUEST_RUN 86=447/11424 152=412/12152 154=348/10186 159=340/9849 158=317/9781 162=309/7889 157=303/12419 155=303/10468 153=299/10155 161=288/8290 160=281/8111 156=279/9806
+EDEN_PERF_IDLE c0=3807 c1=3870 c2=3973 c3=3714 c4=4208 c5=4259
+EDEN_GUEST_WAKE c0=33356/1119/0/0 c1=6830/1447/0/0 c2=8453/1604/0/0 c3=9084/2181/0/0 c4=8055/1494/0/0 c5=7021/1511/0/0
+EDEN_PERF_THREAD name=present cpu_ms=2090 wall_ms=5022
+EDEN_JIT_PAGE_REUSE groups=308331 accesses=1361984
+MKW_SEMAPHORE_STATE frame=4110 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5018.6 busy_ms=1920.7 submissions=4560 max_ms=6.54 cumulative_ns=42638105680 cumulative_submissions=85539 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=12
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=84
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=12
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=12
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=73
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=2987
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=724
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=22
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=536
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=75
+EDEN_GPU_SUBMIT_ORIGIN caller=1b4b3dc finish=1 count=19
+EDEN_GPU_SUBMIT_ORIGIN caller=1b6b725 finish=1 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1b06a6a finish=1 count=1
+EDEN_GPU_SUBMIT_TOTAL count=4560 overflow=0
+MKW_SEMAPHORE_STATE frame=4140 enabled=0 hits=0
+EDEN_VULKAN_FRAME frames=75 seconds=5.021203 fps=14.937 worst_ms=764.768 total=4155 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=1922/56 submit=55/4785 fence_wait=0/75 semaphore_wait=4702/5562 device_idle=0/10 guest_fence=2429/1624 buffer_sync=3/19 present_sync=0/75 texture_gc=4/75 texture_cpu_download=0/183 pipeline_ready_wait=1315/9 shader_prepare=82/6 shader_pool_reset=0/6 shader_cfg=1/12 shader_ir=64/12 shader_spirv=12/12 shader_module=0/12
+EDEN_GUEST_RUN 86=728/17990 152=620/18982 159=514/14609 154=512/15817 157=483/18319 158=465/15844 155=464/15615 162=451/12856 161=433/12836 153=433/16182 156=432/14705 160=416/12290
+EDEN_PERF_IDLE c0=3363 c1=3321 c2=3548 c3=2187 c4=3828 c5=3854
+EDEN_GUEST_WAKE c0=27737/1674/0/0 c1=12607/1700/0/0 c2=11798/1985/0/0 c3=11332/2239/0/0 c4=11237/2457/0/0 c5=11512/2417/0/0
+EDEN_PERF_THREAD name=present cpu_ms=2535 wall_ms=5021
+EDEN_JIT_PAGE_REUSE groups=308502 accesses=1362591
+MKW_SEMAPHORE_STATE frame=4170 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=6417.2 busy_ms=1663.0 submissions=3889 max_ms=7.70 cumulative_ns=44301152200 cumulative_submissions=89428 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=95
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=62
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=22
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=2550
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=623
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=4
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=447
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=59
+EDEN_GPU_SUBMIT_TOTAL count=3889 overflow=0
+MKW_MAPPED_STATS frame=4200 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=4200 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=4200 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=4200 enabled=0 hits=0
+EDEN_VULKAN_FRAME frames=45 seconds=5.563973 fps=8.088 worst_ms=2095.495 total=4200 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=2954/48 submit=33/2834 fence_wait=0/45 semaphore_wait=7295/3186 device_idle=0/8 guest_fence=1696/899 buffer_sync=1/4 texture_sync=1/20 present_sync=0/45 texture_gc=7/45 texture_cpu_download=0/240 pipeline_ready_wait=2938/7 shader_prepare=242/8 shader_pool_reset=0/8 shader_cfg=3/19 shader_ir=200/19 shader_spirv=23/19 shader_module=0/19
+EDEN_GUEST_RUN 86=448/11112 152=426/11836 159=319/9678 154=312/9623 157=296/11496 155=292/9816 162=276/7678 160=275/8033 158=273/9378 153=272/10329 161=266/7884 156=264/9594
+EDEN_PERF_IDLE c0=4393 c1=4483 c2=4611 c3=4054 c4=4741 c5=4807
+EDEN_GUEST_WAKE c0=30046/1227/0/0 c1=9435/1585/0/0 c2=7281/1495/0/0 c3=8746/2071/0/0 c4=13124/1599/0/0 c5=8883/1670/0/0
+EDEN_PERF_THREAD name=present cpu_ms=1762 wall_ms=5564
+EDEN_JIT_PAGE_REUSE groups=308596 accesses=1362997
+EDEN_VULKAN_TEXTURE_BUDGET frame=4200 usage=1605476352 expected=2684354560 critical=3489660928 keep_dirty=1 memory_short=1
+MKW_SEMAPHORE_STATE frame=4230 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5587.9 busy_ms=1787.5 submissions=3562 max_ms=9.80 cumulative_ns=46088604040 cumulative_submissions=92990 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=110
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=58
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=12
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=2284
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=525
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=3
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=474
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=45
+EDEN_GPU_SUBMIT_ORIGIN caller=1b4b3dc finish=1 count=8
+EDEN_GPU_SUBMIT_ORIGIN caller=1b6b725 finish=1 count=12
+EDEN_GPU_SUBMIT_ORIGIN caller=1b06a6a finish=1 count=1
+EDEN_GPU_SUBMIT_TOTAL count=3562 overflow=0
+EDEN_VULKAN_FRAME frames=58 seconds=5.552834 fps=10.445 worst_ms=981.549 total=4258 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=3218/61 submit=42/3597 fence_wait=0/58 semaphore_wait=6679/4136 device_idle=0/10 guest_fence=2559/1294 buffer_sync=2/4 present_sync=0/58 texture_gc=3/58 texture_cpu_download=0/351 pipeline_ready_wait=2415/42 shader_prepare=230/11 shader_pool_reset=0/11 shader_cfg=2/22 shader_ir=184/22 shader_spirv=29/22 shader_module=0/22
+EDEN_GUEST_RUN 86=539/13908 152=480/14446 154=408/12748 159=402/11472 157=384/14042 158=377/12038 156=368/11890 153=357/12328 162=350/9091 161=341/9862 155=340/12415 160=310/9589
+EDEN_PERF_IDLE c0=4197 c1=4213 c2=4390 c3=3745 c4=4609 c5=4583
+EDEN_GUEST_WAKE c0=30205/1387/0/0 c1=10158/1727/0/0 c2=8241/1408/0/0 c3=12156/2189/0/0 c4=8867/2400/0/0 c5=12914/1904/0/0
+EDEN_PERF_THREAD name=present cpu_ms=2135 wall_ms=5552
+EDEN_JIT_PAGE_REUSE groups=308934 accesses=1364281
+MKW_SEMAPHORE_STATE frame=4260 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=4290 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5020.6 busy_ms=1171.9 submissions=3000 max_ms=7.60 cumulative_ns=47260538120 cumulative_submissions=95990 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=101
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=51
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=1936
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=459
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=342
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=48
+EDEN_GPU_SUBMIT_ORIGIN caller=1b4b3dc finish=1 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1b6b725 finish=1 count=20
+EDEN_GPU_SUBMIT_ORIGIN caller=1b06a6a finish=1 count=1
+EDEN_GPU_SUBMIT_TOTAL count=3000 overflow=0
+EDEN_VULKAN_FRAME frames=51 seconds=5.038745 fps=10.122 worst_ms=2099.506 total=4309 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=2699/54 submit=35/3092 fence_wait=0/51 semaphore_wait=6569/3552 device_idle=0/9 guest_fence=2786/1044 buffer_sync=3/3 texture_sync=4/21 present_sync=0/51 texture_gc=7/51 texture_cpu_download=0/223 pipeline_ready_wait=2676/9 shader_prepare=128/9 shader_pool_reset=0/9 shader_cfg=1/19 shader_ir=102/19 shader_spirv=14/19 shader_module=0/19
+EDEN_GUEST_RUN 86=506/11980 152=386/12315 159=338/9528 154=336/10919 158=324/10411 157=310/12070 153=298/10592 155=291/10587 162=288/8105 160=286/7850 156=283/9928 161=283/8578
+EDEN_PERF_IDLE c0=3749 c1=3896 c2=4019 c3=3740 c4=4258 c5=4266
+EDEN_GUEST_WAKE c0=34037/1194/0/0 c1=8282/1740/0/0 c2=7497/1661/0/0 c3=8428/1907/0/0 c4=7548/1567/0/0 c5=7726/1599/0/0
+EDEN_PERF_THREAD name=present cpu_ms=1701 wall_ms=5038
+EDEN_JIT_PAGE_REUSE groups=309613 accesses=1366440
+MKW_MAPPED_STATS frame=4320 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=4320 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=4320 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=4320 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=4350 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=4380 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=4410 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5000.5 busy_ms=2178.8 submissions=6857 max_ms=5.77 cumulative_ns=49439339680 cumulative_submissions=102847 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=8
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=175
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=8
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=8
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=111
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=4599
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=966
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=15
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=786
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=117
+EDEN_GPU_SUBMIT_ORIGIN caller=1b4b3dc finish=1 count=3
+EDEN_GPU_SUBMIT_ORIGIN caller=1b6b725 finish=1 count=60
+EDEN_GPU_SUBMIT_ORIGIN caller=1b06a6a finish=1 count=1
+EDEN_GPU_SUBMIT_TOTAL count=6857 overflow=0
+EDEN_VULKAN_FRAME frames=112 seconds=5.022535 fps=22.299 worst_ms=314.079 total=4421 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=462/50 compute_pipeline=26/3 submit=78/7001 fence_wait=0/112 semaphore_wait=2396/8802 device_idle=0/8 guest_fence=1268/2383 buffer_sync=2/16 texture_sync=12/63 present_sync=0/112 texture_gc=20/112 texture_cpu_download=0/267 pipeline_ready_wait=237/25 shader_prepare=85/13 shader_pool_reset=0/13 shader_cfg=1/23 shader_ir=64/23 shader_spirv=12/23 shader_module=0/23
+EDEN_GUEST_RUN 152=1015/27136 86=1015/27359 154=777/23762 159=774/21659 158=707/22965 162=703/17208 157=696/27843 161=673/18784 153=652/24864 156=625/22371 155=621/23599 160=567/19056
+EDEN_PERF_IDLE c0=2774 c1=2646 c2=2971 c3=2113 c4=3365 c5=3326
+EDEN_GUEST_WAKE c0=30623/2420/0/0 c1=12883/2239/0/0 c2=15427/2766/0/0 c3=17812/3238/0/0 c4=15460/3464/0/0 c5=15345/3443/0/0
+EDEN_PERF_THREAD name=present cpu_ms=3408 wall_ms=5022
+EDEN_JIT_PAGE_REUSE groups=310486 accesses=1369937
+MKW_MAPPED_STATS frame=4440 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=4440 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=4440 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=4440 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=4470 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=4500 enabled=0 hits=0
+EDEN_VULKAN_TEXTURE_BUDGET frame=4500 usage=1641605120 expected=2684354560 critical=3489660928 keep_dirty=1 memory_short=1
+EDEN_GPU_TIME wall_ms=5004.5 busy_ms=1470.2 submissions=4807 max_ms=5.94 cumulative_ns=50909494560 cumulative_submissions=107654 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=137
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=91
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=3211
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=588
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=5
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=638
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=89
+EDEN_GPU_SUBMIT_ORIGIN caller=1b4b3dc finish=1 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1b6b725 finish=1 count=20
+EDEN_GPU_SUBMIT_TOTAL count=4807 overflow=0
+EDEN_VULKAN_FRAME frames=91 seconds=5.003896 fps=18.186 worst_ms=1027.799 total=4512 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=1527/54 submit=55/4865 fence_wait=0/91 semaphore_wait=4559/5854 device_idle=0/9 guest_fence=2296/1710 buffer_sync=1/5 texture_sync=4/21 present_sync=0/91 texture_gc=11/91 texture_cpu_download=0/125 pipeline_ready_wait=1512/11 shader_prepare=40/9 shader_pool_reset=0/9 shader_cfg=0/18 shader_ir=28/18 shader_spirv=7/18 shader_module=0/18
+EDEN_GUEST_RUN 86=828/22887 152=735/22595 159=644/18143 157=599/22361 158=595/19225 162=571/13353 161=566/15849 154=559/19461 156=529/18488 160=503/14462 155=502/20127 153=490/20025
+EDEN_PERF_IDLE c0=3187 c1=3113 c2=3294 c3=2360 c4=3622 c5=3604
+EDEN_GUEST_WAKE c0=21762/2126/0/0 c1=13646/1845/0/0 c2=20472/2346/0/0 c3=14093/2890/0/0 c4=12720/2714/0/0 c5=13962/2799/0/0
+EDEN_PERF_THREAD name=present cpu_ms=2451 wall_ms=5003
+EDEN_JIT_PAGE_REUSE groups=310615 accesses=1370374
+MKW_SEMAPHORE_STATE frame=4530 enabled=0 hits=0
+MKW_MAPPED_STATS frame=4560 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=4560 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=4560 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=4560 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=4590 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5000.0 busy_ms=1212.0 submissions=3777 max_ms=4.69 cumulative_ns=52121513200 cumulative_submissions=111431 pending=5
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=6
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=160
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=6
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=6
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=89
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=2407
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=374
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=4
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=594
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=92
+EDEN_GPU_SUBMIT_ORIGIN caller=1b4b3dc finish=1 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1b6b725 finish=1 count=40
+EDEN_GPU_SUBMIT_ORIGIN caller=1b06a6a finish=1 count=1
+EDEN_GPU_SUBMIT_TOTAL count=3781 overflow=0
+EDEN_VULKAN_FRAME frames=89 seconds=5.000270 fps=17.799 worst_ms=1547.272 total=4601 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=1561/37 submit=45/3858 fence_wait=0/89 semaphore_wait=4294/4592 device_idle=0/6 guest_fence=2245/1310 buffer_sync=1/5 texture_sync=8/42 present_sync=0/89 texture_gc=17/89 texture_cpu_download=0/154 pipeline_ready_wait=1562/9 shader_prepare=44/7 shader_pool_reset=0/7 shader_cfg=0/14 shader_ir=31/14 shader_spirv=6/14 shader_module=0/14
+EDEN_GUEST_RUN 86=725/21338 152=655/21836 159=573/17257 157=568/22383 154=551/18839 158=521/17593 162=520/14351 161=513/13762 155=483/18241 153=483/19379 160=473/13833 156=444/18423
+EDEN_PERF_IDLE c0=3228 c1=3172 c2=3420 c3=2666 c4=3627 c5=3713
+EDEN_GUEST_WAKE c0=30322/1910/0/0 c1=12476/1874/0/0 c2=11698/2056/0/0 c3=12232/2591/0/0 c4=13214/2877/0/0 c5=13722/2760/0/0
+EDEN_PERF_THREAD name=present cpu_ms=2169 wall_ms=5000
+EDEN_JIT_PAGE_REUSE groups=312433 accesses=1378484
+MKW_SEMAPHORE_STATE frame=4620 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=4650 enabled=0 hits=0
+EDEN_WORKER_PLACED name=LoadHold mask=1e80 error=0
+MKW_MAPPED_STATS frame=4680 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=4680 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=4680 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=4680 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=4710 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=4740 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=4770 enabled=0 hits=0
+MKW_MAPPED_STATS frame=4800 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=4800 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=4800 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=4800 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=4830 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=4860 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=4890 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5011.5 busy_ms=160.7 submissions=811 max_ms=3.42 cumulative_ns=52282245800 cumulative_submissions=112242 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=300
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=297
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=45
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=14
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa01d1 finish=0 count=7
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=14
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=3
+EDEN_GPU_SUBMIT_ORIGIN caller=1b4b3dc finish=1 count=4
+EDEN_GPU_SUBMIT_ORIGIN caller=1b6b725 finish=1 count=117
+EDEN_GPU_SUBMIT_ORIGIN caller=1b06a6a finish=1 count=6
+EDEN_GPU_SUBMIT_TOTAL count=807 overflow=0
+EDEN_VULKAN_FRAME frames=298 seconds=5.003349 fps=59.560 worst_ms=55.450 total=4899 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=0/1 submit=18/1072 fence_wait=0/298 semaphore_wait=37/311 guest_fence=7/16 buffer_sync=4/6 texture_sync=17/121 present_sync=0/298 texture_gc=27/67 texture_cpu_download=0/5 pipeline_ready_wait=0/1 shader_prepare=0/1 shader_pool_reset=0/1 shader_cfg=0/2 shader_ir=0/2 shader_spirv=0/2 shader_module=0/2
+EDEN_GUEST_RUN 102=982/4918 119=653/11674 86=586/59429 118=533/10607 120=491/9547 121=472/8830 116=439/10364 152=401/57050 153=392/47377 155=376/42896 117=371/9010 154=363/44125
+EDEN_PERF_IDLE c0=2954 c1=2425 c2=2886 c3=2912 c4=2436 c5=2753
+EDEN_GUEST_WAKE c0=39531/2652/0/0 c1=26029/2329/0/0 c2=32796/2769/0/0 c3=31535/3112/0/0 c4=23752/2859/0/0 c5=25375/3150/0/0
+EDEN_PERF_THREAD name=present cpu_ms=797 wall_ms=5003
+EDEN_JIT_PAGE_REUSE groups=318455 accesses=1399326
+MKW_MAPPED_STATS frame=4920 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=4920 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=4920 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=4920 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=4950 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=4980 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=5010 enabled=0 hits=0
+MKW_MAPPED_STATS frame=5040 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=5040 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=5040 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=5040 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=5070 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=5100 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=5130 enabled=0 hits=0
+MKW_MAPPED_STATS frame=5160 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=5160 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=5160 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=5160 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=5190 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5002.8 busy_ms=114.0 submissions=600 max_ms=0.26 cumulative_ns=52396257560 cumulative_submissions=112842 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=300
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=300
+EDEN_GPU_SUBMIT_TOTAL count=600 overflow=0
+EDEN_VULKAN_FRAME frames=300 seconds=5.005022 fps=59.940 worst_ms=21.170 total=5199 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST submit=15/900 fence_wait=0/300 present_sync=0/300
+EDEN_GUEST_RUN 121=955/22768 119=899/23113 120=837/20903 116=834/23459 118=730/21886 117=669/20533 86=557/58087 152=406/56036 154=388/42467 153=378/46423 156=361/41001 94=355/28823
+EDEN_PERF_IDLE c0=2522 c1=2093 c2=2879 c3=2625 c4=2749 c5=2509
+EDEN_GUEST_WAKE c0=39653/2979/0/0 c1=26133/2505/0/0 c2=38151/3630/0/0 c3=33246/3707/0/0 c4=33166/3695/0/0 c5=28968/3485/0/0
+EDEN_PERF_THREAD name=present cpu_ms=421 wall_ms=5005
+EDEN_JIT_PAGE_REUSE groups=319393 accesses=1403344
+MKW_SEMAPHORE_STATE frame=5220 enabled=0 hits=0
+MKW_SEMAPHORE_STATE frame=5250 enabled=0 hits=0
+EDEN_GPU_TIME wall_ms=5552.5 busy_ms=68.2 submissions=205 max_ms=4.18 cumulative_ns=52464410440 cumulative_submissions=113047 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=71
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=72
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=44
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=3
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=11
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa01d1 finish=0 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=3
+EDEN_GPU_SUBMIT_TOTAL count=205 overflow=0
+EDEN_GPU_TIME wall_ms=5239.9 busy_ms=55.9 submissions=118 max_ms=1.66 cumulative_ns=52520327360 cumulative_submissions=113165 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=117
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa01d1 finish=0 count=1
+EDEN_GPU_SUBMIT_TOTAL count=118 overflow=0
+EDEN_GPU_TIME wall_ms=6165.5 busy_ms=31.2 submissions=94 max_ms=1.35 cumulative_ns=52551530440 cumulative_submissions=113259 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=92
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=2
+EDEN_GPU_SUBMIT_TOTAL count=94 overflow=0
+EDEN_GPU_TIME wall_ms=6931.1 busy_ms=14.6 submissions=60 max_ms=0.66 cumulative_ns=52566093360 cumulative_submissions=113319 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=59
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=1
+EDEN_GPU_SUBMIT_TOTAL count=60 overflow=0
+EDEN_GPU_TIME wall_ms=6331.6 busy_ms=26.6 submissions=57 max_ms=1.59 cumulative_ns=52592702960 cumulative_submissions=113376 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=55
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=2
+EDEN_GPU_SUBMIT_TOTAL count=57 overflow=0
+EDEN_GPU_TIME wall_ms=5332.4 busy_ms=79.9 submissions=158 max_ms=4.18 cumulative_ns=52672648080 cumulative_submissions=113534 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=152
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=4
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa01d1 finish=0 count=1
+EDEN_GPU_SUBMIT_TOTAL count=158 overflow=0
+EDEN_GPU_TIME wall_ms=6843.6 busy_ms=6.5 submissions=21 max_ms=0.61 cumulative_ns=52679129560 cumulative_submissions=113555 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=19
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=2
+EDEN_GPU_SUBMIT_TOTAL count=21 overflow=0
+EDEN_GPU_TIME wall_ms=6341.4 busy_ms=20.0 submissions=38 max_ms=5.99 cumulative_ns=52699099240 cumulative_submissions=113593 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=20
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=5
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=4
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa01d1 finish=0 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=6
+EDEN_GPU_SUBMIT_TOTAL count=38 overflow=0
+EDEN_GPU_TIME wall_ms=9589.4 busy_ms=3.1 submissions=5 max_ms=1.34 cumulative_ns=52702211560 cumulative_submissions=113598 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=4
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=1
+EDEN_GPU_SUBMIT_TOTAL count=5 overflow=0
+EDEN_VULKAN_FRAME frames=70 seconds=59.029420 fps=1.186 worst_ms=57878.269 total=5269 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=61784/154 compute_pipeline=7/1 submit=12/896 fence_wait=0/70 semaphore_wait=75931/381 guest_fence=20934/10 texture_sync=17/60 present_sync=0/70 texture_gc=31/1 texture_cpu_download=0/3826 pipeline_ready_wait=57216/377 shader_prepare=1976/156 shader_pool_reset=0/156 shader_cfg=27/315 shader_ir=1473/313 shader_spirv=305/312 shader_module=11/312
+EDEN_GUEST_RUN 178=28693/14643 152=1543/14265 139=1483/13289 173=1384/507281 155=1362/10873 154=1202/11304 135=848/47133 86=817/17961 102=294/20 146=203/1148 156=145/10260 117=141/3456
+EDEN_PERF_IDLE c0=45264 c1=43182 c2=51419 c3=44652 c4=54995 c5=57191
+EDEN_GUEST_WAKE c0=292112/11467/0/0 c1=44844/14059/0/0 c2=206430/11415/0/0 c3=28321/9814/0/0 c4=21326/4648/0/0 c5=26925/10355/0/0
+EDEN_PERF_THREAD name=present cpu_ms=2911 wall_ms=59029
+EDEN_JIT_PAGE_REUSE groups=319721 accesses=1404866
+EDEN_GPU_TIME wall_ms=6147.4 busy_ms=21.4 submissions=124 max_ms=2.93 cumulative_ns=52723652600 cumulative_submissions=113722 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=5
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=6
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=28
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=9
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa01d1 finish=0 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=8
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=4
+EDEN_GPU_SUBMIT_ORIGIN caller=1b6b725 finish=1 count=60
+EDEN_GPU_SUBMIT_TOTAL count=124 overflow=0
+EDEN_GPU_TIME wall_ms=5298.5 busy_ms=6.2 submissions=11 max_ms=1.54 cumulative_ns=52729849120 cumulative_submissions=113733 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=1
+EDEN_GPU_SUBMIT_TOTAL count=11 overflow=0
+EDEN_VULKAN_FRAME frames=2 seconds=14.701453 fps=0.136 worst_ms=14642.687 total=5271 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=16370/39 submit=1/82 fence_wait=0/2 semaphore_wait=23321/55 guest_fence=1084/14 present_sync=0/2 texture_gc=0/2 texture_cpu_download=0/1394 pipeline_ready_wait=14588/507 shader_prepare=1521/39 shader_pool_reset=0/39 shader_cfg=18/78 shader_ir=1226/78 shader_spirv=188/78 shader_module=4/78
+EDEN_GUEST_RUN 178=7276/3199 139=375/3220 173=346/127147 135=221/12082 115=39/4415 86=14/2627 92=8/8287 136=3/175 126=1/147 174=1/30 125=1/147 123=1/147
+EDEN_PERF_IDLE c0=11819 c1=11718 c2=12120 c3=14529 c4=14060 c5=14387
+EDEN_GUEST_WAKE c0=47462/4799/0/0 c1=18464/4627/0/0 c2=74127/2548/0/0 c3=6005/4401/0/0 c4=663/656/0/0 c5=5867/2922/0/0
+EDEN_PERF_THREAD name=present cpu_ms=1654 wall_ms=14701
+EDEN_JIT_PAGE_REUSE groups=319721 accesses=1404866
+EDEN_GPU_TIME wall_ms=8207.4 busy_ms=19.1 submissions=40 max_ms=2.98 cumulative_ns=52748950280 cumulative_submissions=113773 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=7
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=14
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=8
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa01d1 finish=0 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=3
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=3
+EDEN_GPU_SUBMIT_TOTAL count=40 overflow=0
+EDEN_VULKAN_FRAME frames=2 seconds=6.248418 fps=0.320 worst_ms=4211.525 total=5273 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=6056/15 submit=0/64 fence_wait=0/2 semaphore_wait=11368/56 guest_fence=5692/17 present_sync=0/2 texture_gc=0/2 texture_cpu_download=0/415 pipeline_ready_wait=5990/94 shader_prepare=355/15 pipeline_cache_save=1254/1 shader_pool_reset=0/15 shader_cfg=3/30 shader_ir=273/30 shader_spirv=55/30 shader_module=1/30
+EDEN_GUEST_RUN 178=3071/1453 173=149/54580 139=113/902 153=89/305 135=55/3406 86=39/469 152=37/412 155=36/377 156=31/365 154=30/144 161=13/69 115=9/1268
+EDEN_PERF_IDLE c0=4628 c1=4592 c2=5782 c3=4045 c4=5957 c5=6158
+EDEN_GUEST_WAKE c0=23681/824/0/0 c1=4876/1144/0/0 c2=14271/1002/0/0 c3=1080/567/0/0 c4=15919/378/0/0 c5=325/141/0/0
+EDEN_PERF_THREAD name=present cpu_ms=447 wall_ms=6248
+EDEN_JIT_PAGE_REUSE groups=319721 accesses=1404866
+EDEN_GPU_TIME wall_ms=6976.7 busy_ms=26.1 submissions=67 max_ms=3.41 cumulative_ns=52775050360 cumulative_submissions=113840 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=3
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=27
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=23
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=5
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=7
+EDEN_GPU_SUBMIT_TOTAL count=67 overflow=0
+EDEN_VULKAN_FRAME frames=1 seconds=7.716574 fps=0.130 worst_ms=7716.574 total=5274 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=8347/20 submit=0/34 fence_wait=0/1 semaphore_wait=14180/32 guest_fence=7122/8 present_sync=0/1 texture_gc=0/1 texture_cpu_download=0/677 pipeline_ready_wait=7661/48 shader_prepare=620/20 shader_pool_reset=0/20 shader_cfg=6/40 shader_ir=488/40 shader_spirv=91/40 shader_module=2/40
+EDEN_GUEST_RUN 178=3812/1758 173=182/67603 139=154/1202 146=154/103 135=94/4657 115=14/1725 86=8/1189 152=6/256 154=4/209 155=3/123 156=3/204 92=3/5162
+EDEN_PERF_IDLE c0=5783 c1=5837 c2=6808 c3=5643 c4=7612 c5=7604
+EDEN_GUEST_WAKE c0=30385/2176/0/0 c1=10458/2219/0/0 c2=33821/1983/0/0 c3=2079/1862/0/0 c4=2444/1160/0/0 c5=809/720/0/0
+EDEN_PERF_THREAD name=present cpu_ms=656 wall_ms=7716
+EDEN_JIT_PAGE_REUSE groups=319724 accesses=1404874
+EDEN_GPU_TIME wall_ms=5212.3 busy_ms=60.6 submissions=179 max_ms=3.17 cumulative_ns=52835671440 cumulative_submissions=114019 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=11
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=6
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=4
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=95
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=35
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=16
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=10
+EDEN_GPU_SUBMIT_TOTAL count=179 overflow=0
+EDEN_GPU_TIME wall_ms=7318.5 busy_ms=8.3 submissions=14 max_ms=2.38 cumulative_ns=52843976240 cumulative_submissions=114033 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=8
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=1
+EDEN_GPU_SUBMIT_TOTAL count=14 overflow=0
+EDEN_GPU_TIME wall_ms=6609.6 busy_ms=4.6 submissions=12 max_ms=1.01 cumulative_ns=52848590440 cumulative_submissions=114045 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=2
+EDEN_GPU_SUBMIT_TOTAL count=12 overflow=0
+EDEN_GPU_TIME wall_ms=6623.2 busy_ms=6.9 submissions=14 max_ms=2.55 cumulative_ns=52855507600 cumulative_submissions=114059 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=10
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=1
+EDEN_GPU_SUBMIT_TOTAL count=14 overflow=0
+EDEN_GPU_TIME wall_ms=6885.1 busy_ms=0.9 submissions=1 max_ms=0.93 cumulative_ns=52856435800 cumulative_submissions=114060 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=1
+EDEN_GPU_SUBMIT_TOTAL count=1 overflow=0
+MKW_MAPPED_STATS frame=5280 mode=1 direct=0 checked=0 failures=0
+MKW_MAPPED_REJECT frame=5280 unmapped=0 opaque=0 unknown=0 pending=0
+MKW_MAPPING_STATE frame=5280 enabled=1 ops=0 old_ops=0
+MKW_SEMAPHORE_STATE frame=5280 enabled=0 hits=0
+EDEN_VULKAN_FRAME frames=6 seconds=31.345425 fps=0.191 worst_ms=31218.641 total=5280 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=33648/86 compute_pipeline=12/3 submit=3/229 fence_wait=0/6 semaphore_wait=59672/152 device_idle=0/1 guest_fence=30974/56 buffer_sync=27/2 present_sync=0/6 texture_gc=0/6 texture_cpu_download=0/2297 pipeline_ready_wait=30960/399 shader_prepare=2178/84 shader_pool_reset=0/84 shader_cfg=23/166 shader_ir=1714/166 shader_spirv=323/166 shader_module=8/166
+EDEN_GUEST_RUN 178=15528/10872 139=860/6792 173=764/273211 135=442/25076 86=256/6044 146=166/318 160=141/1144 158=136/1557 117=135/1229 161=131/1154 157=131/1375 162=127/1231
+EDEN_PERF_IDLE c0=23014 c1=23973 c2=28238 c3=30284 c4=29181 c5=30878
+EDEN_GUEST_WAKE c0=223802/8833/0/0 c1=55073/11771/0/0 c2=32990/12785/0/0 c3=18829/9818/0/0 c4=5636/3934/0/0 c5=2607/1264/0/0
+EDEN_PERF_THREAD name=present cpu_ms=2417 wall_ms=31348
+EDEN_JIT_PAGE_REUSE groups=323823 accesses=1422665
+EDEN_GPU_TIME wall_ms=5847.6 busy_ms=25.2 submissions=108 max_ms=3.59 cumulative_ns=52881681960 cumulative_submissions=114168 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1a6f98c finish=1 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1be0c92 finish=1 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1a36f6c finish=1 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1a34627 finish=0 count=2
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=12
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=40
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=26
+EDEN_GPU_SUBMIT_ORIGIN caller=1af3653 finish=1 count=3
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=13
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa0d3f finish=0 count=4
+EDEN_GPU_SUBMIT_TOTAL count=108 overflow=0
+EDEN_GPU_TIME wall_ms=5531.5 busy_ms=34.3 submissions=32 max_ms=9.11 cumulative_ns=52915976400 cumulative_submissions=114200 pending=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1aa9ec5 finish=0 count=1
+EDEN_GPU_SUBMIT_ORIGIN caller=1c879fc finish=0 count=16
+EDEN_GPU_SUBMIT_ORIGIN caller=1a5f9b8 finish=0 count=6
+EDEN_GPU_SUBMIT_ORIGIN caller=1a9c62f finish=0 count=5
+EDEN_GPU_SUBMIT_ORIGIN caller=1c3dc8b finish=0 count=4
+EDEN_GPU_SUBMIT_TOTAL count=32 overflow=0
+EDEN_VULKAN_FRAME frames=2 seconds=9.913241 fps=0.202 worst_ms=8922.191 total=5282 not_shown=0 clock_hz=60.0
+EDEN_PERF_COST graphics_pipeline=9678/50 compute_pipeline=26/6 submit=2/144 fence_wait=0/2 semaphore_wait=18543/102 device_idle=0/2 guest_fence=9191/31 buffer_sync=4/5 present_sync=0/2 texture_gc=0/2 texture_cpu_download=0/938 pipeline_ready_wait=9718/172 shader_prepare=790/46 shader_pool_reset=0/46 shader_cfg=9/86 shader_ir=632/86 shader_spirv=99/86 shader_module=3/86
+EDEN_GUEST_RUN 152=4971/353 153=4931/463 178=4783/2511 173=238/85965 157=188/1809 161=177/1379 159=173/1503 162=162/1292 160=159/1415 158=147/1511 155=129/431 95=87/490
+EDEN_PERF_IDLE c0=7117 c1=3648 c2=4357 c3=4283 c4=9148 c5=9604
+EDEN_GUEST_WAKE c0=42528/919/0/0 c1=9143/544/0/0 c2=8037/295/0/0 c3=23285/755/0/0 c4=6863/355/0/0 c5=842/273/0/0
+EDEN_PERF_THREAD name=present cpu_ms=1019 wall_ms=9910
+EDEN_JIT_PAGE_REUSE groups=325862 accesses=1431591
