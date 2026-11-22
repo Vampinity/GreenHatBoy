@@ -1,6 +1,6 @@
 # Castle Town performance report-back
 
-**Draft · November 21, 2026 · waveydude · base PS5 9.40 and 13.60**
+**November 21, 2026 · waveydude · base PS5 9.40 and 13.60**
 
 The depth-feedback fix took median Castle Town FPS from **11.26 to 12.67 (+12.5%)** across five matched pairs on 9.40. The median worst frame dropped from **132 to 117 ms**. Link reached the final street checkpoint sooner in four of five pairs. The big entrance hitch and a sustained 15 FPS are still open.
 
