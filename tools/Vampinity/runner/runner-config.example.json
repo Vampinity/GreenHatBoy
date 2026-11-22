@@ -1,0 +1,40 @@
+{
+  "_comment": "Copy this file to runner-config.json and fill it in. Keep runner-config.json out of git: it holds your console's address and your save's profile folder.",
+  "console": {
+    "host": "CONSOLE-ADDRESS-HERE",
+    "web_port": 8080,
+    "ftp_port": 2121,
+    "label": "console-1"
+  },
+  "app": {
+    "id": "PPSA98515",
+    "data_dir": "/data/eglantineps5",
+    "env_folders": ["/data/homebrew/PPSA98515"],
+    "shadowmount_log": "/data/shadowmount/debug.log"
+  },
+  "game": {
+    "title": "0400486024DEC000",
+    "save_dir": "/data/eglantineps5/user/nand/user/save/0000000000000000/YOUR-PROFILE-FOLDER/0400486024DEC000"
+  },
+  "folders": {
+    "out_root": "~/ghb-runs/logs",
+    "save_backups": "~/ghb-runs/save-backups",
+    "notes": "~/ghb-runs/notes",
+    "video_trash": "",
+    "legacy_video_roots": []
+  },
+  "capture": {
+    "enabled": true,
+    "obs_host": "127.0.0.1",
+    "obs_port": 4455,
+    "source": "Video Capture Device",
+    "hwaccel": "auto"
+  },
+  "notify": {
+    "command": ""
+  },
+  "keep_awake": {
+    "command": "auto"
+  },
+  "wait_for": ["auto-run(-wait)?\\.py .*--go"]
+}
