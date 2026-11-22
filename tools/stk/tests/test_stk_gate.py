@@ -422,19 +422,49 @@ class WarmBoot(unittest.TestCase):
         self.assertEqual(rep["verdict"], "PASS")
 
 
+class RefusalCount(unittest.TestCase):
+    """22 Nov: the gate reads graphics_refusals; the throttled pool line is kept in the row, never gated."""
+
+    def test_the_gate_sees_past_the_throttle(self):
+        ctrl = [row(f"c{i}", 8.7, graphics_refusals=v, refused_pool_events=31) for i, v in enumerate((28, 30, 31, 32))]
+        cands = [row(f"a{i}", 8.7, graphics_refusals=v, refused_pool_events=32) for i, v in enumerate((144, 200, 250, 320))]
+        rep = stk_gate.check(cands, stk_gate.build_floors(ctrl))[0]
+        self.assertEqual(rep["verdict"], "BLOCK")
+        self.assertIn("graphics_refusals", [x["number"] for x in rep["stages"]["stable"] if x["verdict"] == "worse (real)"])
+
+    def test_the_pool_line_is_not_gated(self):
+        ctrl = [row(f"c{i}", 8.7, graphics_refusals=i, refused_pool_events=i) for i in range(4)]
+        cands = [row(f"a{i}", 8.7, graphics_refusals=i, refused_pool_events=32) for i in range(4)]
+        fl = stk_gate.build_floors(ctrl)
+        self.assertNotIn("refused_pool_events", fl["keys"]["r-v1|13.60|cold"]["numbers"])
+        self.assertEqual(stk_gate.check(cands, fl)[0]["verdict"], "PASS")
+
+    def test_a_floor_from_before_the_count_is_provisional_and_does_not_gate_the_pool_line(self):
+        fl = stk_gate.build_floors([row(f"c{i}", 8.7) for i in range(4)])
+        nums = fl["keys"]["r-v1|13.60|cold"]["numbers"]
+        nums.pop("graphics_refusals", None)
+        nums["refused_pool_events"] = {"stage": "stable", "direction": -1, "measured": True, "values": [0, 1, 0, 1],
+                                       "mean": 0.5}
+        cands = [row(f"a{i}", 8.7, graphics_refusals=300, refused_pool_events=32) for i in range(4)]
+        rep = stk_gate.check(cands, fl)[0]
+        self.assertEqual(rep["verdict"], "PROVISIONAL")           # not BLOCK on the pool line, not a silent PASS
+        self.assertIn("rebuild", rep["provisional"])
+        self.assertNotIn("refused_pool_events", [x["number"] for x in rep["stages"]["stable"]])
+
+
 class AfterPR24(unittest.TestCase):
     """Vampinity's review of PR #24 (19 Nov): zero floors, stranded only at the wall, MIXED never hides a BLOCK."""
 
     def test_one_stray_refusal_on_a_zero_floor_is_a_watch(self):
-        ctrl = [row(f"c{i}", 8.7, refused_pool_events=0) for i in range(4)]
-        cands = [row(f"a{i}", 8.7, refused_pool_events=1) for i in range(4)]
+        ctrl = [row(f"c{i}", 8.7, graphics_refusals=0) for i in range(4)]
+        cands = [row(f"a{i}", 8.7, graphics_refusals=1) for i in range(4)]
         rep = stk_gate.check(cands, stk_gate.build_floors(ctrl))[0]
         self.assertEqual(rep["verdict"], "PASS")
-        self.assertTrue(any("refused_pool_events (the control is 0 on every start)" in n for n in rep["notes"]))
+        self.assertTrue(any("graphics_refusals (the control is 0 on every start)" in n for n in rep["notes"]))
 
     def test_a_nonzero_floor_still_blocks(self):
-        ctrl = [row(f"c{i}", 8.7, refused_pool_events=v) for i, v in enumerate((0, 1, 0, 1))]
-        cands = [row(f"a{i}", 8.7, refused_pool_events=v) for i, v in enumerate((9, 10, 11, 12))]
+        ctrl = [row(f"c{i}", 8.7, graphics_refusals=v) for i, v in enumerate((0, 1, 0, 1))]
+        cands = [row(f"a{i}", 8.7, graphics_refusals=v) for i, v in enumerate((9, 10, 11, 12))]
         self.assertEqual(stk_gate.check(cands, stk_gate.build_floors(ctrl))[0]["verdict"], "BLOCK")
 
     def test_stranded_is_not_gated_where_the_control_stays_off_the_wall(self):

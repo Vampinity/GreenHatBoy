@@ -237,7 +237,8 @@ script_done by design). Floors rebuilt: only `win_after_field_fps` moves (cold 1
 
 On the field route the largest free block's minimum sits at 0-2 MiB on every start, so it can't show a change for
 the worse (Fable's check of the Phase 4 plan). Four numbers that can, from lines the alpha already logs:
-- `refused_pool_events` (stable): `EDEN_REFUSED_POOL` lines; not capped like the OOM lines.
+- `refused_pool_events` (stable): `EDEN_REFUSED_POOL` lines. *First written "not capped like the OOM lines": wrong,
+  the line is throttled. Replaced in the gate by `graphics_refusals`, 22 Nov, below.*
 - `seconds_under_16_mib` (stable): census lines with the largest free block under 16 MiB, 2 s each.
 - `stranded_at_low_mib` (stable): at the lowest census, the heap's free pages + fragmented + the GPU blocks' slack
   (the pool line `memmap.py` reads).
@@ -287,3 +288,27 @@ starts had either after the route ended). Stranded moves on the ties (field cold
   The new one reads MIXED on `main`'s gate and BLOCK here; a twin without the crash checks it reads MIXED.
 
 Floors unchanged (refusal counts rescored on the field, cold and warm: 0, 0, 11, 0 and 7, 0, 5, 11). 134 tests.
+
+## 22 Nov: graphics refusals replace the throttled pool line (scorer 9)
+
+Vampinity saw on PR #33 that `refused_pool_events` stops near 32. Our mistake, from #24: `EDEN_REFUSED_POOL` prints
+only when the retry failed, and the build throttles it (`RefusalReportDue()`: the first 32 at most ten a second, then
+one every 5 s). It is not a count.
+
+- **New number `graphics_refusals`** (stable, under the zero-floor rule): lines starting `EDEN_GRAPHICS_MEMORY an image
+  was refused:` or `EDEN_GRAPHICS_MEMORY a buffer was refused:`. The build prints one per request that reached its
+  release-and-retry path, whether the retry served it or not, and never throttles it. A search for "was refused"
+  alone counts each buffer twice (the heap's report repeats the words). Same window as the other memory numbers.
+  Readable with `EDEN_NX2_POOL_WALK` on. A log with pool reports and no such line (walk off) reads as unavailable,
+  not 0.
+- **`refused_pool_events` stays in the row and is no longer gated.** Packed `run.json` files keep what they were
+  packed with.
+- **A floor file from before this is PROVISIONAL:** the gate skips its pool-line entry and says to rebuild it.
+- **The five floor files are rebuilt** from the same 32 starts; the old code reproduces the published files exactly, and
+  with the new code only this number differs. Field warm 10, 1, 6, 16 (was 7, 0, 5, 11); field cold 0, 0, 12, 0 (was
+  0, 0, 11, 0); the other keys 0.
+- **Over the 1,445 packed runs on `main`:** 1,435 read (10 have no stderr), none below its pool-line count, 154
+  above it. 52 runs had reached the throttle; the furthest off is 5,561 refusals read as 42.
+- **The gate's verdicts on L1, LP1, CL1 and CLP1 don't change** (PASS). M1A has no gate key, before and after.
+
+12 new tests and 2 moved to the new number; the 14 fail on the old code. 146 tests.

@@ -215,6 +215,63 @@ class MemoryAfterPR24(unittest.TestCase):
         self.assertEqual(self.score(log)["stranded_at_low_mib"], 100 + 200 + 500)
 
 
+IMAGE = ("EDEN_GRAPHICS_MEMORY an image was refused: 0 MiB of finished staging, 0 MiB of the heap, 0 MiB of the "
+         "guest's reserve and 0 MiB of cold guest memory went back\n")
+BUFFER = IMAGE.replace("an image", "a buffer")
+HEAP_ECHO = "[EglantinePSN] heap: holds 1280 MiB, 900 MiB of it in use; 0 MiB given back so far (a buffer was refused)\n"
+
+
+class GraphicsRefusals(unittest.TestCase):
+    """22 Nov (Vampinity, PR #33): EDEN_REFUSED_POOL is throttled, so it is no count of refusals."""
+
+    def score(self, stderr, env=""):
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "stderr.log").write_text(stderr)
+            (Path(td) / "env.txt").write_text(env)
+            return score_run(td, None)
+
+    def test_counts_past_the_pool_lines_throttle(self):
+        r = self.score((IMAGE + REFUSED.format(0)) * 32 + IMAGE * 288)
+        self.assertEqual(r["graphics_refusals"], 320)
+        self.assertEqual(r["refused_pool_events"], 32)            # what the log printed, kept beside it
+
+    def test_the_heaps_echo_of_a_buffer_is_not_a_second_refusal(self):
+        r = self.score(IMAGE + HEAP_ECHO + BUFFER + HEAP_ECHO + BUFFER)
+        self.assertEqual(r["graphics_refusals"], 3)
+        self.assertEqual(r["graphics_refusals_source"], "stderr.EDEN_GRAPHICS_MEMORY_was_refused")
+
+    def test_a_refusal_the_retry_served_still_counts(self):
+        r = self.score(IMAGE + BUFFER)                              # no pool line: it prints only when the retry fails
+        self.assertEqual((r["graphics_refusals"], r["refused_pool_events"]), (2, 0))
+
+    def test_stops_where_the_other_memory_numbers_stop(self):
+        log = (IMAGE + DONE + census(1, 380.0, 2) + IMAGE
+               + "".join(census(n, 380.0 + 2 * (n - 1), 3) for n in range(2, 7)) + IMAGE)
+        self.assertEqual(self.score(log)["graphics_refusals"], 2)
+
+    def test_none_refused_is_zero(self):
+        self.assertEqual(self.score(census(1, 300.0, 40))["graphics_refusals"], 0)
+
+    def test_readable_with_the_pool_walk_on(self):
+        r = self.score(IMAGE + REFUSED.format(7680) * 5, "EDEN_NX2_POOL_WALK=1\n")
+        self.assertEqual(r["graphics_refusals"], 1)
+        self.assertIsNone(r["refused_pool_events"])
+
+    def test_walk_prints_alone_are_zero_refusals(self):
+        self.assertEqual(self.score(REFUSED.format(7680) * 5, "EDEN_NX2_POOL_WALK=1\n")["graphics_refusals"], 0)
+
+    def test_a_pool_report_without_the_refusal_line_is_not_a_zero(self):
+        r = self.score(REFUSED.format(0))                           # a log whose build doesn't print the line
+        self.assertIsNone(r["graphics_refusals"])
+        self.assertEqual(r["graphics_refusals_source"], "unavailable_no_refusal_line_in_this_log")
+
+    def test_no_stderr_is_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            r = score_run(td, None)
+        self.assertIsNone(r["graphics_refusals"])
+        self.assertEqual(r["graphics_refusals_source"], "missing_no_stderr")
+
+
 def vi(t, fps):
     return f"[ {t:7.1f}] x nx2:vi2 5 s: {int(fps * 5)} frames, {fps} fps, mean 30.0 ms, 1% low 40.0 ms, worst 50.0 ms\n"
 

@@ -28,7 +28,8 @@ since the control's own value is unknown (point 3).
 
 Stages and what each can do today (18 Nov, the alpha):
   1 stable   every start survived its route (no crash, script done); the memory floor (lowest largest free block,
-             census and driver) and the driver's out-of-memory callbacks. A gate: a start that did not survive, or a
+             census and driver), the driver's out-of-memory callbacks and the refused graphics requests (not the
+             throttled pool line: CHANGES.md, 22 Nov). A gate: a start that did not survive, or a
              memory floor that is really worse, blocks.
   2 picture  flashes per minute. A gate. NOT MEASURED on the alpha: needs a full-rate capture counted, or an
              in-emulator counter. The gate says so instead of passing it silently.
@@ -85,7 +86,7 @@ NUMBERS = {
     "largest_free_block_driver_min_mib": ("stable", +1),
     "radv_oom_events": ("stable", -1),
     # 19 Nov: memory at the wall, where the free block's minimum sits at 0-2 MiB and can't move down.
-    "refused_pool_events": ("stable", -1),
+    "graphics_refusals": ("stable", -1),   # 22 Nov: replaces refused_pool_events, a throttled report line
     "seconds_under_16_mib": ("stable", -1),
     "stranded_at_low_mib": ("stable", -1),
     "flashes_per_min": ("picture", -1),
@@ -99,7 +100,9 @@ MIN_STARTS = 4
 # The zero-floor rule (PR #24, point 3) covers only these: refusals and seconds under 16 MiB sit at 0 on real controls
 # and one stray line there is noise. radv_oom_events is 0 on every control of six keys, and a driver OOM line there is
 # a real event, so it still blocks (Vampinity, PR #26, point 1).
-ZERO_FLOOR_NUMBERS = frozenset({"refused_pool_events", "seconds_under_16_mib"})
+ZERO_FLOOR_NUMBERS = frozenset({"graphics_refusals", "seconds_under_16_mib"})
+# Numbers an older floor file may still carry that are never gated: the throttled pool line (22 Nov, PR #33).
+RETIRED_NUMBERS = frozenset({"refused_pool_events"})
 LOW_MIB = 16   # the wall: stranded_at_low_mib is gated only on keys whose control goes under it (PR #24, point 4)
 # What a side of a comparison must share to be pooled (waveydude, PR #18 review): field -> what it names.
 ARM_FIELDS = {"build_key": "build", "env_hash": "settings (env hash)", "translation_id": "translation id",
@@ -382,6 +385,8 @@ def check(rows: list[dict], floors: dict) -> list[dict]:
             rep["notes"].append(f"INVALID {k}: {status[k][1]}")
         rep["valid_starts"] = len(alive)
         for name, ctrl in f["numbers"].items():
+            if name in RETIRED_NUMBERS:
+                continue
             vals = [v for v in (number_value(r, name) for r in alive) if v is not None]
             j = judge_number(ctrl, vals, sum(1 for r in alive if capped(r, name)), name)
             j["number"] = name
@@ -404,13 +409,16 @@ def check(rows: list[dict], floors: dict) -> list[dict]:
         if f["n"] < MIN_STARTS:
             short.append(f"a floor of {f['n']}")
         for name, ctrl in f["numbers"].items():
-            if ctrl["stage"] != "stable" or not ctrl.get("measured") or ctrl.get("usable") is False:
+            if (name in RETIRED_NUMBERS or ctrl["stage"] != "stable" or not ctrl.get("measured")
+                    or ctrl.get("usable") is False):
                 continue
             n_read = sum(1 for r in alive if number_value(r, name) is not None)
             if n_read < MIN_STARTS:
                 short.append(f"{name} read on {n_read} of {len(alive)} start(s)")
             if len(ctrl["values"]) < MIN_STARTS:
                 short.append(f"{name} on {len(ctrl['values'])} control start(s)")
+        if "graphics_refusals" not in f["numbers"]:   # without this an old floor would pass refusals it never read
+            short.append("refusals not gated (the floor file predates graphics_refusals; rebuild it)")
         short += unverified
         if "arm_unverified" in f:
             short += [f"control: {u}" for u in f["arm_unverified"]]
