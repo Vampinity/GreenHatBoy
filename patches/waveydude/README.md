@@ -36,3 +36,15 @@ The [host test](test-flash-counter.cpp) exercises the detector independently. Af
 c++ -std=c++20 -Isrc /path/to/GreenHatBoy/patches/waveydude/test-flash-counter.cpp -o /tmp/test-flash-counter
 /tmp/test-flash-counter
 ```
+
+## Castle Town depth feedback and optional screenshots
+
+| Patch | Switch | Target |
+|---|---|---|
+| [Depth feedback recheck](town-depth-feedback-recheck.patch) | `EDEN_UP_DEPTH_FEEDBACK_RECHECK=1` | Eglantine core. Rechecks the current draw's depth views before reusing a cached barrier decision. Real overlaps still take the original hazard check. |
+| [Optional screenshot drop](town-screenshot-drop-on-oom.patch) | `EDEN_UP_SCREENSHOT_DROP_ON_OOM=1` | Eglantine core renderer. Drops the optional screenshot when an allocation inside its setup throws Vulkan device OOM. Other errors still propagate. Releases the failed screenshot callback without submitting a copy or returning a partial frame. |
+| [PS5 overlay alternative](town-screenshot-drop-ps5-overlay.patch) | `EDEN_UP_SCREENSHOT_DROP_ON_OOM=1` | Outer PS5 tree that already has the unconditional screenshot-drop transform in `tools/prepare-vulkan-port.py`. Gates that existing recovery. |
+
+Both features default to off. Choose one screenshot patch per build. If the PS5 build generates its renderer with the existing unconditional screenshot-drop transformation, apply the outer-tree alternative there instead of stacking the two variants.
+
+The core patches were checked against the local patched T186 build inputs. Five matched 9.40 pairs measured median Town FPS of 11.26 OFF and 12.67 ON for depth feedback. An extracted host check passed six screenshot cases covering default-off propagation, enabled image and download-buffer OOM recovery, continued propagation of device loss, and successful capture. The local console route did not encounter an eligible screenshot allocation failure. Trinity's indoor run is the hardware test for that path. This packaging does not add a console result.

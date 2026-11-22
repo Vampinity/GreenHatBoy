@@ -1,0 +1,59 @@
+--- a/src/video_core/renderer_vulkan/renderer_vulkan.cpp
++++ b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
+@@ -15,6 +15,7 @@
+ #include <fmt/ranges.h>
+ 
+ #include "common/logging.h"
++#include "common/pe_switch.h"
+ #include <ranges>
+ #include "common/scope_exit.h"
+ #include "common/settings.h"
+@@ -302,16 +303,27 @@
+ vk::Buffer RendererVulkan::RenderToBuffer(std::span<const Tegra::FramebufferConfig> framebuffers,
+                                           const Layout::FramebufferLayout& layout, VkFormat format,
+                                           VkDeviceSize buffer_size) {
+-    auto frame = [&]() {
+-        Frame f{};
+-        f.image =
++    Frame frame{};
++    vk::Buffer dst_buffer;
++    try {
++        frame.image =
+             CreateWrappedImage(memory_allocator, VkExtent2D{layout.width, layout.height}, format);
+-        f.image_view = CreateWrappedImageView(device, f.image, format);
+-        f.framebuffer = blit_capture.CreateFramebuffer(device, layout, *f.image_view, format);
+-        return f;
+-    }();
+-
+-    auto dst_buffer = CreateWrappedBuffer(memory_allocator, buffer_size, MemoryUsage::Download);
++        frame.image_view = CreateWrappedImageView(device, frame.image, format);
++        frame.framebuffer = blit_capture.CreateFramebuffer(device, layout, *frame.image_view, format);
++        dst_buffer = CreateWrappedBuffer(memory_allocator, buffer_size, MemoryUsage::Download);
++    } catch (const vk::Exception& error) {
++        static const bool drop_on_oom = Common::PeSwitch("EDEN_UP_SCREENSHOT_DROP_ON_OOM");
++        if (!drop_on_oom || error.GetResult() != VK_ERROR_OUT_OF_DEVICE_MEMORY) {
++            throw;
++        }
++        static unsigned reported{};
++        if (reported < 8) {
++            ++reported;
++            LOG_WARNING(Render_Vulkan, "Screenshot dropped: no GPU memory for {}x{} ({} bytes)",
++                        layout.width, layout.height, buffer_size);
++        }
++        return {};
++    }
+     blit_capture.DrawToFrame(device, rasterizer, &frame, framebuffers, layout, 1, format);
+ 
+     scheduler.RequestOutsideRenderPassOperationContext();
+@@ -340,6 +352,11 @@
+     const auto dst_buffer = RenderToBuffer(screenshot_layers, layout, VK_FORMAT_B8G8R8A8_UNORM,
+                                            layout.width * layout.height * 4);
+ 
++    if (!dst_buffer) {
++        renderer_settings.screenshot_complete_callback = {};
++        renderer_settings.screenshot_requested = false;
++        return;
++    }
+     std::memcpy(renderer_settings.screenshot_bits, dst_buffer.Mapped().data(),
+                 dst_buffer.Mapped().size());
+     renderer_settings.screenshot_complete_callback(false);

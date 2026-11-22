@@ -1,0 +1,24 @@
+--- a/tools/prepare-vulkan-port.py
++++ b/tools/prepare-vulkan-port.py
+@@ -1203,7 +1203,8 @@
+ adapt('src/video_core/renderer_vulkan/renderer_vulkan.cpp', 'vulkan_renderer.cpp', [
+     ('#include "video_core/renderer_vulkan/renderer_vulkan.h"',
+      '#include "video_core/renderer_vulkan/renderer_vulkan.h"\n#include "display_refresh.h"\n'
+-     '#include "diagnostics.h"\n#include "hud.h"\n#include "gpu_pass_probe.h"'),
++     '#include "diagnostics.h"\n#include "hud.h"\n#include "gpu_pass_probe.h"\n'
++     '#include "common/pe_switch.h"'),
+     # EDEN_UP_GPU_PASS_TIME=1: the frames its per-frame figures divide by (one per Composite).
+     ('void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebuffers) {',
+      'void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebuffers) {\n'
+@@ -1248,7 +1249,10 @@
+         frame.framebuffer = blit_capture.CreateFramebuffer(device, layout, *frame.image_view, format);
+         dst_buffer = CreateWrappedBuffer(memory_allocator, buffer_size, MemoryUsage::Download);
+     } catch (const vk::Exception& error) {
+-        if (error.GetResult() != VK_ERROR_OUT_OF_DEVICE_MEMORY) throw;
++        static const bool drop_on_oom = Common::PeSwitch("EDEN_UP_SCREENSHOT_DROP_ON_OOM");
++        if (!drop_on_oom || error.GetResult() != VK_ERROR_OUT_OF_DEVICE_MEMORY) {
++            throw;
++        }
+         static unsigned reported{};
+         if (reported < 8) {
+             ++reported;
