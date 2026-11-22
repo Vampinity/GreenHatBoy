@@ -2,7 +2,7 @@
 
 **November 21, 2026 · waveydude · base PS5 9.40 and 13.60**
 
-The depth-feedback fix took median Castle Town FPS from **11.26 to 12.67 (+12.5%)** across five matched pairs on 9.40. The median worst frame dropped from **132 to 117 ms**. Link reached the final street checkpoint sooner in four of five pairs. The big entrance hitch and a sustained 15 FPS are still open.
+The depth-feedback fix took median Castle Town FPS from **11.26 to 12.67 (+12.5%)** across five matched pairs on 9.40. The median worst frame dropped from **132 to 117 ms**. Pair 2 lost **0.79 FPS** and pair 4 moved only **+0.36 FPS**. Both had substantially worse worst frames. The clearest evidence for the mechanism is the 13.60 GPU timing, where two pairs cut main 1080p target work from roughly **30 to 8 ms/frame**. Link reached the final street checkpoint sooner in four of five 9.40 pairs. The big entrance hitch and a sustained 15 FPS are still open.
 
 ![Town FPS and worst-frame duration for each of the five matched depth-feedback pairs](depth-recheck-five-pairs.png)
 
