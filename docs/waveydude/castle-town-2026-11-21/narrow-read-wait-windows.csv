@@ -1,0 +1,5 @@
+pair,arm,run_id,start_s,end_s,misses_per_s,narrowed_per_s,narrow_ms_per_s,drained_per_s,drain_ms_per_s,verify_differences
+pair-1,OFF,20261122T025004Z,21.12,31.12,1103.5,0.0,0.0,1103.5,281.1,0
+pair-1,ON,20261122T025423Z,21.32,31.32,996.3,996.3,167.0,0.0,0.0,0
+pair-2,ON,20261122T025842Z,21.13,31.13,1160.6,1160.6,156.1,0.0,0.0,0
+pair-2,OFF,20261122T030300Z,22.09,32.09,1024.1,0.0,0.0,1024.1,319.4,0

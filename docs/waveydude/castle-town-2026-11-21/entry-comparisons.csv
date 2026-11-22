@@ -1,0 +1,6 @@
+firmware,experiment,arm,run_utc,worst_entrance_frame_ms,town_fps,town_worst_frame_ms,first_large_upload_frame_ms,first_frame_image_upload_ms,first_frame_image_upload_mib,min_town_largest_block_mib,town_load_returned_to_driver_mib
+9.40,CPU texture conversion helper,off,20261121T232056Z,603.5,13.95,117.1,662.3,266.5,807.7,,
+9.40,CPU texture conversion helper,on,20261121T232515Z,721.4,12.63,299.3,644.5,245.5,807.7,,
+9.40,CPU texture conversion helper,off repeat,20261121T233024Z,664.1,12.04,646.9,700.6,275.8,807.7,,
+13.60,Drain to pool,off,20261121T235249Z,853.1,16.05,70.8,,,,48,
+13.60,Drain to pool,on,20261121T235800Z,730.0,16.01,73.9,,,,22,733

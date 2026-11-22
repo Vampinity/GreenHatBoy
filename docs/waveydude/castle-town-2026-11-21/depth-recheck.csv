@@ -1,0 +1,3 @@
+arm,run_utc,windows,frames,town_fps,worst_town_frame_ms,mean_fence_ms_per_frame,installed_elf_sha256
+off,20261121T213453Z,2,107,10.6,348.8,75.0,c2a00ab8a8c29d782209beeab80b57373cce585d3911fc21b12fb0eadd1559a0
+on,20261121T213915Z,3,195,12.91,360.0,58.8,c2a00ab8a8c29d782209beeab80b57373cce585d3911fc21b12fb0eadd1559a0
