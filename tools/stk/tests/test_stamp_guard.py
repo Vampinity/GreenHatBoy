@@ -32,3 +32,11 @@ class StampGuard(unittest.TestCase):
         skip = {'EDEN_UP_SHADER_PREP_SKIP_RUNTIME': '1'}
         self.assertEqual(differences(skip, {**skip, runtime: '1'}, {runtime}), [])
         self.assertTrue(differences({}, skip, set()))
+
+    def test_canonical_keys_changes_the_store_outside_the_translation_list(self):
+        reference = {"EDEN_UP_SHADER_PREP_SOURCE_STAMP": "1"}
+        candidate = {**reference, "EDEN_UP_CANONICAL_KEYS": "1"}
+        self.assertEqual(
+            differences(reference, candidate, {"EDEN_DRAW"}, source_stamp=True),
+            [("EDEN_UP_CANONICAL_KEYS", None, "1")],
+        )
