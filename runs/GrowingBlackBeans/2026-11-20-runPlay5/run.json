@@ -18,7 +18,7 @@
   "firmware": "13.60",
   "console": "base PS5, handheld, 1x",
   "env_from": "env-control/env.txt with LP1's lines (the load pair + park wait)",
-  "intent": "Hand play, not a measured start: ~1 h 42 min from a forest save through the first dungeon, the field and into the castle town, where the memory wall hit. Closed by hand (no test-stop), so the log ends mid-play. Proves nothing about LP1; shows a slow wear-down of free memory a 6-minute start can't see.",
+  "intent": "Hand play, not a measured start: ~1 h 42 min from a forest save through the first dungeon, the field and into a later area, where the memory wall hit. Closed by hand (no test-stop), so the log ends mid-play. Proves nothing about LP1; shows a slow wear-down of free memory a 6-minute start can't see.",
   "written": "2026-11-20"
  },
  "derived": {
