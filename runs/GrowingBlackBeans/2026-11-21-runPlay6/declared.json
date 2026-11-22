@@ -1,0 +1,12 @@
+{
+  "run_id": "runPlay6",
+  "control": false,
+  "intended_cache": "warm",
+  "route": "none (hand play)",
+  "build": {"tag": "alpha-T186", "note": "the release eboot as installed"},
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt with LP1's lines (the load pair + park wait): runPlay5's settings",
+  "intent": "Hand play, not a measured start: 43 minutes through later areas, stopped by choice (no test-stop), so the log ends mid-play. Proves nothing about LP1.",
+  "written": "2026-11-22"
+}
