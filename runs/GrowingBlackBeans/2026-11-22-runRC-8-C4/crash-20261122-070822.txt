@@ -1,0 +1,52 @@
+EglantinePS5 crash report
+version: 01.219.028 (code size 0x2d8f380)
+time: 2026-11-22 07:08:22, 389 s after the app started
+what: SIGSEGV (invalid memory access), code 2, address 0x0000001004000020
+where: 0x00000008000b8766 (outside the app's code: a system library or generated code)
+thread: VkPipelineBuilder (0x880f535c0)
+running: game The Legend of Zelda Ocarina of TIme [04004860224DEC000].nup (0400486024dec000), Vulkan, resolution 1x, Bilinear, output 1080p, 60 Hz, mods: none
+memory: largest free block 1 MiB of 12352 MiB, heap 1408 MiB and 0 MiB in 0 large blocks
+registers:
+  rip 00000008000b8766  rsp 0000000402931a50  rbp 0000000402931a50
+  rax 0000001004000020  rbx 0000000002000001  rcx 0000000000000010
+  rdx 0000000000000520  rsi 0000000000000000  rdi 0000001004000020
+  r8  0000000000000000  r9  0000000000000000  r10 0000000000000000
+  r11 0000000000000202  r12 0000001004000000  r13 0000000000000010
+  r14 0000000000000000  r15 0000001004000010  flags 0000000000010216
+  trap 12  error 0x6
+code: 0x0000000000400000 to 0x000000000318f380 (eboot+offset is an address in the build's llvm-pie.elf)
+calls found on the stack, most recent first ("?": not checked against a call instruction):
+  eboot+0x1c00000 ?
+  eboot+0x1c00000 ?
+  eboot+0x11422e ?
+  eboot+0x1c00000 ?
+  eboot+0x2531b80 ?
+  eboot+0xc69000 ?
+  eboot+0xc69000 ?
+  eboot+0xc69000 ?
+  eboot+0xc69000 ?
+  eboot+0x112b41 ?
+  eboot+0xc69000 ?
+  eboot+0x10e9ab ?
+  eboot+0xc69000 ?
+  eboot+0x271ad11 ?
+  eboot+0x268cbe9 ?
+  eboot+0x10ea0c ?
+  eboot+0x10e730 ?
+  eboot+0x268c644 ?
+  eboot+0x2973450 ?
+  eboot+0x2950c79 ?
+  eboot+0x23c75e0 ?
+  eboot+0xc00280 ?
+  eboot+0x297323f ?
+  eboot+0x2957c4d ?
+  eboot+0x2958137 ?
+  eboot+0x29583f8 ?
+  eboot+0x1642a48 ?
+  eboot+0x163b7aa ?
+  eboot+0x18c2565 ?
+  eboot+0x341000 ?
+  eboot+0x340c19 ?
+  eboot+0x3408f7 ?
+  eboot+0x2a06629 ?
+then: the app starts again

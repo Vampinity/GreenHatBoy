@@ -1,0 +1,24 @@
+{
+  "run_id": "runRC-8-C4",
+  "control": true,
+  "route": "field-to-past-field.txt",
+  "route_sha1_12": "c4fada64155f",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "intended_cache": "warm",
+  "env_from": "env-control/env.txt: the script line changed",
+  "intent": "Phase 4 M1 R x C confirmation, control: 4 against 4, whole cache restored first, read against this batch's own controls.",
+  "written": "2026-11-21",
+  "amended": "2026-11-22, before any start: full declaration, unthrottled refusal count",
+  "batch": "M1-RC confirmation",
+  "batch_position": 8,
+  "decision_rule": {
+    "number": "graphics refusals to script_end: stderr lines starting \"EDEN_GRAPHICS_MEMORY an image was refused:\" or \"EDEN_GRAPHICS_MEMORY a buffer was refused:\"",
+    "confirmed_if": "all 4 pair-out starts are above every control in this batch and above 15",
+    "otherwise": "not confirmed, recorded"
+  }
+}
