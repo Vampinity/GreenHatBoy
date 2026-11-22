@@ -2472,7 +2472,7 @@
    "date": "2026-11-10",
    "strength": "weak",
    "phase4": "screen",
-   "own_shader_store": false,
+   "own_shader_store": true,
    "in_gbb_no_verdict_list": false
   },
   {

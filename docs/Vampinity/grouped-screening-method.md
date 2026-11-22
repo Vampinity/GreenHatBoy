@@ -136,10 +136,10 @@ For phase 4 the arm is **the control minus a group of its own lines**. The same 
 - **Lines that repeat the default** change nothing when removed (on T197M, where the default was read). The ledger marks the ones we found; they need no start.
 - **Guards and lines that never fired** (they act only in a rare failure) get a reach check first. On a route where they never act, removing them shows nothing.
 - **Removals of big lines go in the risk group, last in each pass:** frame wait, guest swap, the load window, anything whose removal crashed or froze a start before.
-- **Store names:** 26 of the lines to screen change the shader store's name. They go in own-store groups of 2 or 3.
+- **Store names:** 27 of the lines to screen change the shader store's name. They go in own-store groups of 2 or 3.
 - **Logs:** taking all log and count lines out in one group answers whether the logging itself costs speed. It needs its own readers, because the readers use those lines.
 
-**Rough cost (estimate, our sums, 7.5 min a handheld start):** the 87 lines to screen and the 11 for a reach check first, 98 in all. 72 of them are not store names. In groups of 4 that is about 18 groups: 54 group starts and about 18 controls, near 72 starts or 9 h, fewer if the reach check settles some, plus 2 starts a speed member for the second mix. The 26 store names in groups of 3 need about 9 stores (about 18 h of preparation) and their own starts. Your own estimate on 15 Nov was nine batches and one control arm, about 40 starts and five hours; the difference is the second mix, 10 or more controls, and the store names.
+**Rough cost (estimate, our sums, 7.5 min a handheld start):** the 87 lines to screen and the 11 for a reach check first, 98 in all. 71 of them are not store names. In groups of 4 that is about 18 groups: 54 group starts and about 18 controls, near 72 starts or 9 h, fewer if the reach check settles some, plus 2 starts a speed member for the second mix. The 27 store names in groups of 3 need about 9 stores (about 18 h of preparation) and their own starts. Your own estimate on 15 Nov was nine batches and one control arm, about 40 starts and five hours; the difference is the second mix, 10 or more controls, and the store names.
 
 ## What the batch kit needs
 
