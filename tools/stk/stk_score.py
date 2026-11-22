@@ -28,7 +28,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runfolder import RunFolder  # noqa: E402
 import route_check  # noqa: E402  (waveydude)
 
-SCORER_VERSION = "stk_score 7 (waveydude 1 + run contract v1 + his route_check + build in the key, 16 Nov 2026)"
+SCORER_VERSION = "stk_score 9 (waveydude 1 + run contract v1 + his route_check + build in the key + graphics refusals, 22 Nov 2026)"
+# ReleaseRefused's line (tools/prepare-vulkan-port.py in the build): one per refused image or buffer, never throttled.
+GRAPHICS_REFUSED = ("EDEN_GRAPHICS_MEMORY an image was refused:", "EDEN_GRAPHICS_MEMORY a buffer was refused:")
 
 # No machine's paths here: the control's env comes from --alpha-env or $STK_ALPHA_ENV.
 DEFAULT_ALPHA_ENV = os.environ.get("STK_ALPHA_ENV")
@@ -456,7 +458,13 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
 
     # Memory at the wall (19 Nov, Fable's check of the Phase 4 plan): the free block's minimum sits at 0-2 MiB on the
     # field route, so it can't show a change for the worse. Three numbers that can, all from lines the alpha logs:
-    # - refused_pool_events: EDEN_REFUSED_POOL lines (the pool refused an allocation; not capped like the OOM lines);
+    # - refused_pool_events: EDEN_REFUSED_POOL lines. NOT a count of refusals (22 Nov): the line prints only when the
+    #   retry failed, and RefusalReportDue() throttles it (the first 32 at most ten a second, then one every 5 s).
+    #   Kept in the row as what the log printed; the gate reads graphics_refusals instead.
+    # - graphics_refusals: one line per request that reached ReleaseRefused (release, then one retry), served by the
+    #   retry or not; never throttled. The line's start is matched: the heap's report ends "(a buffer was refused)"
+    #   too, so a search for "was refused" counts every buffer twice. A pool report always follows such a line, so a
+    #   log with pool reports and none of them (the walk off) can't be read as 0 refusals;
     # - seconds_under_16_mib: census lines whose largest free block is under 16 MiB, at 2 s each;
     # - stranded_at_low_mib: at the census with the lowest largest free block, what is free but unusable: the heap's
     #   free pages + fragmented + the GPU blocks' slack (the same pool line memmap.py reads).
@@ -471,6 +479,7 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
     #   walk print reads like a refusal (Vampinity's 14 walk runs: 23 of the 80 lines a "< 16 MiB" filter kept). So
     #   with the walk on, refused_pool_events is unavailable (waveydude, PR #26); with it off every line is a refusal,
     #   whatever block size it reports (a request can be refused with a bigger block free).
+    #   graphics_refusals has its own line, so the walk doesn't touch it.
     # - stranded_at_low_mib is the median over the census lines tied at the lowest block (point 4): docked, many tie
     #   at 0 MiB, and the first of them is the least steady choice.
     mem_lines, memory_window = stderr_lines, "to_log_end"
@@ -493,7 +502,15 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
         mem_lines = stderr_lines[:cut_idx]
         memory_window = "to_script_done+10s" if first_after is not None else "to_script_done_line"
     refused_pool_events, refused_pool_source = None, "missing_no_stderr"
-    if env.get("EDEN_NX2_POOL_WALK", "0") not in ("", "0"):
+    pool_walk_on = env.get("EDEN_NX2_POOL_WALK", "0") not in ("", "0")
+    graphics_refusals, graphics_refusals_source = None, "missing_no_stderr"
+    if stderr_lines:
+        n_refused = sum(1 for l in mem_lines if l.startswith(GRAPHICS_REFUSED))
+        if n_refused == 0 and not pool_walk_on and any("EDEN_REFUSED_POOL" in l for l in mem_lines):
+            graphics_refusals_source = "unavailable_no_refusal_line_in_this_log"
+        else:
+            graphics_refusals, graphics_refusals_source = n_refused, "stderr.EDEN_GRAPHICS_MEMORY_was_refused"
+    if pool_walk_on:
         refused_pool_source = "unavailable_pool_walk_on"
     elif stderr_lines:
         refused_pool_events = sum(1 for l in mem_lines if "EDEN_REFUSED_POOL" in l)
@@ -610,6 +627,7 @@ def score_run(run_dir: str | Path, alpha_env_path: str | Path | None = DEFAULT_A
         "fps_source": fps_source,
         "shader_builds_in_play": shader_builds_in_play, "shader_builds_source": shader_builds_source,
         "largest_free_block_min_mib": largest_free_block_mib, "largest_free_block_source": largest_free_block_source,
+        "graphics_refusals": graphics_refusals, "graphics_refusals_source": graphics_refusals_source,
         "refused_pool_events": refused_pool_events, "refused_pool_source": refused_pool_source,
         "seconds_under_16_mib": seconds_under_16_mib,
         "stranded_at_low_mib": stranded_at_low_mib, "memory_window": memory_window, "load_s": load_s, "load_source": load_source,

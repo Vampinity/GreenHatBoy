@@ -39,6 +39,22 @@
      "max": 14.95,
      "floor": 1.65
     },
+    "graphics_refusals": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "mean": 0,
+     "sd": 0.0,
+     "min": 0,
+     "max": 0,
+     "floor": 0
+    },
     "hitch_ms_per_min": {
      "stage": "smooth",
      "direction": -1,
@@ -84,22 +100,6 @@
      "measured": false
     },
     "radv_oom_events": {
-     "stage": "stable",
-     "direction": -1,
-     "measured": true,
-     "values": [
-      0,
-      0,
-      0,
-      0
-     ],
-     "mean": 0,
-     "sd": 0.0,
-     "min": 0,
-     "max": 0,
-     "floor": 0
-    },
-    "refused_pool_events": {
      "stage": "stable",
      "direction": -1,
      "measured": true,

@@ -39,6 +39,22 @@
      "max": 14.3,
      "floor": 0.1
     },
+    "graphics_refusals": {
+     "stage": "stable",
+     "direction": -1,
+     "measured": true,
+     "values": [
+      10,
+      1,
+      6,
+      16
+     ],
+     "mean": 8.25,
+     "sd": 6.344,
+     "min": 1,
+     "max": 16,
+     "floor": 15
+    },
     "hitch_ms_per_min": {
      "stage": "smooth",
      "direction": -1,
@@ -107,22 +123,6 @@
      "floor": 0,
      "usable": false,
      "why": "control start(s) at the counter's cap: runWF2, runWF4, runWF5; the control's own value is unknown"
-    },
-    "refused_pool_events": {
-     "stage": "stable",
-     "direction": -1,
-     "measured": true,
-     "values": [
-      7,
-      0,
-      5,
-      11
-     ],
-     "mean": 5.75,
-     "sd": 4.573,
-     "min": 0,
-     "max": 11,
-     "floor": 11
     },
     "seconds_under_16_mib": {
      "stage": "stable",
