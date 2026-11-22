@@ -7,7 +7,8 @@
 - The game was left running after the script ended (script_end at 470 s; the log runs to t_s 7,908, about 2 h).
   Counts below are up to script_end; the black and the load are unaffected.
 - Proof lines: no EDEN_UP_PACK_ON_REFUSAL line (refusals=0 in the pack summary); pressure passes 1,479 (3,901 MiB)
-  by the script end; reclaim 149 calls, 177 slots, 110 MiB (controls: 2-3 calls); swap ahead set.
+  by the script end; reclaim 149 calls, 177 slots, 110 MiB (eligible controls: 1-6 calls;
+  corrected 22 Nov from 2-3); swap ahead set.
 - Largest free block at the black 1,270 MiB (controls 986-1,366). Low 0, recovered; through the load; no crash
   files (the one "crash" line is the handler install); worst frame 3,814 ms; refused pool events 6.
 - Fits the compensation pattern: with R out, reclaim is called far more often.

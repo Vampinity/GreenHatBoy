@@ -8,5 +8,5 @@
   ahead set.
 - Largest free block at the black 1,176 MiB (controls 986-1,366). Through the load; no crash files; worst frame
   3,764 ms; refused pool events 0.
-- The 12th counted control. The batch is complete.
+- Corrected 22 Nov: the ninth and last eligible control (first written as the 12th). The batch is complete.
 - stk_gate against WF2-5: field walk 19.43 leans high, one start; everything else within the noise.

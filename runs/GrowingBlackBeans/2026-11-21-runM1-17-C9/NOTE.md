@@ -7,3 +7,5 @@
 - Largest free block at the black 1,260 MiB (controls 986-1,366). Low 0, recovered; through the load; no crash
   files; worst frame 3,877 ms; refused pool events 9 (controls 0-9).
 - stk_gate against WF2-5: everything within the noise.
+- Corrected 22 Nov: not an eligible control. The log has no shutdown lines (`end_kind: log_cut`,
+  `control_eligible: false`), and warm-run-steps.md doesn't count such a start. Kept as data.

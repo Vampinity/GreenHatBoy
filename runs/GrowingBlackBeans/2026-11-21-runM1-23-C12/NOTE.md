@@ -8,5 +8,5 @@
   ahead set.
 - Largest free block at the black 1,174 MiB (controls 986-1,366). Low 0, recovered; through the load; no crash
   files; worst frame 3,736 ms; refused pool events 1.
-- The 11th counted control (C3 ran cold and is not counted). C3r makes 12.
+- Corrected 22 Nov: the eighth eligible control (first written as the 11th).
 - stk_gate against WF2-5: everything within the noise, after-field included (14.1).

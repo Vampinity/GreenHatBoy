@@ -6,6 +6,6 @@
   ahead set.
 - Largest free block at the black 1,185 MiB (controls 986-1,366). Low 0, recovered; through the load; no crash
   files; worst frame 3,858 ms; refused pool events 2.
-- The tenth counted control (C3 ran cold and is not counted): Vampinity's condition 4 (at least 10) is met. C3r
-  makes 11.
+- Corrected 22 Nov: the seventh eligible control (C3 ran cold; C4, C9 and C10 didn't close). First written as the tenth,
+  meeting Vampinity's condition 4 (at least 10); the batch has nine, so it doesn't.
 - stk_gate against WF2-5: after-field 13.9 leans low, as several controls have; everything else within the noise.

@@ -9,3 +9,5 @@
 - First harm signs in the batch, all "not yet shown" (one start) against WF2-5: worst frame 6,922 ms (WF2-5 mean
   3,995; every other start in this batch 3,742-4,063); refused pool events 33 (WF2-5 mean 5.75; this batch 0-14); field walk 18.62.
   With no packing and no reclaim, refusals had nowhere to go. Read with the table, not alone.
+- Corrected 22 Nov: the 33 is a throttled report line, not a count. Graphics refusals to script_end: 144 (138 images,
+  6 buffers); the 21 other counted starts 0-15.

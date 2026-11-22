@@ -10,3 +10,5 @@
 - Pattern to test at the end: the two starts with both R and C out (S6, S7) have 32-33 refusals; starts with only
   one of them out have 0-14 (S1 9, S3 6, S4 0, S5 14). A refused ask that neither refusal-pack nor reclaim can take
   stays refused: a possible R x C pair, per the rule confirmed 4 v 4 if it holds.
+- Corrected 22 Nov: the 32 is a throttled report line, not a count. Graphics refusals to script_end: 41 (33 images,
+  8 buffers); the 21 other counted starts 0-15.

@@ -8,3 +8,5 @@
   files; worst frame 3,762 ms.
 - Refused pool events 3: with C out but R in, refusal-pack took the refusals (as S1 and S4). Fits the R x C pattern
   (only S6 and S7, with both out, reached 32-33).
+- Corrected 22 Nov: the 32-33 above are throttled report lines. Graphics refusals to script_end: this start 3, S6 144,
+  S7 41.
