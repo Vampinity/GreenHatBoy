@@ -282,6 +282,102 @@ FIELD_MARKS = ("[EglantinePS5] test: EDEN_TEST steer_met line=46 point=1/1 at=10
                "[EglantinePS5] test: EDEN_TEST script_done at=390.0\n")
 
 
+RELAUNCH = ("EDEN_CRASH_REPORT installed=1 signals=7 stack_reads=1 folder=logs after_crash=1\n"
+            "[EglantinePS5] test: EDEN_TEST boot_skipped reason=not_armed\n")
+BOOT = "[EglantinePS5 diag] +0ms diagnostic build 01.219.028 (Nov 14 2026 23:24:15), firmware sdk_version 0x13600007\n"
+
+
+def crash_report(age):
+    return (f"EglantinePS5 crash report\nversion: 01.219.028 (code size 0x1)\ntime: 2026-11-22 07:08:22, {age} s after "
+            "the app started\nwhat: SIGSEGV (invalid memory access)\n")
+
+
+class CrashCopy(unittest.TestCase):
+    """22 Nov: after a crash the app starts again, so stderr.log and eden_log.txt are the relaunch's. The crashed
+    session is in the crash's copies (M1A1-4 scored 0 refusals; their copies hold 955-1,715)."""
+
+    CRASHED = ("[EglantinePS5] test: EDEN_TEST boot title=0400486024DEC000\n"
+               "[EglantinePS5] test: EDEN_TEST script_start file=r.txt events=1 waits=1\n")
+
+    def folder(self, copy=True, relaunch_eden="", older=False, stem="crash-20261122-070822"):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        d = Path(td.name)
+        (d / "stderr.log").write_text(RELAUNCH)
+        (d / "eden_log.txt").write_text(relaunch_eden)
+        (d / "boot-trace.txt").write_text(BOOT + "[EglantinePS5 diag] +402ms opening the launcher\n")
+        (d / "env.txt").write_text("EDEN_TEST_BOOT=0400486024DEC000\n")
+        (d / f"{stem}.txt").write_text(crash_report(389))
+        if copy:
+            (d / f"{stem}-stderr.log").write_text(self.CRASHED + IMAGE * 5 + BUFFER)
+            (d / f"{stem}-eden_log.txt").write_text(
+                "[   8.0] x Shader preparation: 0 pipelines known, 0 left to prepare\n"
+                "[   8.2] x EDEN_GUEST_START the test script's clock starts here\n" + vi(100.0, 15.0))
+        if older:
+            (d / "crash-20261121-010101.txt").write_text(crash_report(50))
+            (d / "crash-20261121-010101-stderr.log").write_text(self.CRASHED + IMAGE * 99)
+        return d
+
+    def test_reads_the_crashed_session_not_the_relaunch(self):
+        r = score_run(self.folder(), None)
+        self.assertEqual(r["graphics_refusals"], 6)
+        self.assertEqual(r["logs_read"], "crash_copy.crash-20261122-070822")
+        self.assertEqual(r["fps_median"], 15.0)
+        self.assertEqual(r["start_method"], "test_boot")          # the relaunch opened the launcher, the start did not
+        self.assertEqual(r["survival_result"], "crashed")
+
+    def test_without_the_copy_the_numbers_are_missing_never_zero(self):
+        r = score_run(self.folder(copy=False), None)
+        self.assertIsNone(r["graphics_refusals"])
+        self.assertIsNone(r["refused_pool_events"])
+        self.assertIsNone(r["radv_oom_events"])
+        self.assertEqual(r["survival_result"], "crashed")
+        self.assertEqual(r["logs_read"], "missing_relaunch_logs_only")
+
+    def test_a_relaunch_with_its_own_timestamps_does_not_hide_the_crash(self):
+        r = score_run(self.folder(relaunch_eden="[   3.0] launcher up\n"), None)
+        self.assertEqual(r["survival_result"], "crashed")
+        self.assertEqual(r["graphics_refusals"], 6)
+
+    def test_an_older_crash_in_the_folder_is_not_this_one(self):
+        self.assertEqual(score_run(self.folder(older=True), None)["graphics_refusals"], 6)
+
+    def test_a_start_made_after_a_crash_is_its_own(self):
+        d = self.folder()                                           # the older crash's files are still in logs
+        (d / "stderr.log").write_text(RELAUNCH.split("\n")[0] + "\n" + self.CRASHED + IMAGE + DONE)
+        (d / "eden_log.txt").write_text("[   8.2] x EDEN_GUEST_START the test script's clock starts here\n"
+                                        "[ 600.0] x EDEN_AUDIO_PORT_CLOSED\n")
+        r = score_run(d, None)
+        self.assertEqual((r["graphics_refusals"], r["survival_result"], r["logs_read"]), (1, "completed", "main"))
+
+
+class WorstAfterTheBlack(unittest.TestCase):
+    """22 Nov: on the field route the run's worst frame is the save's own load, before the gate."""
+
+    def score(self, lines):
+        def vw(t, worst):
+            return vi(t, 15.0).replace("worst 50.0 ms", f"worst {worst} ms")
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / "env.txt").write_text("EDEN_TEST_SCRIPT=field-to-past-field.txt\n")
+            (d / "stderr.log").write_text(FIELD_MARKS)
+            (d / "eden_log.txt").write_text("[   0.0] x EDEN_GUEST_START the test script's clock starts here\n"
+                                            + "".join(vw(t, w) for t, w in lines))
+            return score_run(d, None)
+
+    def test_the_saves_load_is_left_out(self):
+        r = self.score([(20.0, 3800.0), (120.0, 1279.0), (300.0, 60.0)])
+        self.assertEqual((r["worst_frame_ms"], r["worst_after_black_ms"]), (3800.0, 1279.0))
+
+    def test_stops_at_script_done_plus_ten(self):
+        r = self.score([(120.0, 1279.0), (420.0, 9000.0)])
+        self.assertEqual(r["worst_after_black_ms"], 1279.0)
+
+    def test_no_black_no_number(self):
+        with tempfile.TemporaryDirectory() as td:
+            self.assertIsNone(score_run(td, None)["worst_after_black_ms"])
+
+
 class LoadSeconds(unittest.TestCase):
     """load_s on a made-up field start (Vampinity, PR #24, point 5): the black, the stall, a false start, the hold."""
 

@@ -312,3 +312,22 @@ one every 5 s). It is not a count.
 - **The gate's verdicts on L1, LP1, CL1 and CLP1 don't change** (PASS). M1A has no gate key, before and after.
 
 12 new tests and 2 moved to the new number; the 14 fail on the old code. 146 tests.
+
+## 22 Nov: a crashed start is read from its crash copies; the worst frame after the black (scorer 10)
+
+- **The bug (ours, since the run contract; missed again in scorer 9):** after a crash the app starts itself again, so a
+  run folder's `stderr.log` and `eden_log.txt` are the relaunch's. The scorer read those: M1A1-4 scored **0** graphics
+  refusals (their crash copies hold 1,357, 1,715, 955, 1,350), had no cache class, and so no gate key: the gate
+  answered NO KEY to four crashes where it should say BLOCK.
+- **Now:** when the main logs are a relaunch (`after_crash=1`, no script and no game in them) and the crash is this
+  run's, the newest crash's `-eden_log.txt` and `-stderr.log` are read. `logs_read` says which logs a row came from.
+  With no copies the numbers are missing, never 0.
+- **`worst_after_black_ms`, reported and not gated:** the worst 5 s-line frame from the load window's mark to
+  `script_done` + 10 s. On the field route `worst_frame_ms` is the save's own load (3.7-4.2 s, before the gate) and
+  hides a shorter hitch in the load under test. One start's value has a long tail (controls 1.1-3.1 s on 21-22 Nov),
+  so it doesn't decide anything.
+- **On `graphics_refusals` (Vampinity's notes on #35):** it counts tries, not separate requests, so an arm that changes
+  retries can move it with memory unchanged. The build's own `graphics_refusals` counter is another number (it also
+  counts driver out-of-memory callbacks). Huge images skip this path.
+- Over the 1,521 rows rescored (every packed run on `main` and our two batches), only crashed starts change; no
+  survival, eligibility or floor moves. 8 new tests, 154 in all; the 8 fail on the old code.
