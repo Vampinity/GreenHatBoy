@@ -134,8 +134,15 @@ class FakeConsole:
             raise tool.NoAnswer(f"fake: {path} is a file")
         out = {".": {"name": ".", "mode": "d"}, "..": {"name": "..", "mode": "d"}}  # websrv lists these too
         for child in sorted(folder.iterdir()):
+            # Like websrv's fs?fmt=json (src/fs.c): each entry is stat'ed THROUGH links (fstatat without
+            # AT_SYMLINK_NOFOLLOW), so a link to a folder lists as "d", a link to a file as "-" with the file's size,
+            # and a dangling link (the stat fails) is left out.
+            try:
+                info = child.stat()
+            except OSError:
+                continue
             out[child.name] = {"name": child.name, "mode": "d" if child.is_dir() else "-",
-                               "size": 0 if child.is_dir() else child.stat().st_size, "mtime": 1}
+                               "size": 0 if child.is_dir() else info.st_size, "mtime": 1}
         if path == tool.EDEN_DIR and "eden_log.txt" in out:
             self.log_reads += 1
             if self.log_grows:
@@ -270,13 +277,18 @@ class FakeWarmWriter:
             data = data[:-1]
         self.fake.local(path).write_bytes(data)
 
+    # DELE and RMD as the console's FTP server does them (remove() and rmdir() on the path, which the system resolves
+    # through any link in the middle of it). The runner's WarmWriter has neither since 23 Nov 2026; they stay here
+    # so a case can show what an older warm_cache.py that still deletes would do, and so every case can prove that
+    # none was sent (no_warm_deletes).
     def dele(self, path):
-        self._go(warm_cache.delete_ok(path, DATA), "dele", path)
-        self.fake.local(path).unlink()
+        self._go(warm_cache.write_ok(path, DATA), "dele", path)
+        local = self.fake.local(path)
+        os.rmdir(local) if local.is_dir() and not local.is_symlink() else os.unlink(local)
 
     def rmd(self, path):
         self._go(warm_cache.write_ok(path, DATA), "rmd", path)
-        self.fake.local(path).rmdir()
+        os.rmdir(self.fake.local(path))
 
     def rename(self, source, target):
         self._go(warm_cache.rename_ok(source, target, DATA), "rename", source, target)
@@ -468,6 +480,19 @@ def nothing_deleted(before, fake):
     under_aside = [w for w in fake.warm_writes if w[0] != "rename" and any(warm_cache.ASIDE in p for p in w[1:])]
     if under_aside:
         problems.append(f"a whole-cache write under an aside name: {under_aside}")
+    problems += no_warm_deletes(fake)
+    return problems
+
+
+def no_warm_deletes(fake):
+    """Since 23 Nov 2026 the whole-cache restore sends no DELE and no RMD at all, and nothing under an .old- name."""
+    problems = []
+    deletes = [w for w in fake.warm_writes if w[0] in ("dele", "rmd")]
+    if deletes:
+        problems.append(f"the whole-cache restore sent a delete: {deletes[:4]}")
+    under_old = [w for w in fake.warm_writes if w[0] != "rename" and any(warm_cache.OLD in p for p in w[1:])]
+    if under_old:
+        problems.append(f"a whole-cache write under an .old- name: {under_old[:4]}")
     return problems
 
 
@@ -1443,10 +1468,19 @@ def _(root, out, folder):
         p.append(f"a start did not find exactly the copy in place ({[len(s) for s in found]} files; the copy has "
                  f"{len(want)})")
     renames = [w for w in fake.warm_writes if w[0] == "rename"]
-    if len(renames) != 4:  # the owner's two folders aside once, back once
-        p.append(f"expected 4 whole-cache renames, got {renames}")
-    if sum(w[0] == "dele" for w in fake.warm_writes) == 0:
-        p.append("the test cache of the first start was never deleted")
+    owner = [w for w in renames if warm_cache.ASIDE in w[1] + w[2]]
+    old = [w for w in renames if warm_cache.OLD in w[2]]
+    if len(owner) != 4 or len(old) != 4 or len(renames) != 8:
+        # the owner's two folders aside once and back once; the first start's test cache (both folders) aside
+        # before the second start, the second start's at the end
+        p.append(f"expected 4 owner renames and 4 .old- renames, got {renames}")
+    kept = sorted(c for parent in (root / DATA.lstrip("/"), root / f"{DATA}/user".lstrip("/"))
+                  for c in parent.iterdir() if warm_cache.OLD in c.name)
+    if len(kept) != 4:
+        p.append(f"expected the two starts' test caches kept as 4 .old- folders, found {[c.name for c in kept]}")
+    for folder_kept in kept:  # each kept test cache holds what the copy put there plus what its start built
+        if not any(q.is_file() for q in folder_kept.rglob("*")):
+            p.append(f"{folder_kept.name} is empty: the test cache was not kept whole")
     p += owner_back(FAKE["before"], root)
     if warm_asides(root):
         p.append(f"an aside folder is left: {warm_asides(root)}")
@@ -1465,7 +1499,7 @@ def _(root, out, folder):
             p.append(f"{run.name}: the boot log should read warm")
     summary = (batch / "summary.md").read_text()
     for needle in ("Whole-cache restore", "back at the end, each listing the same as before",
-                   "warm-1: the copy put back"):
+                   "warm-1: the copy put back", "4 test cache folder(s) renamed aside and KEPT on the console"):
         if needle not in summary:
             p.append(f"summary.md lacks {needle!r}")
     log = (batch / warm_cache.LOG_NAME).read_text()
@@ -1633,23 +1667,30 @@ def _(root, out, folder):
     p = []
     good = [f"{USER_CACHE}", f"{USER_CACHE}/shader/x.bin", f"{DRIVER_CACHE}/radv/00/a"]
     bad = [f"{DATA}/user/save/0000/slot", f"{DATA}/user/cachex/a", f"{USER_CACHE}{warm_cache.ASIDE}/a",
-           f"{USER_CACHE}/../save/a", f"{USER_CACHE}//a", f"{DATA}/env.txt", f"{DRIVER_CACHE}/./a", "/data"]
+           f"{USER_CACHE}/../save/a", f"{USER_CACHE}//a", f"{DATA}/env.txt", f"{DRIVER_CACHE}/./a", "/data",
+           f"{USER_CACHE}.old-20261123-120000/a", f"{DRIVER_CACHE}.old-20261123-120000", f"{USER_CACHE}/x.old-1/a"]
     p += [f"write_ok refuses {x}" for x in good if not warm_cache.write_ok(x, DATA)]
     p += [f"write_ok allows {x}" for x in bad if warm_cache.write_ok(x, DATA)]
-    if warm_cache.delete_ok(USER_CACHE, DATA) or warm_cache.delete_ok(DRIVER_CACHE, DATA):
-        p.append("DELE of a cache folder itself is allowed")
-    pairs_ok = [(USER_CACHE, USER_CACHE + warm_cache.ASIDE), (DRIVER_CACHE + warm_cache.ASIDE, DRIVER_CACHE)]
+    if hasattr(warm_cache, "delete_ok") or hasattr(tool.WarmWriter, "dele") or hasattr(tool.WarmWriter, "rmd"):
+        p.append("a delete rule or a DELE/RMD sender is still there")
+    stamp = ".old-20261123-120000"
+    pairs_ok = [(USER_CACHE, USER_CACHE + warm_cache.ASIDE), (DRIVER_CACHE + warm_cache.ASIDE, DRIVER_CACHE),
+                (USER_CACHE, USER_CACHE + stamp), (DRIVER_CACHE, DRIVER_CACHE + stamp + "-2")]
     pairs_bad = [(USER_CACHE, DRIVER_CACHE + warm_cache.ASIDE), (USER_CACHE + "/shader", USER_CACHE + "/x"),
-                 (f"{DATA}/user/save", f"{DATA}/user/save{warm_cache.ASIDE}"), (USER_CACHE, USER_CACHE + ".old")]
+                 (f"{DATA}/user/save", f"{DATA}/user/save{warm_cache.ASIDE}"), (USER_CACHE, USER_CACHE + ".old"),
+                 (USER_CACHE + stamp, USER_CACHE), (USER_CACHE + warm_cache.ASIDE, USER_CACHE + warm_cache.ASIDE + stamp),
+                 (USER_CACHE + "/shader", USER_CACHE + "/shader" + stamp), (USER_CACHE, USER_CACHE + ".old-2026112-120000"),
+                 (USER_CACHE, DRIVER_CACHE + stamp), (USER_CACHE, USER_CACHE + stamp + "/x"),
+                 (USER_CACHE, USER_CACHE + stamp + "-10"), (f"{DATA}/user/save", f"{DATA}/user/save{stamp}")]
     p += [f"rename_ok refuses {a} -> {b}" for a, b in pairs_ok if not warm_cache.rename_ok(a, b, DATA)]
     p += [f"rename_ok allows {a} -> {b}" for a, b in pairs_bad if warm_cache.rename_ok(a, b, DATA)]
     sent = []
     client = types.SimpleNamespace(sendcmd=lambda c: sent.append(c), rename=lambda a, b: sent.append(("RN", a, b)),
                                    storbinary=lambda c, h: sent.append(c))
     writer = tool.WarmWriter(client)
-    for call in (lambda: writer.dele(f"{USER_CACHE}{warm_cache.ASIDE}/a"), lambda: writer.rmd(f"{DATA}/user/save"),
+    for call in (lambda: writer.mkd(f"{USER_CACHE}{stamp}/a"), lambda: writer.rename(USER_CACHE + stamp, USER_CACHE),
                  lambda: writer.mkd(f"{DATA}/logs/x"), lambda: writer.rename(USER_CACHE, USER_CACHE + ".old"),
-                 lambda: writer.stor(__file__, f"{DATA}/env.txt"), lambda: writer.dele(DRIVER_CACHE)):
+                 lambda: writer.stor(__file__, f"{DATA}/env.txt"), lambda: writer.stor(__file__, f"{DRIVER_CACHE}{stamp}/a")):
         try:
             call()
             p.append("the runner's WarmWriter sent a write outside its rules")
@@ -1657,9 +1698,9 @@ def _(root, out, folder):
             pass
     if sent:
         p.append(f"the runner's WarmWriter sent: {sent}")
-    writer.dele(f"{DRIVER_CACHE}/radv/a")
-    if sent != [f"DELE {DRIVER_CACHE}/radv/a"]:
-        p.append(f"an allowed DELE was not sent as such: {sent}")
+    writer.rename(DRIVER_CACHE, DRIVER_CACHE + stamp)
+    if sent != [("RN", DRIVER_CACHE, DRIVER_CACHE + stamp)]:
+        p.append(f"an allowed rename aside was not sent as such: {sent}")
     real = RealConsole(types.SimpleNamespace(host=HOST, web_port=8080, ftp_port=2121, timeout=0.01))
     before = len(offline_guard.ATTEMPTS)
     for what, call in (("a whole-cache session", lambda: real.warm_writer().__enter__()),
@@ -1706,8 +1747,10 @@ def _(root, out, folder):
     if (root / DRIVER_CACHE.lstrip("/")).exists():
         p.append(f"{DRIVER_CACHE} is left; the owner had none")
     p += owner_back(FAKE["before"], root)
-    if [w for w in fake.warm_writes if w[0] == "rename" and DRIVER_CACHE in w[1]]:
-        p.append("a rename of the driver folder the owner did not have")
+    if [w for w in fake.warm_writes if w[0] == "rename" and DRIVER_CACHE in w[1] and warm_cache.OLD not in w[2]]:
+        p.append("a rename aside of the driver folder the owner did not have")
+    if len([w for w in fake.warm_writes if w[0] == "rename" and w[1] == DRIVER_CACHE and warm_cache.OLD in w[2]]) != 1:
+        p.append("the test's driver cache was not renamed aside (kept as .old-) at the end")
     return p
 
 

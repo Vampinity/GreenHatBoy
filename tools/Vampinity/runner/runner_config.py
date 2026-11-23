@@ -52,6 +52,9 @@ DEFAULTS = {
     # Keeping the computer awake while a batch runs: "auto" (caffeinate on macOS, systemd-inhibit on Linux
     # when it is there), "none", or a list such as ["caffeinate", "-i", "-w", "{pid}"].
     "keep_awake": {"command": "auto"},
+    # How the app is started (launchers.py). kind: "websrv" (its /launch) or "prosperomgr" (ProsperoMgr's
+    # POST /api/titles/launch). host: ProsperoMgr's address ("" = console.host); port: ProsperoMgr's (7070).
+    "launcher": {"kind": "websrv", "host": "", "port": 7070},
     # Other programs the queue waits for before it starts an item (regular expressions on the command line).
     "wait_for": [r"auto-run(-wait)?\.py .*--go"],
 }

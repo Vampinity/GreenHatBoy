@@ -36,5 +36,10 @@
   "keep_awake": {
     "command": "auto"
   },
+  "launcher": {
+    "kind": "websrv",
+    "host": "",
+    "port": 7070
+  },
   "wait_for": ["auto-run(-wait)?\\.py .*--go"]
 }

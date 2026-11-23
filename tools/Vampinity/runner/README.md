@@ -5,7 +5,9 @@ This is the runner behind my scripted starts: it writes `env.txt` for a test, st
 about 10 s after `script_done`, and puts `env.txt` back. New here: it can set the caches aside for a cold
 start and put them back after, and after every start it logs which caches it moved and what the boot reused.
 Since 23 Nov it can also put the whole cache back from one copy before every start, as GrowingBlackBeans does
-for his warm controls (`--warm-copy`, below).
+for his warm controls (`--warm-copy`, below), and start the app through ProsperoMgr instead of websrv's
+`/launch` (`--launcher prosperomgr`, below). **It deletes nothing on the console**: where a folder has to make
+way, it is renamed aside and kept (see "Why renames, not deletes").
 
 **Not proven on a console yet.** My own copy of these tools ran about 1,700 scripted starts on one base PS5
 between 5 and 17 Nov 2026. This folder is that copy with my address, folders and save path taken out
@@ -14,8 +16,8 @@ on a console. What ran is the offline test set below, where a local folder plays
 of the cold option have never run anywhere: making the empty title folder over FTP, and renaming the recipe
 between two folders. Both are checked by a listing and undo everything when the listing does not show them.
 Please watch your first cold start and keep its `cold.log`. No step of the whole-cache restore has run on a
-console either: not one of its FTP deletes, uploads or renames. Please watch its first batch and keep its
-`warm.log`.
+console either: not one of its FTP uploads or renames. Please watch its first batch and keep its `warm.log`. The
+ProsperoMgr launcher has not started anything yet either: it is built from ProsperoMgr's public source, not tried.
 
 ## Files
 
@@ -27,7 +29,8 @@ console either: not one of its FTP deletes, uploads or renames. Please watch its
 | `warm_cache.py` | The whole-cache restore (`--warm-copy`): sets your own two cache folders aside for the batch, puts one copy in their place before every start, and yours back at the end. Also makes and checks the copy |
 | `runner_config.py`, `runner-config.example.json` | The one place for your console's address, your folders, your save folder, capture on or off |
 | `backup-save.py` | Copies the game's save off the console (reading only) |
-| `restore-save.py` | Puts a save backup on the console and checks every file. It removes save slots that are not in the backup, and refuses while the app is open |
+| `launchers.py` | How the app is started: websrv's `/launch` (default) or ProsperoMgr's API (`--launcher prosperomgr`), and where each ProsperoMgr call comes from |
+| `restore-save.py` | Puts a save backup on the console and checks every file. It moves save slots that are not in the backup out of the save folder (renamed, kept), and refuses while the app is open |
 | `set-env.py` | Writes or switches off `env.txt` by hand |
 | `lint-scripts.py` | Offline check of a route script's timing |
 | `video-check.py` | Scans a test's video for flashes, black and freezes (needs ffmpeg; only with capture on) |
@@ -39,6 +42,9 @@ console either: not one of its FTP deletes, uploads or renames. Please watch its
 ## What it needs on the console
 
 - A jailbroken PS5 with **websrv** (file view and `/launch`, port 8080) and **ftpsrv** (port 2121) running.
+  With `--launcher prosperomgr` the start goes through **ProsperoMgr** (port 7070) instead of websrv's `/launch`,
+  but the runner still reads every file, log and folder listing through websrv's file view (`/fs`): without
+  websrv it cannot run yet (see "The launcher").
 - An EglantinePS5 build **with the test harness**: `EDEN_TEST_BOOT`, `EDEN_TEST_SCRIPT`, `test-boot-once`,
   `test-quit`, and for the routes in `../routes` also `WAIT`, `LOOK`, `GONE`, `MAYBE`, `END` and `STEER`
   (`headless/test_harness.h` and `headless/minimap_steer.h`). Without the harness the first test ends as "game
@@ -110,10 +116,11 @@ with the whole cache put back from one copy before every start, as in
 ## A warm control: the whole cache put back before every start
 
 This is step 0 of [`docs/GrowingBlackBeans/warm-run-steps.md`](../../../docs/GrowingBlackBeans/warm-run-steps.md):
-both cache folders, `<data_dir>/user/cache` and `<data_dir>/cache`, deleted whole and uploaded again from one copy
-before every start, so every start begins on the same cache. Nothing is picked file by file. One change from his
-steps, for a console you also play on: **your own two folders are never deleted.** They are renamed aside for the
-batch and come back at the end.
+both cache folders, `<data_dir>/user/cache` and `<data_dir>/cache`, replaced whole by one copy before every start,
+so every start begins on the same cache. Nothing is picked file by file. Two changes from his steps: **your own two
+folders are never deleted** (they are renamed aside for the batch and come back at the end), and **nothing else is
+deleted either**: where his steps delete the live folders, the runner renames them aside to
+`<folder>.old-<date>-<time>` and keeps them (why: next section).
 
 1. Once, right after the store build, with the app closed, copy both folders off the console (reads only):
 
@@ -143,7 +150,8 @@ listing to `warm-note.json` (and to the runner's state file while your folders a
    stops and they go back. A folder you do not have is noted as none, and none is left at the end.
 3. Before every start: the copy is checked against its SHA-256 list again, the app must be closed, and your two
    folders are listed again and must still be as they were. Only then are the two live folders (what the copy and
-   the last start left there) deleted whole and the copy uploaded whole, on one FTP session (each file hashed
+   the last start left there) renamed aside to `<folder>.old-<date>-<time>`, one rename each, and the copy is
+   uploaded whole into new folders, on one FTP session (each file hashed
    again right before it goes, so a copy that changed after its check is not sent). The new folders are
    listed: the same folders, files and sizes as the copy. Then part of it is read back and compared byte for byte:
    in `user/cache` every file up to 4 MiB whole and the first and last 64 KiB of bigger ones; in `cache` the ends
@@ -151,9 +159,12 @@ listing to `warm-note.json` (and to the runner's state file while your folders a
    copy's SHA-256. A changed byte in the middle of a big file, or in a small driver file that is not picked, is
    not seen: the listing only sees its size.
 4. At the end, also after a crash, a stop, a tool error or Ctrl-C, once the app is closed: the test folders are
-   deleted and yours renamed back, and their listing must be the one taken before they moved.
+   renamed aside the same way and yours renamed back, and their listing must be the one taken before they moved.
 5. If the app is still open (a freeze) or the console does not answer, nothing moves yet. The batch stops,
    `summary.md` says **NOT BACK**, and the next `--go` (any plan) or `--restore-env --go` puts them back first.
+
+If a rename aside cannot be done (the console refuses it, or a listing right after does not show it), the step
+stops there and says `COULD NOT RENAME ... ASIDE`; nothing else is tried in its place and nothing is deleted.
 
 What makes it refuse, with nothing deleted: a copy that does not match its lists, or is of another data folder;
 an open app; one of your aside folders that is not as it was before it moved (then nothing is moved back
@@ -163,6 +174,11 @@ come back at the end.
 
 Good to know:
 
+- **Every start leaves a whole test cache on the console**, as `<data_dir>/user/cache.old-<date>-<time>` and
+  `<data_dir>/cache.old-<date>-<time>` (renamed aside before the next start, or at the batch end), each about as
+  big as the copy (about 2.1 GB for GrowingBlackBeans' copy): a plan of 10 starts leaves 10 sets. The plan print says how many sets a plan leaves; `summary.md` and
+  `warm-note.json` list every one. The runner never deletes them: remove them by hand (any FTP client) when you
+  no longer need them, and watch the console's free space on long batches.
 - Each restore uploads the whole copy. GrowingBlackBeans' copy was about 2.1 GB; how long that takes over FTP on
   a console has not been measured with this runner. `result.json` has `warm_restore` with the seconds and the
   upload speed of each one.
@@ -175,6 +191,70 @@ Good to know:
   start runs.
 - `--make-warm-copy` refuses while your folders are set aside (by the state file, and by any
   `.warm-owner-aside` folder on the console), so a copy is always of your own live caches.
+
+## Why renames, not deletes
+
+GrowingBlackBeans spotted this (PR 38): websrv's folder listing (`fs?fmt=json`, `src/fs.c`) reads each entry
+with `fstatat()` without `AT_SYMLINK_NOFOLLOW`, so a link to a folder is listed as an ordinary folder (`d`), and a
+link that points nowhere is left out. ftpsrv's `LIST` and `MLSD` use `stat()` and do the same. So no listing the
+runner can read tells a link from a folder. A delete that walks such a listing (delete every file listed, then
+every folder) would go through a link and delete what it points at. Nothing on the console makes such links
+today, but the runner should not rest on that.
+
+A rename does not have this problem: it moves the name it is given, and if that name is a link, only the link
+moves. So:
+
+- The whole-cache restore sends no delete at all (no `DELE`, no `RMD`). The only write on a folder that was
+  already there is one rename of the top folder (`<data_dir>/user/cache`, `<data_dir>/cache`). Every upload goes
+  into folders the runner has just made itself. What it still walks, it only reads (listings to compare,
+  read-backs), and a walk stops on any entry that is not plainly a file or a folder, and below 40 folders.
+- `restore-save.py` moves a slot that is not in the backup with one rename of the slot folder, to
+  `<profile folder>/<title>.old-<date>-<time>-<slot>`, beside the game's own folder (where the game does not look
+  for slots), instead of deleting what is listed inside it. It prints what it moved; remove those by hand too.
+- What is left that deletes: the runner's single-file deletes of its own files by their fixed names
+  (`test-quit`, `test-boot-once`, the live switch file, and `env.txt` when there was none before the batch), each
+  checked against the fixed list in `writable()`, with no listing walked. A delete of a name that is a link
+  removes the link, not what it points at.
+
+Not covered, for completeness: `restore-save.py` still writes the backup's files into the slot folders of the same
+name that are there (a slot that is a link would be written through). That writes, it does not delete, and it is
+as before.
+
+## The launcher
+
+`--launcher websrv` (the default) starts the app with websrv's `/launch`, as always. `--launcher prosperomgr`
+starts it with ProsperoMgr's own web API, for a console that runs ProsperoMgr:
+
+```
+python3 auto-run-wait.py one-start.json --launcher prosperomgr --go
+python3 auto-run-wait.py --check-launcher --launcher prosperomgr --go    # reads only: running title, temperatures
+```
+
+Or set it once in `runner-config.json`: `"launcher": {"kind": "prosperomgr", "host": "", "port": 7070}` (`host`
+empty means the console's address).
+
+What it sends, and where that comes from. ProsperoMgr publishes no separate API document; these calls are read
+from its public source (github.com/notmaj0r/ProsperoMgr, GPL-3.0, commit 231363b; release v1.2.1 has the same
+calls): `source/backend/src/api_routes.cpp`, `titles.cpp`, `http_server.hpp` and the web page's own `api.js`.
+
+- Before every start: `GET /api/titles/running` (`{"title_id": ...}`, empty when no big app runs). If anything
+  runs, nothing is started: unlike websrv's `/launch`, ProsperoMgr's launch does not close an open app.
+- Then `POST /api/titles/launch` with `{"title_id": "<app.id>"}`. `{"ok": true, "via_notification": false}`
+  counts as started. An error (`{"error": ...}`, for example "no foreground user") or `"via_notification": true`
+  (ProsperoMgr only posted a notification with a button) stops the start as "did not start", with ProsperoMgr's
+  own words. One call, no retry: websrv's retries rest on `/launch` closing a starting app, which ProsperoMgr's
+  launch does not.
+- `--check-launcher --go` asks `GET /api/titles/running` and `GET /api/thermal` and prints them. It starts nothing.
+  The runner does not use ProsperoMgr's close, kill, fan, file or install calls.
+
+**What it does not change:** the runner reads every file, log and listing (env.txt checks, the boot trace, the
+logs, the open-app check through `/mnt/sandbox`, the cache listings) through websrv's `/fs`, and writes over
+ftpsrv. On a console without websrv the launcher alone is not enough. ProsperoMgr has a file API of its own
+(`/api/ftp/list`, `/api/ftp/download`, ...); its listing uses `lstat()`, so a link never shows as a folder there.
+A reader on that API would be a next step, not part of this change.
+
+Not known until it runs on a console: whether EglantinePS5 started this way shows its own title id in
+`/api/titles/running`, and how long the launch call takes to answer.
 
 ## A cold start
 
@@ -275,14 +355,17 @@ Only these:
 - `test-quit`, `test-boot-once` and its own `auto-run-*.txt` script copies in the app's data folder.
 - `eglantineps5.json` and the live switch file, only for a plan that uses `config` or `live`.
 - With `--save`: the game's save folder named in `game.save_dir`. The backup is written over it and **save
-  slots that are not in the backup are deleted.** Back up your own save first.
+  slots that are not in the backup are moved out**, one rename each, to `<title>.old-<date>-<time>-<slot>` beside
+  the save folder (kept; remove them by hand). Back up your own save first.
 - For a cold start, and in the start-up check of every `--go`: the renames above, and the one empty `<title>`
   folder. A cold start never deletes under a cache folder.
 - With `--warm-copy`, and in the start-up check of every `--go`: the renames `<data_dir>/user/cache` and
-  `<data_dir>/cache` to and from `<name>.warm-owner-aside`, and, **before every start, deletes and uploads of
-  everything inside those two live folders**: only after your own folders were listed under their aside names
-  and found as they were. Nothing under an aside name is ever written or deleted. The code refuses any other
-  path (`warm_cache.write_ok`, `delete_ok`, `rename_ok`, and the console class checks again before it sends).
+  `<data_dir>/cache` to and from `<name>.warm-owner-aside`, and, **before every start and at the end, the renames
+  of the two live folders to `<name>.old-<date>-<time>` and uploads into new live folders**: only after your own
+  folders were listed under their aside names and found as they were. No delete. Nothing under an aside or
+  `.old-` name is ever written. The code refuses any other path (`warm_cache.write_ok`, `rename_ok`, and the
+  console class checks again before it sends).
+- With `--launcher prosperomgr`: no write; one `POST /api/titles/launch` per start.
 
 It never installs a build.
 
@@ -292,16 +375,22 @@ It never installs a build.
 python3 -m unittest discover -s tools/Vampinity/runner/tests -v
 ```
 
-44 cases, a few seconds, no console and no network. A local folder plays the console, and a fake FTP session
-plays the whole-cache restore's writes (with an FTP drop, a wrong upload, a short upload and Ctrl-C on demand).
+51 cases (44 in `test_cold_start.py`, 7 in `test_no_delete.py`), a few seconds, no console and no network. A
+local folder plays the console and lists like websrv (links followed, a link to a folder as `d`), and a fake FTP
+session plays the whole-cache restore's writes (with an FTP drop, a wrong upload, a short upload, a refused
+rename and Ctrl-C on demand). `test_no_delete.py` plants links where the old delete would have walked into them
+(inside a test cache, as the live folder itself, as a save slot) and checks that what they point at is untouched,
+that no delete is sent and that the links are kept as links; run against the 23 Nov code that still deleted, its
+link cases fail (the files behind the links are deleted). It also checks the ProsperoMgr calls against a stand-in
+that answers as ProsperoMgr's source does.
 The runner's real `main`, plan check, start-up check, cold set-aside and put-back, whole-cache copy, set-aside,
 restore and put-back, and summary all run. Only starting and closing
 the game are stubbed. `tests/offline_guard.py` makes every socket connect, name lookup and child process fail,
 and each case checks that none was even tried. One case points the real console class at the guard to show
 that it holds.
 
-What the tests cannot show: anything a real console does. The FTP rename and folder make, the FTP deletes and
-uploads of a few thousand files, the timing of the listings and uploads on a big store, a real freeze, and the
+What the tests cannot show: anything a real console does. The FTP rename and folder make, the uploads of a few
+thousand files, ProsperoMgr's real answers, the timing of the listings and uploads on a big store, a real freeze, and the
 boot log of a real cold or restored start with this runner.
 
 ## Not in this folder
@@ -317,7 +406,9 @@ boot log of a real cold or restored start with this runner.
 
 GrowingBlackBeans' warm-run-steps.md is the whole-cache restore's design (step 0: the whole cache, deleted
 and uploaded from one copy before every warm start, checked against a SHA-256 list); keeping the owner's own
-folders aside is our change. waveydude asked for the caches line (which caches moved, that they went back, what a warm start reused).
+folders aside is our change. GrowingBlackBeans found that websrv's listings follow links and proposed renaming
+aside instead of deleting, and asked for the ProsperoMgr launch; the ProsperoMgr calls are those of
+notmaj0r's ProsperoMgr (GPL-3.0). waveydude asked for the caches line (which caches moved, that they went back, what a warm start reused).
 GrowingBlackBeans pointed out that the recipe sits in the folder the cold option moves, which is why the shader
 set now stays in place. The store line pattern and the cold, warm and half classes are those of `tools/stk`
 (waveydude's scorer with GrowingBlackBeans' run contract changes). The fresh boot check and the reading of

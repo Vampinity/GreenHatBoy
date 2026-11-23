@@ -8,8 +8,11 @@ folders, as they are, nothing picked file by file:
                                              vulkan_pipelines.bin among them, the JIT list, everything in it)
   cache        <app.data_dir>/cache         (the driver's disk caches, cache/radv among them)
 
-The runner does the same when it is started with --warm-copy <copy folder>, with one change for a console that
-someone also plays on: THE OWNER'S OWN TWO FOLDERS ARE NEVER DELETED.
+The runner does the same when it is started with --warm-copy <copy folder>, with two changes for a console that
+someone also plays on: THE OWNER'S OWN TWO FOLDERS ARE NEVER DELETED, AND NOTHING ELSE IS EITHER. Where the steps
+say "delete", the runner renames the folder aside instead, in its own folder, once, by its top name:
+
+  <folder>.old-<YYYYMMDD-HHMMSS>   (a test cache that was live; kept on the console, never deleted by the runner)
 
   1. Once, at the start of the batch: the copy is checked against its SHA-256 list. With the app closed, each of
      the owner's two folders is listed (every path and size) and renamed, in its own folder, to
@@ -17,13 +20,28 @@ someone also plays on: THE OWNER'S OWN TWO FOLDERS ARE NEVER DELETED.
      stops (and they go back).
   2. Before every start: the copy is checked against its SHA-256 list again, the app must be closed, and the
      owner's folders are listed again and must still be the same as before they moved. Only then the two live
-     folders (what the copy and the starts put there) are deleted whole, and the copy is uploaded whole. The new
-     live folders are listed: the same folders, files and sizes as the copy. Then a sample of the uploaded files
-     is read back and compared byte for byte (read_back).
+     folders (what the copy and the starts put there) are renamed aside to <folder>.old-<time>, and the copy is
+     uploaded whole into new folders. The new live folders are listed: the same folders, files and sizes as the
+     copy. Then a sample of the uploaded files is read back and compared byte for byte (read_back).
   3. At the end of the batch, also after a crash, a stop, a tool error or Ctrl-C, once the app is closed: the
-     test folders are deleted, the owner's folders renamed back, and their listing must be the one taken before
-     they moved. If the app is still open (a freeze) or the console does not answer, nothing moves yet: the
-     batch stops with NOT BACK and the next --go (any plan) or --restore-env --go puts them back first.
+     test folders are renamed aside to <folder>.old-<time>, the owner's folders renamed back, and their listing
+     must be the one taken before they moved. If the app is still open (a freeze) or the console does not answer,
+     nothing moves yet: the batch stops with NOT BACK and the next --go (any plan) or --restore-env --go puts them
+     back first.
+
+Every start leaves one whole test cache per folder on the console (as big as the copy). The batch summary and
+warm-note.json list each <folder>.old-<time> folder; remove them by hand (any FTP client) once you no longer need
+them. Nothing in this runner deletes them.
+
+Why renames and no deletes (GrowingBlackBeans, PR 38, 23 Nov 2026): websrv's fs?fmt=json listing stats each entry
+with fstatat() without AT_SYMLINK_NOFOLLOW (websrv src/fs.c), and its FTP server's LIST and MLSD use stat(), so a
+link to a folder lists as an ordinary folder ("d"), and a dangling link is left out. No listing this runner reads
+can tell a link from a folder. A delete that walks such a listing would go through a link and delete what it
+points at. A rename does not: rename(2) moves the name it is given, and if that name is a link, only the link
+moves. So the runner never walks a listing to write anything: the only writes on a folder that was already there
+are the single renames of the top folders; every upload goes into folders this runner has just made itself (MKD
+of a name that was not there). The walks that remain only read (listings to compare, read-backs), and a walk stops
+on any entry that is not plainly "d" or "-", and below 40 folders (a link loop).
 
 A copy is made once with --make-warm-copy <folder> --go (reads only, the app closed): both live folders are
 copied to this computer, with manifest.json (every folder, file and size), SHA256SUMS and copy.json. The copy
@@ -31,30 +49,37 @@ holds the console's folder paths, file names, sizes and hashes. No address, no f
 
 Rules, all enforced here:
   - A listing that does not answer, or answers with something unclear, is "unknown", never "not there": the
-    step stops. Nothing is deleted on a guess.
-  - Writes go only to the two live folders and below (MKD, STOR, DELE, RMD), and to the two renames
-    <live> <-> <live>.warm-owner-aside (write_ok, rename_ok). Nothing under an aside name is ever written or
-    deleted. The runner's console class checks the same rules again before it sends a write.
+    step stops. Nothing is renamed on a guess.
+  - Writes: MKD and STOR only in the two live folders and below; no DELE and no RMD at all; and three renames
+    only: <live> -> <live>.warm-owner-aside and back, and <live> -> <live>.old-<time> (write_ok, rename_ok).
+    Nothing under an aside or .old- name is ever written. The runner's console class checks the same rules again
+    before it sends a write.
   - Before a rename a listing taken right then shows the source there and the target not there (the console's
-    RNTO replaces an existing target); a listing right after shows it done.
-  - A live folder is deleted only after the owner's aside folders were listed again right then and found the same
-    as before they moved, so what sits in the live place was put there by this tool or by a test start.
+    RNTO replaces an existing target); a listing right after shows it done. If a rename cannot be done, the step
+    stops and says so; nothing else is tried in its place.
+  - A live folder is renamed aside only after the owner's aside folders were listed again right then and found
+    the same as before they moved, so what sits in the live place was put there by this tool or by a test start.
   - An .warm-owner-aside folder that this computer has no note of is never touched: look by hand.
-  - The note (what is where, the listings before) is written on this computer before every write on the console.
+  - The note (what is where, the listings before, every .old- folder) is written on this computer before every
+    write on the console.
   - The app must be closed: the runner's own check (no sandbox mounts), the three logs the same size over QUIET
     seconds, and no test-quit lying in the data folder.
 
-Ported from our own night kit's restore tool (22 Nov 2026), in this runner's style. Standard library only.
+Ported from our own night kit's restore tool (22 Nov 2026), in this runner's style; deletes replaced by renames
+(23 Nov 2026). Standard library only.
 """
 import hashlib
 import json
 import os
 import posixpath
+import re
 import shutil
 import time
 from pathlib import Path
 
 ASIDE = ".warm-owner-aside"
+OLD = ".old-"  # <live>.old-<YYYYMMDD-HHMMSS>[-n]: a test cache renamed aside, never deleted by the runner
+OLD_TAIL = re.compile(r"\.old-\d{8}-\d{6}(-[1-9])?")
 NOTE_NAME = "warm-note.json"
 LOG_NAME = "warm.log"
 QUIET = 20.0  # seconds; the game logs a heartbeat about every 15 s
@@ -67,7 +92,7 @@ NOTHING_LEFT = "no owner cache folder is left aside"
 
 
 class WarmRefused(Exception):
-    """The step did not go ahead. Nothing was deleted (and anything renamed is back)."""
+    """The step did not go ahead. Nothing was written on the console (and anything renamed is back)."""
 
 
 class WarmFailed(Exception):
@@ -96,20 +121,22 @@ def live_of(path, data):
 
 
 def write_ok(path, data):
-    """MKD, STOR, DELE and RMD only in a live cache folder (or the folder itself), never under an aside name."""
+    """MKD and STOR only in a live cache folder (or the folder itself), never under an aside or .old- name."""
     parts = path.split("/")
-    return (live_of(path, data) is not None and ASIDE not in path and ".." not in parts and "." not in parts
-            and "" not in parts[1:])
+    return (live_of(path, data) is not None and ASIDE not in path and OLD not in path and ".." not in parts
+            and "." not in parts and "" not in parts[1:])
 
 
-def delete_ok(path, data):
-    """DELE: a file inside a live cache folder, never the folder itself."""
-    return write_ok(path, data) and path not in [tree for _, tree in trees(data)]
+def old_ok(source, target, data):
+    """A live cache folder renamed aside to <live>.old-<YYYYMMDD-HHMMSS>[-n], in its own folder. One way only."""
+    return (any(source == tree for _, tree in trees(data)) and target.startswith(source)
+            and OLD_TAIL.fullmatch(target[len(source):]) is not None)
 
 
 def rename_ok(source, target, data):
-    """The only two renames: a live cache folder to its aside name, and back."""
-    return any((source, target) in ((tree, tree + ASIDE), (tree + ASIDE, tree)) for _, tree in trees(data))
+    """The only renames: a live cache folder to its aside name and back, and a live cache folder to an .old- name."""
+    return (any((source, target) in ((tree, tree + ASIDE), (tree + ASIDE, tree)) for _, tree in trees(data))
+            or old_ok(source, target, data))
 
 
 def digest(files, dirs):
@@ -304,19 +331,49 @@ class WarmCache:
         if found is None or posixpath.basename(target) not in found or posixpath.basename(source) in found:
             raise WarmFailed(f"the rename {source} -> {target} does not show in the listing")
 
-    def remove_tree(self, writer, path):
-        """A live cache folder deleted whole: every file (DELE), every folder deepest first (RMD), the folder."""
+    def set_old(self, writer, path, note, keep, why):
+        """A live cache folder renamed aside whole to <path>.old-<time>, in its own folder: one RNTO on the top name,
+        nothing walked, nothing deleted (if the name is a link, only the link moves). The new name goes into the note
+        before the rename. Returns the new name, or None when there is no such folder. Raises WarmFailed when the
+        rename cannot be done (nothing else is tried in its place)."""
         if path not in [tree for _, tree in self.trees]:
-            raise WarmFailed(f"{path} is not a live cache folder: not deleting it")
-        files, dirs = self.walk(path)
-        for rel in sorted(files):
-            self._write(writer, "dele", f"{path}/{rel}")
-        for d in sorted(dirs, key=lambda x: (-x.count("/"), x)):
-            self._write(writer, "rmd", f"{path}/{d}")
-        self._write(writer, "rmd", path)
-        if self.present(path):
-            raise WarmFailed(f"{path} is still there after the delete")
-        return len(files), sum(files.values())
+            raise WarmFailed(f"{path} is not a live cache folder: not renaming it")
+        folder = posixpath.dirname(path)
+        found = self.entries(folder)
+        if found is None:
+            raise Unclear(f"{folder} cannot be listed")
+        name = posixpath.basename(path)
+        if name not in found:
+            return None
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        free = [f"{path}{OLD}{stamp}{tail}" for tail in [""] + [f"-{n}" for n in range(1, 10)]
+                if f"{name}{OLD}{stamp}{tail}" not in found]
+        if not free:
+            raise WarmFailed(f"no free {OLD}{stamp} name for {path}: not renaming it")
+        target = free[0]
+        entry = {"from": path, "to": target, "why": why, "state": "maybe"}
+        note.setdefault("old", []).append(entry)
+        keep(note)
+        try:
+            self.rename(writer, path, target)
+        except (WarmFailed,) + self.errors as error:
+            raise WarmFailed(f"COULD NOT RENAME {path} ASIDE to {posixpath.basename(target)} ({error}): stopped "
+                             "there, nothing deleted") from error
+        entry["state"] = "kept"
+        keep(note)
+        self.say(f"Whole-cache restore: the test cache {path} renamed aside to {posixpath.basename(target)} (kept on "
+                 "the console; remove it by hand when you no longer need it)")
+        return target
+
+    def old_folders(self):
+        """The <live>.old-<time> folders on the console now (reads only), for the summary."""
+        found = []
+        for _, tree in self.trees:
+            folder, name = posixpath.split(tree)
+            for entry in sorted(self.entries(folder) or {}):
+                if entry.startswith(name + OLD) and OLD_TAIL.fullmatch(entry[len(name):]):
+                    found.append(f"{folder}/{entry}")
+        return found
 
     def upload_tree(self, writer, local_root, path, files, dirs, sums):
         """The copy's folder uploaded. Each file is hashed again right before it goes, so a copy that changed on
@@ -451,8 +508,9 @@ class WarmCache:
     # ---- before every start
 
     def restore(self, copy_folder, note, keep):
-        """The copy put in place of the live folders. Returns the record of this restore. Raises WarmRefused
-        (nothing deleted) or WarmFailed (written; the owner's folders are still aside, the note says so)."""
+        """The copy put in place of the live folders (those are renamed aside to .old-<time>, never deleted).
+        Returns the record of this restore. Raises WarmRefused
+        (nothing written) or WarmFailed (written; the owner's folders are still aside, the note says so)."""
         started = time.monotonic()
         manifest, info, total = check_copy(copy_folder, self.data)
         copy_folder = Path(copy_folder)
@@ -467,14 +525,14 @@ class WarmCache:
         self.say("Whole-cache restore: the owner's folders listed again under their aside names: the same as before")
         note["live"] = "partial"
         keep(note)
-        removed, uploaded_at = [], None
+        moved, uploaded_at = [], None
         writes_before = self.writes
         try:
             with self.console.warm_writer() as writer:
                 for key, path in self.trees:
-                    if self.present(path):
-                        n, size = self.remove_tree(writer, path)
-                        removed.append({"tree": key, "files": n, "bytes": size})
+                    target = self.set_old(writer, path, note, keep, "live before a restore")
+                    if target:
+                        moved.append({"tree": key, "to": target})
                 uploaded_at = time.monotonic()
                 for key, path in self.trees:
                     tree = manifest["trees"].get(key)
@@ -482,7 +540,7 @@ class WarmCache:
                         self.upload_tree(writer, copy_folder / key, path, tree["files"], tree["dirs"],
                                          manifest["sha256"][key])
             upload_seconds = time.monotonic() - uploaded_at
-            record = {"copy": copy_folder.name, "copy_made": info.get("made"), "removed": removed, "trees": {}}
+            record = {"copy": copy_folder.name, "copy_made": info.get("made"), "set_old": moved, "trees": {}}
             for key, path in self.trees:
                 tree = manifest["trees"].get(key)
                 if tree is None:
@@ -525,8 +583,8 @@ class WarmCache:
     # ---- at the end (and the start-up check)
 
     def back(self, note, keep, check_closed=True):
-        """The owner's folders back in their place, the test folders deleted. (True, "") when each owner folder
-        is back and its listing is the one taken before it moved. Moves nothing while the app may be open, and
+        """The owner's folders back in their place, the test folders renamed aside to .old-<time>. (True, "") when
+        each owner folder is back and its listing is the one taken before it moved. Moves nothing while the app may be open, and
         nothing when an owner folder is not where the note says, or not as it was."""
         if note.get("status") not in OPEN:
             return True, ""
@@ -573,10 +631,8 @@ class WarmCache:
             with self.console.warm_writer() as writer:
                 for key, what in plan:
                     tree = note["trees"][key]
-                    if what in ("swap", "drop_live") and self.present(tree["path"]):
-                        n, size = self.remove_tree(writer, tree["path"])
-                        self.say(f"Whole-cache restore: the test cache {tree['path']} deleted ({n} files, "
-                                 f"{human(size)})")
+                    if what in ("swap", "drop_live"):
+                        self.set_old(writer, tree["path"], note, keep, "live at the batch end")
                     if what == "swap":
                         tree["state"] = "maybe_back"
                         keep(note)

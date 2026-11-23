@@ -78,6 +78,23 @@ GrowingBlackBeans asked for it on PR #38 (his `warm-run-steps.md`, step 0).
 | `tests/test_cold_start.py` | a fake FTP session for the restore's writes, and 13 new cases (29 to 41) |
 | `README.md`, `GUIDE.md` | the warm control section, what it writes on the console, the tests |
 
+## No deletes, and a ProsperoMgr launcher, 23 Nov (evening)
+
+Asked for by GrowingBlackBeans on PR #38: websrv's `fs?fmt=json` listing follows links (`src/fs.c`: `fstatat`
+without `AT_SYMLINK_NOFOLLOW`), so a delete that walks it could go through a link; and his console starts titles
+with ProsperoMgr, not websrv's `/launch`.
+
+| File | What |
+|---|---|
+| `warm_cache.py` | `remove_tree` and `delete_ok` are gone. A live folder that must make way (before every restore, and at the batch end) is renamed aside whole with one rename to `<folder>.old-<YYYYMMDD-HHMMSS>[-n]` (`set_old`), noted in `warm-note.json` ("old") before the rename, and kept. `rename_ok` allows that one more rename (`old_ok`: a live folder to its own `.old-` name, one way, strict pattern); `write_ok` refuses anything under an `.old-` name. A rename that cannot be done stops the step with `COULD NOT RENAME ... ASIDE`. `old_folders` lists them (reads only). The walk stays, for reads only |
+| `auto-run.py` | `WarmWriter.dele` and `WarmWriter.rmd` are gone (the restore can no longer send `DELE` or `RMD`). The plan print says how many test caches a plan leaves on the console; `summary.md` lists every `.old-` folder. New `--launcher websrv|prosperomgr`, `--launcher-host`, `--launcher-port`, `--check-launcher`: `Batch.launch` makes one ProsperoMgr launch call (no websrv retry) and stops the start as "did not start" on a refusal; `launcher_check_command` reads the running title and temperatures |
+| `launchers.py` | **New.** ProsperoMgr's `GET /api/titles/running`, `POST /api/titles/launch` and `GET /api/thermal`, read from its public source (notmaj0r/ProsperoMgr commit 231363b; the same in release v1.2.1). Starts nothing while any big app runs; a notification-only launch or an error is a refusal |
+| `runner_config.py`, `runner-config.example.json` | a `launcher` setting: `kind`, `host` (empty: the console's), `port` (7070) |
+| `restore-save.py` | slots not in the backup are no longer deleted file by file from a listing: each is moved with one rename to `<title>.old-<time>-<slot>` beside the save folder, and named in the last line |
+| `tests/test_no_delete.py` | **New**, 7 cases (N1 to N7): links inside a test cache, the live folder itself a link, a refused rename, the plan print, a save slot that is a link, the ProsperoMgr calls, `--check-launcher` |
+| `tests/test_cold_start.py` | the stand-in lists like websrv (links followed, a dangling link left out); its FTP session keeps `DELE`/`RMD` as the server does them so a case could show an old delete, and every case now checks that none is sent; cases 29, 36 and 38 follow the renames |
+| `README.md`, `GUIDE.md` | why renames and not deletes, the `.old-` folders and the room they take, the launcher and what it does not change (reads still go through websrv) |
+
 ## Not in this folder
 
 My queue (several plans in a row), my result tool, its flash meter, the tool that cuts a `LOOK` check from a
@@ -107,4 +124,9 @@ loads it only for a plan with `live`, which this folder does not support.
   folder this computer has no note of, without the hash of each file right before its upload, without the
   refusal of unreadable logs in the closed check, and without the aside check before a new copy (9 of 9).
 
-Not checked: any contact with a console, OBS, a save put-back, and Linux.
+- 23 Nov (evening): the offline tests, 51 of 51 (44 + 7), on Python 3.11 and 3.15 (macOS); `lint-scripts.py`
+  flags nothing. The new link cases run against the 31ace18 `warm_cache.py` and `restore-save.py` in a scratch copy
+  fail as they should: the files behind the links are deleted there (N1, N2, N5), and a refused rename does not
+  stop it (N3).
+
+Not checked: any contact with a console, OBS, a save put-back, ProsperoMgr, and Linux.

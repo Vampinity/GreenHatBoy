@@ -64,11 +64,19 @@ Whole-cache restore (23 Nov 2026, GrowingBlackBeans' warm-run-steps.md step 0): 
 At the batch start, with the app closed, the owner's <data>/user/cache and <data>/cache are listed and
 renamed to <name>.warm-owner-aside (never deleted). Before every start the copy is checked against its
 SHA-256 list, the owner's folders are listed again and must be unchanged, then the two live folders are
-deleted whole and the copy is uploaded whole, listed (same files and sizes) and partly read back byte for
-byte. At the end (also after a stop, a crash or Ctrl-C, once the app is closed) the test folders go and the
-owner's folders are renamed back, checked by a listing. Anything that does not match refuses. Make the copy
-once with --make-warm-copy <folder> --go (reads only), check it with --check-warm-copy <folder>. Not with a
-cold start in the same batch. See warm_cache.py.
+renamed aside to <name>.old-<time> (one rename each, nothing walked, nothing deleted) and the copy is
+uploaded whole into new folders, listed (same files and sizes) and partly read back byte for byte. At the
+end (also after a stop, a crash or Ctrl-C, once the app is closed) the test folders are renamed aside the
+same way and the owner's folders are renamed back, checked by a listing. Anything that does not match
+refuses. The .old- folders stay on the console (one whole cache per start) for the owner to remove by hand;
+summary.md lists them. Make the copy once with --make-warm-copy <folder> --go (reads only), check it with
+--check-warm-copy <folder>. Not with a cold start in the same batch. See warm_cache.py.
+
+Launcher (23 Nov 2026, for a console without websrv's /launch): --launcher websrv (default, /launch as
+always) or --launcher prosperomgr (ProsperoMgr's POST /api/titles/launch, port 7070 unless set in
+runner-config.json "launcher"). --check-launcher --go asks the launcher for the running title (and
+ProsperoMgr for its temperatures) and starts nothing. The runner still reads the console's files, logs and
+listings through websrv's /fs: --launcher changes only how the app is started. See launchers.py.
 
 Added 12 Nov 2026:
   - <plan>.stop.json next to a plan holds early-stop rules (fired, aid-control, clear; stop-rules.py, which
@@ -118,6 +126,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import runner_config  # noqa: E402  every per-person setting comes from runner-config.json
 import cold_caches  # noqa: E402  EDEN_TEST_COLD=1 / --cold: the shader store and driver cache aside for a start
 import warm_cache  # noqa: E402  --warm-copy: the whole cache put back from one copy before every start
+import launchers  # noqa: E402  --launcher: websrv's /launch (default) or ProsperoMgr's API
 
 SETTINGS = runner_config.load()
 APP = SETTINGS["app"]["id"]
@@ -695,6 +704,16 @@ def script_lint(script, tools):
     return [line.strip() for line in done.stdout.splitlines() if line.startswith("    ")]
 
 
+def warm_copy_size(folder):
+    """ " (<size>)" of a whole-cache copy by its manifest (no hashing; the check comes later), or ""."""
+    try:
+        manifest = json.loads((Path(folder) / "manifest.json").read_text())
+        size = sum(sum(tree["files"].values()) for tree in manifest["trees"].values())
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return ""
+    return f" ({warm_cache.human(size)})"
+
+
 def print_plan(tests, args, blocks):
     total = sum(test.seconds for test in tests)
     configured = [test for test in tests if test.config is not None]
@@ -738,8 +757,15 @@ def print_plan(tests, args, blocks):
     if getattr(args, "warm_copy", None) is not None:
         print(f"\nWHOLE-CACHE RESTORE from the copy {args.warm_copy.name}: at the start the owner's {DATA}/user/cache and "
               f"{DATA}/cache are renamed to *{warm_cache.ASIDE} (never deleted); before every start the copy is checked "
-              "against its SHA-256 list, the two live folders are deleted whole and the copy uploaded whole, listed and "
-              "partly read back; at the end the owner's folders go back, checked by a listing.")
+              "against its SHA-256 list, the two live folders are renamed aside to *.old-<time> (nothing is deleted) "
+              "and the copy uploaded whole, listed and partly read back; at the end the test folders are renamed aside "
+              "the same way and the owner's folders go back, checked by a listing.")
+        print(f"   ROOM ON THE CONSOLE: every start leaves its whole test cache behind as *.old-<time> (renamed aside "
+              f"before the next start, or at the end): {len(tests)} set(s) for this plan, each about as big as the copy"
+              + warm_copy_size(args.warm_copy) + ". The runner never deletes them: remove them by hand when you "
+              "no longer need them (summary.md lists them).")
+    if getattr(args, "launcher", "websrv") != "websrv":
+        print(f"\nLAUNCHER: {launchers.describe(args)}. Files, logs and listings are still read through websrv's /fs.")
     hang = [test for test in tests if test.may_hang]
     if hang:
         print(f"\nWARNING: '{hang[0].name}' can hang the GPU, and a GPU hang has frozen the whole console. "
@@ -959,8 +985,9 @@ class Console:
 
 class WarmWriter:
     """The whole-cache restore's writes on one FTP session. Each is checked here against warm_cache.py's rules
-    (write_ok, delete_ok, rename_ok) before it is sent: only inside <data>/user/cache and <data>/cache, never
-    under a .warm-owner-aside name, and the one rename pair. warm_cache.py lists right before and after."""
+    (write_ok, rename_ok) before it is sent: MKD and STOR only inside <data>/user/cache and <data>/cache, never
+    under a .warm-owner-aside or .old- name; renames only live <-> live.warm-owner-aside and live ->
+    live.old-<time>. warm_cache.py lists right before and after."""
 
     def __init__(self, client):
         self.client = client
@@ -979,13 +1006,9 @@ class WarmWriter:
         with open(local, "rb") as handle:
             self.client.storbinary(f"STOR {path}", handle)
 
-    def dele(self, path):
-        self._check(warm_cache.delete_ok(path, DATA), "DELE", path)
-        self.client.sendcmd(f"DELE {path}")  # not client.delete(): ftpsrv answers DELE with 226
-
-    def rmd(self, path):
-        self._check(warm_cache.write_ok(path, DATA), "RMD", path)
-        self.client.sendcmd(f"RMD {path}")
+    # No dele and no rmd: the whole-cache restore deletes nothing (23 Nov 2026). websrv's and its FTP server's
+    # listings follow links, so a delete that walks them could go through a link; a live folder is renamed aside
+    # to <folder>.old-<time> instead, one RNTO on its top name (warm_cache.py).
 
     def rename(self, source, target):
         self._check(warm_cache.rename_ok(source, target, DATA), "RENAME", source, target)
@@ -1441,6 +1464,31 @@ def warm_copy_command(args):
     return 0
 
 
+def launcher_check_command(args):
+    """--check-launcher: reads only. Which title runs now, and for ProsperoMgr its temperatures. Starts nothing."""
+    print(f"Launcher: {launchers.describe(args)}")
+    if args.launcher == "websrv":
+        print("websrv's /launch has no call that only reads, so there is nothing to ask it. Nothing was sent.")
+        return 0
+    if not args.go:
+        print("Would ask GET /api/titles/running and GET /api/thermal. Nothing was sent; add --go.")
+        return 0
+    launcher = launchers.make(args, NoAnswer)
+    try:
+        running = launcher.running()
+        thermal = launcher.thermal()
+    except (NoAnswer, launchers.LaunchRefused) as error:
+        print(f"No clear answer: {error}")
+        return 1
+    print(f"Running title: {running or 'none'}" + (" (this runner's app)" if running == APP else ""))
+    if thermal and thermal.get("ok"):
+        print("Temperatures: " + ", ".join(f"{k} {thermal[k]} C" for k in ("cpu_c", "soc_c", "m2_c", "hottest_c")
+                                          if isinstance(thermal.get(k), int)))
+    else:
+        print(f"Temperatures: none given ({thermal!r}); ProsperoMgr reads them only with its supporting payloads")
+    return 0
+
+
 def restore_command(args):
     """--restore-env: finish the job of a run that could not put env.txt back. With --go it also puts back
     any shader store or driver cache a cold start left aside (the note in the state file, and any .cold-aside-
@@ -1592,6 +1640,7 @@ class Batch:
     def __init__(self, args, tests, state):
         self.args, self.tests, self.state = args, tests, state
         self.console = Console(args)
+        self.launcher = launchers.make(args, NoAnswer)  # None: websrv's /launch
         self.folder = new_batch_folder(args.out_root, args.plan.stem)
         self.log = open(self.folder / "batch.log", "a")
         self.results = []
@@ -2210,7 +2259,8 @@ class Batch:
                 self.warm_note = self.warm.last_note  # cut off inside set_aside: the batch end puts back what moved
 
     def warm_restore(self, run):
-        """Before a start: the live cache folders deleted and the copy uploaded whole (warm_cache.WarmCache.restore)."""
+        """Before a start: the live cache folders renamed aside to .old-<time> and the copy uploaded whole
+        (warm_cache.WarmCache.restore). Nothing is deleted."""
         if self.warm_note is None or self.args.warm_copy is None:
             return
         self.warm.say = self.warm_say
@@ -2218,7 +2268,7 @@ class Batch:
             record = self.warm.restore(self.args.warm_copy, self.warm_note, self.warm_keep())
         except warm_cache.WarmRefused as error:
             run.result["warm_restore"] = {"ok": False, "why": str(error)}
-            raise Stop("not_started", f"whole-cache restore refused, nothing deleted: {error}") from error
+            raise Stop("not_started", f"whole-cache restore refused, nothing written: {error}") from error
         except warm_cache.WarmFailed as error:
             run.result["warm_restore"] = {"ok": False, "why": str(error)}
             raise Stop("warm_failed", f"{error}. The owner's caches stay aside until the batch end puts them "
@@ -2229,7 +2279,8 @@ class Batch:
         self.warm_say(f"Whole-cache restore before {run.test.name}: done ({run.folder.name})")
 
     def warm_back(self):
-        """At the batch end: the test caches deleted and the owner's caches renamed back, once the app is closed.
+        """At the batch end: the test caches renamed aside to .old-<time> and the owner's caches renamed back, once
+        the app is closed.
         When they cannot go back the batch stops; the state file keeps the way back for the next --go."""
         note = self.warm_note
         if note is None or note.get("status") not in warm_cache.OPEN:
@@ -2372,6 +2423,15 @@ class Batch:
     def launch(self):
         self.launched_any = True
         self.closed_at = None  # from here a close seen before this start says nothing
+        if self.launcher is not None:
+            # --launcher prosperomgr: one call, no retry. websrv's 503 retries below rest on /launch killing a
+            # starting app; ProsperoMgr's launch does not, and what a second launch does there is not known.
+            try:
+                self.launcher.launch(APP)
+            except launchers.LaunchRefused as error:
+                raise Stop("not_started", f"ProsperoMgr did not start the app: {error}") from error
+            self.say("ProsperoMgr: launch answered ok")
+            return
         for attempt in range(3):
             status = self.console.launch()
             if status == 200:
@@ -3060,6 +3120,13 @@ class Batch:
                 lines.append("- the owner's caches set aside for the batch: " + (", ".join(owner) or "none there") +
                              "; " + ("back at the end, each listing the same as before"
                                      if warm_note.get("status") == "back" else "**NOT BACK**"))
+                olds = warm_note.get("old") or []
+                if olds:
+                    lines.append(f"- {len(olds)} test cache folder(s) renamed aside and KEPT on the console (the runner "
+                                 "deletes nothing; remove them by hand when you no longer need them): " +
+                                 ", ".join(f"`{e['to']}`" + ("" if e.get("state") == "kept" else
+                                                             " (the rename did not show; look by hand)")
+                                           for e in olds))
             for result in results:
                 restored = result.get("warm_restore")
                 if restored and restored.get("ok"):
@@ -3154,6 +3221,16 @@ def parse_args():
                              "(reads only; the app must be closed; with --go)")
     parser.add_argument("--check-warm-copy", type=Path,
                         help="check a whole-cache copy against its SHA-256 list and manifest (this computer only)")
+    parser.add_argument("--launcher", choices=launchers.KINDS, default=SETTINGS["launcher"]["kind"],
+                        help="how the app is started: websrv (its /launch, the default) or prosperomgr (ProsperoMgr's "
+                             "POST /api/titles/launch; launchers.py). Files and logs are read through websrv either way")
+    parser.add_argument("--launcher-host", default=SETTINGS["launcher"]["host"] or None,
+                        help="ProsperoMgr's address (default: the console's)")
+    parser.add_argument("--launcher-port", type=int, default=SETTINGS["launcher"]["port"],
+                        help=f"ProsperoMgr's port (default {launchers.PROSPEROMGR_PORT})")
+    parser.add_argument("--check-launcher", action="store_true",
+                        help="with --go: ask the launcher which title runs (and ProsperoMgr its temperatures); starts "
+                             "nothing, writes nothing")
     parser.add_argument("--web-port", type=int, default=SETTINGS["console"]["web_port"])
     parser.add_argument("--ftp-port", type=int, default=SETTINGS["console"]["ftp_port"])
     parser.add_argument("--obs-host", default=SETTINGS["capture"]["obs_host"])
@@ -3208,11 +3285,15 @@ def parse_args():
     args = parser.parse_args()
     if not args.host:
         parser.error("no console address: give --host or set console.host in runner-config.json")
+    if args.launcher not in launchers.KINDS:
+        parser.error(f"launcher.kind {args.launcher!r} in runner-config.json: use one of {', '.join(launchers.KINDS)}")
     runner_config.use_console(args.host, args.web_port, args.ftp_port)  # the save tools started from here use the same console
-    if not args.restore_env and args.plan is None and not (args.make_warm_copy or args.check_warm_copy):
+    if not args.restore_env and args.plan is None and not (args.make_warm_copy or args.check_warm_copy
+                                                           or args.check_launcher):
         parser.error("name a plan file")
-    if sum(bool(x) for x in (args.restore_env, args.make_warm_copy, args.check_warm_copy, args.plan)) > 1:
-        parser.error("one at a time: a plan, --restore-env, --make-warm-copy or --check-warm-copy")
+    if sum(bool(x) for x in (args.restore_env, args.make_warm_copy, args.check_warm_copy, args.plan,
+                             args.check_launcher)) > 1:
+        parser.error("one at a time: a plan, --restore-env, --make-warm-copy, --check-warm-copy or --check-launcher")
     return args
 
 
@@ -3223,6 +3304,8 @@ def main():
         return restore_command(args)
     if args.make_warm_copy or args.check_warm_copy:
         return warm_copy_command(args)
+    if args.check_launcher:
+        return launcher_check_command(args)
     tests = load_plan(args.plan)
     if args.cold:
         for test in tests:
