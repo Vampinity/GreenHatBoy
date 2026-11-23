@@ -1,0 +1,120 @@
+Subject: [PATCH] EDEN_UP_MIC_DUMP=1: what a Switch 2 sysmix input stream's ring looks like (for the ocarina hum); off by default
+
+The Switch 2 Ocarina of Time plays the ocarina from a hum into the microphone. At boot it opens
+two sysmix input streams (kind 1): "InputStream-0<=1ch48kQ15<=AudioVirtualOutput0" and
+"InputStream-1<=1ch48kQ15<=TrueRawAudioIn", each 4800 frames of mono Q15 at 48 kHz in a 0xd000-byte
+ring. Eden fills neither. To feed the PS5 controller's mic into the second, where the samples go in
+the ring has to be known: only the two indices are (read at +0x44, write at +0x1004), and 0xd000
+bytes is far more than 4801 16-bit frames.
+
+With the switch, for each input stream: at open and at each attach/engage, every non-zero 32-bit
+word of the first 0x3000 bytes (at most 64), and while open both indices about once a second
+(EDEN_MIC_DUMP lines, at most 200 a session). The stream keeps CreateStream's kind for this.
+Nothing else changes, on or off.
+
+diff --git a/src/core/hle/service/audio/nx2_audio_device_manager.h b/src/core/hle/service/audio/nx2_audio_device_manager.h
+index 7464546..10eade8 100644
+--- a/src/core/hle/service/audio/nx2_audio_device_manager.h
++++ b/src/core/hle/service/audio/nx2_audio_device_manager.h
+@@ -17,6 +17,7 @@
+ 
+ #include <fmt/ranges.h>
+ 
++#include "common/pe_switch.h"
+ #include "common/string_util.h"
+ #include "core/core.h"
+ #include "core/core_timing.h"
+@@ -46,6 +47,8 @@ struct Nx2SysmixStream {
+     u32 frames{};
+     bool open{};
+     bool engaged{};
++    u32 kind{};           ///< CreateStream's kind: 1 for an input (a mic, or a device's loopback)
++    u32 dump_ticks{};     ///< EDEN_UP_MIC_DUMP: drains since the last index line
+     double owed_frames{};
+     u32 data_mode{};      ///< command 7's mode; 0 leaves the data event alone
+     s32 data_threshold{}; ///< free frames that signal the data event
+@@ -66,6 +69,39 @@ inline std::shared_ptr<Nx2SysmixStreams> Nx2SysmixStreamList() {
+     return list;
+ }
+ 
++// EDEN_UP_MIC_DUMP=1: what an input stream's ring looks like, to learn where a mic's samples go.
++// Ocarina of Time opens "InputStream-1<=1ch48kQ15<=TrueRawAudioIn" (kind 1, 4800 frames, mono Q15,
++// a 0xd000-byte buffer) to play the ocarina from a hum; only the two indices are known (read at
++// +0x44, write at +0x1004), and 0xd000 is far more than 4801 16-bit frames. At open and at each
++// engage: every non-zero 32-bit word of the first 0x3000 bytes (at most 64); while open, both
++// indices about once a second. At most 200 lines a session.
++inline bool Nx2MicDump() {
++    static const bool on = Common::PeSwitch("EDEN_UP_MIC_DUMP");
++    return on;
++}
++inline std::atomic<u32> nx2_mic_dump_lines{0};
++inline void Nx2MicDumpStream(Core::System& system, const Nx2SysmixStream& stream, const char* why) {
++    if (!Nx2MicDump() || stream.kind != 1 || !stream.buffer || nx2_mic_dump_lines.fetch_add(1) >= 200) {
++        return;
++    }
++    auto& memory = system.ApplicationMemory();
++    std::string words;
++    u32 found = 0;
++    const u64 span = (std::min<u64>)(stream.size, 0x3000);
++    for (u64 offset = 0; offset + 4 <= span && found < 64; offset += 4) {
++        const u32 value = memory.Read32(stream.buffer + offset);
++        if (value != 0) {
++            words += fmt::format(" {:#x}={:#x}", offset, value);
++            ++found;
++        }
++    }
++    LOG_INFO(Service_Audio,
++             "EDEN_MIC_DUMP stream {} {}: size {:#x}, {} frames, {} ch, {} Hz, type {}, engaged {}, "
++             "non-zero words in the first {:#x} bytes:{}",
++             stream.id, why, stream.size, stream.frames, stream.channels, stream.sample_rate,
++             stream.sample_type, stream.engaged, span, found == 0 ? std::string(" none") : words);
++}
++
+ // Switch 2 virtual output devices (nn::audio::ListVirtualOutputDevices and friends), reached through
+ // the object auddmg:u command 0 returns. Eden plays everything through one stereo 48 kHz output, so
+ // there is one virtual device. The nx2: name keeps the other commands auto-stubbed and logged.
+@@ -196,6 +232,7 @@ private:
+         if (const auto it = list->streams.find(stream_id); it != list->streams.end()) {
+             it->second->engaged = engaged;
+             it->second->owed_frames = 0;
++            Nx2MicDumpStream(system, *it->second, engaged ? "attach" : "detach");
+             if (it->second->state_event) {
+                 it->second->state_event->Signal(system.Kernel());
+             }
+@@ -297,6 +334,7 @@ private:
+             stream->frames = frames;
+             stream->owed_frames = 0;
+             stream->open = true;
++            Nx2MicDumpStream(system, *stream, "open");
+             stream->state_event->Signal(system.Kernel());
+         }
+         IPC::ResponseBuilder rb{ctx, 2};
+@@ -435,6 +473,12 @@ private:
+                 continue;
+             }
+             u32 filled = (write + capacity - read) % capacity;
++            if (Nx2MicDump() && stream->kind == 1 && ++stream->dump_ticks >= 200 &&
++                nx2_mic_dump_lines.fetch_add(1) < 200) { // every 200 drains of 5 ms: about 1 s
++                stream->dump_ticks = 0;
++                LOG_INFO(Service_Audio, "EDEN_MIC_DUMP stream {} indices: read(+0x44) {} write(+0x1004) {} of {}, engaged {}",
++                         id, read, write, capacity, stream->engaged);
++            }
+             if (stream->engaged) {
+                 stream->owed_frames += stream->sample_rate *
+                                        std::chrono::duration<double>(DrainInterval).count();
+@@ -464,6 +508,7 @@ private:
+         const auto name = Common::StringFromBuffer(ctx.ReadBuffer(0));
+         auto stream = std::make_shared<Nx2SysmixStream>();
+         stream->buffer = buffer;
++        stream->kind = kind;
+         stream->size = size;
+         {
+             std::scoped_lock lk{streams->mutex};
+@@ -489,6 +534,7 @@ private:
+                 if (const auto it = streams->streams.find(id); it != streams->streams.end()) {
+                     it->second->engaged = engaged;
+                     it->second->owed_frames = 0;
++                    Nx2MicDumpStream(system, *it->second, engaged ? "engage" : "disengage");
+                     if (it->second->state_event) {
+                         it->second->state_event->Signal(system.Kernel());
+                     }

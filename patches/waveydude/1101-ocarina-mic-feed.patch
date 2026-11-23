@@ -1,0 +1,166 @@
+diff --git a/src/core/hle/service/audio/nx2_audio_device_manager.h b/src/core/hle/service/audio/nx2_audio_device_manager.h
+index 10eade8..63da122 100644
+--- a/src/core/hle/service/audio/nx2_audio_device_manager.h
++++ b/src/core/hle/service/audio/nx2_audio_device_manager.h
+@@ -18,6 +18,10 @@
+ #include <fmt/ranges.h>
+ 
+ #include "common/pe_switch.h"
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
+ #include "common/string_util.h"
+ #include "core/core.h"
+ #include "core/core_timing.h"
+@@ -49,6 +53,9 @@ struct Nx2SysmixStream {
+     bool engaged{};
+     u32 kind{};           ///< CreateStream's kind: 1 for an input (a mic, or a device's loopback)
+     u32 dump_ticks{};     ///< EDEN_UP_MIC_DUMP: drains since the last index line
++    bool raw_mic{};       ///< an input stream named ...TrueRawAudioIn: the console's microphone
++    u64 mic_fed{}, mic_silence{}; ///< EDEN_UP_MIC_FEED: frames written, of them silence
++    u32 mic_ticks{};
+     double owed_frames{};
+     u32 data_mode{};      ///< command 7's mode; 0 leaves the data event alone
+     s32 data_threshold{}; ///< free frames that signal the data event
+@@ -64,11 +71,59 @@ struct Nx2SysmixStreams {
+ 
+ // Streams are created through audsmx:u but started and stopped through auddmg:u (AttachStream and
+ // DetachStream), so both services share one list.
++// The PS5 controller's mic (headless/mic_capture.cpp); absent in builds without it.
++extern "C" std::size_t eden_mic_read(std::int16_t* out, std::size_t frames) __attribute__((weak));
++
+ inline std::shared_ptr<Nx2SysmixStreams> Nx2SysmixStreamList() {
+     static const auto list = std::make_shared<Nx2SysmixStreams>();
+     return list;
+ }
+ 
++// EDEN_UP_MIC_FEED=1 (or auto, or <data>,<system index>,<game index> in hex): the PS5 controller's
++// microphone (EDEN_UP_MIC_PROBE, headless/mic_capture.cpp, eden_mic_read) goes into every raw mic
++// input stream ("...TrueRawAudioIn", 1 channel, Q15). Every drain (5 ms) while the stream is open,
++// the frames due at its rate are written at <data> + 2 * index (mono 16-bit, ring capacity being
++// frames + 1), as many as the ring has room for, and the system's index is moved past them; the
++// game's index is only read. With no mic sample to hand, silence is written, as a quiet mic would
++// give. Default layout: data +0x2000, system index +0x44, game index +0x1004. Lines: EDEN_MIC_FEED.
++struct Nx2MicFeed {
++    bool on{};
++    u64 data{}, system_index{}, game_index{};
++};
++inline const Nx2MicFeed& Nx2MicFeedLayout() {
++    static const Nx2MicFeed layout = [] {
++        Nx2MicFeed feed;
++        const char* value = std::getenv("EDEN_UP_MIC_FEED");
++        if (value == nullptr || value[0] == 0 || std::strcmp(value, "0") == 0 ||
++            std::strcmp(value, "off") == 0) {
++            return feed;
++        }
++        if (std::strcmp(value, "1") == 0 || std::strcmp(value, "auto") == 0 ||
++            std::strcmp(value, "true") == 0 || std::strcmp(value, "on") == 0) {
++            feed = {true, 0x2000, 0x44, 0x1004};
++            LOG_INFO(Service_Audio,
++                     "EDEN_UP_MIC_FEED: auto layout enabled: controller mic goes into raw mic streams: "
++                     "data at +0x2000, system index at +0x44, game index at +0x1004");
++            return feed;
++        }
++        unsigned long long data = 0, system_index = 0, game_index = 0;
++        if (std::sscanf(value, "%llx,%llx,%llx", &data, &system_index, &game_index) == 3 &&
++            data >= 0x10 && system_index + 4 <= 0x10000 && game_index + 4 <= 0x10000) {
++            feed = {true, data, system_index, game_index};
++            LOG_INFO(Service_Audio,
++                     "EDEN_UP_MIC_FEED: custom layout: data at +{:#x}, system index at +{:#x}, "
++                     "game index at +{:#x}",
++                     data, system_index, game_index);
++        } else {
++            LOG_WARNING(Service_Audio,
++                        "EDEN_UP_MIC_FEED={}: expected '1'/'auto' or '<data>,<system index>,<game index>' in hex; off",
++                        value);
++        }
++        return feed;
++    }();
++    return layout;
++}
++
+ // EDEN_UP_MIC_DUMP=1: what an input stream's ring looks like, to learn where a mic's samples go.
+ // Ocarina of Time opens "InputStream-1<=1ch48kQ15<=TrueRawAudioIn" (kind 1, 4800 frames, mono Q15,
+ // a 0xd000-byte buffer) to play the ocarina from a hum; only the two indices are known (read at
+@@ -334,6 +389,10 @@ private:
+             stream->frames = frames;
+             stream->owed_frames = 0;
+             stream->open = true;
++            if (stream->kind == 1) {
++                // Input streams (microphone / capture) are active as soon as they are open.
++                stream->engaged = true;
++            }
+             Nx2MicDumpStream(system, *stream, "open");
+             stream->state_event->Signal(system.Kernel());
+         }
+@@ -345,6 +404,7 @@ private:
+         {
+             std::scoped_lock lk{streams->mutex};
+             stream->open = false;
++            stream->engaged = false;
+             stream->state_event->Signal(system.Kernel());
+         }
+         IPC::ResponseBuilder rb{ctx, 2};
+@@ -479,6 +539,53 @@ private:
+                 LOG_INFO(Service_Audio, "EDEN_MIC_DUMP stream {} indices: read(+0x44) {} write(+0x1004) {} of {}, engaged {}",
+                          id, read, write, capacity, stream->engaged);
+             }
++            // EDEN_UP_MIC_FEED: the system writes a raw mic stream; the game reads it.
++            if (const auto& feed = Nx2MicFeedLayout();
++                feed.on && stream->raw_mic && stream->channels == 1 &&
++                feed.data + u64{capacity} * 2 <= stream->size) {
++                if (stream->open) {
++                    const u32 produced = memory.Read32(stream->buffer + feed.system_index);
++                    const u32 consumed = memory.Read32(stream->buffer + feed.game_index);
++                    if (produced < capacity && consumed < capacity) {
++                        stream->owed_frames += stream->sample_rate *
++                                               std::chrono::duration<double>(DrainInterval).count();
++                        const auto owed = static_cast<u32>(stream->owed_frames);
++                        stream->owed_frames -= owed;
++                        const u32 waiting = (produced + capacity - consumed) % capacity;
++                        const u32 room = capacity - 1 - waiting;
++                        const u32 count = (std::min)(owed, room);
++                        std::array<std::int16_t, 1024> samples{};
++                        const u32 wanted = (std::min<u32>)(count, samples.size());
++                        const std::size_t got =
++                            eden_mic_read != nullptr ? eden_mic_read(samples.data(), wanted) : 0;
++                        for (u32 i = 0; i < wanted; ++i) {
++                            memory.Write16(stream->buffer + feed.data + u64{(produced + i) % capacity} * 2,
++                                           static_cast<u16>(samples[i]));
++                        }
++                        memory.Write32(stream->buffer + feed.system_index, (produced + wanted) % capacity);
++                        stream->mic_fed += wanted;
++                        stream->mic_silence += wanted - got;
++                        if (++stream->mic_ticks >= 200 && nx2_mic_dump_lines.fetch_add(1) < 200) {
++                            stream->mic_ticks = 0; // about once a second
++                            const u32 new_waiting = (produced + wanted + capacity - consumed) % capacity;
++                            LOG_INFO(Service_Audio,
++                                     "EDEN_MIC_FEED stream {}: fed {} ({} mic, {} silence); "
++                                     "sys_idx {} game_idx {} (waiting {}) room {}",
++                                     id, stream->mic_fed, stream->mic_fed - stream->mic_silence,
++                                     stream->mic_silence, (produced + wanted) % capacity,
++                                     consumed, new_waiting, capacity - 1 - new_waiting);
++                        }
++                        if (stream->data_event && stream->data_mode != 0 && waiting + wanted > 0) {
++                            stream->data_event->Signal(system.Kernel());
++                        }
++                    }
++                }
++                continue;
++            }
++            if (stream->kind == 1) {
++                // Input streams with feed off: do not treat as output stream.
++                continue;
++            }
+             if (stream->engaged) {
+                 stream->owed_frames += stream->sample_rate *
+                                        std::chrono::duration<double>(DrainInterval).count();
+@@ -509,6 +616,7 @@ private:
+         auto stream = std::make_shared<Nx2SysmixStream>();
+         stream->buffer = buffer;
+         stream->kind = kind;
++        stream->raw_mic = kind == 1 && name.find("TrueRawAudioIn") != std::string::npos;
+         stream->size = size;
+         {
+             std::scoped_lock lk{streams->mutex};

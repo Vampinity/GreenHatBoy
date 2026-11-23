@@ -1,0 +1,94 @@
+Subject: [PATCH] W-34: EDEN_UP_MIC_FEED_REFERENCE=1, silence into the game's AudioVirtualOutput0 input stream (off by default)
+
+Ocarina of Time opens and attaches "InputStream-0<=1ch48kQ15<=AudioVirtualOutput0" every time it
+attaches its raw mic stream. Nothing wrote that stream: its read and write indices stayed 0/0 for
+whole sessions while the game read the mic at 48 kHz (9.40, W-32-mic-signal, 14 Nov). With Humming
+selected the game's volume gate opened but no song came; with Instruments it answered. Hypothesis:
+the stream is the reference (the game's own output) a voice pipeline subtracts from the mic, and
+Humming waits for it. With the switch (and EDEN_UP_MIC_FEED) set it gets silence at its rate, in
+the same ring layout as the mic feed, from the moment the game attaches it; the mic stream still
+takes all mic samples. EDEN_MIC_FEED lines for it say "(reference)". Unset: as before.
+
+diff --git a/src/core/hle/service/audio/nx2_audio_device_manager.h b/src/core/hle/service/audio/nx2_audio_device_manager.h
+--- a/src/core/hle/service/audio/nx2_audio_device_manager.h
++++ b/src/core/hle/service/audio/nx2_audio_device_manager.h
+@@ -55,6 +55,7 @@
+     u32 kind{};           ///< CreateStream's kind: 1 for an input (a mic, or a device's loopback)
+     u32 dump_ticks{};     ///< EDEN_UP_MIC_DUMP: drains since the last index line
+     bool raw_mic{};       ///< an input stream named ...TrueRawAudioIn: the console's microphone
++    bool output_loopback{}; ///< an input stream named ...AudioVirtualOutput...: the game's own output
+     u64 mic_fed{}, mic_silence{}; ///< EDEN_UP_MIC_FEED: frames written, of them silence
+     Common::Nx2MicLog::Pacer dump_pacer{}; ///< EDEN_MIC_DUMP index lines (common/nx2_mic_log.h)
+     Common::Nx2MicLog::Pacer feed_pacer{}; ///< EDEN_MIC_FEED lines
+@@ -134,6 +135,16 @@
+ // +0x44, write at +0x1004), and 0xd000 is far more than 4801 16-bit frames. At open and at each
+ // engage: every non-zero 32-bit word of the first 0x3000 bytes (at most 64); while open, both
+ // indices about once a second. At most 200 lines a session.
++/// EDEN_UP_MIC_FEED_REFERENCE=1 (W-34; exact "1", off by default; needs EDEN_UP_MIC_FEED): Ocarina of
++/// Time opens and attaches "InputStream-0<=1ch48kQ15<=AudioVirtualOutput0" together with its raw mic
++/// stream every time, and nothing wrote it: its indices stayed 0/0 for whole sessions while the game
++/// read the mic (9.40, 14 Nov). Taken to be the reference a voice pipeline subtracts from the mic
++/// (the game's own sound; a hypothesis), it gets silence at the stream's rate, with the same ring
++/// layout as the mic feed, once the game attaches it. Silence says "no game sound to subtract".
++inline bool Nx2MicFeedReference() {
++    static const bool on = Common::PeSwitch("EDEN_UP_MIC_FEED_REFERENCE");
++    return on;
++}
+ inline bool Nx2MicDump() {
+     static const bool on = Common::PeSwitch("EDEN_UP_MIC_DUMP");
+     return on;
+@@ -393,8 +404,9 @@
+             stream->frames = frames;
+             stream->owed_frames = 0;
+             stream->open = true;
+-            if (stream->raw_mic) {
+-                // Raw capture starts when the game attaches the stream.
++            if (stream->raw_mic || (stream->output_loopback && Nx2MicFeedReference())) {
++                // Raw capture (and its reference, with EDEN_UP_MIC_FEED_REFERENCE) starts when the
++                // game attaches the stream.
+                 stream->engaged = false;
+             } else if (stream->kind == 1) {
+                 // Preserve the existing startup behavior for other inputs.
+@@ -551,7 +563,8 @@
+             }
+             // EDEN_UP_MIC_FEED: the system writes a raw mic stream; the game reads it.
+             if (const auto& feed = Nx2MicFeedLayout();
+-                feed.on && stream->raw_mic && stream->channels == 1 &&
++                feed.on && stream->channels == 1 &&
++                (stream->raw_mic || (stream->output_loopback && Nx2MicFeedReference())) &&
+                 feed.data + u64{capacity} * 2 <= stream->size) {
+                 if (stream->engaged) {
+                     const u32 produced = memory.Read32(stream->buffer + feed.system_index);
+@@ -566,8 +579,10 @@
+                         const u32 count = (std::min)(owed, room);
+                         std::array<std::int16_t, 1024> samples{};
+                         const u32 wanted = (std::min<u32>)(count, samples.size());
+-                        const std::size_t got =
+-                            eden_mic_read != nullptr ? eden_mic_read(samples.data(), wanted) : 0;
++                        // The reference stream gets silence; only the mic stream takes mic samples.
++                        const std::size_t got = stream->raw_mic && eden_mic_read != nullptr
++                                                    ? eden_mic_read(samples.data(), wanted)
++                                                    : 0;
+                         for (u32 i = 0; i < wanted; ++i) {
+                             memory.Write16(stream->buffer + feed.data + u64{(produced + i) % capacity} * 2,
+                                            static_cast<u16>(samples[i]));
+@@ -581,9 +596,9 @@
+                         if (Common::Nx2MicLog::Due(stream->feed_pacer, consumed, feed_lines)) {
+                             const u32 new_waiting = (produced + wanted + capacity - consumed) % capacity;
+                             LOG_INFO(Service_Audio,
+-                                     "EDEN_MIC_FEED stream {}: fed {} ({} mic, {} silence); "
++                                     "EDEN_MIC_FEED stream {}{}: fed {} ({} mic, {} silence); "
+                                      "sys_idx {} game_idx {} (waiting {}) room {}",
+-                                     id, stream->mic_fed, stream->mic_fed - stream->mic_silence,
++                                     id, stream->raw_mic ? "" : " (reference)", stream->mic_fed, stream->mic_fed - stream->mic_silence,
+                                      stream->mic_silence, (produced + wanted) % capacity,
+                                      consumed, new_waiting, capacity - 1 - new_waiting);
+                         }
+@@ -629,6 +644,7 @@
+         stream->buffer = buffer;
+         stream->kind = kind;
+         stream->raw_mic = kind == 1 && name.find("TrueRawAudioIn") != std::string::npos;
++        stream->output_loopback = kind == 1 && name.find("AudioVirtualOutput") != std::string::npos;
+         stream->size = size;
+         {
+             std::scoped_lock lk{streams->mutex};

@@ -15,14 +15,47 @@ Settings for the test: `envs/waveydude/w13-game.env.txt` (the whole per-game env
 
 Also used, from others: `EDEN_UP_AHEAD_LOAD_WAIT=1` (in the core already) stops the title-screen freeze with two frames ahead.
 
-## W-32 raw ocarina microphone
+## Ocarina microphone (W-39 stack)
 
-Apply 1108 and 1109 in order to the W-32/T183 core after its existing mic stack (1100, 1101 and 1107). The PS5 headless build must already provide `eden_mic_read`.
+The whole mic stack from my W-39 build, so it can be compared with other mic code. Everything is off unless its switch is set. Verified on a base PS5 with firmware 9.40 only.
 
-- 1108 corrects the auto layout used by `EDEN_UP_MIC_FEED=1` for raw mono PCM without timestamps. PCM starts at `+0x1040`, with producer cursor at `+0x1004` and guest consumer cursor at `+0x44`.
-- 1109 defers raw microphone PCM delivery until sysmix engages the stream. The feed is opt-in through `EDEN_UP_MIC_FEED=1`, with controller capture enabled by `EDEN_UP_MIC_PROBE=1`.
+**Core patches** (Eglantine submodule), in this order: 1100, 1101, 1107, 1108, 1109, 1110. All six touch `src/core/hle/service/audio/nx2_audio_device_manager.h` (1107 also adds `src/common/nx2_mic_log.h`). Checked: they apply cleanly in that order to Eglantine `0ca2032`.
 
-See the [9.40 findings](../../docs/waveydude/ocarina-mic-2026-11-14.md) for the tested build and recognition limits.
+| Patch | Switch | What it does |
+|---|---|---|
+| [1100](1100-ocarina-mic-stream-dump.patch) | `EDEN_UP_MIC_DUMP=1` | Logs what the game's two sysmix input streams look like (`InputStream-0<=1ch48kQ15<=AudioVirtualOutput0` and `InputStream-1<=1ch48kQ15<=TrueRawAudioIn`): their ring's non-zero words at open and attach, then both indices about once a second. `EDEN_MIC_DUMP` lines. |
+| [1101](1101-ocarina-mic-feed.patch) | `EDEN_UP_MIC_FEED=<data>,<system index>,<game index>` or `=1` | Writes the controller mic's samples (`eden_mic_read`, from the host patch below) into the game's raw mic stream at its rate, and moves the system index past them. With no samples it writes silence. `EDEN_MIC_FEED` lines. |
+| [1107](1107-ocarina-mic-log-whole-session.patch) | (with 1100/1101) | The feed and dump lines last the whole session instead of stopping after 200 lines. Host test `tools/test-mic-log.cpp` (in the host patch). |
+| [1108](1108-ocarina-mic-ring-layout.patch) | `EDEN_UP_MIC_FEED=1` | Corrects the auto layout for raw mono PCM without timestamps: PCM at `+0x1040`, producer cursor `+0x1004`, guest consumer cursor `+0x44`. |
+| [1109](1109-ocarina-mic-feed-when-engaged.patch) | (with 1101) | Holds the PCM back until sysmix engages the stream. |
+| [1110](1110-ocarina-mic-feed-reference.patch) | `EDEN_UP_MIC_FEED_REFERENCE=1` | Writes silence into the `AudioVirtualOutput0` input stream, which otherwise stays at 0/0 for the whole session. It was on in the session where Humming worked; whether Humming needs it was not tested on its own. |
+
+**Host patch** (outer repo): [w39-mic-capture.patch](w39-mic-capture.patch). This is the part that opens the PS5 controller's mic. Checked: it applies cleanly to `e40829e`.
+
+- `libSceAudioIn` has no import library in the Payload SDK, and looking its functions up at run time failed on every name and NID (W-14/W-15, `0x80020003`). Instead, the build imports the three functions at link time through a facade, the same way the keyboard's `libSceCommonDialog` is imported: `tools/stubs/libSceAudioIn.c`, built by `tools/build-audio-in-stub.sh` and linked in `headless/CMakeLists.txt`. The native packaging step turns the symbols into imports of the firmware module by NID. Nothing in the stub runs.
+- `headless/mic_capture.{h,cpp}`: `EDEN_UP_MIC_PROBE=1` starts a capture thread after the controllers open (`headless/main.cpp`). It tries a few open settings, logs each result, and keeps the last second of 48 kHz mono samples for `eden_mic_read`. `EDEN_UP_MIC_SIGNAL=1` logs the level and pitch of the PCM handed to sysmix.
+- Optional and older: `EDEN_UP_MIC_NOTES=1` (`headless/hum_notes.h`, `headless/pad.cpp`) turns the hum's pitch into the ocarina's five buttons. It is not needed with the feed. Host test `tools/test-hum-notes.cpp`.
+
+Host tests (both pass):
+
+```sh
+c++ -std=c++20 -O1 -Iheadless tools/test-hum-notes.cpp -o /tmp/test-hum-notes && /tmp/test-hum-notes
+c++ -std=c++20 -O1 -I<patched Eglantine>/src tools/test-mic-log.cpp -o /tmp/test-mic-log && /tmp/test-mic-log
+```
+
+**Settings** that fed real samples on my 9.40 (per-game env):
+
+```text
+EDEN_UP_MIC_PROBE=1
+EDEN_UP_MIC_DUMP=1
+EDEN_UP_MIC_FEED=1040,1004,44
+EDEN_UP_MIC_SIGNAL=1
+EDEN_UP_MIC_FEED_REFERENCE=1
+```
+
+After an install, check that these lines are still live: one install moved my per-game env aside and the mic went silent again.
+
+**What it fixed and what it didn't:** with these, Instruments heard the mic and played a song. Humming still heard nothing, because the game sends Humming's pitch detector the silent virtual stream. That part is game-side and needs a separate game patch, which is not in this folder. With both, Humming and Instruments worked in one session on 9.40 (Humming pitches 231.5, 181.2 and 201.9 Hz; Instruments 133.7 and 337.8 Hz). Details: [discussion #2](https://github.com/Vampinity/GreenHatBoy/discussions/2#discussioncomment-19763262) and the [9.40 findings](../../docs/waveydude/ocarina-mic-2026-11-14.md).
 
 ## 1211 shown-frame flash counter
 

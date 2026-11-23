@@ -1,0 +1,105 @@
+Subject: [PATCH] W-32: EDEN_MIC_FEED and EDEN_MIC_DUMP index lines for the whole session, not the first 200
+
+The feed and dump index lines shared a cap of 200 lines, so they stopped about a minute after the
+game opened its raw mic stream (W-24 at 779 s, W-30 at 104 s) and never covered the hums. Now each
+has its own pacer (common/nx2_mic_log.h): the first 200 lines of the session as before, then a line
+whenever the indices moved since the last line, and every 10 s otherwise. Still only with
+EDEN_UP_MIC_DUMP / EDEN_UP_MIC_FEED set. Host test: tools/test-mic-log.cpp (outer repo).
+
+diff --git a/src/core/hle/service/audio/nx2_audio_device_manager.h b/src/core/hle/service/audio/nx2_audio_device_manager.h
+--- a/src/core/hle/service/audio/nx2_audio_device_manager.h
++++ b/src/core/hle/service/audio/nx2_audio_device_manager.h
+@@ -18,6 +18,7 @@
+ #include <fmt/ranges.h>
+ 
+ #include "common/pe_switch.h"
++#include "common/nx2_mic_log.h"
+ #include <cstdint>
+ #include <cstdio>
+ #include <cstdlib>
+@@ -55,6 +56,8 @@
+     u32 dump_ticks{};     ///< EDEN_UP_MIC_DUMP: drains since the last index line
+     bool raw_mic{};       ///< an input stream named ...TrueRawAudioIn: the console's microphone
+     u64 mic_fed{}, mic_silence{}; ///< EDEN_UP_MIC_FEED: frames written, of them silence
++    Common::Nx2MicLog::Pacer dump_pacer{}; ///< EDEN_MIC_DUMP index lines (common/nx2_mic_log.h)
++    Common::Nx2MicLog::Pacer feed_pacer{}; ///< EDEN_MIC_FEED lines
+     u32 mic_ticks{};
+     double owed_frames{};
+     u32 data_mode{};      ///< command 7's mode; 0 leaves the data event alone
+@@ -533,9 +536,12 @@
+                 continue;
+             }
+             u32 filled = (write + capacity - read) % capacity;
+-            if (Nx2MicDump() && stream->kind == 1 && ++stream->dump_ticks >= 200 &&
+-                nx2_mic_dump_lines.fetch_add(1) < 200) { // every 200 drains of 5 ms: about 1 s
+-                stream->dump_ticks = 0;
++            // About once a second: the first 200 lines of the session, then a line whenever an
++            // index moved and every 10 s (common/nx2_mic_log.h).
++            static u32 dump_lines = 0;
++            if (Nx2MicDump() && stream->kind == 1 &&
++                Common::Nx2MicLog::Due(stream->dump_pacer, Common::Nx2MicLog::Pack(read, write),
++                                       dump_lines)) {
+                 LOG_INFO(Service_Audio, "EDEN_MIC_DUMP stream {} indices: read(+0x44) {} write(+0x1004) {} of {}, engaged {}",
+                          id, read, write, capacity, stream->engaged);
+             }
+@@ -565,8 +571,10 @@
+                         memory.Write32(stream->buffer + feed.system_index, (produced + wanted) % capacity);
+                         stream->mic_fed += wanted;
+                         stream->mic_silence += wanted - got;
+-                        if (++stream->mic_ticks >= 200 && nx2_mic_dump_lines.fetch_add(1) < 200) {
+-                            stream->mic_ticks = 0; // about once a second
++                        // About once a second: the first 200 lines, then whenever the game's index
++                        // moved and every 10 s for the rest of the session (common/nx2_mic_log.h).
++                        static u32 feed_lines = 0;
++                        if (Common::Nx2MicLog::Due(stream->feed_pacer, consumed, feed_lines)) {
+                             const u32 new_waiting = (produced + wanted + capacity - consumed) % capacity;
+                             LOG_INFO(Service_Audio,
+                                      "EDEN_MIC_FEED stream {}: fed {} ({} mic, {} silence); "
+diff --git a/src/common/nx2_mic_log.h b/src/common/nx2_mic_log.h
+new file mode 100644
+--- /dev/null
++++ b/src/common/nx2_mic_log.h
+@@ -0,0 +1,43 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "common/common_types.h"
++
++/// EDEN_MIC_FEED / EDEN_MIC_DUMP index lines (W-32): one chance about every second (every 200
++/// drains of 5 ms). The first `first_lines` lines of the session are all written; after that a line
++/// is written when the indices moved since the last line, and every `every_seconds` chances
++/// otherwise, so a long session shows when the game starts reading its raw mic stream.
++namespace Common::Nx2MicLog {
++
++struct Pacer {
++    u32 ticks{};
++    u32 seconds{};
++    u64 last{~u64{0}}; ///< the indices at the last line written (packed by the caller)
++};
++
++/// Called once per drain. True when a line is due now; then `last` already holds `now`.
++/// `lines_so_far` is the session's shared count of chances taken, incremented here.
++[[nodiscard]] constexpr bool Due(Pacer& p, u64 now, u32& lines_so_far, u32 first_lines = 200,
++                                 u32 every_seconds = 10, u32 drains_a_second = 200) noexcept {
++    if (++p.ticks < drains_a_second) {
++        return false;
++    }
++    p.ticks = 0;
++    const bool early = lines_so_far < first_lines;
++    ++lines_so_far;
++    const bool moved = now != p.last;
++    const bool periodic = every_seconds != 0 && ++p.seconds % every_seconds == 0;
++    if (early || moved || periodic) {
++        p.last = now;
++        return true;
++    }
++    return false;
++}
++
++[[nodiscard]] constexpr u64 Pack(u32 a, u32 b) noexcept {
++    return (u64{a} << 32) | b;
++}
++
++} // namespace Common::Nx2MicLog

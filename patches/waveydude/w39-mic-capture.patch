@@ -1,0 +1,1003 @@
+diff --git a/headless/pad.cpp b/headless/pad.cpp
+index b4c3aa8..984b311 100644
+--- a/headless/pad.cpp
++++ b/headless/pad.cpp
+@@ -7,6 +7,9 @@
+ #include "common/input.h"
+ #include "common/logging.h"
+ #include "gameplay_test.h"
++#ifdef PS5_NATIVE
++#include "mic_capture.h"
++#endif
+ #include "input_common/input_poller.h"
+ #include "test_harness.h"
+ #include <utility>
+@@ -332,6 +335,7 @@ void Pad::Consume(std::size_t player, std::span<const ps5::pad::Data> samples) {
+         constexpr ButtonMask menu_chord = kButtonTouchPad | kButtonL1;
+         constexpr ButtonMask hud_chord = kButtonTouchPad | kButtonR1;
+         const auto pressed = sample.buttons;
++        const auto previous = last_buttons;
+         if ((pressed & menu_chord) == menu_chord &&
+             (last_buttons & menu_chord) != menu_chord)
+             return_to_menu = true;
+@@ -373,6 +377,24 @@ void Pad::Consume(std::size_t player, std::span<const ps5::pad::Data> samples) {
+                                                         (pad == pad_l2 && left) || (pad == pad_r2 && right));
+         }
+         set_touch(sample.buttons);
++#ifdef PS5_NATIVE
++        // EDEN_UP_MIC_NOTES=1 (hum_notes.h): D-pad left takes the ocarina out and arms the hum, B
++        // puts it away and disarms it (the capture thread also disarms after 20 s without a note).
++        // While armed, the note hummed holds its ocarina button as the Switch 2 has them: low D,
++        // F, A, B, high D on L, R, A, Y, X. Player 1 in the usual grip only; the real buttons
++        // still work, the hum only adds presses.
++        if (player == 0 && grip == Grip::usual && Eden::Mic::NotesOn()) {
++            if ((pressed & kButtonLeft) != 0 && (previous & kButtonLeft) == 0) Eden::Mic::ArmNotes();
++            if (down(game_b, sample.buttons, left, right)) Eden::Mic::DisarmNotes();
++            static constexpr Button kNotes[]{Button::TriggerL, Button::TriggerR, Button::ButtonA,
++                                             Button::ButtonY, Button::ButtonX};
++            const int note = Eden::Mic::HeldNote();
++            if (note >= 0 && note < static_cast<int>(std::size(kNotes)))
++                engine->SetButtonState(player, kNotes[note], true);
++        }
++#else
++        (void)previous;
++#endif
+         last_left = left;
+         last_right = right;
+         float left_x = axis(sample.left_stick.x), left_y = -axis(sample.left_stick.y);
+diff --git a/headless/CMakeLists.txt b/headless/CMakeLists.txt
+index 56f23f2..131bf33 100644
+--- a/headless/CMakeLists.txt
++++ b/headless/CMakeLists.txt
+@@ -2877,12 +2880,18 @@ target_include_directories(eden-headless PRIVATE "${PORT_BUILD_DIR}/version")
+ target_link_libraries(eden-headless PRIVATE core eden-pad)
+ # A game's text entry on the PS5's own on-screen keyboard (system_keyboard.h, keyboard_applet.h).
+ target_sources(eden-headless PRIVATE "${EDEN_PORT_DIR}/system_keyboard.cpp")
++if(PS5_NATIVE)
++    # EDEN_UP_MIC_PROBE: the PS5 controller's mic (mic_capture.h).
++    target_sources(eden-headless PRIVATE "${EDEN_PORT_DIR}/mic_capture.cpp")
++endif()
+ target_sources(eden-headless PRIVATE "${EDEN_PORT_DIR}/multiplayer.cpp")
+ target_include_directories(eden-headless BEFORE PRIVATE "${MULTIPLAYER_SOCKET_HEADERS}" "${MULTIPLAYER_OUTPUT}")
+ if(PS5_NATIVE)
+     target_link_libraries(eden-headless PRIVATE
+         "${sdk}/target/lib/libSceImeDialog.so" "${sdk}/target/lib/libSceSysmodule.so"
+-        "${PORT_ROOT}/build/stubs/libSceCommonDialog.so")
++        "${PORT_ROOT}/build/stubs/libSceCommonDialog.so"
++        # The controller's mic (mic_capture.cpp; tools/build-audio-in-stub.sh).
++        "${PORT_ROOT}/build/stubs/libSceAudioIn.so")
+     # Games on NFS servers (headless/nfs/nfs.h): libnfs, and the app's layer that passes the C library's file
+     # calls through it (the final link wraps them: tools/link-headless-native.sh).
+     set(libnfs_dir "${PORT_ROOT}/third_party/libnfs")
+
+diff --git a/headless/main.cpp b/headless/main.cpp
+index 757c8d2..45a091b 100644
+--- a/headless/main.cpp
++++ b/headless/main.cpp
+@@ -1,3 +1,4 @@
++#include "mic_capture.h"
+ #include "core/arm/debug.h"
+ #include "core/hle/kernel/k_light_lock.h"
+ #include "core/hle/kernel/k_thread.h"
+@@ -1404,6 +1405,9 @@ int main(int argc, char** argv) {
+             pad = std::make_unique<Eden::Pad>();
+             if (!pad->Open()) throw std::runtime_error("PS5 controller initialization failed");
+             Eden::BootTrace::Line("controllers open");
++#ifdef PS5_NATIVE
++            Eden::Mic::Start(); // EDEN_UP_MIC_PROBE (mic_capture.h)
++#endif
+             Settings::values.audio_output_device_id = "ps5";
+             // Settings > Controls, or the game's own (Library > Game settings > Controls).
+             const auto controls = Eden::PreferencesFor(game_title);
+diff --git a/headless/mic_capture.h b/headless/mic_capture.h
+new file mode 100644
+index 0000000..3e9cdea
+--- /dev/null
++++ b/headless/mic_capture.h
+@@ -0,0 +1,34 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// EDEN_UP_MIC_PROBE=1: the PS5 controller's microphone, captured for the Switch 2 sound mixer's
++// input streams (Ocarina of Time plays the ocarina from a hum: it opens "InputStream-1 <= 1ch 48k
++// Q15 <= TrueRawAudioIn" at boot, and Eden feeds it nothing).
++//
++// This first step only finds out whether a homebrew app may open the mic, and how: the PS5's
++// libSceAudioIn is not in the Payload SDK: it is imported through a link-time facade
++// (tools/stubs/libSceAudioIn.c), as the keyboard's libSceCommonDialog is; looking it up at run
++// time (W-14/W-15) found none of its functions. It tries a few open settings, logs each answer, then logs the level
++// once a second and keeps the last second of samples, at 48 kHz mono, for eden_mic_read.
++// Off: nothing is loaded or started.
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++
++namespace Eden::Mic {
++/// Starts the capture thread when EDEN_UP_MIC_PROBE=1 (once; later calls do nothing).
++void Start();
++/// Asks the thread to close the mic and end (does not wait: a read may block).
++void Stop();
++
++/// EDEN_UP_MIC_NOTES=1 (hum_notes.h): whether the hum plays the ocarina's buttons.
++bool NotesOn();
++/// Arms the hum (the player took the ocarina out); nothing is pressed until armed.
++void ArmNotes();
++/// Disarms it (the ocarina was put away).
++void DisarmNotes();
++/// The ocarina note the hum holds now: 0 low D, 1 F, 2 A, 3 B, 4 high D, -1 none (or switch off).
++int HeldNote();
++} // namespace Eden::Mic
++
++/// Up to `frames` samples (48 kHz, mono, s16) captured since the last call; 0 when the mic is not open.
++extern "C" std::size_t eden_mic_read(std::int16_t* out, std::size_t frames);
+diff --git a/headless/mic_capture.cpp b/headless/mic_capture.cpp
+new file mode 100644
+index 0000000..cda4f0e
+--- /dev/null
++++ b/headless/mic_capture.cpp
+@@ -0,0 +1,389 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// EDEN_UP_MIC_PROBE (mic_capture.h).
++#include "mic_capture.h"
++
++#include <algorithm>
++#include <array>
++#include <atomic>
++#include <chrono>
++#include <cmath>
++#include <cstdlib>
++#include <cstring>
++#include <memory>
++#include <mutex>
++#include <string>
++#include <thread>
++#include <vector>
++
++#include "common/logging.h"
++#include "hum_notes.h"
++
++extern "C" {
++int sceAudioInOpen(int user, unsigned type, unsigned index, unsigned length, unsigned rate, unsigned param);
++int sceAudioInInput(int handle, void* samples);
++int sceAudioInClose(int handle);
++int sceUserServiceGetForegroundUser(std::int32_t* user_id);
++}
++
++namespace Eden::Mic {
++namespace {
++
++using OpenFn = int (*)(std::int32_t user, std::uint32_t type, std::uint32_t index, std::uint32_t length,
++                       std::uint32_t rate, std::uint32_t param);
++using InputFn = int (*)(int handle, void* samples);
++using CloseFn = int (*)(int handle);
++
++struct Api {
++    OpenFn open{};
++    InputFn input{};
++    CloseFn close{};
++};
++
++bool Exactly1(const char* name) {
++    const char* value = std::getenv(name);
++    return value != nullptr && value[0] == '1' && value[1] == '\0';
++}
++
++// EDEN_UP_MIC_NOTES=1 (hum_notes.h): the hum's pitch presses the ocarina's buttons. It needs the
++// capture, so it starts it as EDEN_UP_MIC_PROBE=1 does.
++bool NotesSwitched() {
++    static const bool on = Exactly1("EDEN_UP_MIC_NOTES");
++    return on;
++}
++
++// EDEN_UP_MIC_NOTES_ALWAYS=1: the hum is armed all the time (no D-pad left needed; W-17: the
++// user's ocarina is not on D-pad left, so a loud hum never armed). Only B disarms it, for one
++// window; it re-arms at once.
++bool AlwaysArmed() {
++    static const bool on = Exactly1("EDEN_UP_MIC_NOTES_ALWAYS");
++    return on;
++}
++
++// EDEN_UP_MIC_FEED: streaming raw PCM into the Switch 2 mixer's raw mic stream (TrueRawAudioIn).
++// Also needs mic capture running.
++bool FeedSwitched() {
++    const char* val = std::getenv("EDEN_UP_MIC_FEED");
++    return val != nullptr && val[0] != '\0' && std::strcmp(val, "0") != 0 && std::strcmp(val, "off") != 0;
++}
++
++bool Switched() {
++    return Exactly1("EDEN_UP_MIC_PROBE") || NotesSwitched() || FeedSwitched();
++}
++
++// The functions come from libSceAudioIn, imported at link time (tools/stubs/libSceAudioIn.c; the
++// app's loader resolves them by NID as it does libSceAudioOut's). W-14/W-15 loaded the module at
++// run time instead and sceKernelDlsym refused every name and NID (0x80020003).
++bool LoadApi(Api& api) {
++    api.open = &sceAudioInOpen;
++    api.input = &sceAudioInInput;
++    api.close = &sceAudioInClose;
++    LOG_INFO(Audio_Sink, "EDEN_MIC functions imported: open {}, input {}, close {}",
++             reinterpret_cast<void*>(api.open), reinterpret_cast<void*>(api.input),
++             reinterpret_cast<void*>(api.close));
++    return api.open != nullptr && api.input != nullptr && api.close != nullptr;
++}
++
++// One second of 48 kHz mono for eden_mic_read, bounded to 100 ms max backlog to preserve real-time responsiveness.
++static constexpr std::size_t kRingCapacity = 48000;
++static constexpr std::size_t kMaxLatencyFrames = 4800; // 100 ms at 48 kHz
++std::mutex ring_mutex;
++std::array<std::int16_t, kRingCapacity> ring{};
++std::size_t ring_write = 0, ring_count = 0;
++std::uint64_t ring_overruns = 0, ring_underruns = 0;
++
++void Push(const std::int16_t* samples, std::size_t count, std::uint32_t rate) {
++    // 16 kHz is taken three times over (the hum's pitch stays where it was); 48 kHz as it is.
++    const std::size_t repeat = rate == 16000 ? 3 : 1;
++    std::scoped_lock lock{ring_mutex};
++    for (std::size_t i = 0; i < count; ++i) {
++        for (std::size_t r = 0; r < repeat; ++r) {
++            ring[ring_write] = samples[i];
++            ring_write = (ring_write + 1) % ring.size();
++            if (ring_count < kMaxLatencyFrames) {
++                ++ring_count;
++            } else {
++                // Drop oldest sample beyond 100 ms so humming pitch recognition remains low-latency
++                ++ring_overruns;
++            }
++        }
++    }
++}
++
++std::atomic<bool> stopping{false};
++
++// EDEN_UP_MIC_NOTES: the pad thread arms and disarms (ArmNotes/DisarmNotes), the capture thread
++// runs the tracker and publishes the note held (HeldNote). Arm requests are counted so one made
++// between two windows is never lost.
++std::atomic<unsigned> arm_requests{0}, disarm_requests{0};
++std::atomic<int> held_note{Hum::None};
++
++std::int64_t NowMs() {
++    return std::chrono::duration_cast<std::chrono::milliseconds>(
++               std::chrono::steady_clock::now().time_since_epoch())
++        .count();
++}
++
++// 48 kHz (or 16 kHz) blocks into 16 kHz windows of Hum::Window, every half window.
++struct NoteRunner {
++    std::vector<std::int16_t> window = std::vector<std::int16_t>(Hum::Window);
++    std::size_t filled = 0;
++    std::uint32_t phase = 0; // 48 kHz: one sample of three, the mean of the three
++    std::int32_t sum3 = 0;
++    Hum::Tracker tracker;
++    unsigned arms_seen = 0, disarms_seen = 0;
++    Hum::Note last_logged = Hum::None;
++    unsigned logged = 0;
++
++    void Take(std::int16_t sample) {
++        window[filled++] = sample;
++        if (filled < window.size()) return;
++        Step();
++        // Half the window again: a window every 32 ms.
++        std::copy(window.begin() + window.size() / 2, window.end(), window.begin());
++        filled = window.size() / 2;
++    }
++
++    void Push(const std::int16_t* samples, std::size_t count, std::uint32_t rate) {
++        for (std::size_t i = 0; i < count; ++i) {
++            if (rate == Hum::Rate) {
++                Take(samples[i]);
++            } else if (rate == 48000) {
++                sum3 += samples[i];
++                if (++phase == 3) {
++                    Take(static_cast<std::int16_t>(sum3 / 3));
++                    sum3 = 0;
++                    phase = 0;
++                }
++            }
++        }
++    }
++
++    void Step() {
++        const auto now = NowMs();
++        const unsigned arms = arm_requests.load(std::memory_order_acquire);
++        const unsigned disarms = disarm_requests.load(std::memory_order_acquire);
++        if (disarms != disarms_seen) {
++            disarms_seen = disarms;
++            if (tracker.Armed()) LOG_INFO(Audio_Sink, "EDEN_MIC_NOTE disarmed (B or the ocarina again)");
++            tracker.Disarm();
++        }
++        if (arms != arms_seen) {
++            arms_seen = arms;
++            tracker.Arm(now);
++            LOG_INFO(Audio_Sink, "EDEN_MIC_NOTE armed: hum D, F, A, B or a higher D");
++        }
++        if (AlwaysArmed() && !tracker.Armed()) tracker.Arm(now);
++        const bool was_armed = tracker.Armed();
++        const float hz = Hum::DetectPitch(window.data(), window.size());
++        const Hum::Note note = tracker.Feed(hz, now);
++        if (was_armed && !tracker.Armed() && !AlwaysArmed()) LOG_INFO(Audio_Sink, "EDEN_MIC_NOTE disarmed: no note for 20 s");
++        held_note.store(note, std::memory_order_release);
++        if (note != last_logged && logged < 2000) {
++            static constexpr const char* names[]{"low D (L)", "F (R)", "A (A)", "B (Y)", "high D (X)"};
++            if (note == Hum::None) {
++                LOG_INFO(Audio_Sink, "EDEN_MIC_NOTE release");
++            } else {
++                LOG_INFO(Audio_Sink, "EDEN_MIC_NOTE {} at {:.1f} Hz", names[note], hz);
++            }
++            ++logged;
++            last_logged = note;
++        }
++    }
++};
++
++// Detached: sceAudioInInput may block, and the app's exit must not wait for it.
++std::thread worker;
++std::once_flag started;
++
++void Run() {
++    Api api;
++    if (!LoadApi(api)) {
++        LOG_WARNING(Audio_Sink, "EDEN_MIC the PS5's mic functions are not there: no capture");
++        return;
++    }
++    std::int32_t user = -1;
++    const int user_result = sceUserServiceGetForegroundUser(&user);
++    LOG_INFO(Audio_Sink, "EDEN_MIC foreground user: result {:#x}", static_cast<unsigned>(user_result));
++    // Types and rates to try, most useful first: 48 kHz needs no conversion. param 0 = 16-bit mono.
++    struct Try {
++        std::uint32_t type, rate, length;
++    };
++    static constexpr Try tries[]{{0, 48000, 256}, {1, 48000, 256}, {2, 48000, 256}, {3, 48000, 256},
++                                 {0, 16000, 256}, {1, 16000, 256}, {2, 16000, 256}, {3, 16000, 256}};
++    int handle = -1;
++    Try chosen{};
++    for (const Try& t : tries) {
++        handle = api.open(user, t.type, 0, t.length, t.rate, 0);
++        LOG_INFO(Audio_Sink, "EDEN_MIC open type {} {} Hz {} frames: {:#x}", t.type, t.rate, t.length,
++                 static_cast<unsigned>(handle));
++        if (handle >= 0) {
++            chosen = t;
++            break;
++        }
++    }
++    if (handle < 0) {
++        LOG_WARNING(Audio_Sink, "EDEN_MIC no open setting was accepted: no capture");
++        return;
++    }
++    std::vector<std::int16_t> block(chosen.length);
++    std::unique_ptr<NoteRunner> notes;
++    if (NotesSwitched()) {
++        notes = std::make_unique<NoteRunner>();
++        if (AlwaysArmed()) LOG_INFO(Audio_Sink, "EDEN_UP_MIC_NOTES_ALWAYS=1: the hum is always armed");
++        LOG_INFO(Audio_Sink, "EDEN_UP_MIC_NOTES=1: D-pad left arms the hum (the ocarina comes out), B or "
++                             "D-pad left again or 20 s without a note disarms it");
++    }
++    double sum = 0;
++    int peak = 0;
++    std::uint64_t frames = 0, calls = 0, failures = 0;
++    std::uint64_t voice_frames = 0;
++    std::int64_t last_input_us = 0;
++    auto next = std::chrono::steady_clock::now() + std::chrono::seconds(1);
++    while (!stopping.load(std::memory_order_relaxed)) {
++        const auto t0 = std::chrono::steady_clock::now();
++        const int result = api.input(handle, block.data());
++        const auto t1 = std::chrono::steady_clock::now();
++        last_input_us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
++        ++calls;
++        if (result < 0) {
++            if (++failures == 1 || failures % 100 == 0)
++                LOG_WARNING(Audio_Sink, "EDEN_MIC input failed: {:#x} ({} times)", static_cast<unsigned>(result),
++                            failures);
++            if (failures >= 1000) break;
++            std::this_thread::sleep_for(std::chrono::milliseconds(5));
++            continue;
++        }
++        Push(block.data(), block.size(), chosen.rate);
++        if (notes) notes->Push(block.data(), block.size(), chosen.rate);
++        double block_sum = 0;
++        int block_peak = 0;
++        for (const std::int16_t s : block) {
++            block_sum += double(s) * s;
++            block_peak = std::max(block_peak, std::abs(int(s)));
++        }
++        const double block_rms = block.empty() ? 0 : std::sqrt(block_sum / double(block.size()));
++        if (block_rms > 100.0) { // voice activity > -50 dBFS
++            voice_frames += block.size();
++        }
++        sum += block_sum;
++        peak = std::max(peak, block_peak);
++        frames += block.size();
++        if (std::chrono::steady_clock::now() >= next) {
++            const double rms = frames ? std::sqrt(sum / double(frames)) : 0;
++            const double vad_pct = frames ? (100.0 * double(voice_frames) / double(frames)) : 0.0;
++            std::size_t buffered = 0;
++            std::uint64_t drops = 0;
++            {
++                std::scoped_lock lock{ring_mutex};
++                buffered = ring_count;
++                drops = ring_overruns;
++            }
++            LOG_INFO(Audio_Sink,
++                     "EDEN_MIC level: rms {:.0f} ({:.1f} dBFS), peak {}, vad {:.0f}% active, "
++                     "{} frames in {} reads ({} us/read, {} failed), ring {}/{} (drops {})",
++                     rms, rms > 0 ? 20 * std::log10(rms / 32768.0) : -120.0, peak, vad_pct,
++                     frames, calls, last_input_us, failures, buffered, kMaxLatencyFrames, drops);
++            sum = 0;
++            peak = 0;
++            frames = calls = voice_frames = 0;
++            next += std::chrono::seconds(1);
++        }
++    }
++    held_note.store(Hum::None, std::memory_order_release);
++    api.close(handle);
++    LOG_INFO(Audio_Sink, "EDEN_MIC closed");
++}
++
++} // namespace
++
++void Start() {
++    if (!Switched()) return;
++    std::call_once(started, [] {
++        LOG_INFO(Audio_Sink, "EDEN_UP_MIC_PROBE=1: opening the PS5 controller's mic (a level line every second)");
++        worker = std::thread([] { Run(); });
++        worker.detach();
++    });
++}
++
++bool NotesOn() {
++    return NotesSwitched();
++}
++
++void ArmNotes() {
++    if (NotesSwitched()) arm_requests.fetch_add(1, std::memory_order_acq_rel);
++}
++
++void DisarmNotes() {
++    if (NotesSwitched()) disarm_requests.fetch_add(1, std::memory_order_acq_rel);
++}
++
++int HeldNote() {
++    return NotesSwitched() ? held_note.load(std::memory_order_acquire) : Hum::None;
++}
++
++void Stop() {
++    stopping.store(true, std::memory_order_relaxed); // the thread closes the mic at its next read
++}
++
++// Observe the PCM returned to sysmix. Retain only a short pitch-analysis window.
++void LogDeliveredSignal(const std::int16_t* samples, std::size_t count) {
++    static const bool enabled = Exactly1("EDEN_UP_MIC_SIGNAL");
++    if (!enabled || count == 0) return;
++
++    static std::mutex mutex;
++    static std::array<std::int16_t, Hum::Window> window{};
++    static std::size_t filled = 0;
++    static std::size_t frames = 0, clipped = 0;
++    static unsigned phase = 0;
++    static int sum = 0, peak = 0;
++    static double energy = 0.0;
++    static float pitch = 0.0f;
++    static unsigned lines = 0;
++    std::scoped_lock lock{mutex};
++    if (lines >= 120) return;
++
++    for (std::size_t i = 0; i < count; ++i) {
++        const int sample = samples[i];
++        const int magnitude = std::abs(sample);
++        peak = std::max(peak, magnitude);
++        clipped += (sample == -32768 || sample == 32767);
++        energy += double(sample) * sample;
++        ++frames;
++        sum += sample;
++        if (++phase == 3) {
++            window[filled++] = static_cast<std::int16_t>(sum / 3);
++            phase = 0;
++            sum = 0;
++        }
++        if (filled == window.size()) {
++            if (pitch == 0.0f) pitch = Hum::DetectPitch(window.data(), window.size());
++            filled = 0;
++        }
++    }
++    if (frames < 48000) return;
++    LOG_INFO(Audio_Sink, "EDEN_MIC_SIGNAL delivered: {} frames, rms {:.0f}, peak {}, "
++                         "{} clipped, first clear pitch {:.1f} Hz",
++             frames, std::sqrt(energy / double(frames)), peak, clipped, pitch);
++    ++lines;
++    frames = clipped = 0;
++    peak = 0;
++    energy = 0.0;
++    pitch = 0.0f;
++}
++
++} // namespace Eden::Mic
++
++extern "C" std::size_t eden_mic_read(std::int16_t* out, std::size_t frames) {
++    using namespace Eden::Mic;
++    std::size_t take;
++    {
++        std::scoped_lock lock{ring_mutex};
++        take = std::min(frames, ring_count);
++        ring_underruns += frames - take;
++        const std::size_t start = (ring_write + kRingCapacity - ring_count) % kRingCapacity;
++        for (std::size_t i = 0; i < take; ++i) out[i] = ring[(start + i) % kRingCapacity];
++        ring_count -= take;
++    }
++    LogDeliveredSignal(out, take);
++    return take;
++}
+diff --git a/headless/hum_notes.h b/headless/hum_notes.h
+new file mode 100644
+index 0000000..3e1ac17
+--- /dev/null
++++ b/headless/hum_notes.h
+@@ -0,0 +1,195 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// EDEN_UP_MIC_NOTES=1 (mic_capture.cpp, pad.cpp): a hum into the PS5 controller's mic plays the
++// ocarina. W-14 showed Ocarina of Time never attaches its raw mic input stream under Eden (indices
++// 0/0 with the ocarina out), so instead of feeding that stream the hum's pitch is turned into the
++// ocarina's five buttons, which the game reads as if they were pressed: low D, F, A, B, high D on
++// the Switch 2's L, R, A, Y, X.
++//
++// Pure functions, no platform calls (tools/test-hum-notes.cpp tests them on the host):
++// - DetectPitch: the fundamental of one window of 16 kHz mono samples (YIN), 0 when the window is
++//   too quiet or has no clear pitch.
++// - Classify: which of the five notes a pitch is. Octaves do not matter (people hum where their
++//   voice sits), only the note's name: D, F, A or B within KeepCents of it, nothing between them.
++//   A D is the high one when it is above the last other note hummed in the last few seconds (the
++//   songs that go up to it: B-D in Zelda's Lullaby), the low one otherwise.
++// - Tracker: which note is held now. A note starts after two windows in a row agree (a stray
++//   window of noise presses nothing), stays while windows keep agreeing, and ends at the first
++//   window that does not; a new note always needs two windows, so the game sees a release between
++//   two notes. Nothing is held unless armed; arming ends after IdleDisarmMs without a note.
++#pragma once
++
++#include <array>
++#include <cmath>
++#include <cstddef>
++#include <cstdint>
++
++namespace Eden::Hum {
++
++constexpr unsigned Rate = 16000;     ///< DetectPitch's sample rate
++constexpr std::size_t Window = 1024; ///< samples per detection (64 ms)
++constexpr float MinHz = 70.0f;       ///< a low male hum
++constexpr float MaxHz = 1100.0f;     ///< above a high whistle's fundamental
++constexpr float MinRms = 300.0f;     ///< about -40 dBFS: quieter windows are silence
++constexpr float YinThreshold = 0.15f;
++constexpr float KeepCents = 75.0f;   ///< how far off a note's name a pitch may be and count
++constexpr std::int64_t HighDContextMs = 3000;
++constexpr std::int64_t IdleDisarmMs = 20000;
++
++enum Note : int { None = -1, LowD = 0, F = 1, A = 2, B = 3, HighD = 4 };
++
++/// The fundamental frequency of `n` samples at `rate` Hz, or 0 for silence or no clear pitch.
++inline float DetectPitch(const std::int16_t* samples, std::size_t n, unsigned rate = Rate) {
++    if (samples == nullptr || rate == 0) return 0.0f;
++    const std::size_t min_lag = static_cast<std::size_t>(static_cast<float>(rate) / MaxHz);
++    const std::size_t max_lag = static_cast<std::size_t>(static_cast<float>(rate) / MinHz) + 1;
++    if (n < 2 * max_lag + 2 || min_lag < 2) return 0.0f;
++    double energy = 0;
++    double mean = 0;
++    for (std::size_t i = 0; i < n; ++i) mean += samples[i];
++    mean /= static_cast<double>(n);
++    for (std::size_t i = 0; i < n; ++i) {
++        const double s = samples[i] - mean;
++        energy += s * s;
++    }
++    if (std::sqrt(energy / static_cast<double>(n)) < MinRms) return 0.0f;
++
++    // YIN: d(tau) = sum (x[i] - x[i + tau])^2 over a fixed span, then the cumulative mean
++    // normalised difference; the first tau under the threshold, at its local minimum.
++    const std::size_t span = n - max_lag - 1;
++    std::array<float, 1024> cmnd{};
++    if (max_lag + 2 > cmnd.size()) return 0.0f;
++    double running = 0;
++    cmnd[0] = 1.0f;
++    for (std::size_t tau = 1; tau <= max_lag + 1; ++tau) {
++        double d = 0;
++        for (std::size_t i = 0; i < span; ++i) {
++            const double diff = static_cast<double>(samples[i]) - samples[i + tau];
++            d += diff * diff;
++        }
++        running += d;
++        cmnd[tau] = running > 0 ? static_cast<float>(d * static_cast<double>(tau) / running) : 1.0f;
++    }
++    std::size_t best = 0;
++    for (std::size_t tau = min_lag; tau <= max_lag; ++tau) {
++        if (cmnd[tau] < YinThreshold) {
++            while (tau + 1 <= max_lag && cmnd[tau + 1] < cmnd[tau]) ++tau;
++            best = tau;
++            break;
++        }
++    }
++    if (best == 0) return 0.0f;
++    // Parabolic interpolation between the neighbours for a fractional lag.
++    float lag = static_cast<float>(best);
++    const float a = cmnd[best - 1], b = cmnd[best], c = cmnd[best + 1];
++    const float denom = a - 2 * b + c;
++    if (denom > 1e-6f) lag += 0.5f * (a - c) / denom;
++    const float hz = static_cast<float>(rate) / lag;
++    return hz >= MinHz && hz <= MaxHz ? hz : 0.0f;
++}
++
++/// A pitch as a MIDI note number (69 = A4 = 440 Hz), fractional.
++inline float Midi(float hz) {
++    return 69.0f + 12.0f * std::log2(hz / 440.0f);
++}
++
++/// Which note `hz` is; `last_other_midi` is the last F, A or B hummed lately (NaN for none).
++inline Note Classify(float hz, float last_other_midi) {
++    if (!(hz > 0.0f)) return None;
++    const float midi = Midi(hz);
++    float pc = std::fmod(midi, 12.0f);
++    if (pc < 0) pc += 12.0f;
++    struct Name {
++        float pc;
++        Note note;
++    };
++    static constexpr std::array<Name, 4> names{{{2.0f, LowD}, {5.0f, F}, {9.0f, A}, {11.0f, B}}};
++    Note found = None;
++    float closest = 12.0f;
++    for (const auto& name : names) {
++        float d = std::fabs(pc - name.pc);
++        d = std::fmin(d, 12.0f - d);
++        if (d < closest) {
++            closest = d;
++            found = name.note;
++        }
++    }
++    if (closest * 100.0f > KeepCents) return None;
++    if (found == LowD && !std::isnan(last_other_midi) && midi > last_other_midi) return HighD;
++    return found;
++}
++
++class Tracker {
++public:
++    void Arm(std::int64_t now_ms) {
++        armed = true;
++        last_activity_ms = now_ms;
++        Reset();
++    }
++    void Disarm() {
++        armed = false;
++        Reset();
++    }
++    bool Armed() const {
++        return armed;
++    }
++    Note Held() const {
++        return armed ? held : None;
++    }
++
++    /// One window's pitch (0 for none) at `now_ms`; returns the note held after it.
++    Note Feed(float hz, std::int64_t now_ms) {
++        if (!armed) return None;
++        if (now_ms - last_activity_ms > IdleDisarmMs) {
++            Disarm();
++            return None;
++        }
++        const float context =
++            now_ms - last_other_ms <= HighDContextMs ? last_other_midi : std::nanf("");
++        const Note note = Classify(hz, context);
++        if (note == F || note == A || note == B) {
++            last_other_midi = Midi(hz);
++            last_other_ms = now_ms;
++        }
++        if (note == None) {
++            held = None;
++            candidate = None;
++            run = 0;
++            return held;
++        }
++        last_activity_ms = now_ms;
++        if (held != None && note == held) return held;
++        // Anything else ends the held note; a new one needs two windows in a row.
++        held = None;
++        if (note == candidate) {
++            ++run;
++        } else {
++            candidate = note;
++            run = 1;
++        }
++        if (run >= 2) {
++            held = note;
++            candidate = None;
++            run = 0;
++        }
++        return held;
++    }
++
++private:
++    void Reset() {
++        held = None;
++        candidate = None;
++        run = 0;
++        last_other_midi = std::nanf("");
++        last_other_ms = -HighDContextMs - 1;
++    }
++
++    bool armed = false;
++    Note held = None;
++    Note candidate = None;
++    int run = 0;
++    float last_other_midi = std::nanf("");
++    std::int64_t last_other_ms = -HighDContextMs - 1;
++    std::int64_t last_activity_ms = 0;
++};
++
++} // namespace Eden::Hum
+diff --git a/tools/stubs/libSceAudioIn.c b/tools/stubs/libSceAudioIn.c
+new file mode 100644
+index 0000000..b86fa3f
+--- /dev/null
++++ b/tools/stubs/libSceAudioIn.c
+@@ -0,0 +1,20 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later
++ *
++ * Link-time facade of the PS5 libSceAudioIn module, which the Payload SDK has no import library
++ * for: the three functions the controller's mic capture calls (headless/mic_capture.cpp). The
++ * native packaging tool turns the symbols into imports of the firmware module (by NID, as a
++ * game's are); nothing here is linked into the application or ever runs. W-14/W-15 looked the
++ * functions up at run time instead and the module refused every name and NID (0x80020003).
++ */
++int sceAudioInOpen(int user, unsigned type, unsigned index, unsigned length, unsigned rate, unsigned param) {
++    (void)user; (void)type; (void)index; (void)length; (void)rate; (void)param;
++    return -1;
++}
++int sceAudioInInput(int handle, void* samples) {
++    (void)handle; (void)samples;
++    return -1;
++}
++int sceAudioInClose(int handle) {
++    (void)handle;
++    return -1;
++}
+diff --git a/tools/build-audio-in-stub.sh b/tools/build-audio-in-stub.sh
+new file mode 100755
+index 0000000..c67f6e1
+--- /dev/null
++++ b/tools/build-audio-in-stub.sh
+@@ -0,0 +1,17 @@
++#!/usr/bin/env bash
++# SPDX-License-Identifier: GPL-3.0-or-later
++# Builds build/stubs/libSceAudioIn.so, the libSceAudioIn import facade the controller mic
++# capture links against (tools/stubs/libSceAudioIn.c), with the Payload SDK's compiler.
++set -euo pipefail
++root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
++sdk="$root/../ps5-native-app-boilerplate/.deps/native/ps5-payload-sdk"
++source="$root/tools/stubs/libSceAudioIn.c"
++out="$root/build/stubs/libSceAudioIn.so"
++[[ -f $out && $out -nt $source ]] && exit 0
++test -x "$sdk/bin/prospero-clang" || { echo "Missing the Payload SDK; run make deps" >&2; exit 1; }
++mkdir -p "$root/build/stubs"
++work=$(mktemp -d)
++trap 'rm -rf "$work"' EXIT
++PS5_PAYLOAD_SDK="$sdk" "$sdk/bin/prospero-clang" -fPIC -c "$source" -o "$work/libSceAudioIn.o"
++"$sdk/bin/prospero-lld" --shared -soname libSceAudioIn.sprx -o "$work/libSceAudioIn.so" "$work/libSceAudioIn.o"
++mv "$work/libSceAudioIn.so" "$out"
+diff --git a/tools/test-hum-notes.cpp b/tools/test-hum-notes.cpp
+new file mode 100644
+index 0000000..90ca487
+--- /dev/null
++++ b/tools/test-hum-notes.cpp
+@@ -0,0 +1,163 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// Host test for headless/hum_notes.h (EDEN_UP_MIC_NOTES).
++//   c++ -std=c++20 -O1 -fsanitize=address,undefined -Iheadless tools/test-hum-notes.cpp -o /tmp/t && /tmp/t
++#include <cmath>
++#include <cstdint>
++#include <cstdio>
++#include <numbers>
++#include <random>
++#include <vector>
++
++#include "hum_notes.h"
++
++namespace H = Eden::Hum;
++static int failures = 0;
++#define CHECK(cond)                                                                                \
++    do {                                                                                           \
++        if (!(cond)) {                                                                             \
++            std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);                            \
++            ++failures;                                                                            \
++        }                                                                                          \
++    } while (0)
++
++static float Hz(float midi) {
++    return 440.0f * std::pow(2.0f, (midi - 69.0f) / 12.0f);
++}
++
++// A hum: the fundamental with two weaker harmonics, as a voice has, plus a little noise.
++static std::vector<std::int16_t> Tone(float hz, float amplitude, unsigned seed = 1) {
++    std::vector<std::int16_t> out(H::Window);
++    std::mt19937 rng{seed};
++    std::normal_distribution<float> noise{0.0f, amplitude * 0.03f};
++    for (std::size_t i = 0; i < out.size(); ++i) {
++        const float t = static_cast<float>(i) / H::Rate;
++        const float w = 2 * std::numbers::pi_v<float> * hz * t;
++        const float s = amplitude * (std::sin(w) + 0.5f * std::sin(2 * w) + 0.25f * std::sin(3 * w)) / 1.75f;
++        out[i] = static_cast<std::int16_t>(std::lround(std::fmax(-32768.0f, std::fmin(32767.0f, s + noise(rng)))));
++    }
++    return out;
++}
++
++static float Detect(const std::vector<std::int16_t>& s) {
++    return H::DetectPitch(s.data(), s.size());
++}
++
++// Pitches across the hummed range come back within a few cents, harmonics or not.
++static void PitchAccuracy() {
++    for (float midi = 40.0f; midi <= 84.0f; midi += 1.0f) { // E2 .. C6
++        const float hz = Hz(midi);
++        const float found = Detect(Tone(hz, 8000.0f, static_cast<unsigned>(midi)));
++        const float cents = found > 0 ? 1200.0f * std::log2(found / hz) : 9999.0f;
++        if (std::fabs(cents) > 20.0f) std::printf("  midi %.0f: %.1f Hz -> %.1f Hz (%.0f cents)\n", midi, hz, found, cents);
++        CHECK(std::fabs(cents) <= 20.0f);
++    }
++}
++
++// Silence, a quiet room and white noise have no pitch; a window shorter than two of the longest
++// periods is refused rather than read past.
++static void NoPitch() {
++    CHECK(Detect(std::vector<std::int16_t>(H::Window, 0)) == 0.0f);
++    CHECK(Detect(Tone(220.0f, 150.0f)) == 0.0f); // under MinRms
++    std::vector<std::int16_t> noise(H::Window);
++    std::mt19937 rng{7};
++    std::uniform_int_distribution<int> any{-12000, 12000};
++    for (auto& s : noise) s = static_cast<std::int16_t>(any(rng));
++    CHECK(Detect(noise) == 0.0f);
++    const auto tone = Tone(220.0f, 8000.0f);
++    CHECK(H::DetectPitch(tone.data(), 300) == 0.0f);
++    CHECK(H::DetectPitch(nullptr, H::Window) == 0.0f);
++    CHECK(Detect(Tone(40.0f, 8000.0f)) == 0.0f); // below MinHz
++}
++
++// Note names in any octave; between two notes nothing; the D goes high only above a recent note.
++static void Classify() {
++    const float none = std::nanf("");
++    CHECK(H::Classify(Hz(62), none) == H::LowD); // D4
++    CHECK(H::Classify(Hz(50), none) == H::LowD); // D3, an octave down
++    CHECK(H::Classify(Hz(53), none) == H::F);
++    CHECK(H::Classify(Hz(57), none) == H::A);
++    CHECK(H::Classify(Hz(59), none) == H::B);
++    CHECK(H::Classify(Hz(71), none) == H::B);    // B4
++    CHECK(H::Classify(Hz(60), none) == H::None); // C: a whole tone from D and from B
++    CHECK(H::Classify(Hz(55), none) == H::None); // G
++    CHECK(H::Classify(Hz(62.7f), none) == H::LowD);  // 70 cents sharp still counts
++    CHECK(H::Classify(Hz(62.8f), none) == H::None);  // 80 cents is too far
++    CHECK(H::Classify(Hz(52.25f), none) == H::F);    // 75 cents flat of F counts
++    CHECK(H::Classify(0.0f, none) == H::None);
++    CHECK(H::Classify(Hz(62), 59.0f) == H::HighD);   // D4 above a B3
++    CHECK(H::Classify(Hz(50), 59.0f) == H::LowD);    // D3 below it
++}
++
++// Two agreeing windows start a note; a different note releases first; silence releases; nothing
++// unarmed; the idle limit disarms.
++static void Tracker() {
++    H::Tracker t;
++    std::int64_t now = 0;
++    const auto feed = [&](float hz) { now += 32; return t.Feed(hz, now); };
++    CHECK(feed(Hz(57)) == H::None); // not armed
++    t.Arm(now);
++    CHECK(feed(Hz(57)) == H::None); // one window
++    CHECK(feed(Hz(57)) == H::A);    // two in a row
++    CHECK(feed(Hz(57)) == H::A);
++    CHECK(feed(Hz(53)) == H::None); // a different note releases A first
++    CHECK(feed(Hz(53)) == H::F);
++    CHECK(feed(0.0f) == H::None);   // silence releases
++    CHECK(feed(Hz(62)) == H::None);
++    CHECK(feed(0.0f) == H::None);   // one stray window never presses
++    CHECK(feed(Hz(62)) == H::None);
++    // Zelda's Lullaby goes B up to D: the D after a B is the high one.
++    CHECK(feed(Hz(59)) == H::None);
++    CHECK(feed(Hz(59)) == H::B);
++    CHECK(feed(Hz(62)) == H::None);
++    CHECK(feed(Hz(62)) == H::HighD);
++    // Song of Time goes A down to D: low.
++    CHECK(feed(Hz(57)) == H::None);
++    CHECK(feed(Hz(57)) == H::A);
++    CHECK(feed(Hz(50)) == H::None);
++    CHECK(feed(Hz(50)) == H::LowD);
++    CHECK(t.Held() == H::LowD);
++    t.Disarm();
++    CHECK(t.Held() == H::None);
++    CHECK(feed(Hz(57)) == H::None);
++    // Idle: after IdleDisarmMs without a note, arming ends; a note just before keeps it.
++    t.Arm(now);
++    now += H::IdleDisarmMs - 100;
++    CHECK(t.Feed(Hz(57), now) == H::None && t.Armed());
++    now += H::IdleDisarmMs + 1;
++    CHECK(t.Feed(0.0f, now) == H::None);
++    CHECK(!t.Armed());
++    // The high-D context expires.
++    t.Arm(now);
++    feed(Hz(59));
++    feed(Hz(59));
++    now += H::HighDContextMs + 100;
++    feed(0.0f);
++    feed(Hz(62));
++    CHECK(feed(Hz(62)) == H::LowD);
++}
++
++// End to end: tones through DetectPitch into the tracker.
++static void EndToEnd() {
++    H::Tracker t;
++    t.Arm(0);
++    std::int64_t now = 0;
++    H::Note last = H::None;
++    for (int i = 0; i < 4; ++i) last = t.Feed(Detect(Tone(Hz(53), 6000.0f, i)), now += 32);
++    CHECK(last == H::F);
++    last = t.Feed(Detect(std::vector<std::int16_t>(H::Window, 0)), now += 32);
++    CHECK(last == H::None);
++}
++
++int main() {
++    PitchAccuracy();
++    NoPitch();
++    Classify();
++    Tracker();
++    EndToEnd();
++    if (failures) {
++        std::printf("%d failure(s)\n", failures);
++        return 1;
++    }
++    std::puts("hum notes PASS");
++    return 0;
++}
+diff --git a/tools/test-mic-log.cpp b/tools/test-mic-log.cpp
+new file mode 100644
+index 0000000..5c1ece6
+--- /dev/null
++++ b/tools/test-mic-log.cpp
+@@ -0,0 +1,52 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// Host test for Eglantine's src/common/nx2_mic_log.h (patch 1107): the EDEN_MIC_FEED / EDEN_MIC_DUMP
++// index lines are written for the whole session, not only the first 200.
++//   c++ -std=c++20 -O1 -fsanitize=address,undefined -I<patched Eglantine>/src tools/test-mic-log.cpp
++#include <cstdio>
++#include "common/nx2_mic_log.h"
++using namespace Common::Nx2MicLog;
++static int failures = 0;
++#define CHECK(c) do { if (!(c)) { std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); ++failures; } } while (0)
++// Runs `seconds` seconds of 200 drains each with the indices `idx(second)`; returns lines written.
++template <class F> static int Run(Pacer& p, u32& shared, int seconds, F idx) {
++    int lines = 0;
++    for (int s = 0; s < seconds; ++s)
++        for (int d = 0; d < 200; ++d)
++            lines += Due(p, idx(s), shared);
++    return lines;
++}
++int main() {
++    { // Indices never move: 200 lines, then one every 10 s; never more than one a second.
++        Pacer p; u32 shared = 0;
++        CHECK(Run(p, shared, 200, [](int) { return u64{4800}; }) == 200);
++        CHECK(Run(p, shared, 100, [](int) { return u64{4800}; }) == 10);
++    }
++    { // The bug this replaced: past the cap the old code re-checked every drain. 3600 s: at most 3600 lines.
++        Pacer p; u32 shared = 0;
++        const int lines = Run(p, shared, 3600, [](int s) { return u64(s % 2); }); // moves every second
++        CHECK(lines == 3600);
++        Pacer q; u32 shared2 = 0;
++        CHECK(Run(q, shared2, 3600, [](int) { return u64{7}; }) == 200 + (3600 - 200) / 10);
++    }
++    { // A move after the cap is reported at the next chance, and only once.
++        Pacer p; u32 shared = 0;
++        (void)Run(p, shared, 250, [](int) { return u64{0}; });
++        int lines = Run(p, shared, 3, [](int s) { return s == 0 ? u64{1} : u64{1}; });
++        CHECK(lines == 1);
++    }
++    { // No line between chances: exactly one chance per 200 drains.
++        Pacer p; u32 shared = 0;
++        for (int d = 0; d < 199; ++d) CHECK(!Due(p, d, shared));
++        CHECK(Due(p, 0, shared));
++        CHECK(shared == 1);
++    }
++    { // The count is shared between streams: the early lines are 200 in all, not per stream.
++        Pacer a, b; u32 shared = 0;
++        int la = 0, lb = 0;
++        for (int s = 0; s < 150; ++s) for (int d = 0; d < 200; ++d) { la += Due(a, 5, shared); lb += Due(b, 5, shared); }
++        CHECK(la + lb >= 200 && la + lb <= 200 + 2 * 5);
++    }
++    CHECK(Pack(1, 2) != Pack(2, 1) && Pack(0, 4800) != Pack(4800, 0));
++    if (failures == 0) std::puts("PASS");
++    return failures != 0;
++}
