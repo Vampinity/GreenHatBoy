@@ -21,8 +21,10 @@ install calls.
 
 What its launch does, from that source: it needs a signed-in foreground user; it calls sceSystemServiceLaunchApp for
 the title; for a title whose home-screen tile opens a web address it opens the browser instead, and for a tile with
-another system address it only posts a notification with a button ("via_notification": true). The runner counts
-only a plain launch: a notification or an error stops the start. Unlike websrv's /launch it does NOT close an app
+another system address it only posts a notification with a button ("via_notification": true). A notification or
+an error stops the start. A tile that opens a web address answers {"ok": true, "via_notification": false} like a
+plain launch, so the runner cannot tell it apart here; the boot-trace wait right after catches a start that did not
+happen. Unlike websrv's /launch it does NOT close an app
 that is already open, so the runner asks /api/titles/running first and starts nothing while any big app runs.
 
 NOT RUN ON A CONSOLE YET. Not known from the source: whether EglantinePS5, started this way, shows its own title id

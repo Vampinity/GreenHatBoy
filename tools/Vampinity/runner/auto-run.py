@@ -2341,7 +2341,7 @@ class Batch:
 
         # The app boots the title only if this file is there, and takes it away: this start, no other.
         console.touch(BOOT_ONCE)
-        self.say("Starting the app through /launch")
+        self.say("Starting the app through " + ("ProsperoMgr's launch call" if self.launcher is not None else "/launch"))
         self.launch_seen_open = None
         self.launch()
         run.launched = time.monotonic()
@@ -2470,7 +2470,7 @@ class Batch:
             trace = self.console.read(BOOT_TRACE, length=HEAD) or b""
             if trace and (not before or differs(trace, before)):
                 return trace
-        raise Stop("no_answer", f"no fresh boot trace {self.args.boot_wait:g} s after /launch")
+        raise Stop("no_answer", f"no fresh boot trace {self.args.boot_wait:g} s after the launch")
 
     def spend_crash_note(self):
         """A crash that closed the app left crash-note.txt: the next start opens the launcher whatever
