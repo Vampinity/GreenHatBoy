@@ -1,0 +1,26 @@
+{
+  "run_id": "runM1A-12-X2",
+  "control": false,
+  "intended_cache": "warm",
+  "route": "field-to-past-field.txt",
+  "route_sha1_12": "c4fada64155f",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt: the script line changed and 2 line(s) removed",
+  "intent": "Phase 4 M1B-F batch A: load hold out, against this batch's own controls.",
+  "batch": "M1 batch A",
+  "batch_position": 12,
+  "rules_sha1_12": "ffbf5cface7f",
+  "arm": {
+    "name": "M1A-x",
+    "unit": "load hold",
+    "lines_removed": [
+      "EDEN_UP_LOAD_HOLD",
+      "EDEN_UP_LOAD_HOLD_FREE_MIB"
+    ]
+  }
+}
