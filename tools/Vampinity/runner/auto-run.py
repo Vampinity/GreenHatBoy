@@ -1676,6 +1676,7 @@ class Batch:
         self.warm_note = None  # this batch's note: the owner's folders, where they are, the restores
         self.warm_recovered = None  # what the start-up check put back, for the summary
         self.warm_left = None  # why the owner's folders are not back at the end, if they are not
+        self.warm_old_now = None  # the .old- folders on the console at the batch end (all batches), if listed
 
     @property
     def put_back(self):
@@ -2291,6 +2292,10 @@ class Batch:
         finally:
             self.warm.say = self.say
         if ok:
+            try:  # every .old- folder on the console now, this batch's and earlier ones, for summary.md (reads only)
+                self.warm_old_now = self.warm.old_folders()
+            except (NoAnswer, warm_cache.Unclear):
+                self.warm_old_now = None
             return
         self.warm_left = why
         text = (f"the owner's caches are NOT back ({why}). They stay renamed on the console ("
@@ -3127,6 +3132,9 @@ class Batch:
                                  ", ".join(f"`{e['to']}`" + ("" if e.get("state") == "kept" else
                                                              " (the rename did not show; look by hand)")
                                            for e in olds))
+                if self.warm_old_now:
+                    lines.append(f"- all .old- test cache folders on the console at the end, from this batch and "
+                                 f"earlier ones: {len(self.warm_old_now)}")
             for result in results:
                 restored = result.get("warm_restore")
                 if restored and restored.get("ok"):

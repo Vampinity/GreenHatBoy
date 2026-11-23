@@ -490,9 +490,9 @@ def no_warm_deletes(fake):
     deletes = [w for w in fake.warm_writes if w[0] in ("dele", "rmd")]
     if deletes:
         problems.append(f"the whole-cache restore sent a delete: {deletes[:4]}")
-    under_old = [w for w in fake.warm_writes if w[0] != "rename" and any(warm_cache.OLD in p for p in w[1:])]
-    if under_old:
-        problems.append(f"a whole-cache write under an .old- name: {under_old[:4]}")
+    outside = [w for w in fake.warm_writes if w[0] in ("mkd", "stor") and warm_cache.live_of(w[-1], DATA) is None]
+    if outside:
+        problems.append(f"a whole-cache write outside the two live folders (an aside or .old- name?): {outside[:4]}")
     return problems
 
 
@@ -1499,7 +1499,8 @@ def _(root, out, folder):
             p.append(f"{run.name}: the boot log should read warm")
     summary = (batch / "summary.md").read_text()
     for needle in ("Whole-cache restore", "back at the end, each listing the same as before",
-                   "warm-1: the copy put back", "4 test cache folder(s) renamed aside and KEPT on the console"):
+                   "warm-1: the copy put back", "4 test cache folder(s) renamed aside and KEPT on the console",
+                   "all .old- test cache folders on the console at the end, from this batch and earlier ones: 4"):
         if needle not in summary:
             p.append(f"summary.md lacks {needle!r}")
     log = (batch / warm_cache.LOG_NAME).read_text()
@@ -1665,10 +1666,10 @@ def _(root, out, folder):
 @case("36 the write guard: only inside the two live folders, never under an aside name, one rename pair")
 def _(root, out, folder):
     p = []
-    good = [f"{USER_CACHE}", f"{USER_CACHE}/shader/x.bin", f"{DRIVER_CACHE}/radv/00/a"]
+    good = [f"{USER_CACHE}", f"{USER_CACHE}/shader/x.bin", f"{DRIVER_CACHE}/radv/00/a", f"{USER_CACHE}/x.old-1/a"]
     bad = [f"{DATA}/user/save/0000/slot", f"{DATA}/user/cachex/a", f"{USER_CACHE}{warm_cache.ASIDE}/a",
            f"{USER_CACHE}/../save/a", f"{USER_CACHE}//a", f"{DATA}/env.txt", f"{DRIVER_CACHE}/./a", "/data",
-           f"{USER_CACHE}.old-20261123-120000/a", f"{DRIVER_CACHE}.old-20261123-120000", f"{USER_CACHE}/x.old-1/a"]
+           f"{USER_CACHE}.old-20261123-120000/a", f"{DRIVER_CACHE}.old-20261123-120000"]
     p += [f"write_ok refuses {x}" for x in good if not warm_cache.write_ok(x, DATA)]
     p += [f"write_ok allows {x}" for x in bad if warm_cache.write_ok(x, DATA)]
     if hasattr(warm_cache, "delete_ok") or hasattr(tool.WarmWriter, "dele") or hasattr(tool.WarmWriter, "rmd"):

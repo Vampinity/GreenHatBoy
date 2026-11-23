@@ -273,7 +273,9 @@ class FakeFTP:
         what, path = command.split(" ", 1)
         local = self.local(path)
         try:
-            if what == "DELE":
+            if what == "MKD":
+                local.mkdir()
+            elif what == "DELE":
                 os.rmdir(local) if local.is_dir() and not local.is_symlink() else os.unlink(local)
             elif what == "RMD":
                 os.rmdir(local)
@@ -356,13 +358,16 @@ def _(root, out, folder):
     deletes = [c for c in FakeFTP.sent if c.startswith(("DELE", "RMD"))]
     if deletes:
         p.append(f"the save restore sent deletes: {deletes}")
-    aside = sorted(c.name for c in fake.local(profile).iterdir() if ".old-" in c.name)
-    if len(aside) != 2 or not all(n.startswith(f"{H.TITLE}.old-") for n in aside):
-        p.append(f"expected slot_2 and slot_3 beside the save folder as <title>.old-<time>-<slot>: {aside}")
-    if not any(n.endswith("-slot_3") and (fake.local(profile) / n).is_symlink() for n in aside):
+    kept = fake.local(f"{DATA}/old-save-slots")
+    aside = sorted(c.name for c in kept.iterdir()) if kept.is_dir() else []
+    if len(aside) != 2 or not all(n.startswith(f"{H.TITLE}-") for n in aside):
+        p.append(f"expected slot_2 and slot_3 in <data_dir>/old-save-slots as <title>-<time>-<slot>: {aside}")
+    if not any(n.endswith("-slot_3") and (kept / n).is_symlink() for n in aside):
         p.append("the slot that is a link was not moved as the link")
-    if any(n.endswith("-slot_2") and not (fake.local(profile) / n / "save.bin").is_file() for n in aside):
+    if any(n.endswith("-slot_2") and not (kept / n / "save.bin").is_file() for n in aside):
         p.append("the moved autosave slot is not kept whole")
+    if sorted(c.name for c in fake.local(profile).iterdir()) != [H.TITLE]:
+        p.append(f"something was put beside the save folder: {sorted(c.name for c in fake.local(profile).iterdir())}")
     if sorted(c.name for c in fake.local(save).iterdir()) != ["slot_1"] or \
             fake.local(f"{save}/slot_1/save.bin").read_bytes() != b"the owner's slot 1" * 10:
         p.append(f"the save folder is not the backup: {sorted(c.name for c in fake.local(save).iterdir())}")

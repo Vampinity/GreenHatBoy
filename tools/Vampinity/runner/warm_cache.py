@@ -121,9 +121,10 @@ def live_of(path, data):
 
 
 def write_ok(path, data):
-    """MKD and STOR only in a live cache folder (or the folder itself), never under an aside or .old- name."""
+    """MKD and STOR only in a live cache folder (or the folder itself), so never under an aside or .old- name (those
+    are siblings of the live folder, not inside it: live_of refuses them)."""
     parts = path.split("/")
-    return (live_of(path, data) is not None and ASIDE not in path and OLD not in path and ".." not in parts
+    return (live_of(path, data) is not None and ASIDE not in path and ".." not in parts
             and "." not in parts and "" not in parts[1:])
 
 

@@ -30,7 +30,7 @@ ProsperoMgr launcher has not started anything yet either: it is built from Prosp
 | `runner_config.py`, `runner-config.example.json` | The one place for your console's address, your folders, your save folder, capture on or off |
 | `backup-save.py` | Copies the game's save off the console (reading only) |
 | `launchers.py` | How the app is started: websrv's `/launch` (default) or ProsperoMgr's API (`--launcher prosperomgr`), and where each ProsperoMgr call comes from |
-| `restore-save.py` | Puts a save backup on the console and checks every file. It moves save slots that are not in the backup out of the save folder (renamed, kept), and refuses while the app is open |
+| `restore-save.py` | Puts a save backup on the console and checks every file. It moves save slots that are not in the backup to `<data_dir>/old-save-slots` (renamed, kept), and refuses while the app is open |
 | `set-env.py` | Writes or switches off `env.txt` by hand |
 | `lint-scripts.py` | Offline check of a route script's timing |
 | `video-check.py` | Scans a test's video for flashes, black and freezes (needs ffmpeg; only with capture on) |
@@ -177,7 +177,8 @@ Good to know:
 - **Every start leaves a whole test cache on the console**, as `<data_dir>/user/cache.old-<date>-<time>` and
   `<data_dir>/cache.old-<date>-<time>` (renamed aside before the next start, or at the batch end), each about as
   big as the copy (about 2.1 GB for GrowingBlackBeans' copy): a plan of 10 starts leaves 10 sets. The plan print says how many sets a plan leaves; `summary.md` and
-  `warm-note.json` list every one. The runner never deletes them: remove them by hand (any FTP client) when you
+  `warm-note.json` list every one, and `summary.md` also counts all `.old-` folders on the console at the end,
+  earlier batches' too. The runner never deletes them: remove them by hand (any FTP client) when you
   no longer need them, and watch the console's free space on long batches.
 - Each restore uploads the whole copy. GrowingBlackBeans' copy was about 2.1 GB; how long that takes over FTP on
   a console has not been measured with this runner. `result.json` has `warm_restore` with the seconds and the
@@ -208,9 +209,13 @@ moves. So:
   already there is one rename of the top folder (`<data_dir>/user/cache`, `<data_dir>/cache`). Every upload goes
   into folders the runner has just made itself. What it still walks, it only reads (listings to compare,
   read-backs), and a walk stops on any entry that is not plainly a file or a folder, and below 40 folders.
+  Those reads do go through links, since no listing shows one: `--make-warm-copy` would copy what a link in the
+  caches points at into the copy as ordinary files, and a restore would then upload them as such. Nothing is
+  deleted or written through a link that way.
 - `restore-save.py` moves a slot that is not in the backup with one rename of the slot folder, to
-  `<profile folder>/<title>.old-<date>-<time>-<slot>`, beside the game's own folder (where the game does not look
-  for slots), instead of deleting what is listed inside it. It prints what it moved; remove those by hand too.
+  `<data_dir>/old-save-slots/<title>-<date>-<time>-<slot>` (the folder is made once), instead of deleting what is
+  listed inside it. That is outside the emulator's save tree (`user/nand/...`), so neither the emulator nor the
+  game should look there; not yet tried on a console. It prints what it moved; remove those by hand too.
 - What is left that deletes: the runner's single-file deletes of its own files by their fixed names
   (`test-quit`, `test-boot-once`, the live switch file, and `env.txt` when there was none before the batch), each
   checked against the fixed list in `writable()`, with no listing walked. A delete of a name that is a link
@@ -355,8 +360,9 @@ Only these:
 - `test-quit`, `test-boot-once` and its own `auto-run-*.txt` script copies in the app's data folder.
 - `eglantineps5.json` and the live switch file, only for a plan that uses `config` or `live`.
 - With `--save`: the game's save folder named in `game.save_dir`. The backup is written over it and **save
-  slots that are not in the backup are moved out**, one rename each, to `<title>.old-<date>-<time>-<slot>` beside
-  the save folder (kept; remove them by hand). Back up your own save first.
+  slots that are not in the backup are moved out**, one rename each, to
+  `<data_dir>/old-save-slots/<title>-<date>-<time>-<slot>` (kept; remove them by hand), and that folder is made
+  once. Back up your own save first.
 - For a cold start, and in the start-up check of every `--go`: the renames above, and the one empty `<title>`
   folder. A cold start never deletes under a cache folder.
 - With `--warm-copy`, and in the start-up check of every `--go`: the renames `<data_dir>/user/cache` and

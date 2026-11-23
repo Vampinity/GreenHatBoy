@@ -5,12 +5,13 @@ a test's autosave would otherwise decide where the next test starts. Back up you
 and put it back when the tests are done.
 
 Moved out, not deleted (23 Nov 2026): each such slot folder is renamed, with one rename of the folder itself, to
-<profile folder>/<title>.old-<YYYYMMDD-HHMMSS>-<slot>, beside the game's own folder, where the game does not look
-for slots. Nothing in it is walked or deleted. websrv's listings follow links (src/fs.c stats through them), so a
+<data_dir>/old-save-slots/<title>-<YYYYMMDD-HHMMSS>-<slot>: out of the emulator's save tree (user/nand/...), so
+neither the emulator nor the game should look there (not yet tried on a console). The folder is made once if it is
+not there. Nothing in a slot is walked or deleted. websrv's listings follow links (src/fs.c stats through them), so a
 slot that is a link to a folder would list as a folder, and deleting what is listed inside it would delete what
 the link points at. A rename moves only the link. The old slots stay on the console: remove them by hand when you
 no longer need them (the last line names them)."""
-import ftplib, hashlib, json, os, sys, time, urllib.parse, urllib.request
+import ftplib, hashlib, json, os, posixpath, sys, time, urllib.parse, urllib.request
 sys.path.insert(0, str(os.path.dirname(os.path.abspath(__file__))))
 import runner_config  # noqa: E402  every per-person setting comes from runner-config.json
 CFG = runner_config.load()
@@ -49,21 +50,30 @@ for root, dirs, files in os.walk(src):
             sys.exit(f"copy differs: {target}/{name}")
         n += 1
 gone = []
-PARENT, TITLE = DEST.rstrip("/").rsplit("/", 1)
+TITLE = posixpath.basename(DEST.rstrip("/"))
+ASIDE_DIR = f"{DATA}/old-save-slots"  # outside the emulator's save tree; made once, never emptied by this tool
 STAMP = time.strftime("%Y%m%d-%H%M%S")
-beside = {e["name"] for e in ls(PARENT)}
-for entry in ls(DEST):
-    if entry["name"].startswith("slot_") and not os.path.isdir(os.path.join(src, entry["name"])):
-        aside = f"{TITLE}.old-{STAMP}-{entry['name']}"
-        if aside in beside:
-            sys.exit(f"{aside} is already there: nothing renamed over it; {entry['name']} is left in place")
+extra = [e["name"] for e in ls(DEST)
+         if e["name"].startswith("slot_") and not os.path.isdir(os.path.join(src, e["name"]))]
+if extra:
+    top = {e["name"]: e for e in ls(DATA)}
+    if "old-save-slots" not in top:
+        f.sendcmd(f"MKD {ASIDE_DIR}")  # any 2xx; the listing right after is the proof
+        top = {e["name"]: e for e in ls(DATA)}
+    if top.get("old-save-slots", {}).get("mode") != "d":
+        sys.exit(f"{ASIDE_DIR} is not a folder: nothing moved; {extra} left in place")
+    there = {e["name"] for e in ls(ASIDE_DIR)}
+    for name in extra:
+        aside = f"{TITLE}-{STAMP}-{name}"
+        if aside in there:
+            sys.exit(f"{ASIDE_DIR}/{aside} is already there: nothing renamed over it; {name} is left in place")
         # One rename of the slot folder itself (RNFR/RNTO; ftpsrv answers 226): nothing inside is walked or
         # deleted, and a slot that is a link moves as the link.
-        f.rename(f"{DEST}/{entry['name']}", f"{PARENT}/{aside}")
-        beside.add(aside)
-        gone.append(aside)
-if gone and not set(gone) <= {e["name"] for e in ls(PARENT)}:
-    sys.exit(f"the slots moved aside do not show beside the save folder: {gone}")
+        f.rename(f"{DEST}/{name}", f"{ASIDE_DIR}/{aside}")
+        there.add(aside)
+        gone.append(f"{ASIDE_DIR}/{aside}")
+    if not {posixpath.basename(g) for g in gone} <= {e["name"] for e in ls(ASIDE_DIR)}:
+        sys.exit(f"the slots moved aside do not show in {ASIDE_DIR}: {gone}")
 left = sorted(e["name"] for e in ls(DEST) if e["name"].startswith("slot_"))
 wanted = sorted(d for d in os.listdir(src) if d.startswith("slot_"))
 if left != wanted:
