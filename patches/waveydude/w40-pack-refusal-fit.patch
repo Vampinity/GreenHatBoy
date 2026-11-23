@@ -1,0 +1,826 @@
+diff --git a/headless/performance.cpp b/headless/performance.cpp
+index d4272b7..b304938 100644
+--- a/headless/performance.cpp
++++ b/headless/performance.cpp
+@@ -1,4 +1,6 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
++#include "refusal_trace.h"
++#include "refusal_fit.h"
+ #include "performance.h"
+ #include "memory_wait.h"
+ #include "crash_report.h"
+@@ -2394,6 +2396,30 @@ extern "C" int eden_heap_hold_begin(void) __attribute__((weak));
+ // at its floor of 64 MiB that nothing here could reach.
+ extern "C" std::size_t eden_guest_memory_reclaim_bounded(std::size_t want, int verify) __attribute__((weak));
+ extern "C" std::size_t eden_guest_reserve_lend_quiet(std::size_t bytes, std::size_t below_floor) __attribute__((weak));
++// The isolated RADV archive calls this symbol across object files for both BOs
++// and command streams. Keep the second recovery within the same allocation.
++struct radv_ps5_memory;
++extern "C" bool __real_eden_radv_private_radv_ps5_memory_alloc(
++    std::uint64_t bytes, std::uint64_t alignment, bool window32, radv_ps5_memory* out);
++extern "C" bool __wrap_eden_radv_private_radv_ps5_memory_alloc(
++    std::uint64_t bytes, std::uint64_t alignment, bool window32, radv_ps5_memory* out) {
++    if (window32 || !Eden::RefusalFit::Enabled()) {
++        return __real_eden_radv_private_radv_ps5_memory_alloc(bytes, alignment, window32, out);
++    }
++    Eden::RefusalFit::Attempt attempt{};
++    const Eden::RefusalFit::AttemptScope scope{attempt};
++    if (__real_eden_radv_private_radv_ps5_memory_alloc(bytes, alignment, window32, out)) {
++        return true;
++    }
++    if (!attempt.packed_small) {
++        return false;
++    }
++    // The original RADV retry could not place the block. A fresh allocation attempt
++    // can succeed if memory became available; only a new refusal reaches our 64 MiB ask.
++    attempt.follow_up = true;
++    return __real_eden_radv_private_radv_ps5_memory_alloc(bytes, alignment, window32, out);
++}
++
+ extern "C" std::uint64_t eden_radv_out_of_memory(std::uint64_t bytes) {
+     static std::mutex one_at_a_time;
+     const std::lock_guard lock{one_at_a_time};
+@@ -2401,7 +2427,8 @@ extern "C" std::uint64_t eden_radv_out_of_memory(std::uint64_t bytes) {
+     // Live, read once per call (not a hot path); 0 is the code as it was.
+     const std::uint64_t lend =
+         static_cast<std::uint64_t>(::Common::LiveSwitch::Value<::Common::LiveSwitch::Id::RadvOomLend>());
+-    const std::uint64_t want = std::clamp<std::uint64_t>(bytes * 4, std::uint64_t{64} << 20, std::uint64_t{512} << 20);
++    const std::uint64_t want = std::clamp<std::uint64_t>((std::min)(bytes, std::uint64_t{128} << 20) * 4,
++                                                         std::uint64_t{64} << 20, std::uint64_t{512} << 20);
+     // EDEN_UP_HEAP_HOLD_AT_LOAD (heap_arenas.inc): a refused request of 64 MiB or more is an area's big
+     // image, which comes before the texture cache's burst; the heap's pieces stay from here on (the trim
+     // below gives nothing back while the hold runs). run1399: 304,132 KiB refused, the heap's 32 MiB given
+@@ -2410,13 +2437,34 @@ extern "C" std::uint64_t eden_radv_out_of_memory(std::uint64_t bytes) {
+         std::fprintf(stderr, "EDEN_UP_HEAP_HOLD begun: the driver was refused %llu MiB; the heap keeps its pieces\n",
+                      static_cast<unsigned long long>(bytes >> 20));
+     std::uint64_t freed = Eden::Performance::TrimHeap("the driver found no memory");
+-    if (lend != 0 && eden_guest_memory_reclaim_bounded) {
+-        static const bool verify = Common::PeSwitch("EDEN_UP_RADV_OOM_LEND_VERIFY");
+-        if (freed < bytes)
+-            freed += eden_guest_memory_reclaim_bounded(static_cast<std::size_t>(want), verify ? 1 : 0);
+-    } else if (freed < bytes && eden_guest_memory_reclaim) {
+-        freed += eden_guest_memory_reclaim(static_cast<std::size_t>(want));
++    Eden::RefusalTrace::PackScan scan{};
++    auto refusal = Eden::RefusalTrace::Refused(bytes, "radv", "driver_block");
++    refusal.scan = &scan;
++    auto* const attempt = Eden::RefusalFit::current;
++    const bool fit = attempt && refusal.refused_bytes != 0;
++    refusal.fit_pack = fit;
++    refusal.follow_up = fit && attempt->follow_up;
++    const auto target = fit ? (refusal.follow_up ? Eden::RefusalFit::FollowUpBytes
++                                                  : Eden::RefusalFit::RoundedAsk(bytes))
++                            : want;
++    const bool bounded = lend != 0 && eden_guest_memory_reclaim_bounded;
++    const auto asked = freed < bytes && (bounded || eden_guest_memory_reclaim) ? target : 0;
++    const auto pack_start = Eden::RefusalTrace::NowNs();
++    std::uint64_t reclaimed = 0;
++    if (asked != 0) {
++        const Eden::RefusalTrace::Scope scope{refusal};
++        if (bounded) {
++            static const bool verify = Common::PeSwitch("EDEN_UP_RADV_OOM_LEND_VERIFY");
++            reclaimed = eden_guest_memory_reclaim_bounded(static_cast<std::size_t>(asked), verify ? 1 : 0);
++        } else {
++            reclaimed = eden_guest_memory_reclaim(static_cast<std::size_t>(asked));
++        }
++        if (fit && !refusal.follow_up && asked < Eden::RefusalFit::FollowUpBytes) {
++            attempt->packed_small = true;
++        }
++        freed += reclaimed;
+     }
++    Eden::RefusalTrace::LogAttempt(refusal, asked, reclaimed, pack_start, Eden::RefusalTrace::NowNs());
+     // The driver asks once more, for one range of `bytes` or in 2 MiB pieces: the asked size rounded up
+     // to 2 MiB and one block more, less what already went back.
+     std::uint64_t lent = 0;
+diff --git a/headless/refusal_fit.h b/headless/refusal_fit.h
+new file mode 100644
+index 0000000..c8c37cd
+--- /dev/null
++++ b/headless/refusal_fit.h
+@@ -0,0 +1,49 @@
++#pragma once
++
++#include <cstdint>
++#include <cstdlib>
++#include <limits>
++
++namespace Eden::RefusalFit {
++
++inline constexpr std::uint64_t SlotBytes = std::uint64_t{2} << 20;
++inline constexpr std::uint64_t MinimumBytes = std::uint64_t{8} << 20;
++inline constexpr std::uint64_t FollowUpBytes = std::uint64_t{64} << 20;
++
++constexpr std::uint64_t RoundedAsk(std::uint64_t refused) noexcept {
++    constexpr auto largest_aligned = std::numeric_limits<std::uint64_t>::max() & ~(SlotBytes - 1);
++    if (refused > largest_aligned / 2) {
++        return largest_aligned;
++    }
++    const auto twice = refused * 2;
++    const auto wanted = twice < MinimumBytes ? MinimumBytes : twice;
++    return (wanted + SlotBytes - 1) & ~(SlotBytes - 1);
++}
++
++inline bool Enabled() noexcept {
++    static const bool enabled = [] {
++        const char* value = std::getenv("EDEN_UP_PACK_REFUSAL_FIT");
++        return value && value[0] == '1' && value[1] == '\0';
++    }();
++    return enabled;
++}
++
++struct Attempt {
++    bool packed_small{};
++    bool follow_up{};
++};
++
++inline thread_local Attempt* current{};
++
++class AttemptScope {
++public:
++    explicit AttemptScope(Attempt& attempt) noexcept : previous{current} { current = &attempt; }
++    ~AttemptScope() { current = previous; }
++    AttemptScope(const AttemptScope&) = delete;
++    AttemptScope& operator=(const AttemptScope&) = delete;
++
++private:
++    Attempt* previous;
++};
++
++} // namespace Eden::RefusalFit
+diff --git a/headless/refusal_trace.h b/headless/refusal_trace.h
+new file mode 100644
+index 0000000..f2bd398
+--- /dev/null
++++ b/headless/refusal_trace.h
+@@ -0,0 +1,81 @@
++#pragma once
++
++#include <cstdint>
++#include <cstdio>
++#include <ctime>
++
++namespace Eden::RefusalTrace {
++struct PackScan {
++    std::size_t tried{};
++    std::size_t went{};
++    std::size_t limit{};
++    unsigned reasons{};
++    std::uint64_t local_failures{};
++    std::uint64_t other_failures{};
++    const char* stop{"no_pack"};
++    std::size_t spare_uses{};
++    std::size_t spare_taken{};
++    std::size_t spare_refilled{};
++};
++struct Allocation {
++    const char* kind{};
++    std::uint64_t resource_bytes{};
++    unsigned width{}, height{}, depth{}, format{};
++    unsigned layers{}, levels{};
++    std::uint64_t refused_bytes{};
++    const char* source{};
++    bool fit_pack{};
++    bool follow_up{};
++    PackScan* scan{};
++};
++
++inline thread_local Allocation active{};
++
++class Scope {
++public:
++    explicit Scope(Allocation allocation) noexcept : previous{active} {
++        active = allocation;
++    }
++    ~Scope() { active = previous; }
++    Scope(const Scope&) = delete;
++    Scope& operator=(const Scope&) = delete;
++
++private:
++    Allocation previous;
++};
++
++inline Allocation Refused(std::uint64_t bytes, const char* source, const char* fallback) noexcept {
++    auto refusal = active;
++    if (!refusal.kind) {
++        refusal.kind = fallback;
++    }
++    if (!refusal.source) {
++        refusal.refused_bytes = bytes;
++        refusal.source = source;
++    }
++    return refusal;
++}
++inline long long NowNs() noexcept {
++    timespec time{};
++    clock_gettime(CLOCK_MONOTONIC, &time);
++    return static_cast<long long>(time.tv_sec) * 1'000'000'000 + time.tv_nsec;
++}
++
++inline void LogAttempt(const Allocation& refusal, std::uint64_t ask, std::uint64_t freed,
++                       long long start_ns, long long end_ns) noexcept {
++    std::fprintf(stderr,
++                 "EDEN_UP_PACK_REFUSAL_FIT source=%s kind=%s start_ms=%lld refused=%llu "
++                 "asked=%llu freed=%llu took_us=%lld follow_up=%u tried=%zu went=%zu try_limit=%zu"
++                 " failure_mask=%x local_failures=%llu other_failures=%llu stop=%s"
++                 " spare_used=%u spare_takes=%zu spare_refilled=%zu\n",
++                 refusal.source, refusal.kind, start_ns / 1'000'000,
++                 static_cast<unsigned long long>(refusal.refused_bytes),
++                 static_cast<unsigned long long>(ask), static_cast<unsigned long long>(freed),
++                 (end_ns - start_ns) / 1'000, unsigned(refusal.follow_up),
++                 refusal.scan->tried, refusal.scan->went, refusal.scan->limit, refusal.scan->reasons,
++                 static_cast<unsigned long long>(refusal.scan->local_failures),
++                 static_cast<unsigned long long>(refusal.scan->other_failures), refusal.scan->stop,
++                 unsigned(refusal.scan->spare_uses != 0), refusal.scan->spare_taken,
++                 refusal.scan->spare_refilled);
++}
++} // namespace Eden::RefusalTrace
+diff --git a/headless/vulkan_memory_allocator.cpp b/headless/vulkan_memory_allocator.cpp
+index fc37998..f1a6762 100644
+--- a/headless/vulkan_memory_allocator.cpp
++++ b/headless/vulkan_memory_allocator.cpp
+@@ -4,6 +4,9 @@
+ // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include "refusal_trace.h"
++#include "refusal_fit.h"
++#include <string_view>
+ #include <algorithm>
+ #include <array>
+ #include <atomic>
+@@ -635,7 +638,20 @@ u64 MemoryAllocator::ReleaseRefused(const char* why, u64 wanted) const {
+     // Then cold guest memory, sent out now (EDEN_GUEST_SWAP_RECLAIM=1 with the swap on; after Aflakon's
+     // patch 1905): a scene load asks for hundreds of MiB within seconds, before the swapper's next tick.
+     // For images too: the pool's 2 MiB blocks side by side are what an image needs.
+-    const u64 reclaimed = staging + heap + lent < lend && eden_guest_memory_reclaim ? eden_guest_memory_reclaim(lend) : 0;
++    ::Eden::RefusalTrace::PackScan scan{};
++    auto refusal = ::Eden::RefusalTrace::Refused(wanted, "allocator", "unknown");
++    refusal.scan = &scan;
++    // The allocator's smaller 32 MiB reclaim already takes the ordinary swap path.
++    // Fit only requests that would have entered the synchronous pack.
++    refusal.fit_pack = ::Eden::RefusalFit::Enabled() && wanted != 0 &&
++                       lend >= ::Eden::RefusalFit::FollowUpBytes;
++    const u64 target = refusal.fit_pack ? ::Eden::RefusalFit::RoundedAsk(wanted) : lend;
++    const u64 asked = staging + heap + lent < lend && eden_guest_memory_reclaim ? target : 0;
++    const auto started = ::Eden::RefusalTrace::NowNs();
++    const ::Eden::RefusalTrace::Scope scope{refusal};
++    const u64 reclaimed = asked != 0 ? eden_guest_memory_reclaim(asked) : 0;
++    ::Eden::RefusalTrace::LogAttempt(refusal, asked, reclaimed, started,
++                                   ::Eden::RefusalTrace::NowNs());
+     std::fprintf(stderr, "EDEN_GRAPHICS_MEMORY %s: %llu MiB of finished staging, %llu MiB of the heap, %llu MiB of the "
+                  "guest's reserve and %llu MiB of cold guest memory went back\n",
+                  why, static_cast<unsigned long long>(staging >> 20), static_cast<unsigned long long>(heap >> 20),
+@@ -693,6 +709,9 @@ bool MemoryAllocator::NoFallbackLeft(const VkImageCreateInfo& ci) const {
+ 
+ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicated) const
+ {
++    const ::Eden::RefusalTrace::Scope request{
++        {"image", 0, ci.extent.width, ci.extent.height, ci.extent.depth,
++         static_cast<unsigned>(ci.format), ci.arrayLayers, ci.mipLevels}};
+     const VmaAllocationCreateInfo alloc_ci = {
+             // Best fit: images freed by the thousand leave holes in the blocks, which new ones
+             // should fill before VMA takes another block.
+@@ -874,6 +893,7 @@ vk::Image MemoryAllocator::CreateUnbackedImage(const VkImageCreateInfo &ci, bool
+ VmaAllocation MemoryAllocator::AllocateSparseMemory(const VkMemoryRequirements &requirements,
+                                                    VkDeviceMemory &memory,
+                                                    VkDeviceSize &offset) const {
++    const ::Eden::RefusalTrace::Scope request{{"vma_block", requirements.size}};
+     const VmaAllocationCreateInfo alloc_ci{
+         .flags = 0,
+         .usage = VMA_MEMORY_USAGE_UNKNOWN,
+@@ -971,6 +991,9 @@ bool MemoryAllocator::CreateBufferInSeparatePool(const VkBufferCreateInfo& ci, M
+ }
+ 
+ vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsage usage) const {
++    const auto* const kind = ::Eden::RefusalTrace::active.kind;
++    const ::Eden::RefusalTrace::Scope request{
++        {kind && std::string_view{kind} == "staging" ? "staging" : "buffer", ci.size}};
+     // MESA will do memcpy() if not marked as host cached, so just force mark it for most buffers
+     auto const anv_flags = (usage == MemoryUsage::Stream
+         && device.GetDriverID() == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA)
+@@ -1059,6 +1082,9 @@ vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsa
+ 
+ vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsage usage,
+                                          VkDeviceSize min_alignment) const {
++    const auto* const kind = ::Eden::RefusalTrace::active.kind;
++    const ::Eden::RefusalTrace::Scope request{
++        {kind && std::string_view{kind} == "staging" ? "staging" : "buffer", ci.size}};
+     if (min_alignment <= 1) {
+         return CreateBuffer(ci, usage);
+     }
+@@ -1148,6 +1174,9 @@ vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsa
+ }
+ 
+ vk::Buffer MemoryAllocator::CreateBufferInHoles(const VkBufferCreateInfo &ci, MemoryUsage usage) const {
++    const auto* const kind = ::Eden::RefusalTrace::active.kind;
++    const ::Eden::RefusalTrace::Scope request{
++        {kind && std::string_view{kind} == "staging" ? "staging" : "buffer", ci.size}};
+     const VmaAllocationCreateInfo alloc_ci = {
+         .flags = VMA_ALLOCATION_CREATE_NEVER_ALLOCATE_BIT | MemoryUsageVmaFlags(usage),
+         .usage = MemoryUsageVma(usage),
+@@ -1183,6 +1212,7 @@ vk::Buffer MemoryAllocator::CreateBufferInHoles(const VkBufferCreateInfo &ci, Me
+ 
+ MemoryCommit MemoryAllocator::Commit(const VkMemoryRequirements &reqs, MemoryUsage usage)
+ {
++    const ::Eden::RefusalTrace::Scope request{{"vma_block", reqs.size}};
+     const auto vma_usage = MemoryUsageVma(usage);
+     VmaAllocationCreateInfo ci{};
+     ci.flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT | MemoryUsageVmaFlags(usage);
+@@ -1215,6 +1245,7 @@ MemoryCommit MemoryAllocator::Commit(const VkMemoryRequirements &reqs, MemoryUsa
+ }
+ 
+ MemoryCommit MemoryAllocator::Commit(const vk::Buffer &buffer, MemoryUsage usage) {
++    const ::Eden::RefusalTrace::Scope request{{"buffer"}};
+     // Allocate memory appropriate for this buffer automatically
+     const auto vma_usage = MemoryUsageVma(usage);
+ 
+diff --git a/src/guest_memory_service.inc b/src/guest_memory_service.inc
+index 5e5be5b..fd80109 100644
+--- a/src/guest_memory_service.inc
++++ b/src/guest_memory_service.inc
+@@ -587,6 +587,47 @@ std::atomic<std::uint64_t> pack_not_worth{0};
+ std::size_t PackedPages(std::uint32_t bytes) noexcept {
+     return (bytes + FinePage - 1) / FinePage;
+ }
++enum class PackFailure : unsigned {
++    NoView = 1, NoDestination = 2, FileRefused = 4, TailRelease = 8,
++    NotWorth = 16, StateChanged = 32, Unpack = 64, NoFileSlot = 128,
++};
++
++struct PackFailureAudit {
++    unsigned reasons{};
++    std::uint64_t local{};
++    std::size_t spare_uses{};
++    std::size_t spare_taken{};
++    std::size_t spare_refilled{};
++};
++thread_local PackFailureAudit* pack_failure_audit = nullptr;
++
++class PackFailureScope {
++public:
++    explicit PackFailureScope(PackFailureAudit& audit) noexcept
++        : previous{pack_failure_audit} {
++        pack_failure_audit = &audit;
++    }
++    ~PackFailureScope() { pack_failure_audit = previous; }
++    PackFailureScope(const PackFailureScope&) = delete;
++    PackFailureScope& operator=(const PackFailureScope&) = delete;
++private:
++    PackFailureAudit* previous;
++};
++
++void NotePackFailure(PackFailure reason) noexcept {
++    if (pack_failure_audit) {
++        pack_failure_audit->reasons |= static_cast<unsigned>(reason);
++    }
++}
++
++void CountPackFailure(PackFailure reason) noexcept {
++    if (pack_failure_audit) {
++        ++pack_failure_audit->local;
++        NotePackFailure(reason);
++    }
++    swap_counters.failures.fetch_add(1, std::memory_order_relaxed);
++}
++
+ std::uint64_t NowNs() noexcept {
+     timespec now{};
+     clock_gettime(CLOCK_MONOTONIC, &now);
+@@ -746,7 +787,8 @@ std::uint32_t FreeSlabEntry() noexcept {
+ // Under swap_out_mutex: `physical`, a whole block, is the open slab now (entry `index`, from
+ // FreeSlabEntry); the one before is closed and goes back if nothing is left in it. Not while a view
+ // of the one before is mapped.
+-void OpenSlab(std::uint32_t index, std::int64_t physical) noexcept {
++bool OpenPackSlab(std::uint32_t index, std::int64_t physical, std::uint32_t& open,
++                  std::size_t& used) noexcept {
+     PackSlab& fresh = pack_slabs[index];
+     fresh.physical.store(physical, std::memory_order_relaxed);
+     fresh.bytes.store(0, std::memory_order_relaxed);
+@@ -754,12 +796,56 @@ void OpenSlab(std::uint32_t index, std::int64_t physical) noexcept {
+     fresh.used.store(true, std::memory_order_release);
+     guest_committed.fetch_add(SparseSlot, std::memory_order_relaxed);
+     pack_store_slabs.fetch_add(1, std::memory_order_relaxed);
+-    const std::uint32_t closed = open_slab;
+-    open_slab = index;
+-    open_used = 0;
+-    if (closed != NoSlab && pack_slabs[closed].live.fetch_sub(SlabOpen, std::memory_order_acq_rel) == SlabOpen)
+-        ReleaseSlab(closed);
++    const std::uint32_t closed = open;
++    open = index;
++    used = 0;
++    const bool released = closed != NoSlab &&
++                          pack_slabs[closed].live.fetch_sub(SlabOpen, std::memory_order_acq_rel) == SlabOpen;
++    if (released) ReleaseSlab(closed);
++    return released;
++}
++void OpenSlab(std::uint32_t index, std::int64_t physical) noexcept {
++    OpenPackSlab(index, physical, open_slab, open_used);
+ }
++
++// Only PackOutAny may take from this bank, and only if the normal destination
++// allocation was refused. A dedicated open slab packs more than one copy into
++// each borrowed block. The first source block replaces that spare in the bank.
++constexpr std::size_t PackSpareMaximum = 32;
++std::int64_t pack_spares[PackSpareMaximum];
++std::size_t pack_spares_goal = 0, pack_spares_held = 0;
++std::uint32_t spare_slab = NoSlab;
++std::size_t spare_used = 0;
++thread_local bool pack_spare_allowed = false;
++
++void FillPackSpares() noexcept {
++    while (pack_spares_held < pack_spares_goal) {
++        std::int64_t block = -1;
++        if (eden_direct_guest(SparseSlot, SparseSlot, 12, &block) != 0) break;
++        pack_spares[pack_spares_held++] = block;
++        guest_committed.fetch_add(SparseSlot, std::memory_order_relaxed);
++    }
++}
++
++void EmptyPackSpares() noexcept {
++    pack_spares_goal = 0;
++    while (pack_spares_held != 0) {
++        const auto block = pack_spares[--pack_spares_held];
++        if (sceKernelReleaseDirectMemory(block, SparseSlot) != 0) std::abort();
++        guest_committed.fetch_sub(SparseSlot, std::memory_order_relaxed);
++    }
++}
++
++class AllowPackSpare {
++public:
++    AllowPackSpare() noexcept : previous{pack_spare_allowed} { pack_spare_allowed = true; }
++    ~AllowPackSpare() { pack_spare_allowed = previous; }
++    AllowPackSpare(const AllowPackSpare&) = delete;
++    AllowPackSpare& operator=(const AllowPackSpare&) = delete;
++private:
++    bool previous;
++};
++
+ // The session's end (every copy dropped, no thread left to pack): the open slab is closed, and a slab
+ // still held is counted and given back.
+ void ClosePackStore() noexcept {
+@@ -768,6 +854,12 @@ void ClosePackStore() noexcept {
+     open_used = 0;
+     if (closed != NoSlab && pack_slabs[closed].live.fetch_sub(SlabOpen, std::memory_order_acq_rel) == SlabOpen)
+         ReleaseSlab(closed);
++    const std::uint32_t spare_closed = spare_slab;
++    spare_slab = NoSlab;
++    spare_used = 0;
++    if (spare_closed != NoSlab &&
++        pack_slabs[spare_closed].live.fetch_sub(SlabOpen, std::memory_order_acq_rel) == SlabOpen)
++        ReleaseSlab(spare_closed);
+     std::size_t left = 0;
+     for (std::uint32_t i = 0; i < PackSlabs; ++i)
+         if (pack_slabs[i].used.load(std::memory_order_acquire)) {
+@@ -1188,10 +1280,77 @@ bool PackInPlace() noexcept {
+ // The packing buffer (2 MiB of flexible memory), one for PackOut and EDEN_UP_PACK_SHARED's PackShared:
+ // both run under swap_out_mutex (the self-test packs before the swapper starts).
+ char pack_buffer[LZ4_COMPRESSBOUND(SparseSlot)];
++enum class SparePlacement { Unavailable, NoView, Stored };
++
++SparePlacement PackIntoSpare(SparseRange& range, std::size_t slot, const char* packed,
++                             std::uint32_t size, std::uint64_t start) noexcept {
++    if (!pack_spare_allowed || pack_spares_goal == 0) return SparePlacement::Unavailable;
++    const std::size_t needed = CopyBytes(size);
++    const bool room = spare_slab != NoSlab && spare_used + needed <= SparseSlot;
++    const auto entry = room ? spare_slab : pack_spares_held != 0 ? FreeSlabEntry() : NoSlab;
++    if (entry == NoSlab) return SparePlacement::Unavailable;
++
++    const auto destination = room ? pack_slabs[entry].physical.load(std::memory_order_relaxed)
++                                  : pack_spares[pack_spares_held - 1];
++    void* view = reinterpret_cast<void*>(slot_view_hint.load(std::memory_order_relaxed));
++    if (sceKernelMapDirectMemory(&view, SparseSlot, PROT_READ | PROT_WRITE, 0, destination, SparseSlot) != 0)
++        return SparePlacement::NoView;
++
++    const auto at = SlotAddress(range, slot);
++    const auto whole = range.physical[slot];
++    if (munmap(reinterpret_cast<void*>(at), SparseSlot) != 0) std::abort();
++    void* again = reinterpret_cast<void*>(at);
++    if (sceKernelReserveVirtualRange(&again, SparseSlot, MAP_FIXED, SparseSlot) != 0 ||
++        again != reinterpret_cast<void*>(at)) std::abort();
++
++    const bool refilled = !room || pack_spares_held < pack_spares_goal;
++    std::size_t returned = 0;
++    if (!room) {
++        // Transfer the source directly to the bank. It was never given to the
++        // general pool, and cannot be taken by a different allocator.
++        pack_spares[pack_spares_held - 1] = whole;
++        if (OpenPackSlab(entry, destination, spare_slab, spare_used)) returned += SparseSlot;
++        guest_committed.fetch_sub(SparseSlot, std::memory_order_relaxed);
++        pack_counters.from_pool.fetch_add(1, std::memory_order_relaxed);
++    } else if (refilled) {
++        pack_spares[pack_spares_held++] = whole;
++    }
++
++    const auto offset = spare_used;
++    spare_used += needed;
++    pack_slabs[entry].live.fetch_add(1, std::memory_order_relaxed);
++    pack_slabs[entry].bytes.fetch_add(static_cast<std::uint32_t>(needed), std::memory_order_relaxed);
++    std::memcpy(static_cast<char*>(view) + offset, packed, size);
++    if (munmap(view, SparseSlot) != 0) std::abort();
++
++    if (!refilled) {
++        if (sceKernelReleaseDirectMemory(whole, SparseSlot) != 0) std::abort();
++        guest_committed.fetch_sub(SparseSlot, std::memory_order_relaxed);
++        returned += SparseSlot;
++    }
++    pack_shared_given = returned;
++    if (pack_failure_audit) {
++        ++pack_failure_audit->spare_uses;
++        pack_failure_audit->spare_taken += !room;
++        pack_failure_audit->spare_refilled += refilled;
++    }
++
++    range.physical[slot] = StorePlace(entry, offset);
++    range.swap[slot] = size;
++    pack_store_bytes.fetch_add(size, std::memory_order_relaxed);
++    pack_store_copies.fetch_add(1, std::memory_order_relaxed);
++    pack_counters.packed.fetch_add(1, std::memory_order_relaxed);
++    swap_counters.out.fetch_add(1, std::memory_order_relaxed);
++    swap_counters.out_ns.fetch_add(NowNs() - start, std::memory_order_relaxed);
++    UnlockSlot(range, slot, SlotOut);
++    return SparePlacement::Stored;
++}
++
+ bool PackOut(SparseRange& range, std::size_t slot) noexcept {
+     auto& packed = pack_buffer;
+     LockSlot(range, slot);
+     if (SlotState(range, slot) != SlotProbe) {
++        NotePackFailure(PackFailure::StateChanged);
+         UnlockSlot(range, slot, SlotState(range, slot));
+         return false;
+     }
+@@ -1212,8 +1371,10 @@ bool PackOut(SparseRange& range, std::size_t slot) noexcept {
+                       : pack_pool_first.load(std::memory_order_relaxed) ? Mode::PoolFirst : Mode::InPlace;
+     // A block for the packed bytes, with a view to write them through. Nothing is held on a refusal.
+     bool have_block = false;
++    bool destination_allocated = false;
+     if (Eden::PackPlace::AsksPoolFirst(worth, mode)) {
+         if (eden_direct_guest(kept * FinePage, FinePage, 12, &block) == 0) {
++            destination_allocated = true;
+             have_block = sceKernelMapDirectMemory(&view, kept * FinePage, PROT_READ | PROT_WRITE, 0, block, FinePage) == 0;
+             if (!have_block) {
+                 (void)sceKernelReleaseDirectMemory(block, kept * FinePage);
+@@ -1222,6 +1383,11 @@ bool PackOut(SparseRange& range, std::size_t slot) noexcept {
+         }
+         if (!have_block) block = -1;
+     }
++    if (worth && !destination_allocated && Eden::PackPlace::AsksPoolFirst(worth, mode)) {
++        const auto spare = PackIntoSpare(range, slot, packed, static_cast<std::uint32_t>(size), start);
++        if (spare == SparePlacement::Stored) return true;
++        destination_allocated = spare == SparePlacement::NoView;
++    }
+     const Place place = Eden::PackPlace::Choose(worth, mode, have_block);
+     if (place == Place::InPlace) {
+         // The slot's own block keeps the packed bytes in its first `kept` pages. The tail goes back
+@@ -1237,7 +1403,7 @@ bool PackOut(SparseRange& range, std::size_t slot) noexcept {
+             if (mprotect(reinterpret_cast<void*>(at), SparseSlot, PROT_NONE) != 0) std::abort();
+             range.swap[slot] = swap_tick.load(std::memory_order_relaxed);
+             pack_tail_refused.fetch_add(1, std::memory_order_relaxed);
+-            swap_counters.failures.fetch_add(1, std::memory_order_relaxed);
++            CountPackFailure(PackFailure::TailRelease);
+             UnlockSlot(range, slot, SlotProbe);
+             return false;
+         }
+@@ -1256,7 +1422,12 @@ bool PackOut(SparseRange& range, std::size_t slot) noexcept {
+     if (place != Place::OwnBlock) {
+         if (mprotect(reinterpret_cast<void*>(at), SparseSlot, PROT_NONE) != 0) std::abort();
+         range.swap[slot] = swap_tick.load(std::memory_order_relaxed);
+-        (worth ? swap_counters.failures : pack_not_worth).fetch_add(1, std::memory_order_relaxed);
++        if (worth) {
++            CountPackFailure(destination_allocated ? PackFailure::NoView : PackFailure::NoDestination);
++        } else {
++            NotePackFailure(PackFailure::NotWorth);
++            pack_not_worth.fetch_add(1, std::memory_order_relaxed);
++        }
+         UnlockSlot(range, slot, SlotProbe);
+         return false;
+     }
+@@ -1307,7 +1478,7 @@ bool UnpackIn(SparseRange& range, std::size_t slot, std::int64_t given = -1) noe
+     }
+     if (!ok || !MapSlot(SlotAddress(range, slot), PROT_READ | PROT_WRITE, physical)) {
+         (void)sceKernelReleaseDirectMemory(physical, SparseSlot);
+-        swap_counters.failures.fetch_add(1, std::memory_order_relaxed);
++        CountPackFailure(PackFailure::Unpack);
+         Note(ok ? "EDEN_SWAP a packed slot could not be mapped again\n" : "EDEN_SWAP a packed slot could not be unpacked\n");
+         errno = saved;
+         return false;
+@@ -1337,6 +1508,7 @@ bool PackShared(SparseRange& range, std::size_t slot) noexcept {
+     pack_shared_given = 0;
+     LockSlot(range, slot);
+     if (SlotState(range, slot) != SlotProbe) {
++        NotePackFailure(PackFailure::StateChanged);
+         UnlockSlot(range, slot, SlotState(range, slot));
+         return false;
+     }
+@@ -1361,10 +1533,11 @@ bool PackShared(SparseRange& range, std::size_t slot) noexcept {
+         if (mprotect(reinterpret_cast<void*>(at), SparseSlot, PROT_NONE) != 0) std::abort();
+         range.swap[slot] = now;
+         if (!worth) {
++            NotePackFailure(PackFailure::NotWorth);
+             pack_not_worth.fetch_add(1, std::memory_order_relaxed);
+             PackSkip(slot, now);
+         } else {
+-            swap_counters.failures.fetch_add(1, std::memory_order_relaxed);
++            CountPackFailure(!room && entry == NoSlab ? PackFailure::NoDestination : PackFailure::NoView);
+         }
+         UnlockSlot(range, slot, SlotProbe);
+         return false;
+@@ -1431,7 +1604,7 @@ bool UnpackShared(SparseRange& range, std::size_t slot, std::int64_t given = -1)
+     }
+     if (!ok || !MapSlot(SlotAddress(range, slot), PROT_READ | PROT_WRITE, physical)) {
+         (void)sceKernelReleaseDirectMemory(physical, SparseSlot);
+-        swap_counters.failures.fetch_add(1, std::memory_order_relaxed);
++        CountPackFailure(PackFailure::Unpack);
+         Note(ok ? "EDEN_UP_PACK a slot in the store could not be mapped again\n"
+                 : "EDEN_UP_PACK a slot in the store could not be unpacked\n");
+         errno = saved;
+@@ -1480,7 +1653,7 @@ bool SwapIn(SparseRange& range, std::size_t slot, std::int64_t given = -1) noexc
+     if (munmap(view, SparseSlot) != 0) std::abort();
+     if (!read || !MapSlot(SlotAddress(range, slot), PROT_READ | PROT_WRITE, physical)) {
+         (void)sceKernelReleaseDirectMemory(physical, SparseSlot);
+-        swap_counters.failures.fetch_add(1, std::memory_order_relaxed);
++        CountPackFailure(PackFailure::Unpack);
+         Note(read ? "EDEN_SWAP a slot could not be mapped again\n" : "EDEN_SWAP a slot could not be read back from the file\n");
+         errno = saved;
+         return false;
+@@ -3466,7 +3639,9 @@ bool SwapOut(SparseRange& range, std::size_t slot) noexcept {
+ #endif
+     LockSlot(range, slot);
+     std::uint32_t place = 0;
+-    if (SlotState(range, slot) != SlotProbe || !TakeSwapPlace(&place)) {
++    const bool probe = SlotState(range, slot) == SlotProbe;
++    if (!probe || !TakeSwapPlace(&place)) {
++        NotePackFailure(probe ? PackFailure::NoFileSlot : PackFailure::StateChanged);
+         UnlockSlot(range, slot, SlotState(range, slot));
+         return false;
+     }
+@@ -3476,7 +3651,7 @@ bool SwapOut(SparseRange& range, std::size_t slot) noexcept {
+     if (!SwapWrite(reinterpret_cast<const void*>(at), place)) {
+         if (mprotect(reinterpret_cast<void*>(at), SparseSlot, PROT_NONE) != 0) std::abort();
+         GiveSwapPlace(place);
+-        swap_counters.failures.fetch_add(1, std::memory_order_relaxed);
++        CountPackFailure(PackFailure::FileRefused);
+         UnlockSlot(range, slot, SlotProbe);
+         return false;
+     }
+@@ -3611,6 +3786,7 @@ std::size_t PoolLargest() noexcept {
+ bool PackOutAny(SparseRange& range, std::size_t slot, std::size_t* given) noexcept {
+     *given = 0;
+     const std::uint64_t not_worth = pack_not_worth.load(std::memory_order_relaxed);
++    const AllowPackSpare allow_spare{};
+     if (!SwapOut(range, slot)) {
+         if (pack_not_worth.load(std::memory_order_relaxed) != not_worth) PackSkip(slot, swap_tick.load(std::memory_order_relaxed));
+         return false;
+@@ -3841,26 +4017,53 @@ std::size_t PackOnRefusal(SparseRange& range, std::size_t want, const char* path
+         candidates[count++] = group << 62 | (order & ((std::uint64_t{1} << 48) - 1)) << 14 | slot;
+     }
+     std::sort(candidates, candidates + count);
+-    const std::size_t most_tries = 3 * (want / SparseSlot) + 8;
++    // Fit changes the stopping target, not the search depth. Packing several
++    // slots can leave the pool no freer if their packed pages need a new slab.
++    const auto& refusal = ::Eden::RefusalTrace::active;
++    const std::size_t search_bytes = refusal.fit_pack
++        ? (std::max)(want, PackRefusalLarge) : want;
++    const std::size_t most_tries = 3 * (search_bytes / SparseSlot) + 8;
+     std::size_t freed = 0, went = 0, tried = 0, written = 0;
++    unsigned failure_streak = 0;
++    const char* stop = "candidates_exhausted";
++    PackFailureAudit audit{};
++    const PackFailureScope observe{audit};
+     const std::uint64_t failed = swap_counters.failures.load(std::memory_order_relaxed);
+     for (std::size_t i = 0; i < count; ++i) {
+-        if (freed >= want || went >= 256 || tried >= most_tries) break;
+         const std::size_t slot = static_cast<std::size_t>(candidates[i] & 0x3fff);
+         const bool own = (candidates[i] >> 62) == 2;
+-        // Locked now: given back and written meanwhile, its write may wait up to 2 s for a block.
+         if (range.state[slot].load(std::memory_order_relaxed) & SlotLock) continue;
+-        if (own && !ArmSlot(range, slot, true)) continue; // touched or changed meanwhile
++        if (own && !ArmSlot(range, slot, true)) continue;
+         ++tried;
+         std::size_t given = 0;
+         if (PackOutAny(range, slot, &given)) {
++            failure_streak = 0;
+             ++went;
+             freed += given;
++            if (pack_spares_held < pack_spares_goal && freed >= SparseSlot) {
++                const auto before = pack_spares_held;
++                while (pack_spares_held < pack_spares_goal && freed >= SparseSlot) {
++                    std::int64_t block = -1;
++                    if (eden_direct_guest(SparseSlot, SparseSlot, 12, &block) != 0) break;
++                    pack_spares[pack_spares_held++] = block;
++                    guest_committed.fetch_add(SparseSlot, std::memory_order_relaxed);
++                    freed -= SparseSlot;
++                }
++                audit.spare_refilled += pack_spares_held - before;
++            }
+             written += own ? 1 : 0;
+-        } else if (swap_counters.failures.load(std::memory_order_relaxed) != failed) {
+-            break; // no view or block now, or the file refused
++        } else if (refusal.fit_pack ? ++failure_streak >= 3
++                                   : swap_counters.failures.load(std::memory_order_relaxed) != failed) {
++            stop = refusal.fit_pack ? "three_failed_slots" : "failure_counter_changed";
++            break;
++        }
++        if (freed >= want || went >= 256 || tried >= most_tries) {
++            stop = freed >= want ? "target_reached" : went >= 256 ? "slot_cap" : "try_limit";
++            break;
+         }
+     }
++    const auto global_failures = swap_counters.failures.load(std::memory_order_relaxed) - failed;
++    const auto other_failures = global_failures > audit.local ? global_failures - audit.local : 0;
+     const std::uint64_t took = NowNs() - start;
+     pack_counters.refusals.fetch_add(1, std::memory_order_relaxed);
+     pack_counters.refusal_out.fetch_add(went, std::memory_order_relaxed);
+@@ -3876,11 +4079,28 @@ std::size_t PackOnRefusal(SparseRange& range, std::size_t want, const char* path
+                                      "%zu tried, %llu ms\n",
+                                      want >> 20, freed >> 20, went, written, tried, (unsigned long long)(took / 1000000));
+     if (length > 0) Report(line);
+-    char trace[224];
++    if (refusal.scan) {
++        *refusal.scan = {tried, went, most_tries, audit.reasons, audit.local, other_failures,
++                         stop, audit.spare_uses, audit.spare_taken, audit.spare_refilled};
++    }
++    char trace[656];
+     std::snprintf(trace, sizeof(trace),
+-                  "EDEN_TOWN_PREPACK_RECOVERY path=%s start_ms=%llu took_us=%llu asked=%zu freed=%zu\n",
++                  "EDEN_TOWN_PREPACK_RECOVERY path=%s start_ms=%llu took_us=%llu asked=%zu freed=%zu"
++                  " source=%s kind=%s refused_bytes=%llu resource_bytes=%llu extent=%ux%ux%u"
++                  " format=%u layers=%u levels=%u tried=%zu went=%zu try_limit=%zu follow_up=%u"
++                  " failure_mask=%x local_failures=%llu other_failures=%llu stop=%s"
++                  " spare_used=%u spare_takes=%zu spare_refilled=%zu\n",
+                   path, static_cast<unsigned long long>(start / 1000000),
+-                  static_cast<unsigned long long>(took / 1000), want, freed);
++                  static_cast<unsigned long long>(took / 1000), want, freed,
++                  refusal.source ? refusal.source : "unknown",
++                  refusal.kind ? refusal.kind : "unknown",
++                  static_cast<unsigned long long>(refusal.refused_bytes),
++                  static_cast<unsigned long long>(refusal.resource_bytes),
++                  refusal.width, refusal.height, refusal.depth, refusal.format,
++                  refusal.layers, refusal.levels, tried, went, most_tries, unsigned(refusal.follow_up),
++                  audit.reasons, static_cast<unsigned long long>(audit.local),
++                  static_cast<unsigned long long>(other_failures), stop, unsigned(audit.spare_uses != 0),
++                  audit.spare_taken, audit.spare_refilled);
+     Report(trace);
+     return freed;
+ }
+@@ -5440,6 +5660,23 @@ void ServiceStart(SparseRange& range) noexcept {
+     pack_tail_refused.store(0, std::memory_order_relaxed);
+     pack_not_worth.store(0, std::memory_order_relaxed);
+     ReadPackSwitches(); // EDEN_UP_PACK_* (the mode is final now)
++#ifdef EDEN_SWAP_LZ4
++    if (const char* value = std::getenv("EDEN_UP_PACK_SPARE_BLOCKS");
++        value && swap_mode.load(std::memory_order_relaxed) == 3) {
++        char* end = nullptr;
++        const auto requested = value[0] >= '0' && value[0] <= '9' ? std::strtoul(value, &end, 10) : 0;
++        if (end && *end == '\0' && requested != 0) {
++            const std::lock_guard lock{swap_out_mutex};
++            pack_spares_goal = std::min<std::size_t>(requested, PackSpareMaximum);
++            FillPackSpares();
++            char spare_line[128];
++            std::snprintf(spare_line, sizeof(spare_line),
++                          "EDEN_UP_PACK_SPARE_BLOCKS target=%zu held=%zu block_bytes=%zu\n",
++                          pack_spares_goal, pack_spares_held, SparseSlot);
++            Report(spare_line);
++        }
++    }
++#endif
+     ReadGpuReadSwitches(); // 0900 EDEN_UP_GPU_READ_THROUGH, EDEN_UP_FAULT_* (the swap file is open now)
+     ReadWaitReclaimSwitches(); // T181a EDEN_UP_WAIT_RECLAIM (off: one getenv; its thread only when on)
+     if (swap_mode.load(std::memory_order_relaxed) != 0) {
+@@ -5494,6 +5731,10 @@ void ServiceStop(SparseRange& range) noexcept {
+     EmptyReserve();
+     table_reserve_target.store(0, std::memory_order_relaxed); // T178b: off until the next start reads it again
+     EmptyTableReserve();                                        // (0 held when off)
++    {
++        const std::lock_guard lock{swap_out_mutex};
++        EmptyPackSpares();
++    }
+     CloseSwapFile();
+ #endif
+ }
+@@ -5524,7 +5765,7 @@ void ReleaseServiceBlocks(SparseRange& range) noexcept {
+         if (state == SlotOwn || state == SlotProbe) guest_committed.fetch_sub(SparseSlot, std::memory_order_relaxed);
+         range.owned[slot].store(false, std::memory_order_relaxed);
+     }
+-    if (range.guest && pack_shared.load(std::memory_order_relaxed)) ClosePackStore(); // every copy is gone now
++    if (range.guest && (pack_shared.load(std::memory_order_relaxed) || spare_slab != NoSlab)) ClosePackStore(); // every copy is gone now
+ #else
+     const std::size_t slots = (range.end - range.begin.load(std::memory_order_relaxed)) / SparseSlot;
+     for (std::size_t slot = 0; slot < slots; ++slot) {
+@@ -5629,7 +5870,7 @@ extern "C" std::size_t eden_guest_memory_reclaim(std::size_t want) noexcept {
+     static const bool enabled = std::getenv("EDEN_GUEST_SWAP_RECLAIM") != nullptr && std::getenv("EDEN_GUEST_SWAP_RECLAIM")[0] == '1';
+     const int mode = swap_mode.load(std::memory_order_relaxed);
+     SparseRange* const range = service_range.load(std::memory_order_acquire);
+-    if (pack_on_refusal.load(std::memory_order_relaxed) && want >= PackRefusalLarge && (mode == 2 || mode == 3) &&
++    if (pack_on_refusal.load(std::memory_order_relaxed) && (want >= PackRefusalLarge || ::Eden::RefusalTrace::active.fit_pack) && (mode == 2 || mode == 3) &&
+         range != nullptr && range->state != nullptr)
+         return PackOnRefusal(*range, want, "direct");
+     if (!enabled || (mode != 2 && mode != 3) || range == nullptr || range->state == nullptr) return 0;
+@@ -5685,7 +5926,7 @@ extern "C" std::size_t eden_guest_memory_reclaim_bounded(std::size_t want, int v
+     static const bool enabled = std::getenv("EDEN_GUEST_SWAP_RECLAIM") != nullptr && std::getenv("EDEN_GUEST_SWAP_RECLAIM")[0] == '1';
+     const int mode = swap_mode.load(std::memory_order_relaxed);
+     SparseRange* const range = service_range.load(std::memory_order_acquire);
+-    if (pack_on_refusal.load(std::memory_order_relaxed) && want >= PackRefusalLarge && (mode == 2 || mode == 3) &&
++    if (pack_on_refusal.load(std::memory_order_relaxed) && (want >= PackRefusalLarge || ::Eden::RefusalTrace::active.fit_pack) && (mode == 2 || mode == 3) &&
+         range != nullptr && range->state != nullptr)
+         return PackOnRefusal(*range, want, "bounded");
+     if (!enabled || (mode != 2 && mode != 3) || range == nullptr || range->state == nullptr) return 0;

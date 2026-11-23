@@ -36,3 +36,29 @@ The [host test](test-flash-counter.cpp) exercises the detector independently. Af
 c++ -std=c++20 -Isrc /path/to/GreenHatBoy/patches/waveydude/test-flash-counter.cpp -o /tmp/test-flash-counter
 /tmp/test-flash-counter
 ```
+
+## W-40 refusal fit: pack only what a refused allocation needs
+
+[w40-pack-refusal-fit.patch](w40-pack-refusal-fit.patch). Off unless its switches are set. Outer repo: `src/guest_memory_service.inc`, `headless/performance.cpp`, the port's `headless/vulkan_memory_allocator.cpp`, and two new headers, `headless/refusal_fit.h` and `headless/refusal_trace.h`.
+
+**The problem.** With `EDEN_UP_PACK_ON_REFUSAL=1`, a refused graphics allocation makes the thread that asked pack guest memory itself, one 2 MiB slot at a time, until 64 MiB is free. In a Castle Town walk on my 9.40, all 38 refusals were small: 0.9–2 MiB, mostly 720x405 and 568x568 D32 depth images and 2 MiB staging. Each one still asked for 64 MiB, through `eden_radv_out_of_memory`, and took 100–260 ms. Of 1,359 ms spent packing in that walk, 1,337 ms fell inside the six frames over 250 ms.
+
+**The switches**
+- `EDEN_UP_PACK_REFUSAL_FIT=1`: the refusal asks for `max(2 x refused bytes, 8 MiB)`, rounded up to whole 2 MiB slots (`RefusalFit::RoundedAsk`). It keeps the 64 MiB search depth, so it does not give up early, and stops once the smaller target is free. A slot that fails to pack is skipped, and the pass stops after 3 failures in a row (unset: it stops at the first change of the global failure counter). If the RADV allocation still cannot be placed, it is tried once more, and only a second refusal asks for 64 MiB. This uses a link wrap of `eden_radv_private_radv_ps5_memory_alloc`: link with `-Wl,--wrap=eden_radv_private_radv_ps5_memory_alloc`.
+- `EDEN_UP_PACK_SPARE_BLOCKS=<n>` (I use 2; only with `EDEN_GUEST_SWAP=3`): n 2 MiB blocks are held only as destinations for a refusal's pack. When the pack finds the pool empty (every failed 8 MiB pass on my 13.60 was "no destination block", all on the packing thread), it packs into a spare, and the source block refills the spare first.
+- `EDEN_TOWN_PREPACK_RECOVERY` lines now carry the refused kind, bytes, extent, format, tries, try limit, stop reason, failure mask and spare use. `refusal_trace.h` labels each refusal by its source (`radv` or `allocator`) and kind.
+
+**Results** (my stack, not the alpha: base PS5, handheld 1x, Bilinear, max res off, depth recheck, park wait; combined Castle Town route; store reused; 2 screen pairs, then 5 confirmation pairs; order alternated):
+
+| Console | Build | Walk frames over 250 ms | Packing in the walk | Walk fps, median paired | 64 MiB fallbacks |
+|---|---|---|---|---|---|
+| 9.40 | fit + 2 spares | 29 → 8 (fewer in 5 of 5 pairs) | 7,027 → 4,059 ms; median per walk 1,317 → 253 ms | +3.00 | 0 → 11 |
+| 13.60 | fit, no spares code | 9 → 1 | 2,202 → 929 ms | +2.24 | 0 → 3 |
+
+Graphics refusals go up with the fit (13.60: 11 → 24): each one frees less, so the next comes sooner, but each is short. On the 9.40 they went down (139 → 108), as did driver OOMs (133 → 108), because the spares let packs start. One 9.40 pair went the other way (11.79 vs 18.32 walk fps, 9 fallbacks), but its freezes still fell (9 → 6).
+
+**Porting notes**
+- The patch is against my W-series tree: the guest memory service already has my pack-in-place work (`OpenSlab`, `PackOut`, w20). Port by function: `eden_radv_out_of_memory` and the wrap (performance.cpp), `MemoryAllocator::ReleaseRefused` (allocator), and `PackOnRefusal`, `PackOut`, `PackIntoSpare` and the `eden_guest_memory_reclaim` gate (guest memory service).
+- The 9.40 file is exactly what was confirmed there. The 13.60 confirmation used the same fit code without the spares functions. With `EDEN_UP_PACK_SPARE_BLOCKS` unset they are skipped, but that exact combination was not run on its own.
+- Unset, the only change on the default path is how failures are counted (`CountPackFailure` adds to the same global counter) and an overflow guard on the RADV ask, `min(bytes, 128 MiB) x 4`, which gives the same clamped 64–512 MiB result as before.
+- Not a translation input and no stamp switch: my store was reused in every run.
