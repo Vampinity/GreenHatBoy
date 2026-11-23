@@ -60,6 +60,16 @@ pipeline count, the driver pipeline cache). It goes to batch.log, to result.json
 summary.md, and for a cold start to cold.log too. A start that was not asked to be cold moves nothing
 and restores nothing: the line only reports what the boot found.
 
+Whole-cache restore (23 Nov 2026, GrowingBlackBeans' warm-run-steps.md step 0): --warm-copy <copy folder>.
+At the batch start, with the app closed, the owner's <data>/user/cache and <data>/cache are listed and
+renamed to <name>.warm-owner-aside (never deleted). Before every start the copy is checked against its
+SHA-256 list, the owner's folders are listed again and must be unchanged, then the two live folders are
+deleted whole and the copy is uploaded whole, listed (same files and sizes) and partly read back byte for
+byte. At the end (also after a stop, a crash or Ctrl-C, once the app is closed) the test folders go and the
+owner's folders are renamed back, checked by a listing. Anything that does not match refuses. Make the copy
+once with --make-warm-copy <folder> --go (reads only), check it with --check-warm-copy <folder>. Not with a
+cold start in the same batch. See warm_cache.py.
+
 Added 12 Nov 2026:
   - <plan>.stop.json next to a plan holds early-stop rules (fired, aid-control, clear; stop-rules.py, which
     is not in this folder: without it every start runs).
@@ -82,6 +92,7 @@ import copy
 import dataclasses
 import fcntl
 import ftplib
+import hashlib
 import http.client
 import importlib.util
 import io
@@ -106,6 +117,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import runner_config  # noqa: E402  every per-person setting comes from runner-config.json
 import cold_caches  # noqa: E402  EDEN_TEST_COLD=1 / --cold: the shader store and driver cache aside for a start
+import warm_cache  # noqa: E402  --warm-copy: the whole cache put back from one copy before every start
 
 SETTINGS = runner_config.load()
 APP = SETTINGS["app"]["id"]
@@ -187,6 +199,8 @@ ENDINGS = {
     "not_started": "did not start",
     "tool_error": "this tool failed",
     "cold_not_back": "COLD START: CACHES NOT BACK",
+    "warm_failed": "WHOLE-CACHE RESTORE STOPPED HALF WAY",
+    "warm_not_back": "WHOLE-CACHE RESTORE: THE OWNER'S CACHES NOT BACK",
 }
 
 
@@ -721,6 +735,11 @@ def print_plan(tests, args, blocks):
                 print(f"         [{name}] " + (" ".join(switches) or "(env values)"))
             if live_seconds(live) + 30 > test.seconds:
                 print("   WARNING: the time limit leaves under 30 s for the boot and the way to the test spot")
+    if getattr(args, "warm_copy", None) is not None:
+        print(f"\nWHOLE-CACHE RESTORE from the copy {args.warm_copy.name}: at the start the owner's {DATA}/user/cache and "
+              f"{DATA}/cache are renamed to *{warm_cache.ASIDE} (never deleted); before every start the copy is checked "
+              "against its SHA-256 list, the two live folders are deleted whole and the copy uploaded whole, listed and "
+              "partly read back; at the end the owner's folders go back, checked by a listing.")
     hang = [test for test in tests if test.may_hang]
     if hang:
         print(f"\nWARNING: '{hang[0].name}' can hang the GPU, and a GPU hang has frozen the whole console. "
@@ -889,6 +908,33 @@ class Console:
             # sendcmd, not client.mkd(): any 2xx answer will do; the listing after it is the proof.
             client.sendcmd(f"MKD {path}")
 
+    def download(self, path, dest):
+        """A console file streamed to dest over the web server (a whole-cache copy): (bytes, sha256). The file
+        is written under .part and only renamed to dest once the read is complete. NoAnswer on any failure."""
+        found, size = hashlib.sha256(), 0
+        part = dest.with_name(dest.name + ".part")
+        request = urllib.request.Request(f"{self.web}/fs{urllib.parse.quote(path)}")
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response, open(part, "wb") as out:
+                if response.status != 200:
+                    raise NoAnswer(f"HTTP {response.status} for {path}")
+                for chunk in iter(lambda: response.read(4 << 20), b""):
+                    out.write(chunk)
+                    found.update(chunk)
+                    size += len(chunk)
+        except urllib.error.HTTPError as error:
+            raise NoAnswer(f"HTTP {error.code} for {path}") from error
+        except (OSError, http.client.HTTPException) as error:
+            raise NoAnswer(f"the read of {path} broke off ({error})") from error
+        os.replace(part, dest)
+        return size, found.hexdigest()
+
+    @contextlib.contextmanager
+    def warm_writer(self):
+        """One FTP session for the whole-cache restore's writes (thousands of files: one session, not one each)."""
+        with self._ftp() as client:
+            yield WarmWriter(client)
+
     def sandboxes(self):
         entries = self.list("/mnt/sandbox")
         if entries is None:
@@ -909,6 +955,41 @@ class Console:
         """Other titles that look open. /launch would kill them."""
         return [name for name in self.sandboxes() if OTHER_GAME.fullmatch(name) and not name.startswith(APP)
                 and len(self.list(f"/mnt/sandbox/{name}") or {}) > 1]
+
+
+class WarmWriter:
+    """The whole-cache restore's writes on one FTP session. Each is checked here against warm_cache.py's rules
+    (write_ok, delete_ok, rename_ok) before it is sent: only inside <data>/user/cache and <data>/cache, never
+    under a .warm-owner-aside name, and the one rename pair. warm_cache.py lists right before and after."""
+
+    def __init__(self, client):
+        self.client = client
+
+    @staticmethod
+    def _check(ok, what, *paths):
+        if not ok:
+            raise Refused(f"{what} {' -> '.join(paths)}")
+
+    def mkd(self, path):
+        self._check(warm_cache.write_ok(path, DATA), "MKD", path)
+        self.client.sendcmd(f"MKD {path}")  # any 2xx; the listing after is the proof
+
+    def stor(self, local, path):
+        self._check(warm_cache.write_ok(path, DATA), "STOR", path)
+        with open(local, "rb") as handle:
+            self.client.storbinary(f"STOR {path}", handle)
+
+    def dele(self, path):
+        self._check(warm_cache.delete_ok(path, DATA), "DELE", path)
+        self.client.sendcmd(f"DELE {path}")  # not client.delete(): ftpsrv answers DELE with 226
+
+    def rmd(self, path):
+        self._check(warm_cache.write_ok(path, DATA), "RMD", path)
+        self.client.sendcmd(f"RMD {path}")
+
+    def rename(self, source, target):
+        self._check(warm_cache.rename_ok(source, target, DATA), "RENAME", source, target)
+        self.client.rename(source, target)
 
 
 # ---------------------------------------------------------------- frames (obs/grab.py, obs/loop.py)
@@ -1224,6 +1305,10 @@ def blocked(state, tests, args):
     if cold and cold.get("host") != args.host:
         reasons.append(f"a cold start in {cold.get('batch')} left caches aside on another console: run "
                        "--restore-env --go with that console's --host first")
+    warm = state.get("warm_pending")
+    if warm and warm.get("host") != args.host:
+        reasons.append(f"a whole-cache restore in {warm.get('batch')} left the owner's caches aside on another "
+                       "console: run --restore-env --go with that console's --host first")
     stopped = state.get("stopped")
     if stopped and not (args.clear_stop or args.new_boot):
         reasons.append(f"the last batch stopped on {stopped['kind']} ({stopped['test']}, {stopped['when']}). "
@@ -1297,6 +1382,65 @@ def cold_keeper(state, root, batch, run, host, note_file):
     return keep
 
 
+def warm_keeper(state, root, batch, host, note_file):
+    """keep(note) for warm_cache: the note into note_file, and while the owner's folders may be aside, into the
+    state file too (warm_pending), so the next --go or --restore-env --go puts them back first. The note holds
+    console paths, counts, sizes and the copy's folder name only: no address, no folder of this computer."""
+    def keep(note):
+        note_file.write_text(json.dumps(note, indent=2) + "\n")
+        current = state.get("warm_pending")
+        if note["status"] in warm_cache.OPEN:
+            state["warm_pending"] = {"batch": batch, "host": host, "note": note}
+        elif current and current.get("batch") == batch:
+            state.pop("warm_pending")
+        save_state(root, state)
+    return keep
+
+
+def console_log_sizes(console):
+    """The sizes of the app's three logs, eden_log.txt first (as Batch.log_sizes)."""
+    eden, logs = console.list(EDEN_DIR) or {}, console.list(LOG_DIR) or {}
+    return tuple((folder.get(name) or {}).get("size")
+                 for folder, name in ((eden, "eden_log.txt"), (logs, "stderr.log"), (logs, "heap.log")))
+
+
+def warm_for(console, state, say):
+    return warm_cache.WarmCache(
+        console, DATA, say=say, app_open=lambda: bool(console.mounted_sandboxes() - set(state.get("stale_sandboxes", []))),
+        log_sizes=lambda: console_log_sizes(console), errors=(NoAnswer,))
+
+
+def warm_copy_command(args):
+    """--check-warm-copy (this computer only) and --make-warm-copy (reads the console; only with --go)."""
+    if args.check_warm_copy:
+        try:
+            _, info, total = warm_cache.check_copy(args.check_warm_copy, DATA)
+        except warm_cache.WarmRefused as error:
+            print(f"COPY NOT GOOD: {error}")
+            return 2
+        print(f"Copy good: {total['files']} files, {warm_cache.human(total['bytes'])}, made {info.get('made')}; every "
+              "file matches its SHA-256 and the manifest")
+        return 0
+    folder = args.make_warm_copy
+    if not args.go:
+        print(f"Would copy {DATA}/user/cache and {DATA}/cache from the console, whole, into {folder.name}, with a "
+              "SHA-256 list. Reads only; the app must be closed. Nothing was sent to the console. Add --go to do it.")
+        return 0
+    with only_one_run(args.out_root):
+        state = load_state(args.out_root)
+        if state.get("warm_pending"):
+            sys.exit("The owner's caches are set aside by an earlier whole-cache restore: run --restore-env --go "
+                     "first. Nothing was read.")
+        console = Console(args)
+        cache = warm_for(console, state, say=lambda text: print(f"{time.strftime('%H:%M:%S')} {text}", flush=True))
+        try:
+            info = warm_cache.make_copy(cache, folder, {"from": "the console's live cache folders"})
+        except warm_cache.WarmRefused as error:
+            sys.exit(f"No copy made: {error}")
+    print(f"Copy made: {folder.name}, {info['files']} files, {warm_cache.human(info['bytes'])} in {info['seconds']:.0f} s")
+    return 0
+
+
 def restore_command(args):
     """--restore-env: finish the job of a run that could not put env.txt back. With --go it also puts back
     any shader store or driver cache a cold start left aside (the note in the state file, and any .cold-aside-
@@ -1304,6 +1448,7 @@ def restore_command(args):
     state = load_state(args.out_root)
     pending = state.get("pending_restore")
     cold = state.get("cold_pending")
+    warm = state.get("warm_pending")
     config = None
     if not pending:
         print("Nothing to restore: no run left env.txt changed.")
@@ -1323,9 +1468,14 @@ def restore_command(args):
             sys.exit(f"The cold-start caches left aside belong to {cold.get('host')}, not {args.host}.")
         print(f"Cold start in {cold.get('batch') or 'an earlier run'} left aside: " + ", ".join(
             item["aside"] for item in cold["note"]["items"] if item.get("state") in ("maybe", "aside")))
+    if warm:
+        if warm.get("host") != args.host:
+            sys.exit(f"The owner's caches set aside belong to {warm.get('host')}, not {args.host}.")
+        print(f"A whole-cache restore in {warm.get('batch') or 'an earlier run'} left the owner's caches aside: " +
+              ", ".join(tree["aside"] for tree in warm["note"]["trees"].values() if tree.get("before")))
     if not args.go:
         print("Nothing was sent to the console. Add --go to put these back (with --go the console's cache folders "
-              "are also checked for any .cold-aside- folder left behind).")
+              "are also checked for any .cold-aside- or .warm-owner-aside folder left behind).")
         return 0
     with only_one_run(args.out_root):
         console = Console(args)
@@ -1355,6 +1505,13 @@ def restore_command(args):
         if not ok:
             sys.exit(f"Cold-start caches NOT back: {how}. Nothing more was moved; {note_file.name} says what is where.")
         print(f"Cold-start caches: {how}.")
+        warm_file = args.out_root / f"warm-recovery-{time.strftime('%Y%m%d-%H%M%S')}.json"
+        caches = warm_for(console, state, say=lambda text: print(f"{time.strftime('%H:%M:%S')} {text}", flush=True))
+        ok, how = caches.recover(warm and warm["note"],
+                                 warm_keeper(state, args.out_root, warm and warm["batch"], args.host, warm_file))
+        if not ok:
+            sys.exit(f"The owner's caches NOT back: {how}. Nothing more was moved.")
+        print(f"Whole-cache restore: {how}.")
     return 0
 
 
@@ -1464,6 +1621,12 @@ class Batch:
         self.cold = cold_caches.ColdCaches(self.console, DATA, ENV_FOLDERS, say=self.say, app_open=self.app_open,
                                            log_sizes=self.log_sizes, errors=(NoAnswer,))
         self.cold_recovered = None  # what the start-up check put back, for the summary
+        # --warm-copy: the whole cache put back from one copy before every start (warm_cache.py)
+        self.warm = warm_cache.WarmCache(self.console, DATA, say=self.say, app_open=self.app_open,
+                                         log_sizes=self.log_sizes, errors=(NoAnswer,))
+        self.warm_note = None  # this batch's note: the owner's folders, where they are, the restores
+        self.warm_recovered = None  # what the start-up check put back, for the summary
+        self.warm_left = None  # why the owner's folders are not back at the end, if they are not
 
     @property
     def put_back(self):
@@ -1517,8 +1680,11 @@ class Batch:
             try:
                 self.end_save_job()
             finally:  # whatever the wait for the save does, env.txt goes back and the page is written
-                self.restore_env()
-                self.finish()
+                try:
+                    self.warm_back()  # --warm-copy: the owner's caches back, once the app is closed
+                finally:
+                    self.restore_env()
+                    self.finish()
         return 2 if self.stop else 130 if self.interrupted else 0
 
     def prepare(self):
@@ -1561,6 +1727,7 @@ class Batch:
                 self.quit_app()
             self.clear_test_quit()
             self.cold_recover()
+            self.warm_recover()
             before = {}
             copies = self.folder / "env-before"
             copies.mkdir()
@@ -1590,6 +1757,7 @@ class Batch:
         self.env_before = before
         self.state["pending_restore"] = {"batch": self.folder.name, "host": self.args.host, "before": before}
         self.save_state()
+        self.warm_aside()  # --warm-copy only: last, so a refusal here has changed nothing else
 
     def restore_save(self, early=None, again=False):
         """Every test starts from one save: a walk goes through doorways and the game saves there.
@@ -1792,6 +1960,7 @@ class Batch:
             self.restore_save(early, again=opened)
             if self.args.discard_save_reuse:
                 self.save_clean = False  # a failed launch/finish must never carry old proof forward
+            self.warm_restore(run)  # --warm-copy only: the whole cache from the copy; refuses while the app runs
             self.cold_aside(run)  # EDEN_TEST_COLD=1 / --cold only; refuses (nothing moved) while the app runs
             self.start(run)
             self.finish_run(run, self.watch(run))
@@ -1986,6 +2155,103 @@ class Batch:
                                                         "back. Next steps are yours.")
         self.told_owner = True
         return False
+
+    # The whole-cache restore (warm_cache.py): --warm-copy <copy folder>, GrowingBlackBeans' warm-run-steps.md step 0.
+
+    def warm_say(self, text):
+        """A whole-cache line: in batch.log and on screen as every line, and in the batch folder's warm.log."""
+        self.say(text)
+        with open(self.folder / warm_cache.LOG_NAME, "a") as out:
+            out.write(f"{time.strftime('%H:%M:%S')} {text}\n")
+
+    def warm_keep(self, note_file=None):
+        return warm_keeper(self.state, self.args.out_root, self.folder.name, self.args.host,
+                           note_file or self.folder / warm_cache.NOTE_NAME)
+
+    def warm_recover(self):
+        """The start-up check, on every --go: the owner's caches an earlier, cut-off run left aside go back before
+        anything else is written. Refuses the batch when it cannot."""
+        pending = self.state.get("warm_pending") or {}
+        keep = warm_keeper(self.state, self.args.out_root, pending.get("batch"), self.args.host,
+                           self.folder / "warm-recovery.json")
+        self.warm.say = self.warm_say
+        try:
+            ok, how = self.warm.recover(pending.get("note"), keep)
+        finally:
+            self.warm.say = self.say
+        if not ok:
+            raise Stop("not_started", f"start-up check: the owner's cache folders an earlier whole-cache restore left "
+                                      f"aside could not be put back: {how}. Nothing else was sent")
+        if how == warm_cache.NOTHING_LEFT:
+            self.say(f"Start-up check: {how}")
+        else:
+            self.warm_recovered = how
+
+    def warm_aside(self):
+        """--warm-copy: the copy checked, then the owner's two cache folders renamed aside for the batch."""
+        if self.args.warm_copy is None:
+            return
+        self.warm.say = self.warm_say
+        self.warm.last_note = None
+        try:
+            _, info, total = warm_cache.check_copy(self.args.warm_copy, DATA)
+            self.warm_say(f"Whole-cache restore: copy {self.args.warm_copy.name}, {total['files']} files, "
+                          f"{warm_cache.human(total['bytes'])}, made {info.get('made')}: matches its SHA-256 list")
+            self.warm_note = self.warm.set_aside(self.args.warm_copy.name, self.warm_keep())
+        except warm_cache.WarmRefused as error:
+            raise Stop("not_started", f"whole-cache restore refused, nothing was moved: {error}") from error
+        except warm_cache.WarmNotBack as error:
+            self.warm_note = self.warm.last_note
+            raise Stop("warm_not_back", f"{error}. The next --go or --restore-env --go puts them back") from error
+        finally:
+            self.warm.say = self.say
+            if self.warm_note is None and self.warm.last_note is not None and \
+                    self.warm.last_note.get("status") in warm_cache.OPEN:
+                self.warm_note = self.warm.last_note  # cut off inside set_aside: the batch end puts back what moved
+
+    def warm_restore(self, run):
+        """Before a start: the live cache folders deleted and the copy uploaded whole (warm_cache.WarmCache.restore)."""
+        if self.warm_note is None or self.args.warm_copy is None:
+            return
+        self.warm.say = self.warm_say
+        try:
+            record = self.warm.restore(self.args.warm_copy, self.warm_note, self.warm_keep())
+        except warm_cache.WarmRefused as error:
+            run.result["warm_restore"] = {"ok": False, "why": str(error)}
+            raise Stop("not_started", f"whole-cache restore refused, nothing deleted: {error}") from error
+        except warm_cache.WarmFailed as error:
+            run.result["warm_restore"] = {"ok": False, "why": str(error)}
+            raise Stop("warm_failed", f"{error}. The owner's caches stay aside until the batch end puts them "
+                                      "back") from error
+        finally:
+            self.warm.say = self.say
+        run.result["warm_restore"] = record
+        self.warm_say(f"Whole-cache restore before {run.test.name}: done ({run.folder.name})")
+
+    def warm_back(self):
+        """At the batch end: the test caches deleted and the owner's caches renamed back, once the app is closed.
+        When they cannot go back the batch stops; the state file keeps the way back for the next --go."""
+        note = self.warm_note
+        if note is None or note.get("status") not in warm_cache.OPEN:
+            return
+        self.warm.say = self.warm_say
+        try:
+            ok, why = self.warm.back(note, self.warm_keep())
+        finally:
+            self.warm.say = self.say
+        if ok:
+            return
+        self.warm_left = why
+        text = (f"the owner's caches are NOT back ({why}). They stay renamed on the console ("
+                + ", ".join(t["aside"] for t in note["trees"].values() if t.get("before")) +
+                "); the next --go, or --restore-env --go, puts them back once the app is closed")
+        self.say("WHOLE-CACHE RESTORE: " + text)
+        if not self.stop and not self.interrupted:
+            self.stop = Stop("warm_not_back", text)
+            if self.launched_any:
+                self.latch(self.stop, self.results[-1]["name"] if self.results else "?")
+        notify(self.args, "EglantinePS5 tests stopped", "the owner's caches are NOT back. Next steps are yours.")
+        self.told_owner = True
 
     def start(self, run):
         test, console = run.test, self.console
@@ -2599,15 +2865,26 @@ class Batch:
         does not read as it was asked gets a note."""
         cold = run.result.get("cold") if run.test.cold else None
         use = cold_caches.boot_caches(run.folder)
-        line = cold_caches.cache_line(use, cold)
-        run.result["caches"] = dict(use, asked="cold" if run.test.cold else "not cold", line=line,
-                                    short=cold_caches.cache_short(use, cold))
+        restored = run.result.get("warm_restore")
+        restored = restored if restored and restored.get("ok") else None
+        if restored:
+            line = warm_cache.cache_line(use, restored, cold_caches.boot_text)
+            short = warm_cache.cache_short(use, restored, cold_caches.boot_text)
+        else:
+            line, short = cold_caches.cache_line(use, cold), cold_caches.cache_short(use, cold)
+        run.result["caches"] = dict(use, asked="cold" if run.test.cold else "whole cache restored" if restored
+                                    else "not cold", line=line, short=short)
         if run.test.cold:
             self.cold_say(run.folder, line)
+        elif restored:
+            self.warm_say(line)
         else:
             self.say(line)
         reads = use["reads_as"]
-        if run.test.cold and reads in ("warm", "half"):
+        if restored and reads in ("cold", "half"):
+            run.note(f"caches: the whole cache was put back from the copy, but the boot log reads as {reads}: "
+                     "not a warm control")
+        elif run.test.cold and reads in ("warm", "half"):
             run.note(f"caches: asked for a cold start, but the boot log reads as {reads} ({cold_caches.boot_text(use)})")
         elif not run.test.cold and reads in ("cold", "half"):
             run.note(f"caches: not asked to be a cold start, but the boot log reads as {reads}: the store was new "
@@ -2719,6 +2996,8 @@ class Batch:
                 lines.append(f"Nothing more was sent to the console except {self.put_back}"
                              + (" and a cold start's caches put back, only with the app closed (below)"
                                 if any(r.get("cold") for r in results) else "")
+                             + (" and the owner's caches put back, only with the app closed (below)"
+                                if self.warm_note else "")
                              + ". The next steps are the owner's.")
         elif self.interrupted:
             lines.append("**Stopped by hand.**")
@@ -2768,6 +3047,38 @@ class Batch:
                 lines.append("- **NOT BACK on the console:** " + ", ".join(
                     item["aside"] for item in pending["note"]["items"] if item.get("state") in ("maybe", "aside")) +
                     ". The next `--go`, or `--restore-env --go`, puts them back once the app is closed.")
+        warm_note, warm_pending = self.warm_note, self.state.get("warm_pending")
+        if warm_note or self.warm_recovered or warm_pending:
+            lines += ["", "Whole-cache restore (GrowingBlackBeans' warm-run-steps.md step 0; warm.log and warm-note.json "
+                          "in this folder say what moved where):"]
+            if self.warm_recovered:
+                lines.append(f"- start-up check, before the first test: {self.warm_recovered}")
+            if warm_note:
+                lines.append(f"- copy: {warm_note.get('copy')}, checked against its SHA-256 list before every start")
+                owner = [f"{t['path']} ({t['before']['files']} files, {cold_caches.human(t['before']['bytes'])})"
+                         for t in warm_note["trees"].values() if t.get("before")]
+                lines.append("- the owner's caches set aside for the batch: " + (", ".join(owner) or "none there") +
+                             "; " + ("back at the end, each listing the same as before"
+                                     if warm_note.get("status") == "back" else "**NOT BACK**"))
+            for result in results:
+                restored = result.get("warm_restore")
+                if restored and restored.get("ok"):
+                    lines.append(f"- {result['name']}: the copy put back ({restored['files']} files, "
+                                 f"{cold_caches.human(restored['bytes'])}, {restored['seconds']:.0f} s), listing the "
+                                 "same as the copy, " + str(sum(t["read_back"] for t in restored["trees"].values())) +
+                                 " files read back")
+                elif restored:
+                    lines.append(f"- {result['name']}: **not put back**: {restored.get('why')}")
+            counts = sorted({r["caches"].get("store_pipelines") for r in results
+                             if (r.get("warm_restore") or {}).get("ok") and r.get("caches")}, key=str)
+            if len(counts) > 1:
+                lines.append("- **the store's pipeline count differs between restored starts** "
+                             f"({', '.join(map(str, counts))}): the starts did not begin alike")
+            if warm_pending:
+                lines.append("- **NOT BACK on the console:** " + ", ".join(
+                    t["aside"] for t in warm_pending["note"]["trees"].values() if t.get("before")) +
+                    f". {self.warm_left or ''} The next `--go`, or `--restore-env --go`, puts them back once the app "
+                    "is closed.")
         used = [result for result in results if result.get("caches")]
         if used:
             lines += ["", "Caches per start (what the runner set aside, and what each boot log says the start reused; "
@@ -2834,6 +3145,15 @@ def parse_args():
     parser.add_argument("--cold", action="store_true",
                         help="every test a cold start, as EDEN_TEST_COLD=1 in its env: the shader store and the "
                              "driver cache renamed aside before the start and put back after (cold_caches.py)")
+    parser.add_argument("--warm-copy", type=Path,
+                        help="whole-cache restore (GrowingBlackBeans' warm-run-steps.md step 0): the owner's two cache "
+                             "folders renamed aside for the batch, and before every start the live ones replaced by "
+                             "this copy, checked; the owner's back at the end (warm_cache.py). Not with a cold start")
+    parser.add_argument("--make-warm-copy", type=Path,
+                        help="copy the console's two cache folders whole into this new folder, with a SHA-256 list "
+                             "(reads only; the app must be closed; with --go)")
+    parser.add_argument("--check-warm-copy", type=Path,
+                        help="check a whole-cache copy against its SHA-256 list and manifest (this computer only)")
     parser.add_argument("--web-port", type=int, default=SETTINGS["console"]["web_port"])
     parser.add_argument("--ftp-port", type=int, default=SETTINGS["console"]["ftp_port"])
     parser.add_argument("--obs-host", default=SETTINGS["capture"]["obs_host"])
@@ -2889,8 +3209,10 @@ def parse_args():
     if not args.host:
         parser.error("no console address: give --host or set console.host in runner-config.json")
     runner_config.use_console(args.host, args.web_port, args.ftp_port)  # the save tools started from here use the same console
-    if not args.restore_env and args.plan is None:
+    if not args.restore_env and args.plan is None and not (args.make_warm_copy or args.check_warm_copy):
         parser.error("name a plan file")
+    if sum(bool(x) for x in (args.restore_env, args.make_warm_copy, args.check_warm_copy, args.plan)) > 1:
+        parser.error("one at a time: a plan, --restore-env, --make-warm-copy or --check-warm-copy")
     return args
 
 
@@ -2899,10 +3221,20 @@ def main():
     args.out_root.mkdir(parents=True, exist_ok=True)
     if args.restore_env:
         return restore_command(args)
+    if args.make_warm_copy or args.check_warm_copy:
+        return warm_copy_command(args)
     tests = load_plan(args.plan)
     if args.cold:
         for test in tests:
             test.cold = True
+    if args.warm_copy is not None and any(test.cold for test in tests):
+        sys.exit("--warm-copy and a cold start in one batch: the whole-cache restore would put the caches back "
+                 "under the cold start. Run them as two batches. Nothing was done.")
+    if args.warm_copy is not None and args.go:
+        try:
+            warm_cache.check_copy(args.warm_copy, DATA)
+        except warm_cache.WarmRefused as error:
+            sys.exit(f"The whole-cache copy is not good: {error}. Nothing was sent to the console.")
     lone = [test.name for test in tests if test.cold_set and not test.cold]
     if lone:
         sys.exit(f"{cold_caches.SET_LINE}=1 needs a cold start ({cold_caches.COLD_LINE}=1 or --cold): " +

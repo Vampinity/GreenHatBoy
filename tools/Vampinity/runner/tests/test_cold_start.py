@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Offline tests of the runner's cold-start option (EDEN_TEST_COLD=1 / --cold) and of its caches line.
+"""Offline tests of the runner's cold-start option (EDEN_TEST_COLD=1 / --cold), of its caches line, and of the
+whole-cache restore (--warm-copy, --make-warm-copy, --check-warm-copy; cases 29 and up).
 They never talk to a console: offline_guard.py makes any network use or child process fail, and every case
 checks that none was even tried.
 
@@ -60,6 +61,7 @@ wrapper = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(wrapper)
 tool = wrapper.tool
 cold_caches = tool.cold_caches
+warm_cache = tool.warm_cache
 tool.runner_config.keep_awake = lambda pid: None
 RealConsole = tool.Console  # kept for the one case that proves the guard stops the real thing
 
@@ -108,6 +110,11 @@ class FakeConsole:
         self.fail_rename_at = None  # the n-th rename (1-based) fails with no answer
         self.ctrl_c_at = None  # Ctrl-C comes right before the n-th rename
         self.down = False
+        self.warm_writes = []  # every whole-cache write, in order: (what, path...)
+        self.warm_fail_at = None  # the n-th whole-cache write (1-based) fails with no answer (an FTP drop)
+        self.warm_corrupt = None  # an uploaded file of this name lands with its last byte changed
+        self.warm_short = None  # an uploaded file of this name lands one byte short (the answer is still fine)
+        self.warm_ctrl_c_at = None  # Ctrl-C comes right before the n-th whole-cache write
 
     def local(self, path):
         assert path.startswith("/") and ".." not in path.split("/"), path
@@ -203,6 +210,22 @@ class FakeConsole:
             self.fail_mkdir = False
             raise tool.NoAnswer("fake: FTP: connection reset after MKD")
 
+    def download(self, path, dest):
+        self.calls.append(("download", path))
+        self._up(path)
+        file = self.local(path)
+        if not file.is_file():
+            raise tool.NoAnswer(f"fake: 404 {path}")
+        data = file.read_bytes()
+        Path(dest).write_bytes(data)
+        return len(data), hashlib.sha256(data).hexdigest()
+
+    @contextlib.contextmanager
+    def warm_writer(self):
+        self.calls.append(("warm-session",))
+        self._up("ftp")
+        yield FakeWarmWriter(self)
+
     def sandboxes(self):
         return {f"{tool.APP}_000": {"mtime": 1}}
 
@@ -211,6 +234,57 @@ class FakeConsole:
 
     def other_games(self):
         return []
+
+
+class FakeWarmWriter:
+    """The whole-cache restore's FTP session on the stand-in. The same guard as the runner's WarmWriter, and an
+    RNTO that replaces an existing target, logged so a case can prove it never happened."""
+
+    def __init__(self, fake):
+        self.fake = fake
+
+    def _go(self, ok, what, *paths):
+        fake = self.fake
+        fake.calls.append(("warm-" + what,) + paths)
+        if not ok:
+            raise tool.Refused(f"{what} {' -> '.join(paths)}")
+        fake._up("ftp")
+        if fake.warm_fail_at is not None and len(fake.warm_writes) + 1 == fake.warm_fail_at:
+            fake.warm_fail_at = None
+            raise tool.NoAnswer("fake: FTP: connection reset")
+        if fake.warm_ctrl_c_at is not None and len(fake.warm_writes) + 1 == fake.warm_ctrl_c_at:
+            fake.warm_ctrl_c_at = None
+            raise KeyboardInterrupt
+        fake.warm_writes.append((what,) + paths)
+
+    def mkd(self, path):
+        self._go(warm_cache.write_ok(path, DATA), "mkd", path)
+        self.fake.local(path).mkdir()
+
+    def stor(self, local, path):
+        self._go(warm_cache.write_ok(path, DATA), "stor", path)
+        data = Path(local).read_bytes()
+        if self.fake.warm_corrupt and posixpath.basename(path) == self.fake.warm_corrupt and data:
+            data = data[:-1] + bytes([data[-1] ^ 0xFF])
+        if self.fake.warm_short and posixpath.basename(path) == self.fake.warm_short and data:
+            data = data[:-1]
+        self.fake.local(path).write_bytes(data)
+
+    def dele(self, path):
+        self._go(warm_cache.delete_ok(path, DATA), "dele", path)
+        self.fake.local(path).unlink()
+
+    def rmd(self, path):
+        self._go(warm_cache.write_ok(path, DATA), "rmd", path)
+        self.fake.local(path).rmdir()
+
+    def rename(self, source, target):
+        self._go(warm_cache.rename_ok(source, target, DATA), "rename", source, target)
+        s, t = self.fake.local(source), self.fake.local(target)
+        if t.exists():  # what RNTO does on the console: the old target is gone
+            self.fake.overwrites.append((source, target))
+            shutil.rmtree(t) if t.is_dir() else t.unlink()
+        os.rename(s, t)
 
 
 def put_file(root, path, data):
@@ -268,7 +342,12 @@ def stub_start(self, run):
     found = {"/" + str(p.relative_to(fake.root)): hashlib.sha256(p.read_bytes()).hexdigest()
              for p in shader.rglob("*") if p.is_file()} if shader.exists() else {}
     SCENARIO.setdefault("at_start", []).append(found)
-    was_cold = all(cold_caches.is_set_file(posixpath.basename(p)) and posixpath.dirname(p) == SHADER for p in found)
+    # The whole live cache the start finds (both folders), for the whole-cache restore cases.
+    SCENARIO.setdefault("warm_at_start", []).append(
+        {p: d for p, d in hashes(fake.root).items() if p.startswith((f"{DATA}/user/cache/", f"{DATA}/cache/"))})
+    if SCENARIO.get("after_start"):
+        SCENARIO["after_start"](fake)
+    was_cold =all(cold_caches.is_set_file(posixpath.basename(p)) and posixpath.dirname(p) == SHADER for p in found)
     fake.app_running = True
     self.launched_any = True
     self.closed_at = None
@@ -320,6 +399,8 @@ tool.Batch.watch = stub_watch
 tool.Batch.finish_run = stub_finish_run
 tool.Batch.quit_app = stub_quit_app
 cold_caches.QUIET = 0.01  # the closed check's eden_log.txt look: 20 s on a console, a moment here
+warm_cache.QUIET = 0.01  # the same for the whole-cache restore
+warm_cache.MAC_SPARE = 0  # a test copy is small; the room check still runs, without the 5 GiB floor
 FAKE = {}
 tool.Console = lambda args: FAKE["console"]
 
@@ -376,7 +457,7 @@ def nothing_deleted(before, fake):
     for path, digest in before.items():
         if after.get(path) == digest:
             continue
-        moved = [p for p, d in after.items() if d == digest and ".cold-aside-" in p]
+        moved = [p for p, d in after.items() if d == digest and (".cold-aside-" in p or warm_cache.ASIDE in p)]
         if not moved:
             problems.append(f"{path} is gone or changed")
     if fake.overwrites:
@@ -384,6 +465,9 @@ def nothing_deleted(before, fake):
     cache_removes = [p for p in fake.removed if "/cache/" in p]
     if cache_removes:
         problems.append(f"removed under a cache folder: {cache_removes}")
+    under_aside = [w for w in fake.warm_writes if w[0] != "rename" and any(warm_cache.ASIDE in p for p in w[1:])]
+    if under_aside:
+        problems.append(f"a whole-cache write under an aside name: {under_aside}")
     return problems
 
 
@@ -393,11 +477,14 @@ def private_values(out_root):
     home = str(Path.home())
     needles = [HOST, home, str(SCRATCH), "/" + "Users/", "/" + "home/"]
     files = [p for p in Path(out_root).rglob("*") if p.is_file() and
-             (p.name in (cold_caches.NOTE_NAME, cold_caches.LOG_NAME, "cold-recovery.json"))]
+             (p.name in (cold_caches.NOTE_NAME, cold_caches.LOG_NAME, "cold-recovery.json", warm_cache.NOTE_NAME,
+                         warm_cache.LOG_NAME, "warm-recovery.json", "copy.json", "manifest.json", "SHA256SUMS")
+              or p.name.startswith("warm-recovery-"))]
     texts = [(p.name, p.read_text(errors="replace")) for p in files]
     for log in Path(out_root).rglob("batch.log"):
         texts.append((log.name, "\n".join(line for line in log.read_text().splitlines()
-                                         if any(m in line for m in ("Cold start", "COLD START", "Start-up check")))))
+                                         if any(m in line for m in ("Cold start", "COLD START", "Start-up check",
+                                                                    "Whole-cache", "WHOLE-CACHE")))))
     for name, text in texts:
         for needle in needles:
             if needle and needle in text:
@@ -1273,6 +1360,430 @@ def _(root, out, folder):
         p.append(f"the cold start's put-back suffered: {result['cold']}")
     if "- readerfault-1:" not in (batches(out)[0] / "summary.md").read_text():
         p.append("summary.md was not written as usual")
+    return p
+
+
+# ---------------------------------------------------------------- the whole-cache restore (--warm-copy)
+
+USER_CACHE, DRIVER_CACHE = f"{DATA}/user/cache", f"{DATA}/cache"
+
+
+def run_argv(argv):
+    """tool.main() with these arguments. (exit code, printed text)."""
+    sys.argv = ["runner", *argv]
+    printed = io.StringIO()
+    with contextlib.redirect_stdout(printed):
+        try:
+            code = tool.main()
+        except SystemExit as stop:
+            code = stop.code
+        except Exception:  # noqa: BLE001
+            code = "raised: " + traceback.format_exc().strip().splitlines()[-1]
+    return code, printed.getvalue()
+
+
+def make_warm_copy(folder, out):
+    """The copy, as a person makes it once right after a store build: a second stand-in console (its own caches,
+    not the owner's) and the runner's own --make-warm-copy --go. (copy folder, exit code, printed text). The
+    owner's stand-in is put back as FAKE["console"] after."""
+    build = folder / "build-console"
+    build.mkdir()
+    console_layout(build)
+    put_file(build, f"{USER_CACHE}/jit/blocks.bin", os.urandom(300))
+    put_file(build, f"{SHADER}/up_v1_2/vulkan_pipelines.bin", os.urandom(300_000))  # big: read back at its ends
+    put_file(build, f"{RADV}/01/small", os.urandom(40))
+    owner = FAKE.get("console")
+    FAKE["console"] = FakeConsole(build)
+    copy = Path(out) / "warm-copy-after-store-build"
+    try:
+        code, text = run_argv([f"--make-warm-copy={copy}", "--go", "--out-root", str(out)])
+    finally:
+        FAKE["console"] = owner
+    return copy, code, text
+
+
+def copy_on_console(copy):
+    """{console path: sha256} the copy should put in place."""
+    manifest = json.loads((Path(copy) / "manifest.json").read_text())
+    return {f"{tree['path']}/{rel}": manifest["sha256"][key][rel]
+            for key, tree in manifest["trees"].items() for rel in tree["files"]}
+
+
+def batch_named(out, plan_name):
+    """The batch folder of the plan with this name (two batches can start in the same second)."""
+    return next(b for b in batches(out) if b.name.endswith("-" + plan_name))
+
+
+def warm_asides(root):
+    return sorted(p for p in (f"{USER_CACHE}{warm_cache.ASIDE}", f"{DRIVER_CACHE}{warm_cache.ASIDE}")
+                  if (Path(root) / p.lstrip("/")).exists())
+
+
+def owner_back(before, root):
+    """The owner's cache files back at their own paths, byte for byte, and no other file in the two folders."""
+    now = hashes(root)
+    mine = {p: d for p, d in before.items() if p.startswith((f"{USER_CACHE}/", f"{DRIVER_CACHE}/"))}
+    there = {p: d for p, d in now.items() if p.startswith((f"{USER_CACHE}/", f"{DRIVER_CACHE}/"))}
+    return [] if mine == there else [f"the owner's caches are not back as they were: {len(there)} files now, "
+                                     f"{len(mine)} before"]
+
+
+@case("29 whole-cache restore: two warm starts from one copy; the owner's caches aside once and back byte for byte")
+def _(root, out, folder):
+    fake = new_fake(root, recipe=True)
+    copy, code, text = make_warm_copy(folder, out)
+    p = [] if code == 0 else [f"--make-warm-copy exit {code}: {text[-400:]}"]
+    want = copy_on_console(copy)
+    code, text = run_main(plan(folder, "warm", ["EDEN_TEST_DISCARD_SAVE=1"], tests=2), out,
+                          ("--warm-copy", str(copy)))
+    if code != 0:
+        p.append(f"exit {code}: {text[-600:]}")
+    found = SCENARIO.get("warm_at_start", [])
+    if len(found) != 2 or any(start != want for start in found):
+        p.append(f"a start did not find exactly the copy in place ({[len(s) for s in found]} files; the copy has "
+                 f"{len(want)})")
+    renames = [w for w in fake.warm_writes if w[0] == "rename"]
+    if len(renames) != 4:  # the owner's two folders aside once, back once
+        p.append(f"expected 4 whole-cache renames, got {renames}")
+    if sum(w[0] == "dele" for w in fake.warm_writes) == 0:
+        p.append("the test cache of the first start was never deleted")
+    p += owner_back(FAKE["before"], root)
+    if warm_asides(root):
+        p.append(f"an aside folder is left: {warm_asides(root)}")
+    if "warm_pending" in state_of(out):
+        p.append("the state file still has warm_pending")
+    batch = batches(out)[0]
+    for run in sorted(batch.glob("run*")):
+        result = json.loads((run / "result.json").read_text())
+        restored = result.get("warm_restore") or {}
+        if not restored.get("ok") or not all(t["read_back"] for t in restored.get("trees", {}).values()):
+            p.append(f"{run.name}: warm_restore = {restored}")
+        if result.get("caches", {}).get("asked") != "whole cache restored" or \
+                "the whole cache put back before this start" not in result.get("caches", {}).get("line", ""):
+            p.append(f"{run.name}: caches = {result.get('caches')}")
+        if result.get("caches", {}).get("reads_as") != "warm":
+            p.append(f"{run.name}: the boot log should read warm")
+    summary = (batch / "summary.md").read_text()
+    for needle in ("Whole-cache restore", "back at the end, each listing the same as before",
+                   "warm-1: the copy put back"):
+        if needle not in summary:
+            p.append(f"summary.md lacks {needle!r}")
+    log = (batch / warm_cache.LOG_NAME).read_text()
+    for needle in ("renamed to cache.warm-owner-aside", "checked against its SHA-256 list", "the owner's caches are back"):
+        if needle not in log:
+            p.append(f"warm.log lacks {needle!r}")
+    return p
+
+
+@case("30 the copy: --make-warm-copy (reads only), --check-warm-copy; a changed byte refuses before anything is sent")
+def _(root, out, folder):
+    fake = new_fake(root)
+    p = []
+    code, text = run_argv([f"--make-warm-copy={folder / 'not-made'}", "--out-root", str(out)])
+    if code != 0 or "Nothing was sent" not in text or (folder / "not-made").exists():
+        p.append(f"--make-warm-copy without --go: exit {code}, {text[-200:]!r}")
+    if fake.calls:
+        p.append(f"--make-warm-copy without --go asked the console: {fake.calls[:3]}")
+    fake.log_grows = True
+    code, text = run_argv([f"--make-warm-copy={folder / 'while-open'}", "--go", "--out-root", str(out)])
+    fake.log_grows = False
+    if code in (0, None) or "No copy made" not in str(code) or list((folder / "while-open").glob("*")):
+        p.append(f"a copy was made while the app ran: {code}")
+    copy, code, text = make_warm_copy(folder, out)
+    if code != 0:
+        p.append(f"--make-warm-copy exit {code}: {text[-300:]}")
+    sums = (copy / "SHA256SUMS").read_text().splitlines()
+    if len(sums) != len(copy_on_console(copy)) or not all(len(line.split("  ")[0]) == 64 for line in sums):
+        p.append(f"SHA256SUMS does not list every file: {len(sums)} lines")
+    code, text = run_argv([f"--check-warm-copy={copy}"])
+    if code != 0 or "Copy good" not in text:
+        p.append(f"--check-warm-copy on a good copy: exit {code}, {text[-200:]!r}")
+    victim = next(q for q in sorted((copy / "user-cache").rglob("*")) if q.is_file() and q.stat().st_size)
+    data = bytearray(victim.read_bytes())
+    data[0] ^= 0x01
+    victim.write_bytes(bytes(data))  # same size: only the SHA-256 list can see it
+    code, text = run_argv([f"--check-warm-copy={copy}"])
+    if code != 2 or "does not match its SHA-256" not in text:
+        p.append(f"--check-warm-copy on a changed copy: exit {code}, {text[-200:]!r}")
+    fake.calls.clear()
+    before = hashes(root)
+    code, text = run_main(plan(folder, "badcopy", []), out, ("--warm-copy", str(copy)))
+    if code in (0, None) or "not good" not in str(code):
+        p.append(f"a batch on a changed copy: exit {code}")
+    if fake.calls or hashes(root) != before or SCENARIO.get("started"):
+        p.append(f"a batch on a changed copy reached the console: {fake.calls[:3]}")
+    return p
+
+
+@case("31 the owner's set-aside folder changes during the batch: nothing deleted, the batch stops, nothing moved back")
+def _(root, out, folder):
+    fake = new_fake(root)
+    copy, code, text = make_warm_copy(folder, out)
+
+    def tamper(console):
+        if not SCENARIO.get("tampered"):
+            put_file(console.root, f"{USER_CACHE}{warm_cache.ASIDE}/someone-wrote-here", b"x")
+            SCENARIO["tampered"] = True
+    SCENARIO["after_start"] = tamper
+    code, text = run_main(plan(folder, "tamper", [], tests=2), out, ("--warm-copy", str(copy)))
+    p = [] if code == 2 else [f"exit {code}, expected 2"]
+    if len(SCENARIO.get("started", [])) != 1:
+        p.append(f"starts: {SCENARIO.get('started')}")
+    first_restore_end = max(i for i, w in enumerate(fake.warm_writes) if w[0] == "stor")
+    after = fake.warm_writes[first_restore_end + 1:]
+    if after:
+        p.append(f"written after the owner's folder changed: {after[:4]}")
+    if warm_asides(root) != sorted([f"{USER_CACHE}{warm_cache.ASIDE}", f"{DRIVER_CACHE}{warm_cache.ASIDE}"]):
+        p.append(f"the owner's folders should stay aside, untouched: {warm_asides(root)}")
+    if "warm_pending" not in state_of(out):
+        p.append("no warm_pending in the state file")
+    summary = (batches(out)[0] / "summary.md").read_text()
+    if "NOTHING DELETED" not in summary or "**NOT BACK**" not in summary:
+        p.append("summary.md does not say nothing was deleted and the caches are not back")
+    count = len(fake.warm_writes)
+    code, text = run_main(plan(folder, "next", []), out, ("--clear-stop",))
+    if code != 2 or len(fake.warm_writes) != count or len(SCENARIO.get("started", [])) != 1:
+        p.append(f"the next --go did not refuse untouched: exit {code}, writes {fake.warm_writes[count:][:3]}")
+    if "DIFFERS FROM BEFORE" not in (batch_named(out, "next") / "summary.md").read_text():
+        p.append("the next --go does not say the owner's folder differs")
+    return p
+
+
+@case("32 an uploaded file reads back wrong: the batch stops before the start, the owner's caches come back")
+def _(root, out, folder):
+    fake = new_fake(root)
+    copy, code, text = make_warm_copy(folder, out)
+    fake.warm_corrupt = "prep_stores.txt"
+    code, text = run_main(plan(folder, "corrupt", []), out, ("--warm-copy", str(copy)))
+    p = [] if code == 2 else [f"exit {code}, expected 2"]
+    if SCENARIO.get("started"):
+        p.append("the test started on a wrong cache")
+    summary = (batches(out)[0] / "summary.md").read_text()
+    if "STOPPED HALF WAY" not in summary or "read back differ" not in summary:
+        p.append("summary.md does not name the failed read-back")
+    p += owner_back(FAKE["before"], root)
+    if warm_asides(root) or "warm_pending" in state_of(out):
+        p.append(f"not back: {warm_asides(root)}")
+    return p
+
+
+@case("33 frozen app: the owner's caches stay aside; the next --go puts them back first, then runs")
+def _(root, out, folder):
+    fake = new_fake(root)
+    copy, code, text = make_warm_copy(folder, out)
+    SCENARIO["ending"] = "freeze"
+    code, text = run_main(plan(folder, "freeze", []), out, ("--warm-copy", str(copy)))
+    p = [] if code == 2 else [f"exit {code}, expected 2"]
+    if len(warm_asides(root)) != 2 or "warm_pending" not in state_of(out):
+        p.append(f"the owner's caches should stay aside while the app is open: {warm_asides(root)}")
+    if "**NOT BACK**" not in (batches(out)[0] / "summary.md").read_text():
+        p.append("summary.md does not say NOT BACK")
+    fake.app_running = False
+    SCENARIO["ending"] = "script_end"
+    code, text = run_main(plan(folder, "after", []), out, ("--clear-stop",))
+    if code != 0:
+        p.append(f"next --go: exit {code}: {text[-400:]}")
+    if SCENARIO.get("warm_at_start", [None])[-1] != {k: v for k, v in FAKE["before"].items()
+                                                     if k.startswith((f"{USER_CACHE}/", f"{DRIVER_CACHE}/"))}:
+        p.append("the next start did not find the owner's own caches back")
+    if warm_asides(root) or "warm_pending" in state_of(out):
+        p.append(f"not back after the next --go: {warm_asides(root)}")
+    if "start-up check, before the first test: the owner's caches are back and checked" not in \
+            (batch_named(out, "after") / "summary.md").read_text():
+        p.append("the next summary.md does not name the start-up check")
+    return p
+
+
+@case("34 an FTP drop half way through a restore: the batch stops, the owner's caches come back at the end")
+def _(root, out, folder):
+    fake = new_fake(root)
+    copy, code, text = make_warm_copy(folder, out)
+    fake.warm_fail_at = 6  # 2 renames aside, then the uploads of the first restore
+    code, text = run_main(plan(folder, "drop", []), out, ("--warm-copy", str(copy)))
+    p = [] if code == 2 else [f"exit {code}, expected 2"]
+    if SCENARIO.get("started"):
+        p.append("the test started after a broken restore")
+    p += owner_back(FAKE["before"], root)
+    if warm_asides(root) or "warm_pending" in state_of(out):
+        p.append(f"not back: {warm_asides(root)}")
+    if "STOPPED HALF WAY" not in (batches(out)[0] / "summary.md").read_text():
+        p.append("summary.md does not name the half-way stop")
+    return p
+
+
+@case("35 a .warm-owner-aside folder with no note on this computer: --go and --restore-env --go move nothing")
+def _(root, out, folder):
+    fake = new_fake(root)
+    put_file(root, f"{DRIVER_CACHE}{warm_cache.ASIDE}/radv/index", b"left by someone")
+    FAKE["before"] = hashes(root)
+    code, text = run_main(plan(folder, "leftover", []), out)
+    p = [] if code == 2 else [f"--go: exit {code}, expected 2"]
+    if fake.warm_writes or SCENARIO.get("started"):
+        p.append(f"--go moved or started something: {fake.warm_writes}")
+    if "no note of it" not in (batches(out)[0] / "summary.md").read_text():
+        p.append("summary.md does not say there is no note")
+    code, text = run_argv(["--restore-env", "--go", "--out-root", str(out)])
+    if "no note of it" not in str(code) or fake.warm_writes:
+        p.append(f"--restore-env --go: {code!r}, writes {fake.warm_writes}")
+    return p
+
+
+@case("36 the write guard: only inside the two live folders, never under an aside name, one rename pair")
+def _(root, out, folder):
+    p = []
+    good = [f"{USER_CACHE}", f"{USER_CACHE}/shader/x.bin", f"{DRIVER_CACHE}/radv/00/a"]
+    bad = [f"{DATA}/user/save/0000/slot", f"{DATA}/user/cachex/a", f"{USER_CACHE}{warm_cache.ASIDE}/a",
+           f"{USER_CACHE}/../save/a", f"{USER_CACHE}//a", f"{DATA}/env.txt", f"{DRIVER_CACHE}/./a", "/data"]
+    p += [f"write_ok refuses {x}" for x in good if not warm_cache.write_ok(x, DATA)]
+    p += [f"write_ok allows {x}" for x in bad if warm_cache.write_ok(x, DATA)]
+    if warm_cache.delete_ok(USER_CACHE, DATA) or warm_cache.delete_ok(DRIVER_CACHE, DATA):
+        p.append("DELE of a cache folder itself is allowed")
+    pairs_ok = [(USER_CACHE, USER_CACHE + warm_cache.ASIDE), (DRIVER_CACHE + warm_cache.ASIDE, DRIVER_CACHE)]
+    pairs_bad = [(USER_CACHE, DRIVER_CACHE + warm_cache.ASIDE), (USER_CACHE + "/shader", USER_CACHE + "/x"),
+                 (f"{DATA}/user/save", f"{DATA}/user/save{warm_cache.ASIDE}"), (USER_CACHE, USER_CACHE + ".old")]
+    p += [f"rename_ok refuses {a} -> {b}" for a, b in pairs_ok if not warm_cache.rename_ok(a, b, DATA)]
+    p += [f"rename_ok allows {a} -> {b}" for a, b in pairs_bad if warm_cache.rename_ok(a, b, DATA)]
+    sent = []
+    client = types.SimpleNamespace(sendcmd=lambda c: sent.append(c), rename=lambda a, b: sent.append(("RN", a, b)),
+                                   storbinary=lambda c, h: sent.append(c))
+    writer = tool.WarmWriter(client)
+    for call in (lambda: writer.dele(f"{USER_CACHE}{warm_cache.ASIDE}/a"), lambda: writer.rmd(f"{DATA}/user/save"),
+                 lambda: writer.mkd(f"{DATA}/logs/x"), lambda: writer.rename(USER_CACHE, USER_CACHE + ".old"),
+                 lambda: writer.stor(__file__, f"{DATA}/env.txt"), lambda: writer.dele(DRIVER_CACHE)):
+        try:
+            call()
+            p.append("the runner's WarmWriter sent a write outside its rules")
+        except tool.Refused:
+            pass
+    if sent:
+        p.append(f"the runner's WarmWriter sent: {sent}")
+    writer.dele(f"{DRIVER_CACHE}/radv/a")
+    if sent != [f"DELE {DRIVER_CACHE}/radv/a"]:
+        p.append(f"an allowed DELE was not sent as such: {sent}")
+    real = RealConsole(types.SimpleNamespace(host=HOST, web_port=8080, ftp_port=2121, timeout=0.01))
+    before = len(offline_guard.ATTEMPTS)
+    for what, call in (("a whole-cache session", lambda: real.warm_writer().__enter__()),
+                       ("a whole-cache download", lambda: real.download("/data/x", Path(folder) / "x"))):
+        try:
+            call()
+            p.append(f"{what} on the real Console did not fail")
+        except tool.NoAnswer:
+            pass
+    if len(offline_guard.ATTEMPTS) == before:
+        p.append("the real Console's whole-cache calls left no record in the guard")
+    del offline_guard.ATTEMPTS[:]  # these were made on purpose
+    return p
+
+
+@case("37 --warm-copy with a cold start refuses; the plan print names the restore and makes no console")
+def _(root, out, folder):
+    fake = new_fake(root)
+    copy, code, text = make_warm_copy(folder, out)
+    fake.calls.clear()
+    p = []
+    code, text = run_main(plan(folder, "mixed", ["EDEN_TEST_COLD=1"]), out, ("--warm-copy", str(copy)))
+    if "two batches" not in str(code) or fake.calls:
+        p.append(f"a cold start with --warm-copy: exit {code}, calls {fake.calls[:3]}")
+    made = []
+    tool.Console = lambda args: made.append(args) or FAKE["console"]
+    try:
+        code, text = run_argv([str(plan(folder, "print", [])), "--warm-copy", str(copy), "--out-root", str(out)])
+    finally:
+        tool.Console = lambda args: FAKE["console"]
+    if code != 0 or "WHOLE-CACHE RESTORE from the copy warm-copy-after-store-build" not in text or made or fake.calls:
+        p.append(f"plan print: exit {code}, made {len(made)} console(s), {text[-300:]!r}")
+    return p
+
+
+@case("38 the owner has no driver cache folder: only the app cache goes aside, none is left after")
+def _(root, out, folder):
+    fake = new_fake(root, radv=False)
+    copy, code, text = make_warm_copy(folder, out)
+    code, text = run_main(plan(folder, "nodriver", []), out, ("--warm-copy", str(copy)))
+    p = [] if code == 0 else [f"exit {code}: {text[-400:]}"]
+    if SCENARIO.get("warm_at_start", [None])[0] != copy_on_console(copy):
+        p.append("the start did not find the copy in place")
+    if (root / DRIVER_CACHE.lstrip("/")).exists():
+        p.append(f"{DRIVER_CACHE} is left; the owner had none")
+    p += owner_back(FAKE["before"], root)
+    if [w for w in fake.warm_writes if w[0] == "rename" and DRIVER_CACHE in w[1]]:
+        p.append("a rename of the driver folder the owner did not have")
+    return p
+
+
+@case("39 an uploaded file lands short where no read-back looks: the listing check stops the batch")
+def _(root, out, folder):
+    fake = new_fake(root)
+    copy, code, text = make_warm_copy(folder, out)
+    fake.warm_short = "small"  # a small driver-cache file the one-in-16 read-back does not pick
+    code, text = run_main(plan(folder, "short", []), out, ("--warm-copy", str(copy)))
+    p = [] if code == 2 else [f"exit {code}, expected 2"]
+    if SCENARIO.get("started"):
+        p.append("the test started on a wrong cache")
+    if "after the upload" not in (batches(out)[0] / "summary.md").read_text():
+        p.append("summary.md does not name the listing that differs")
+    p += owner_back(FAKE["before"], root)
+    if warm_asides(root) or "warm_pending" in state_of(out):
+        p.append(f"not back: {warm_asides(root)}")
+    return p
+
+
+@case("40 Ctrl-C between the two renames, and Ctrl-C half way through a restore: the owner's caches come back")
+def _(root, out, folder):
+    fake = new_fake(root)
+    copy, code, text = make_warm_copy(folder, out)
+    p = []
+    for at, name in ((2, "ctrl-aside"), (7, "ctrl-restore")):
+        fake.warm_ctrl_c_at = at
+        code, text = run_main(plan(folder, name, []), out, ("--warm-copy", str(copy)))
+        if code not in (2, 130):
+            p.append(f"{name}: exit {code}: {text[-300:]}")
+        if SCENARIO.get("started"):
+            p.append(f"{name}: the test started")
+        p += [f"{name}: {x}" for x in owner_back(FAKE["before"], root)]
+        if warm_asides(root) or "warm_pending" in state_of(out):
+            p.append(f"{name}: not back: {warm_asides(root)}")
+    return p
+
+
+@case("41 outside-review fixes: a copy changed after its check is not sent; no copy over an aside; unreadable logs")
+def _(root, out, folder):
+    fake = new_fake(root)
+    copy, code, text = make_warm_copy(folder, out)
+    p = []
+    real_check, calls = warm_cache.check_copy, []
+
+    def check_then_change(copy_folder, data=None):
+        found = real_check(copy_folder, data)
+        calls.append(1)
+        if len(calls) == 3:  # main's check, the batch start's, then the restore's: the copy changes right after
+            victim = sorted(q for q in (Path(copy_folder) / "user-cache").rglob("*") if q.is_file())[0]
+            data_now = bytearray(victim.read_bytes())
+            data_now[0] ^= 0x01
+            victim.write_bytes(bytes(data_now))
+        return found
+    warm_cache.check_copy = check_then_change
+    try:
+        code, text = run_main(plan(folder, "changed", []), out, ("--warm-copy", str(copy)))
+    finally:
+        warm_cache.check_copy = real_check
+    if code != 2 or SCENARIO.get("started"):
+        p.append(f"a copy changed after its check: exit {code}, started {SCENARIO.get('started')}")
+    if "changed on this computer after it was checked" not in (batch_named(out, "changed") / "summary.md").read_text():
+        p.append("summary.md does not name the changed copy")
+    p += owner_back(FAKE["before"], root)
+    if warm_asides(root):
+        p.append(f"not back: {warm_asides(root)}")
+    put_file(root, f"{USER_CACHE}{warm_cache.ASIDE}/x", b"left")
+    code, text = run_argv([f"--make-warm-copy={folder / 'over-aside'}", "--go", "--out-root", str(folder / "other-out")])
+    if "No copy made" not in str(code) or "is on the console" not in str(code):
+        p.append(f"a copy was made while an aside folder is on the console: {code}")
+    shutil.rmtree(root / f"{USER_CACHE}{warm_cache.ASIDE}".lstrip("/"))
+    caches = warm_cache.WarmCache(fake, DATA, say=lambda t: None, app_open=lambda: False,
+                                  log_sizes=lambda: (None, None, None), errors=(tool.NoAnswer,), quiet=0)
+    ok, why = caches.closed()  # the log folders did not list: two equal "unknown" looks are not "quiet"
+    if ok or "eden_log.txt cannot be read" not in why:
+        p.append(f"closed() with no eden_log.txt: {ok} {why}")
     return p
 
 

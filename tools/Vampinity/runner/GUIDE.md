@@ -161,7 +161,7 @@ Each log copy stops at 256 MiB (`--max-log-mib`), and the summary says if one wa
 
 ## What it will never do
 
-No `--go`, no contact with the console at all. It has no default address. It can only write `env.txt` in the app folders of the settings, `test-quit`, `test-boot-once`, and its own `auto-run-*.txt` scripts in `/data/eglantineps5` (plus the app's settings file and the live switch file for a plan that uses `config` or `live`). Anything else is refused in the code. Since 18 Nov a cold start, and the start-up check of every `--go`, may also rename the two cache folders and make one empty folder: README.md, "What it writes on the console", has the full list. With `--save` the save tool writes the game's save folder. It can only start EglantinePS5. It never installs a build, never renames or moves app folders, never touches PSN or firmware.
+No `--go`, no contact with the console at all. It has no default address. It can only write `env.txt` in the app folders of the settings, `test-quit`, `test-boot-once`, and its own `auto-run-*.txt` scripts in `/data/eglantineps5` (plus the app's settings file and the live switch file for a plan that uses `config` or `live`). Anything else is refused in the code. Since 18 Nov a cold start, and the start-up check of every `--go`, may also rename the two cache folders and make one empty folder. With `--warm-copy` it also renames your two cache folders aside for the batch, and before every start deletes and uploads what is inside the two live ones (README.md, "A warm control"). README.md, "What it writes on the console", has the full list. With `--save` the save tool writes the game's save folder. It can only start EglantinePS5. It never installs a build, never renames or moves app folders, never touches PSN or firmware.
 
 It leaves the `auto-run-*.txt` scripts on the console. They're small, and the next run with that name replaces them.
 
@@ -189,7 +189,7 @@ The tool keeps the Mac awake while it runs (settings: keep_awake). Don't close t
 
 My own copy was tested against a mock console on my Mac: websrv, ftpsrv, the app, and OBS, with freezes, device-lost, CE errors, a dead console and a dozen other cases simulated from real log lines. The script check was compared with the app's real parser, and one test compiled the app's own `test_harness.h` to run the tool against it. That mock and those tests are not in this folder: they are not cleaned of my own paths.
 
-What is here is `tests/`: the offline tests of the cold option and the caches line (README.md, "Tests"). They do not cover the rest of the runner.
+What is here is `tests/`: the offline tests of the cold option, the caches line and the whole-cache restore (README.md, "Tests"). They do not cover the rest of the runner.
 
 Credit: the fresh-boot check and reading crash reports follow the idea of heydemoura's `mkw-bench-console.py` (GPL-3.0-or-later), rewritten here.
 

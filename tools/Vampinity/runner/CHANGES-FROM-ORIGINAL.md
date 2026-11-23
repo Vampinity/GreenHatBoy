@@ -66,6 +66,18 @@ New code, not in my own copy. Line numbers are this folder's.
 | `.gitignore` | **New.** Keeps `runner-config.json` out of git |
 | wording | `auto-run.py`, `auto-run-wait.py`, `backup-save.py`, `restore-save.py`, `lint-scripts.py`: comments that named a folder or script of my own set-up, the game or its main character now say it in general words. `restore-save.py`'s first lines now say plainly that it removes save slots. No code line changed in these five places |
 
+## The whole-cache restore, 23 Nov
+
+New code, not in my own copy: our night kit's restore tool of 22 Nov, ported into this runner's style.
+GrowingBlackBeans asked for it on PR #38 (his `warm-run-steps.md`, step 0).
+
+| File | What |
+|---|---|
+| `warm_cache.py` | **New.** The copy (`make_copy`, `check_copy`: manifest, `SHA256SUMS`, `copy.json`), the owner's two folders renamed aside and proven unchanged (`set_aside`, `owner_intact`), the restore before every start (`restore`: delete the live folders, upload the copy, list, read back), the way back (`back`) and the start-up check (`recover`). Its own write rules: `write_ok`, `delete_ok`, `rename_ok` |
+| `auto-run.py` | imports `warm_cache`; `--warm-copy`, `--make-warm-copy`, `--check-warm-copy`; `Console.download` and `Console.warm_writer`, with a `WarmWriter` that checks the rules again before each FTP write (`writable()` unchanged); `Batch.warm_recover` in `prepare`, `warm_aside` at its end, `warm_restore` before every start, `warm_back` in `run`'s `finally`; `warm_restore` in `result.json`; the caches line of a restored start; a "Whole-cache restore" part in `summary.md`; `--restore-env --go` also puts the owner's folders back; two stops (`warm_failed`, `warm_not_back`); a host check in `blocked`; a cold start with `--warm-copy` is refused |
+| `tests/test_cold_start.py` | a fake FTP session for the restore's writes, and 13 new cases (29 to 41) |
+| `README.md`, `GUIDE.md` | the warm control section, what it writes on the console, the tests |
+
 ## Not in this folder
 
 My queue (several plans in a row), my result tool, its flash meter, the tool that cuts a `LOOK` check from a
@@ -87,5 +99,12 @@ loads it only for a plan with `live`, which this folder does not support.
   read as their author classed them, and his warm control gave his own numbers (80770 reused, 80770 known,
   0 left, 3 own records, Total Pipeline Count 4). The older build has no store line: its store fields and its class
   come out empty with the reason, as they should.
+
+- 23 Nov: the offline tests, 44 of 44, on Python 3.11 and 3.15 (macOS). Broken on purpose in scratch copies of
+  `warm_cache.py`, the tests fail as they should: without the check of the owner's folders before a delete,
+  without the read-back compare, without the SHA-256 compare of the copy, without the listing check after an
+  upload, without the check of an aside folder before it is renamed back, without the refusal of an aside
+  folder this computer has no note of, without the hash of each file right before its upload, without the
+  refusal of unreadable logs in the closed check, and without the aside check before a new copy (9 of 9).
 
 Not checked: any contact with a console, OBS, a save put-back, and Linux.
