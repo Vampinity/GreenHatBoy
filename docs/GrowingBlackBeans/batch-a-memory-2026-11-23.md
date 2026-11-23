@@ -7,9 +7,18 @@ Phase 4, memory first: our batch A of the split (D2). Alpha T186 (01.219.028) + 
 restore before every start. Each arm takes one part out of the control; 12 controls interleaved.
 
 Rules frozen before start 1 (sha1 ffbf5cface7f), plus amendment 1 (sha1 a0a7f3176378, frozen before start 15): two
-sittings, and the controls pooled only if the two sittings' controls agree. **Moved:** a crash in an arm when no control
-crashed, or a two-sided permutation p < 0.01 on any of six numbers, either direction. **Quiet:** nothing moved, and the
-part's own log line is in every control and in no arm start.
+sittings, and the controls pooled only if the two sittings' controls agree. Both files are in
+[`batch-a-rules/`](batch-a-rules/), byte for byte, so the hashes can be checked. **Moved:** a crash in an arm when no
+control crashed, or a two-sided permutation p < 0.01 on any of six numbers, either direction. The six are refusals,
+largest free block at the black, s under 16 MiB, worst frame after the black, load s and field walk fps; distinct
+failed shapes is reported beside refusals and is not one of them. **Quiet:** nothing moved, and the part's own log line
+is in every control and in no arm start.
+
+**When amendment 1 was written.** After sitting 1 was packed: the first commit (84fc377) called the batch short. The
+amendment's outline was pushed at 04:58 UTC on 23 Nov (cb48288), before sitting 2's counted starts; its frozen text,
+its hash and the "agree" bar (no sitting difference under 0.01) were first pushed with this read. That matters for z:
+0.0016 needs sitting 1's starts. Sitting 2's two drain-out starts (1054, 1000) sit below all seven of its controls,
+but 2 against 7 can't reach 0.01 on its own.
 
 | arm: what is out | call | |
 |---|---|---|
@@ -24,7 +33,7 @@ z is three things, not one: drain at area and load hold's drain step both run on
 |---|---|---|---|---|---|
 | graphics refusals, to script_end (tries) | 0-27 | 3-5 | 6-20 | 4-50 | 0.0137 |
 | distinct failed shapes | 0-9 | 0-2 | 1-4 | 0-12 | 0.0214 |
-| largest free block at the black, MiB | 1100-1354 | 1109-1311 | 1171-1339 | **956-1130** | **0.0016** |
+| largest free block at the black, MiB (driver's available figure, as in #37) | 1100-1354 | 1109-1311 | 1171-1339 | **956-1130** | **0.0016** |
 | s under 16 MiB | 2-42 | 24-44 | 10-108 | **38-92** | **0.0022** |
 | worst frame after the black, ms | 1,246-5,397 | 2,127-7,012 | 1,399-3,125 | 1,590-9,130 | 0.0489 |
 | load s | 9.3-26.6 | 19.8-33.1 | 18.8-24.3 | 20.5-32.2 | 0.0379 |
@@ -39,6 +48,14 @@ numbers: p 0.146-0.896, none under 0.01. The pooled read stands.
   than any control (956, 1000, 1054 against 1100 and up; the fourth is 1130), and three of four spend longer under
   16 MiB than any control (50, 56, 92 against 42 at most). Refusals and failed shapes lean
   the same way but stay above the line, so they are not called.
+- "At the black" is the driver's available figure (as in #37). On the allocator census's largest piece, z is still
+  lowest on ranks (p 0.0044) but not on means (p 0.052) (Vampinity's recount, #43).
+- The VMA dumps (`EDEN_UP_AREA_VMA_SNAPSHOT=1`, on in every start) fire when over 512 MiB of the allocator sits outside
+  the census. Each drain-out start wrote three (two before the black, one after), but Y4 and C8's cold first try wrote
+  one each, so they are not drain-out only. They read as a sign of drain out, not a cause.
+- z's refusals lean up (p 0.0137, not called). On the alpha each graphics refusal triggers a flat 64 MiB pack on the
+  asking thread, the source of waveydude's walk freezes on 9.40 and 13.60, so refusals are a lead for the split
+  (waveydude, #43).
 - "Quiet" is a screen on this route, handheld, from a fresh start, at 4 against 12. It is not "cleared" and says
   nothing about long play or docked.
 - No start crashed, in any arm or control. Every start got through the load.

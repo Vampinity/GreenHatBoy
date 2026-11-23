@@ -4,4 +4,4 @@
 - Boot warm: 80,770 known, 3 records read (3 own), Total Pipeline Count 4; settings as written; closed normally.
 - Graphics refusals to script_end 4; largest block at the black 1130 MiB; 38 s under 16 MiB; worst frame after
   the black 1,590 ms; load 20.5 s; field walk 19.12 fps; distinct failed shapes 0. One start: no call.
-- Also left `mkw-vma-<pid>-9000NN.json` dumps (Vulkan allocator); only the drain-out starts did. Not packed.
+- Also left `mkw-vma-<pid>-9000NN.json` dumps (Vulkan allocator); each drain-out start wrote three, and Y4 and C8's cold first try one each (they fire when over 512 MiB sits outside the census), so not drain-out only. Not packed.
