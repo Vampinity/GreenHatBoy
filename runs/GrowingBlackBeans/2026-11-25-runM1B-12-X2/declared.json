@@ -1,0 +1,25 @@
+{
+  "run_id": "runM1B-12-X2",
+  "control": false,
+  "intended_cache": "warm",
+  "route": "field-to-past-field.txt",
+  "route_sha1_12": "c4fada64155f",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt: the script line changed and 1 line(s) removed",
+  "intent": "Phase 4 M1B-F batch B: reserve floor out, against this batch's own controls.",
+  "batch": "M1 batch B",
+  "batch_position": 12,
+  "rules_sha1_12": "9e13ca644841",
+  "arm": {
+    "name": "M1B-x",
+    "unit": "reserve floor",
+    "lines_removed": [
+      "EDEN_GUEST_RESERVE_FLOOR"
+    ]
+  }
+}
