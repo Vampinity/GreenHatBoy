@@ -1,0 +1,58 @@
+EglantinePS5 crash report
+version: 01.219.028 (code size 0x2d8f380)
+time: 2026-11-22 08:22:53, 2970 s after the app started
+what: SIGSEGV (invalid memory access), code 2, address 0x0000008247a75578
+where: 0x000000123030ad4e (outside the app's code: a system library or generated code)
+thread: CPUCore_4 (0x880f59d40)
+running: game The Legend of Zelda Ocarina of TIme [04004860224DEC000].nup (0400486024dec000), Vulkan, resolution 1x, Bilinear, output 1080p, 60 Hz, mods: none
+memory: largest free block 1 MiB of 12352 MiB, heap 1792 MiB and 0 MiB in 0 large blocks
+registers:
+  rip 000000123030ad4e  rsp 00000012f541b970  rbp 00000012f541bd80
+  rax 000000000000003c  rbx 00000061f9600000  rcx 000000115e475028
+  rdx 00000070e9600000  rsi 000000115e475578  rdi 0000002155d2c5f0
+  r8  000000100a000540  r9  00000000c004bc2a  r10 00000000000000a2
+  r11 2000000080ac3b54  r12 00000061f9600000  r13 0000002161aa7080
+  r14 00000011c0e00000  r15 0000001009647090  flags 0000000000010206
+  trap 12  error 0x4
+code: 0x0000000000400000 to 0x000000000318f380 (eboot+offset is an address in the build's llvm-pie.elf)
+calls found on the stack, most recent first ("?": not checked against a call instruction):
+  eboot+0x1d333f6 ?
+  eboot+0x1d333f6 ?
+  eboot+0x7adf1c ?
+  eboot+0x33d1d0 ?
+  eboot+0x1d333f6 ?
+  eboot+0x78d350 ?
+  eboot+0x1d333f6 ?
+  eboot+0x78d350 ?
+  eboot+0x1d333f6 ?
+  eboot+0x78d350 ?
+  eboot+0x7adf1c ?
+  eboot+0x33baa1 ?
+  eboot+0x78d350 ?
+  eboot+0x7adf1c ?
+  eboot+0x3392d9 ?
+  eboot+0x3383c4 ?
+  eboot+0x1d333f6 ?
+  eboot+0x29b9bd0 ?
+  eboot+0x2a50260 ?
+  eboot+0x2a4e718 ?
+  eboot+0x33baa1 ?
+  eboot+0xc00000 ?
+  eboot+0x2a4ceed ?
+  eboot+0x78d350 ?
+  eboot+0x1d333f6 ?
+  eboot+0x4a67d7 ?
+  eboot+0x4a7063 ?
+  eboot+0x7adf1c ?
+  eboot+0x1d333f6 ?
+  eboot+0x4a6f40 ?
+  eboot+0x1d333f6 ?
+  eboot+0x4a6f40 ?
+  eboot+0x4a7760 ?
+  eboot+0x4ecb8c ?
+  eboot+0x4ecae9 ?
+  eboot+0x1d56f10 ?
+  eboot+0x1d56ea0 ?
+  eboot+0x1df7f9f ?
+  eboot+0x1df7f9f ?
+then: the app starts again
