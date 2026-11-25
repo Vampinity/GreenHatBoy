@@ -1,0 +1,25 @@
+{
+  "run_id": "runM1AS-11-W4",
+  "control": false,
+  "intended_cache": "warm",
+  "route": "field-to-past-field.txt",
+  "route_sha1_12": "c4fada64155f",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt: the script line changed and 1 line(s) removed",
+  "intent": "Phase 4 M1B-F batch AS: drain at area out, against this batch's own controls.",
+  "batch": "M1 batch AS",
+  "batch_position": 11,
+  "rules_sha1_12": "133e19b181fb",
+  "arm": {
+    "name": "M1AS-w",
+    "unit": "drain at area",
+    "lines_removed": [
+      "EDEN_UP_DRAIN_AT_AREA"
+    ]
+  }
+}
