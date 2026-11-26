@@ -1,0 +1,13 @@
+{
+  "run_id": "auto-20261125-073350-proving-one-control/run2-proving-control-1",
+  "control": true,
+  "intended_cache": "warm",
+  "route": "field-to-past-field.txt",
+  "route_sha1_12": "c4fada64155f",
+  "build": {"tag": "alpha-T186", "note": "the release eboot as installed, 01.219.028"},
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "proving-one-control.json: the pinned control's 170 lines; the runner added EDEN_TEST_BOOT and EDEN_TEST_SCRIPT",
+  "intent": "The second automated start (Vampinity's runner, PR 38 at 31ace18, on the Pi over the cable): a WARM field control, the whole cache put back from the Pi's ws2 copy (matches runWS2's list, 27/27) by --warm-copy. The second of two proving controls, against the hand controls (runRC-5-C3).",
+  "written": "2026-11-25"
+}
