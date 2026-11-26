@@ -4,4 +4,6 @@
 - The control env plus `EDEN_UP_FAULT_LOG=1`, log-only on this control (GPU_READ_THROUGH=2 and FAULT_RESERVE=1 already turn the fault path on). Not a control, not read for numbers: it decides batch D (`waits.py`, beside the rules).
 - Two guest-write waits, both on the cpu-jit thread near 175 s, 2 and 95 ms, both got a block. No JIT commit or new-handler wait in it.
 - Boot warm; script done.
+- Whole-cache restore before this start: copy ws2 (made 2026-11-25 06:57:21), 27 files, 2.1 GiB, 204 s, at 2026-11-25 19:00:50; read back 26 + 13 files; user-cache digest 07472daf4d3a, cache digest 48d0fe46e312 (the same in every start).
+- VMA dumps left on the console: 0.
 - Graphics refusals to script_end 14; largest block at the black 1,225 MiB; 42 s under 16 MiB; worst frame after the black 3,253 ms; load 24.8 s; field walk 18.88 fps; distinct failed shapes 5.

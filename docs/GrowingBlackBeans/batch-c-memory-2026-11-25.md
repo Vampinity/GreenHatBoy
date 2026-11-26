@@ -45,10 +45,14 @@ needs 10 or more eligible controls.
 - **x leans** toward more room and a shorter load (p 0.059, 0.065), not called.
 - **z** has the lowest single room at the black of any start (Z2, 909 MiB), but the arm doesn't move (p 0.12), and its
   worst frame after the black doesn't lengthen (p 0.64).
-- **No start crashed or hung**; 28 of 28 completed and all 12 controls are eligible.
+- **No start crashed or hung**; 28 of 28 completed, every one with a clean close (no log cut), and all 12 controls are
+  eligible. No start failed to count, so nothing needed a rerun.
+- **VMA dumps left on the console: 0** in every start, the probe included.
 - **Every start was checked for the whole-cache restore** in the runner's own log before the import: 29 of 29 (27 files,
   2.1 GiB, 203-218 s each), and all booted warm (80,770 known, 3 own records, Total Pipeline Count 4). The owner's caches
-  were put back at the end, each listing the same as before.
+  were put back at the end, each listing the same as before. Each run's NOTE.md carries its own restore line (time,
+  size, seconds, files read back, the two digests, the same in every start; no address or paths), and each `run.json`
+  was packed with the alpha env as reference, so `control_eligible` reads true for the 12 controls.
 - A screen on this route, handheld, from a fresh start, at 4 against 12. Nothing is adopted or removed: phase 4 explains
   the control and changes nothing until the programme ends.
 
