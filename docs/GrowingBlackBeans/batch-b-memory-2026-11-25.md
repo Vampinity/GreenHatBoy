@@ -1,6 +1,7 @@
 # Batch B: the reserves that act (GrowingBlackBeans, 25 Nov 2026)
 
 **All three quiet: reserve floor out and DMA scratch out, no change seen; reserved tables out, no harm seen (its cap).**
+**Reserve floor out leans the way written before start 1 (more seconds under 16 MiB, p 0.021), not called.**
 
 Phase 4, memory first: batch A's twin for the other three memory parts of the control. Alpha T186 (01.219.028) + play
 v4.0 with swap ahead 2048, base PS5, 13.60, handheld 1x, the warm field route (c4fada64155f), the shared warm store
@@ -38,18 +39,30 @@ needs 10 or more eligible controls.
 **What this does and does not say**
 
 - **No line moved.** Two lean without being called:
-  - x has more time near empty: 36-76 s under 16 MiB against 14-50 (p 0.021). X4 has the smallest room at the black of
-    any start, 928 MiB.
+  - x has more time near empty: 36-76 s under 16 MiB against 14-50 (p 0.021). That is the direction the rules wrote
+    down before start 1 ("more seconds under 16 MiB"), so "no change seen" stands beside a lean the right way, not
+    called at p 0.01. X4 has the smallest room at the black of any start, 928 MiB.
   - z has a shorter load: 11.6-21.5 s (p 0.045).
-  At four arms, about 1 batch in 9 shows a false move, so leans at this size are what identical controls also give.
+  At three arms, about 1 batch in 9 shows a false move, so leans at this size are what identical controls also give.
 - **z's census heap** at the last census line before the black: arm 604-725 MiB against controls 688-800. The 88 MiB of
   scratch not reserved is mostly not taken at that moment, as expected. It doesn't show as room at the black (p 0.97).
 - **y can only show harm:** 4 starts miss the risky growth (tables doubling with memory at the bottom) about 1 time in 5.
   "No harm seen" is the best this batch can say about it.
-- **No start crashed or hung.** One control, C5, lost the end of its log just after the quit (`end_kind log_cut`) and is
-  not eligible, as the rules say. 11 eligible controls remain.
+- **No start crashed or hung.** Three starts lost the end of their log just after the quit (`end_kind log_cut`): the
+  control C5 and the arm starts Y1 and X3. C5 is not an eligible control, so 11 eligible controls remain. Y1 and X3 keep
+  their count (a bad quit after script_end keeps an arm start's count) and are read.
+- **C5 was not rerun, and the rules ask for it** (a start that doesn't count and didn't crash is rerun at the end). We
+  missed it: the runner ran all 24 in one go, and we only found C5 ineligible at the read, after the console had moved
+  on to batch C. The read stands on 11 controls, which the rules allow (10 or more), but the rerun line wasn't followed.
+  A rerun now would come from another day and another sitting, so we report the miss instead. Batch C and L7 are checked
+  for this before the read.
 - **Every start was checked for the whole-cache restore** in the runner's own log before the import. All 24 had it (27
-  files, 2.1 GiB, 203-224 s each), and all 24 booted warm.
+  files, 2.1 GiB, 203-224 s each, the same two digests every time), and all 24 booted warm. Each run's NOTE.md now
+  carries its own restore line (time, size, seconds, files read back, digests; no address or paths).
+- **VMA dumps left on the console: 0** in every start, the five set-aside ones included.
+- **Repacked 25 Nov** with the alpha env as the reference, so each `run.json` reads `control_eligible` as the scorer
+  does: true for the 11 eligible controls, false for C5 and the arm starts. The set-aside controls (`-try1`, `-nowarm`)
+  read true there too, as starts, but are not read with B.
 - **Starts that are kept and not read:**
   - try 1's four starts: `runM1B-01-C1-try1` to `-04-Y1-try1`, by hand, all clean;
   - the runner's first start 1 without the restore: `runM1B-01-C1-nowarm`. It booted warm by its numbers on the cache
