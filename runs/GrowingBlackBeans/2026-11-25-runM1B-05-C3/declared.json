@@ -1,0 +1,18 @@
+{
+  "run_id": "runM1B-05-C3",
+  "control": true,
+  "intended_cache": "warm",
+  "route": "field-to-past-field.txt",
+  "route_sha1_12": "c4fada64155f",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt: the script line changed",
+  "intent": "Phase 4 M1B-F batch B: control, interleaved, whole cache restored first.",
+  "batch": "M1 batch B",
+  "batch_position": 5,
+  "rules_sha1_12": "9e13ca644841"
+}
