@@ -1,0 +1,21 @@
+{
+  "run_id": "runM1C-29-PROBE",
+  "control": false,
+  "intended_cache": "warm",
+  "route": "field-to-past-field.txt",
+  "route_sha1_12": "c4fada64155f",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt: the script line changed and EDEN_UP_FAULT_LOG=1 added",
+  "intent": "Phase 4 waits probe: which waits happen on the field route, for the batch D decision.",
+  "batch": "M1 batch C",
+  "batch_position": 29,
+  "rules_sha1_12": "4d083ca2d204",
+  "probe": {
+    "line_added": "EDEN_UP_FAULT_LOG=1"
+  }
+}
