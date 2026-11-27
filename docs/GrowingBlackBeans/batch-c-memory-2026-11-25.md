@@ -107,3 +107,39 @@ Runs: `runs/GrowingBlackBeans/2026-11-25-runM1C-01-C1` to `-28-C12`, and `-29-PR
 batch kit (`batch_kit.py read`, exact two-sided permutation on means), scorer stk_score 10; batch D's decision with
 `waits.py`. The runner's result folder is not posted: it holds the console's network address. Each start's logs came
 from it, flat, through a checked import (the env and the route that ran are the folder's).
+
+## After the review (27 Nov)
+
+Vampinity's five points on #49, each checked against the 29 folders. Nothing above changes: the read, the p values and
+batch D's three arms stand.
+
+1. **Longest waits.** The probe's own lines counted 2 guest-write waits, but every start logs its guest-write waits as
+   `EDEN_UP_WAIT_RECLAIM` lines too: **36 waits in 21 of the 29 starts, every one ended `done`** (got a block). Five
+   lasted over 1 s, three of them just past the 2 s mark: C2 slot 2913 (app thread, 2,099 ms, 180 s) and slot 2834
+   (cpu-jit, 1,045 ms), C7 slot 2271 (cpu-jit, 2,094 ms, 173 s), Z4 slot 3376 (cpu-jit, 2,089 ms, 195 s) and slot 2938
+   (cpu-jit, 1,892 ms). All the rest were under 200 ms. So the longest guest-write wait was 2.1 s, not 95 ms. It is in
+   two controls and one z start, so it's the control's, not an arm's. Guest-write was already an arm of D.
+2. **The new-handler pattern in `waits.py` was wrong:** it looked for `EDEN_UP_NEW_WAIT_MS`, while the lines are
+   `EDEN_NEW_WAIT start` (main.cpp:592, one per wait) and the summary `EDEN_UP_NEW_WAIT limit=` (performance.cpp:1147,
+   printed only once a wait has begun). **Neither appears in any of the 29 starts**, so "never acted: no arm" stands.
+   `waits.py` stays as frozen (sha1 4d083ca2d204, D runs from it); this note is the correction.
+3. **Block wait trim** has no line of its own. It trims at the first try of every guest-write wait and every 500 ms
+   after (guest_memory_service.inc:1877) and prints neither a count nor what it freed. So the logs can't say how often
+   it trimmed, only that it had its chance in each of the 36 waits above. D's arm for it can be read by its effect
+   (room, waits) and not by a line of its own.
+4. **VMA dumps** are above ("VMA dumps left on the console: 0", every start). **y's idle-arena page lines,** the last
+   `EDEN_HEAP_PAGES` line before the black (MiB of whole empty pages that are idle arenas), reported per arm and not
+   tested, as the rules say:
+
+   | arm | idle-arena MiB at the black, median (range) | the census's `idle_arenas=` at the black, median (range) |
+   |---|---|---|
+   | controls (12) | 38 (24-54) | 42 (22-106) |
+   | w | 39 (26-54) | 50 (24-112) |
+   | x | 30 (26-54) | 59 (32-64) |
+   | y | 46 (26-56) | 46 (28-108) |
+   | z | 45 (32-62) | 55 (34-110) |
+
+   y gives 12-24 arenas back over the run, yet no fewer sit idle at the black: the same story as the room not moving.
+5. **`pack_run.py`'s profile rule** now takes `launch: Profile:? ` (your rule from #13), and the audit after packing
+   refuses any profile line left unredacted. Two tests added (26 pass). None of our 1,813 raw logs has the launcher's
+   profile line in either form, so nothing already packed is affected.
