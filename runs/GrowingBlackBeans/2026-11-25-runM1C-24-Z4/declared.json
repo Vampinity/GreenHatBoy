@@ -1,0 +1,25 @@
+{
+  "run_id": "runM1C-24-Z4",
+  "control": false,
+  "intended_cache": "warm",
+  "route": "field-to-past-field.txt",
+  "route_sha1_12": "c4fada64155f",
+  "build": {
+    "tag": "alpha-T186",
+    "note": "the release eboot as installed, 01.219.028"
+  },
+  "firmware": "13.60",
+  "console": "base PS5, handheld, 1x",
+  "env_from": "env-control/env.txt: the script line changed and 1 line(s) removed",
+  "intent": "Phase 4 M1B-F batch C: memory report thread out, against this batch's own controls.",
+  "batch": "M1 batch C",
+  "batch_position": 24,
+  "rules_sha1_12": "4d083ca2d204",
+  "arm": {
+    "name": "M1C-z",
+    "unit": "memory report thread",
+    "lines_removed": [
+      "EDEN_MEMORY_REPORT_THREAD"
+    ]
+  }
+}

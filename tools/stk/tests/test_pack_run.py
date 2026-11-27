@@ -43,6 +43,20 @@ class Rules(unittest.TestCase):
         self.assertNotIn("account", out.splitlines()[0])
         self.assertIn("next line", out)
 
+    def test_profile_name_with_colon_goes(self):
+        """Vampinity's rule from #13: the launcher can print "Profile:" with a colon (review of #49)."""
+        counts = {}
+        out = pack_run.redact("launch: Profile: Someone's PS5 account\nnext line\n", Fake, counts)
+        self.assertIn("launch: Profile: <redacted>", out)
+        self.assertNotIn("account", out.splitlines()[0])
+
+    def test_audit_refuses_a_profile_name(self):
+        pattern = dict(pack_run.FORBIDDEN)["profile name"]
+        self.assertTrue(pattern.search("launch: Profile: Someone"))
+        self.assertTrue(pattern.search("launch: Profile Someone"))
+        self.assertFalse(pattern.search("launch: Profile: <redacted>"))
+        self.assertFalse(pattern.search("launch: Profile <redacted>"))
+
     def test_profile_id_by_value_goes_on_any_line(self):
         """Vampinity's rule 1 (D2, 17 Nov): an id known from config.json or a save path is replaced anywhere."""
         counts = {}
